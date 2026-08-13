@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use grammers_client::client::{ClientConfiguration, UpdatesConfiguration};
+use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::updates::UpdatesLike;
 use grammers_client::{Client, SenderPool};
 use tokio::sync::mpsc;
 
 pub struct ClientGuard {
     pub client: Client,
+    pub session: Arc<SqliteSession>,
     pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
 }
 
@@ -34,7 +36,11 @@ impl ClientGuard {
         } = pool;
         tokio::spawn(runner.run());
         let client = Client::with_configuration(handle, ClientConfiguration::default());
-        Ok(Self { client, updates })
+        Ok(Self {
+            client,
+            session,
+            updates,
+        })
     }
 }
 

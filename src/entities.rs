@@ -1,6 +1,7 @@
 use grammers_client::tl;
 use grammers_client::{Client, InvocationError};
-use grammers_session::types::PeerRef;
+use grammers_session::types::{PeerInfo, PeerRef};
+use grammers_session::Session;
 
 pub async fn resolve_peer(
     client: &Client,
@@ -99,6 +100,10 @@ fn rpc_error(code: i32, name: &str) -> InvocationError {
     })
 }
 
+pub async fn cache_chat<S: Session>(session: &S, chat: &tl::enums::Chat) -> Result<(), S::Error> {
+    session.cache_peer(&PeerInfo::from(chat)).await
+}
+
 pub async fn peer_ref(peer: &grammers_client::peer::Peer) -> Result<PeerRef, InvocationError> {
     match peer.to_ref().await? {
         Some(pref) => Ok(pref),
@@ -150,5 +155,61 @@ pub async fn input_user(
             value: None,
             caused_by: None,
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grammers_session::storages::MemorySession;
+    use grammers_session::types::PeerId;
+
+    #[tokio::test]
+    async fn cache_chat_stores_channel_access_hash() {
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 123456,
+            access_hash: 987654321,
+            title: "t".to_string(),
+            until_date: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let peer = session
+            .peer_ref(PeerId::channel_unchecked(123456))
+            .await
+            .unwrap()
+            .expect("created chat must be cached");
+        assert_eq!(peer.auth.hash(), 987654321);
+    }
+
+    #[tokio::test]
+    async fn cache_chat_stores_basic_group() {
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        assert!(session
+            .peer_ref(PeerId::chat_unchecked(123))
+            .await
+            .unwrap()
+            .is_some());
     }
 }
