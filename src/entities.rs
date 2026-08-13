@@ -120,6 +120,17 @@ fn rpc_error(code: i32, name: &str) -> InvocationError {
     })
 }
 
+pub fn is_channel(peer: &grammers_client::peer::Peer) -> bool {
+    match peer {
+        grammers_client::peer::Peer::Channel(_) => true,
+        grammers_client::peer::Peer::Group(group) => matches!(
+            &group.raw,
+            tl::enums::Chat::Channel(_) | tl::enums::Chat::ChannelForbidden(_)
+        ),
+        grammers_client::peer::Peer::User(_) => false,
+    }
+}
+
 pub async fn cache_chat<S: Session>(session: &S, chat: &tl::enums::Chat) -> Result<(), S::Error> {
     session.cache_peer(&PeerInfo::from(chat)).await
 }

@@ -171,6 +171,16 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .await
                         .map_err(tele_invocation)?;
                 }
+                grammers_client::peer::Peer::Group(_) if entities::is_channel(&peer) => {
+                    let channel = entities::input_channel(&peer)
+                        .await
+                        .map_err(tele_invocation)?;
+                    guard
+                        .client
+                        .invoke(&tl::functions::channels::LeaveChannel { channel })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
                 grammers_client::peer::Peer::Group(_) => {
                     let user_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
                     guard
@@ -221,6 +231,19 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .map_err(tele_invocation)?;
             match &chat {
                 grammers_client::peer::Peer::Channel(_) => {
+                    let channel = entities::input_channel(&chat)
+                        .await
+                        .map_err(tele_invocation)?;
+                    guard
+                        .client
+                        .invoke(&tl::functions::channels::InviteToChannel {
+                            channel,
+                            users: vec![user_input],
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                grammers_client::peer::Peer::Group(_) if entities::is_channel(&chat) => {
                     let channel = entities::input_channel(&chat)
                         .await
                         .map_err(tele_invocation)?;
