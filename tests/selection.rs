@@ -441,7 +441,7 @@ fn malformed_config_is_surfaced() {
 }
 
 #[test]
-fn readme_envelope_has_no_command_field_until_plumbed() {
+fn envelope_command_field_is_plumbed() {
     let dir = appdir("envelope");
     write_session(&dir, "work");
     let (code, out, _err) = run_in(
@@ -461,9 +461,31 @@ fn readme_envelope_has_no_command_field_until_plumbed() {
     );
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
-    assert!(v.get("command").is_none(), "command not plumbed yet: {out}");
+    assert_eq!(v["command"], serde_json::json!("msg send"), "stdout: {out}");
     assert!(v.get("results").is_some(), "results key required: {out}");
     assert!(v.get("accounts").is_none(), "accounts key removed: {out}");
+}
+
+#[test]
+fn envelope_command_reflects_nested_path() {
+    let dir = appdir("envelopenested");
+    write_session(&dir, "work");
+    let (code, out, _err) = run_in(
+        &dir,
+        &[
+            "chat",
+            "join",
+            "--account",
+            "work",
+            "--chat",
+            "me",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {_err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["command"], serde_json::json!("chat join"));
 }
 
 #[test]

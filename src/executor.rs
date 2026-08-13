@@ -15,6 +15,7 @@ pub struct GlobalFlags {
     pub dry_run: bool,
     pub quiet: bool,
     pub config_path: Option<std::path::PathBuf>,
+    pub command: String,
 }
 
 pub async fn run_fanout(
@@ -81,7 +82,11 @@ pub async fn run_fanout(
             }
         }
     }
-    Ok(crate::output::Envelope::new(outcomes, flags.dry_run))
+    Ok(crate::output::Envelope::new(
+        outcomes,
+        flags.dry_run,
+        &flags.command,
+    ))
 }
 
 fn failed_outcome(account: String, e: TeleError) -> AccountOutcome {

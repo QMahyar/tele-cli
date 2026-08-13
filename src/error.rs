@@ -11,7 +11,7 @@ pub enum TeleError {
     Usage(String),
     Auth(String),
     Config(String),
-    Invocation(String),
+    Invocation(String, Option<u32>),
     Other(String),
 }
 
@@ -29,7 +29,7 @@ impl TeleError {
             TeleError::Usage(m)
             | TeleError::Auth(m)
             | TeleError::Config(m)
-            | TeleError::Invocation(m)
+            | TeleError::Invocation(m, _)
             | TeleError::Other(m) => m,
         }
     }
@@ -39,10 +39,14 @@ impl TeleError {
             TeleError::Usage(_) => "UsageError",
             TeleError::Auth(_) => "AuthError",
             TeleError::Config(_) => "ConfigError",
-            TeleError::Invocation(_) => "InvocationError",
+            TeleError::Invocation(..) => "InvocationError",
             TeleError::Other(_) => "Error",
         };
-        serde_json::json!({ "type": kind, "message": self.message() })
+        let mut value = serde_json::json!({ "type": kind, "message": self.message() });
+        if let TeleError::Invocation(_, Some(seconds)) = self {
+            value["seconds"] = serde_json::json!(seconds);
+        }
+        value
     }
 }
 
@@ -82,5 +86,63 @@ pub fn invocation_message(e: &grammers_client::InvocationError) -> String {
     match e {
         grammers_client::InvocationError::Rpc(rpc) => rpc.to_string(),
         other => other.to_string(),
+    }
+}
+
+pub fn invocation_wait_seconds(e: &grammers_client::InvocationError) -> Option<u32> {
+    match e {
+        grammers_client::InvocationError::Rpc(rpc) if rpc.code == 420 && rpc.value.is_some() => {
+            rpc.value
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grammers_client::sender::RpcError;
+
+    fn flood(seconds: u32) -> TeleError {
+        TeleError::Invocation(
+            invocation_message(&grammers_client::InvocationError::Rpc(RpcError {
+                code: 420,
+                name: "FLOOD_WAIT".to_string(),
+                value: Some(seconds),
+                caused_by: None,
+            })),
+            invocation_wait_seconds(&grammers_client::InvocationError::Rpc(RpcError {
+                code: 420,
+                name: "FLOOD_WAIT".to_string(),
+                value: Some(seconds),
+                caused_by: None,
+            })),
+        )
+    }
+
+    #[test]
+    fn flood_wait_error_carries_seconds() {
+        let v = flood(17).as_json();
+        assert_eq!(v["type"], "InvocationError");
+        assert_eq!(v["seconds"], 17);
+    }
+
+    #[test]
+    fn non_flood_invocation_has_no_seconds() {
+        let e = TeleError::Invocation("request error: dropped (cancelled)".to_string(), None);
+        let v = e.as_json();
+        assert_eq!(v["type"], "InvocationError");
+        assert!(v.get("seconds").is_none());
+    }
+
+    #[test]
+    fn wait_seconds_only_for_flood_code() {
+        let e = grammers_client::InvocationError::Rpc(RpcError {
+            code: 400,
+            name: "CHAT_INVALID".to_string(),
+            value: Some(17),
+            caused_by: None,
+        });
+        assert_eq!(invocation_wait_seconds(&e), None);
     }
 }

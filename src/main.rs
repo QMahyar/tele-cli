@@ -10,7 +10,7 @@ mod output;
 mod serialize;
 mod session;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use commands::*;
 use error::TeleResult;
@@ -104,7 +104,8 @@ enum Command {
 
 fn main() {
     logging::init();
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).expect("clap matches parse");
     let flags = GlobalFlags {
         account: cli.account,
         tag: cli.tag,
@@ -114,6 +115,7 @@ fn main() {
         dry_run: cli.dry_run,
         quiet: cli.quiet,
         config_path: cli.config,
+        command: invoked_path(&matches),
     };
     logging::set_flags(cli.verbose, flags.quiet);
     if flags.json && flags.jsonl {
@@ -129,6 +131,16 @@ fn main() {
         .expect("tokio runtime");
     let code = runtime.block_on(async { run_command(cli.command, &flags).await });
     std::process::exit(code);
+}
+
+fn invoked_path(matches: &clap::ArgMatches) -> String {
+    let mut parts = Vec::new();
+    let mut m = matches;
+    while let Some((name, sub)) = m.subcommand() {
+        parts.push(name.to_string());
+        m = sub;
+    }
+    parts.join(" ")
 }
 
 async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
