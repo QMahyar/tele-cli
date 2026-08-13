@@ -283,6 +283,7 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
@@ -290,11 +291,15 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
         let config_path = config_path.clone();
         let target = args.chat.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+            }
             let guard = ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
+            ensure_chat_peer(&chat, "participants")?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
             let mut iter = guard.client.iter_participants(chat_ref);
             let mut rows = Vec::new();
@@ -305,7 +310,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
                         rows.push(serde_json::json!({
                             "id": p.user.id().bare_id().unwrap_or_default(),
                             "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
-                            "role": format!("{:?}", p.role),
+                            "role": role_name(&p.role),
                         }));
                         count += 1;
                     }
@@ -347,6 +352,7 @@ async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
+            ensure_chat_peer(&chat, "kick")?;
             let user_peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), &user)
                 .await
                 .map_err(tele_invocation)?;
@@ -370,6 +376,11 @@ fn validate_admin(args: &AdminArgs) -> TeleResult<()> {
     if args.promote && args.demote {
         return Err(TeleError::Usage(
             "--promote and --demote are mutually exclusive".to_string(),
+        ));
+    }
+    if !args.promote && !args.demote {
+        return Err(TeleError::Usage(
+            "--promote or --demote required".to_string(),
         ));
     }
     Ok(())
@@ -421,12 +432,6 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     .pin_messages(true)
                     .add_admins(true)
                     .manage_call(true);
-            } else if demote {
-                // keep all defaults off
-            } else {
-                return Err(TeleError::Usage(
-                    "--promote or --demote required".to_string(),
-                ));
             }
             if let Some(t) = &title {
                 builder = builder.rank(t.clone());
@@ -447,6 +452,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
@@ -454,9 +460,20 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
         let target = args.chat.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
+            let own_id = guard
+                .client
+                .get_me()
+                .await
+                .map_err(tele_invocation)?
+                .id()
+                .bare_id()
+                .unwrap_or_default();
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
@@ -486,7 +503,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 rows.push(serde_json::json!({
                     "id": event.id,
                     "date": date,
-                    "action": admin_action_summary(&event.action),
+                    "action": admin_action_summary(&event.action, own_id),
                 }));
             }
             if !output::machine_mode(json, jsonl) {
@@ -516,11 +533,15 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let broadcast = args.broadcast;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -709,18 +730,41 @@ fn peer_id(peer: &tl::enums::Peer) -> i64 {
     }
 }
 
-fn participant_user_id(p: &tl::enums::ChannelParticipant) -> i64 {
+fn participant_user_id(p: &tl::enums::ChannelParticipant, own_id: i64) -> i64 {
     match p {
         tl::enums::ChannelParticipant::Participant(p) => p.user_id,
+        tl::enums::ChannelParticipant::ParticipantSelf(_) => own_id,
         tl::enums::ChannelParticipant::Creator(p) => p.user_id,
         tl::enums::ChannelParticipant::Admin(p) => p.user_id,
         tl::enums::ChannelParticipant::Banned(p) => peer_id(&p.peer),
         tl::enums::ChannelParticipant::Left(p) => peer_id(&p.peer),
-        _ => 0,
     }
 }
 
-fn admin_action_summary(a: &tl::enums::ChannelAdminLogEventAction) -> serde_json::Value {
+fn role_name(role: &grammers_client::peer::Role) -> &'static str {
+    match role {
+        grammers_client::peer::Role::Creator(_) => "creator",
+        grammers_client::peer::Role::Admin(_) => "admin",
+        grammers_client::peer::Role::Banned(_) => "banned",
+        grammers_client::peer::Role::User(_) => "member",
+        grammers_client::peer::Role::Left(_) => "left",
+        _ => "unknown",
+    }
+}
+
+fn ensure_chat_peer(peer: &grammers_client::peer::Peer, action: &str) -> TeleResult<()> {
+    if matches!(peer, grammers_client::peer::Peer::User(_)) {
+        return Err(TeleError::Other(format!(
+            "{action} requires a chat, got a user"
+        )));
+    }
+    Ok(())
+}
+
+fn admin_action_summary(
+    a: &tl::enums::ChannelAdminLogEventAction,
+    own_id: i64,
+) -> serde_json::Value {
     match a {
         tl::enums::ChannelAdminLogEventAction::ChangeTitle(v) => {
             serde_json::json!({"kind": "change_title", "title": v.new_value})
@@ -752,19 +796,19 @@ fn admin_action_summary(a: &tl::enums::ChannelAdminLogEventAction) -> serde_json
         tl::enums::ChannelAdminLogEventAction::ParticipantInvite(v) => {
             serde_json::json!({
                 "kind": "participant_invite",
-                "user_id": participant_user_id(&v.participant),
+                "user_id": participant_user_id(&v.participant, own_id),
             })
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantToggleBan(v) => {
             serde_json::json!({
                 "kind": "toggle_ban",
-                "user_id": participant_user_id(&v.new_participant),
+                "user_id": participant_user_id(&v.new_participant, own_id),
             })
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantToggleAdmin(v) => {
             serde_json::json!({
                 "kind": "toggle_admin",
-                "user_id": participant_user_id(&v.new_participant),
+                "user_id": participant_user_id(&v.new_participant, own_id),
             })
         }
         tl::enums::ChannelAdminLogEventAction::ChangePhoto(_) => {
@@ -825,6 +869,62 @@ fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Value {
 mod tests {
     use super::*;
 
+    fn admin_rights() -> tl::enums::ChatAdminRights {
+        tl::enums::ChatAdminRights::Rights(tl::types::ChatAdminRights {
+            change_info: false,
+            post_messages: false,
+            edit_messages: false,
+            delete_messages: false,
+            ban_users: false,
+            invite_users: false,
+            pin_messages: false,
+            add_admins: false,
+            anonymous: false,
+            manage_call: false,
+            other: false,
+            manage_topics: false,
+            post_stories: false,
+            edit_stories: false,
+            delete_stories: false,
+            manage_direct_messages: false,
+            manage_ranks: false,
+        })
+    }
+
+    fn banned_rights() -> tl::enums::ChatBannedRights {
+        tl::enums::ChatBannedRights::Rights(tl::types::ChatBannedRights {
+            view_messages: false,
+            send_messages: false,
+            send_media: false,
+            send_stickers: false,
+            send_gifs: false,
+            send_games: false,
+            send_inline: false,
+            embed_links: false,
+            send_polls: false,
+            change_info: false,
+            invite_users: false,
+            pin_messages: false,
+            manage_topics: false,
+            send_photos: false,
+            send_videos: false,
+            send_roundvideos: false,
+            send_audios: false,
+            send_voices: false,
+            send_docs: false,
+            send_plain: false,
+            edit_rank: false,
+            send_reactions: false,
+            until_date: 0,
+        })
+    }
+
+    fn offline_client() -> grammers_client::Client {
+        let session = std::sync::Arc::new(grammers_session::storages::MemorySession::default());
+        let pool = grammers_client::sender::SenderPool::new(session, 12345);
+        grammers_client::Client::new(pool.handle)
+    }
+
     fn create_args(kind: &str) -> CreateArgs {
         CreateArgs {
             title: "t".to_string(),
@@ -878,5 +978,94 @@ mod tests {
             title: None,
         };
         assert!(validate_admin(&demote_only).is_ok());
+    }
+
+    #[test]
+    fn admin_requires_promote_or_demote() {
+        let neither = AdminArgs {
+            chat: "c".to_string(),
+            user: "u".to_string(),
+            promote: false,
+            demote: false,
+            title: None,
+        };
+        assert!(matches!(validate_admin(&neither), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn participant_user_id_never_masks_to_zero() {
+        let own = 777;
+        let participant =
+            tl::enums::ChannelParticipant::Participant(tl::types::ChannelParticipant {
+                user_id: 101,
+                date: 0,
+                subscription_until_date: None,
+                rank: None,
+            });
+        assert_eq!(participant_user_id(&participant, own), 101);
+        let self_p =
+            tl::enums::ChannelParticipant::ParticipantSelf(tl::types::ChannelParticipantSelf {
+                via_request: false,
+                user_id: 0,
+                inviter_id: 0,
+                date: 0,
+                subscription_until_date: None,
+                rank: None,
+            });
+        assert_eq!(participant_user_id(&self_p, own), own);
+        let creator =
+            tl::enums::ChannelParticipant::Creator(tl::types::ChannelParticipantCreator {
+                user_id: 202,
+                admin_rights: admin_rights(),
+                rank: None,
+            });
+        assert_eq!(participant_user_id(&creator, own), 202);
+        let admin = tl::enums::ChannelParticipant::Admin(tl::types::ChannelParticipantAdmin {
+            can_edit: false,
+            is_self: false,
+            user_id: 303,
+            inviter_id: None,
+            promoted_by: 1,
+            date: 0,
+            admin_rights: admin_rights(),
+            rank: None,
+        });
+        assert_eq!(participant_user_id(&admin, own), 303);
+        let banned = tl::enums::ChannelParticipant::Banned(tl::types::ChannelParticipantBanned {
+            left: false,
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 404 }),
+            kicked_by: 1,
+            date: 0,
+            banned_rights: banned_rights(),
+            rank: None,
+        });
+        assert_eq!(participant_user_id(&banned, own), 404);
+        let left = tl::enums::ChannelParticipant::Left(tl::types::ChannelParticipantLeft {
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 505 }),
+        });
+        assert_eq!(participant_user_id(&left, own), 505);
+    }
+
+    #[tokio::test]
+    async fn ensure_chat_peer_rejects_user_peer() {
+        let client = offline_client();
+        let user_peer = grammers_client::peer::Peer::User(grammers_client::peer::User::from_raw(
+            &client,
+            tl::enums::User::Empty(tl::types::UserEmpty { id: 0 }),
+        ));
+        let err = ensure_chat_peer(&user_peer, "kick").unwrap_err();
+        assert!(err.message().contains("kick requires a chat, got a user"));
+        assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
+    }
+
+    #[tokio::test]
+    async fn ensure_chat_peer_accepts_group() {
+        let client = offline_client();
+        let group_peer =
+            grammers_client::peer::Peer::Group(grammers_client::peer::Group::from_raw(
+                &client,
+                tl::enums::Chat::Empty(tl::types::ChatEmpty { id: 1 }),
+            ));
+        assert!(ensure_chat_peer(&group_peer, "participants").is_ok());
     }
 }
