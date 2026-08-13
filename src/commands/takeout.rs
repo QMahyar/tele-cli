@@ -321,6 +321,35 @@ mod tests {
     }
 
     #[test]
+    fn export_state_reports_contacts_only() {
+        let dir = temp_dir("state-contacts-only");
+        std::fs::write(dir.join("contacts.json"), "[]").unwrap();
+        assert_eq!(
+            export_state(&dir),
+            "contacts.json: written, messages.jsonl: missing, dialogs.json: missing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_error_message_names_dir_and_resume_commands() {
+        let dir = temp_dir("err-resume");
+        std::fs::write(dir.join("contacts.json"), "[]").unwrap();
+        std::fs::write(dir.join("messages.jsonl"), "{}").unwrap();
+        let msg = export_error_message(&dir, "FLOOD_WAIT");
+        assert!(
+            msg.contains(&dir.to_string_lossy().to_string()),
+            "msg: {msg}"
+        );
+        assert!(msg.contains("messages.jsonl: partial"), "msg: {msg}");
+        assert!(msg.contains("re-run `tele takeout export`"), "msg: {msg}");
+        assert!(msg.contains("`tele takeout start`"), "msg: {msg}");
+        assert!(msg.contains("`tele takeout finish`"), "msg: {msg}");
+        assert!(msg.contains("FLOOD_WAIT"), "msg: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn export_error_message_names_state_and_resume_path() {
         let dir = temp_dir("err");
         std::fs::write(dir.join("contacts.json"), "[]").unwrap();
