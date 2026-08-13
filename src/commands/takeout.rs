@@ -198,12 +198,23 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let success: bool = guard
+            let result = guard
                 .client
                 .invoke(&tl::functions::account::FinishTakeoutSession { success: true })
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({"finished": success}))
+                .await;
+            let data = match result {
+                Ok(success) => serde_json::json!({"finished": success}),
+                Err(grammers_client::InvocationError::Rpc(e))
+                    if e.name == "TAKEOUT_REQUIRED" =>
+                {
+                    serde_json::json!({
+                        "finished": false,
+                        "reason": "no active takeout session (run takeout start first)"
+                    })
+                }
+                Err(e) => return Err(tele_invocation(e)),
+            };
+            Ok(data)
         })
     })
     .await?;
