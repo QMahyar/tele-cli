@@ -52,6 +52,7 @@ pub async fn run(cmd: ContactCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
@@ -59,6 +60,9 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
 
         Box::pin(async move {
+            if dry_run {
+                return Ok(dry_run_payload(None));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -116,7 +120,7 @@ async fn add(args: AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let phone = args.phone.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "user": user_target}));
+                return Ok(dry_run_payload(Some(&user_target)));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -163,7 +167,7 @@ async fn block(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let user_target = args.user.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "user": user_target}));
+                return Ok(dry_run_payload(Some(&user_target)));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -195,7 +199,7 @@ async fn unblock(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let user_target = args.user.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "user": user_target}));
+                return Ok(dry_run_payload(Some(&user_target)));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -225,4 +229,30 @@ fn creds() -> crate::TeleResult<crate::config::Credentials> {
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+fn dry_run_payload(user: Option<&str>) -> serde_json::Value {
+    match user {
+        Some(u) => serde_json::json!({"dry_run": true, "user": u}),
+        None => serde_json::json!({"dry_run": true}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dry_run_payload_marks_dry_run_only() {
+        let v = dry_run_payload(None);
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert!(v.get("user").is_none());
+    }
+
+    #[test]
+    fn dry_run_payload_carries_user_target() {
+        let v = dry_run_payload(Some("alice"));
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["user"], serde_json::json!("alice"));
+    }
 }

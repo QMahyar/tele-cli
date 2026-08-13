@@ -86,6 +86,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit as i32;
@@ -93,6 +94,9 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
         let target = args.chat.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(list_dry_run_payload(&target));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -163,10 +167,26 @@ fn rand_seed() -> i64 {
     nanos ^ (nanos << 21) ^ (nanos >> 19)
 }
 
+fn list_dry_run_payload(target: &str) -> serde_json::Value {
+    serde_json::json!({"dry_run": true, "chat": target})
+}
+
 fn creds() -> crate::TeleResult<crate::config::Credentials> {
     crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
 }
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_dry_run_payload_marks_dry_run_with_chat() {
+        let v = list_dry_run_payload("work");
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["chat"], serde_json::json!("work"));
+    }
 }

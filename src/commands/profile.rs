@@ -39,12 +39,16 @@ pub async fn run(cmd: ProfileCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(get_dry_run_payload(target.as_deref()));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -122,6 +126,13 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
         ));
     }
     Ok(())
+}
+
+fn get_dry_run_payload(target: Option<&str>) -> serde_json::Value {
+    match target {
+        Some(t) => serde_json::json!({"dry_run": true, "chat": t}),
+        None => serde_json::json!({"dry_run": true}),
+    }
 }
 
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -242,5 +253,19 @@ mod tests {
             photo: None,
         };
         assert!(validate_set(&with_name).is_ok());
+    }
+
+    #[test]
+    fn get_dry_run_payload_marks_dry_run_only() {
+        let v = get_dry_run_payload(None);
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert!(v.get("chat").is_none());
+    }
+
+    #[test]
+    fn get_dry_run_payload_carries_chat_target() {
+        let v = get_dry_run_payload(Some("me"));
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["chat"], serde_json::json!("me"));
     }
 }
