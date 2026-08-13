@@ -189,9 +189,29 @@ fn raw_registered_name_reaches_fanout() {
 
 #[test]
 fn listen_unknown_event_exits_1_before_connect() {
-    let (code, _out, err) = run_isolated("lsev", &["listen", "--events", "Bogus"]);
-    assert_eq!(code, 1);
-    assert!(err.contains("unknown event name"), "stderr: {err}");
+    for name in ["Bogus", "Nope"] {
+        let (code, _out, err) = run_isolated("lsev", &["listen", "--events", name]);
+        assert_eq!(code, 1);
+        assert!(err.contains("unknown event name"), "stderr: {err}");
+    }
+}
+
+#[test]
+fn listen_dry_run_exits_0_with_session() {
+    let dir = isolated_appdir("lsdry");
+    write_session(&dir, "work");
+    let (code, _out, err) = run_in(
+        &dir,
+        &[
+            "listen",
+            "--events",
+            "NewMessage",
+            "--account",
+            "work",
+            "--dry-run",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
 }
 
 #[test]
@@ -200,6 +220,47 @@ fn listen_valid_events_reach_selection() {
         run_isolated("lsok", &["listen", "--events", "NewMessage,MessageDeleted"]);
     assert_eq!(code, 1);
     assert!(err.contains("no accounts selected"), "stderr: {err}");
+}
+
+#[test]
+fn clap_usage_errors_exit_1() {
+    let (code, _out, err) = run_isolated("noargs", &[]);
+    assert_eq!(code, 1);
+    assert!(err.contains("Usage:"), "stderr: {err}");
+    let (code, _out, err) = run_isolated("badgrpflag", &["msg", "--bogus-flag"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("unexpected argument"), "stderr: {err}");
+    let (code, _out, err) = run_isolated("badcmdflag", &["msg", "send", "--bogus-flag"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("unexpected argument"), "stderr: {err}");
+}
+
+#[test]
+fn parallel_out_of_range_is_clamped_not_usage_error() {
+    let dir = isolated_appdir("parclamp");
+    write_session(&dir, "work");
+    for n in ["0", "99"] {
+        let (code, _out, err) = run_in(
+            &dir,
+            &[
+                "msg",
+                "send",
+                "--account",
+                "work",
+                "--chat",
+                "me",
+                "--text",
+                "hi",
+                "--parallel",
+                n,
+                "--dry-run",
+            ],
+        );
+        assert_eq!(
+            code, 0,
+            "--parallel {n} must clamp to 1-3, not a usage error: stderr: {err}"
+        );
+    }
 }
 
 #[test]
@@ -606,7 +667,9 @@ fn done_rows_have_cli_surface() {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             let group = parts[0];
             assert!(
-                root_help.contains(&format!(" {group} ")),
+                root_help
+                    .lines()
+                    .any(|l| l.split_whitespace().next().unwrap_or("") == group),
                 "row {id}: group {group} missing from root --help"
             );
             if parts.len() < 2 {
