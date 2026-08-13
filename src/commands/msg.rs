@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::SystemTime;
+
 use clap::{Args, Subcommand};
 use grammers_client::message::InputMessage;
 
@@ -162,13 +165,47 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "unknown --format {other} (use plain or markdown)"
         ))),
     }?;
-    if args.text.is_none() && args.file.is_none() {
-        return Err(TeleError::Usage(
-            "msg send requires --text or --file".to_string(),
-        ));
+    match (&args.text, &args.file) {
+        (None, None) => {
+            return Err(TeleError::Usage(
+                "msg send requires --text or --file".to_string(),
+            ))
+        }
+        (Some(_), Some(_)) => {
+            return Err(TeleError::Usage(
+                "--text and --file are mutually exclusive".to_string(),
+            ))
+        }
+        _ => {}
+    }
+    if args.caption.is_some() && args.file.is_none() {
+        return Err(TeleError::Usage("--caption requires --file".to_string()));
     }
     if let Some(path) = &args.file {
         validate_upload_path(path)?;
+    }
+    if args.format == "markdown" {
+        if let Some(text) = &args.text {
+            validate_markdown(text)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_markdown(text: &str) -> TeleResult<()> {
+    let mut rest = text;
+    while let Some(pos) = rest.find("tg://user?id=") {
+        let after = &rest[pos + "tg://user?id=".len()..];
+        let id = after
+            .split(|c: char| c == ')' || c == '"' || c == '>' || c.is_whitespace())
+            .next()
+            .unwrap_or("");
+        if !matches!(id.parse::<i64>(), Ok(v) if v > 0) {
+            return Err(TeleError::Usage(format!(
+                "invalid tg://user?id= mention in --text: id must be a positive number (got {id:?})"
+            )));
+        }
+        rest = after;
     }
     Ok(())
 }
@@ -182,7 +219,8 @@ fn validate_upload_path(path: &str) -> TeleResult<()> {
         ));
     }
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    if base == ".env" || base.ends_with(".session") || base.ends_with(".session-journal") {
+    let lower = base.to_ascii_lowercase();
+    if lower == ".env" || lower.ends_with(".session") || lower.ends_with(".session-journal") {
         return Err(TeleError::Usage(format!(
             "refusing to upload sensitive file {base}"
         )));
@@ -190,21 +228,29 @@ fn validate_upload_path(path: &str) -> TeleResult<()> {
     Ok(())
 }
 
+fn parse_schedule(value: Option<&str>) -> TeleResult<Option<i32>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let dt = crate::commands::parse_unixtime(value)?;
+    let ts = dt.timestamp();
+    if ts <= chrono::Utc::now().timestamp() {
+        return Err(TeleError::Usage(format!(
+            "--schedule must be a future time (got {value})"
+        )));
+    }
+    i32::try_from(ts).map(Some).map_err(|_| {
+        TeleError::Usage(format!(
+            "--schedule {value} is out of range (max 2038-01-19 03:14:07 UTC)"
+        ))
+    })
+}
+
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_send(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let schedule = args
-        .schedule
-        .as_deref()
-        .map(crate::commands::parse_unixtime)
-        .transpose()?
-        .and_then(|s| {
-            let ts = s.timestamp();
-            u32::try_from(ts)
-                .ok()
-                .or_else(|| ts.is_negative().then_some(0))
-        });
+    let schedule = parse_schedule(args.schedule.as_deref())?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -340,11 +386,14 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if ids.is_empty() {
                 return Ok(serde_json::json!({"deleted": 0}));
             }
-            let count = guard
-                .client
-                .delete_messages(chat_ref, &ids)
-                .await
-                .map_err(tele_invocation)?;
+            let mut count = 0usize;
+            for chunk in batches(&ids) {
+                count += guard
+                    .client
+                    .delete_messages(chat_ref, chunk)
+                    .await
+                    .map_err(tele_invocation)?;
+            }
             Ok(serde_json::json!({"deleted": count}))
         })
     })
@@ -363,6 +412,7 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_forward(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
+    let silent = args.silent;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let from_target = args.from.clone();
@@ -383,21 +433,97 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .map_err(tele_invocation)?;
             let from_ref = entities::peer_ref(&from).await.map_err(tele_invocation)?;
             let to_ref = entities::peer_ref(&to).await.map_err(tele_invocation)?;
-            let sent = guard
-                .client
-                .forward_messages(to_ref, &ids, from_ref)
-                .await
-                .map_err(tele_invocation)?;
-            let msgs: Vec<serde_json::Value> = sent
-                .iter()
-                .filter_map(|m| m.as_ref())
-                .map(crate::serialize::message_to_json)
-                .collect::<TeleResult<_>>()?;
+            let mut msgs: Vec<serde_json::Value> = Vec::new();
+            for chunk in batches(&ids) {
+                let sent = if silent {
+                    let from_peer = entities::input_peer(&from).await.map_err(tele_invocation)?;
+                    let to_peer = entities::input_peer(&to).await.map_err(tele_invocation)?;
+                    forward_silent(&guard.client, to_ref, from_peer, to_peer, chunk).await?
+                } else {
+                    guard
+                        .client
+                        .forward_messages(to_ref, chunk, from_ref)
+                        .await
+                        .map_err(tele_invocation)?
+                };
+                msgs.extend(
+                    sent.iter()
+                        .filter_map(|m| m.as_ref())
+                        .map(crate::serialize::message_to_json)
+                        .collect::<TeleResult<Vec<_>>>()?,
+                );
+            }
             Ok(serde_json::json!({"forwarded": msgs}))
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn batches(ids: &[i32]) -> Vec<&[i32]> {
+    ids.chunks(100).collect()
+}
+
+static RANDOM_ID: AtomicI64 = AtomicI64::new(0);
+
+fn random_ids(count: usize) -> Vec<i64> {
+    let seed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+        .max(1);
+    RANDOM_ID.fetch_max(seed, Ordering::SeqCst);
+    (0..count)
+        .map(|_| RANDOM_ID.fetch_add(1, Ordering::SeqCst))
+        .collect()
+}
+
+async fn forward_silent(
+    client: &grammers_client::Client,
+    to_ref: grammers_session::types::PeerRef,
+    from_peer: grammers_client::tl::enums::InputPeer,
+    to_peer: grammers_client::tl::enums::InputPeer,
+    ids: &[i32],
+) -> TeleResult<Vec<Option<grammers_client::message::Message>>> {
+    let random_ids = random_ids(ids.len());
+    let request = grammers_client::tl::functions::messages::ForwardMessages {
+        silent: true,
+        background: false,
+        with_my_score: false,
+        drop_author: false,
+        drop_media_captions: false,
+        from_peer,
+        id: ids.to_vec(),
+        random_id: random_ids.clone(),
+        to_peer,
+        top_msg_id: None,
+        reply_to: None,
+        schedule_date: None,
+        schedule_repeat_period: None,
+        send_as: None,
+        noforwards: false,
+        quick_reply_shortcut: None,
+        allow_paid_floodskip: false,
+        effect: None,
+        video_timestamp: None,
+        allow_paid_stars: None,
+        suggested_post: None,
+    };
+    let updates = client.invoke(&request).await.map_err(tele_invocation)?;
+    let mut new_ids = Vec::new();
+    if let grammers_client::tl::enums::Updates::Updates(u) = updates {
+        for update in u.updates {
+            if let grammers_client::tl::enums::Update::MessageId(m) = update {
+                if random_ids.contains(&m.random_id) {
+                    new_ids.push(m.id);
+                }
+            }
+        }
+    }
+    client
+        .get_messages_by_id(to_ref, &new_ids)
+        .await
+        .map_err(tele_invocation)
 }
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -770,6 +896,156 @@ mod tests {
     }
 
     #[test]
+    fn send_rejects_text_with_file() {
+        let mut args = send_args("plain");
+        args.file = Some("C:/tmp/a.pdf".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn send_rejects_caption_without_file() {
+        let mut args = send_args("plain");
+        args.caption = Some("cap".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn send_accepts_file_with_caption() {
+        let mut args = send_args("plain");
+        args.text = None;
+        args.file = Some("C:/tmp/a.pdf".to_string());
+        args.caption = Some("cap".to_string());
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
+    fn markdown_rejects_non_numeric_mention_ids() {
+        let mut args = send_args("markdown");
+        for bad in [
+            "[x](tg://user?id=abc)",
+            "[x](tg://user?id=12abc)",
+            "[x](tg://user?id=)",
+            "plain text with tg://user?id=abc",
+            "<tg://user?id=-1>",
+        ] {
+            args.text = Some(bad.to_string());
+            assert!(
+                matches!(validate_send(&args), Err(TeleError::Usage(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_accepts_numeric_mention_ids() {
+        let mut args = send_args("markdown");
+        for good in [
+            "[x](tg://user?id=12345678)",
+            "<tg://user?id=999>",
+            "[a](https://example.com) **bold**",
+            "plain text",
+        ] {
+            args.text = Some(good.to_string());
+            assert!(validate_send(&args).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn upload_rejects_sensitive_basenames_case_insensitive() {
+        assert!(matches!(
+            validate_upload_path("C:/secrets/.ENV"),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_upload_path("C:/telecli-data/1.SESSION"),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_upload_path("2.Session-Journal"),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn schedule_absent_is_none() {
+        assert_eq!(parse_schedule(None).unwrap(), None);
+    }
+
+    #[test]
+    fn schedule_rejects_past_timestamps() {
+        for v in ["0", "-5", "1000000", "1970-01-01T00:00:01Z"] {
+            assert!(
+                matches!(parse_schedule(Some(v)), Err(TeleError::Usage(_))),
+                "{v}"
+            );
+        }
+    }
+
+    #[test]
+    fn schedule_rejects_beyond_i32_range() {
+        for v in [
+            "2147483648",
+            "9999999999",
+            "2038-01-19T03:14:08Z",
+            "2100-01-01T00:00:00Z",
+        ] {
+            assert!(
+                matches!(parse_schedule(Some(v)), Err(TeleError::Usage(_))),
+                "{v}"
+            );
+        }
+    }
+
+    #[test]
+    fn schedule_rejects_garbage() {
+        assert!(matches!(
+            parse_schedule(Some("not a date")),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn schedule_accepts_future_values() {
+        let future_ts = chrono::Utc::now().timestamp() + 3600;
+        let ts = parse_schedule(Some(&future_ts.to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ts, future_ts as i32);
+        let future_rfc = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        assert!(parse_schedule(Some(&future_rfc)).unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_batches_ids_by_100() {
+        let ids: Vec<i32> = (1..=250).collect();
+        let parts = batches(&ids);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts.iter().map(|b| b.len()).collect::<Vec<_>>(),
+            vec![100, 100, 50]
+        );
+        let exactly_100: Vec<i32> = (1..=100).collect();
+        assert_eq!(batches(&exactly_100).len(), 1);
+        assert!(batches(&[]).is_empty());
+    }
+
+    #[test]
+    fn random_ids_are_unique_positive_and_increasing() {
+        let a = random_ids(5);
+        let b = random_ids(5);
+        assert_eq!(a.len(), 5);
+        assert_eq!(b.len(), 5);
+        assert!(a.iter().all(|&x| x > 0));
+        assert!(a.windows(2).all(|w| w[0] < w[1]));
+        assert!(b.windows(2).all(|w| w[0] < w[1]));
+        let mut all = a;
+        all.extend_from_slice(&b);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 10);
+    }
+
+    #[test]
     fn delete_requires_ids_unless_all() {
         let args = DeleteArgs {
             chat: "me".to_string(),
@@ -827,4 +1103,3 @@ mod tests {
         assert!(validate_react(&with_reaction).is_ok());
     }
 }
-
