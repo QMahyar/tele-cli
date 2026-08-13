@@ -71,7 +71,10 @@ async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRe
             .flatten()
             .collect()
     } else {
-        PeerId::channel(raw).into_iter().collect()
+        [PeerId::channel(raw), PeerId::chat(raw)]
+            .into_iter()
+            .flatten()
+            .collect()
     };
     for pid in ids {
         if let Ok(Some(pref)) = session.peer_ref(pid).await {
@@ -294,6 +297,33 @@ mod tests {
             .await
             .expect("cached channel must resolve");
         assert_eq!(pref.auth.hash(), 8913517700375938783);
+    }
+
+    #[tokio::test]
+    async fn cached_ref_resolves_cached_basic_group() {
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let pref = cached_ref(&session, -123, 123)
+            .await
+            .expect("cached basic group must resolve");
+        assert_eq!(pref.id.bare_id_unchecked(), 123);
     }
 
     #[tokio::test]
