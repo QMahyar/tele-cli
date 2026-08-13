@@ -156,7 +156,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if !allow.is_empty() {
                 let mut users = Vec::new();
                 for target in &allow {
-                    let peer = entities::resolve_peer(&guard.client, target)
+                    let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
                         .await
                         .map_err(tele_invocation)?;
                     users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
@@ -168,7 +168,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if !deny.is_empty() {
                 let mut users = Vec::new();
                 for target in &deny {
-                    let peer = entities::resolve_peer(&guard.client, target)
+                    let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
                         .await
                         .map_err(tele_invocation)?;
                     users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);

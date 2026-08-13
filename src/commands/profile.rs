@@ -50,7 +50,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             client::authorize(&guard.client, &creds()?).await?;
             let row = match &target {
                 Some(t) => {
-                    let peer = entities::resolve_peer(&guard.client, t)
+                    let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), t)
                         .await
                         .map_err(tele_invocation)?;
                     match &peer {

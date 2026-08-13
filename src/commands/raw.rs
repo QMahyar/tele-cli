@@ -48,7 +48,7 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&account, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            dispatch(&guard.client, &name, &params)
+            dispatch(&guard.client, guard.session.as_ref(), &name, &params)
                 .await
                 .map_err(tele_invocation)
         })
@@ -131,12 +131,13 @@ fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
 
 async fn dispatch(
     client: &grammers_client::Client,
+    session: &grammers_session::storages::SqliteSession,
     name: &str,
     p: &serde_json::Value,
 ) -> Result<serde_json::Value, grammers_client::InvocationError> {
     match name {
         "messages.ExportChatInvite" => {
-            let chat = crate::entities::resolve_peer(client, &str_field(p, "chat")?).await?;
+            let chat = crate::entities::resolve_peer(client, session, &str_field(p, "chat")?).await?;
             let peer = crate::entities::input_peer(&chat).await?;
             let r: tl::enums::ExportedChatInvite = client
                 .invoke(&tl::functions::messages::ExportChatInvite {
@@ -217,7 +218,7 @@ async fn dispatch(
             }))
         }
         "stats.GetBroadcastStats" => {
-            let chat = crate::entities::resolve_peer(client, &str_field(p, "channel")?).await?;
+            let chat = crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
             let channel = crate::entities::input_channel(&chat).await?;
             let r: tl::enums::stats::BroadcastStats = client
                 .invoke(&tl::functions::stats::GetBroadcastStats {
@@ -237,7 +238,7 @@ async fn dispatch(
             }))
         }
         "stats.GetMegagroupStats" => {
-            let chat = crate::entities::resolve_peer(client, &str_field(p, "channel")?).await?;
+            let chat = crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
             let channel = crate::entities::input_channel(&chat).await?;
             let r: tl::enums::stats::MegagroupStats = client
                 .invoke(&tl::functions::stats::GetMegagroupStats {

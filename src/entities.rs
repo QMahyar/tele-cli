@@ -1,10 +1,12 @@
 use grammers_client::tl;
 use grammers_client::{Client, InvocationError};
-use grammers_session::types::{PeerInfo, PeerRef};
+use grammers_session::storages::SqliteSession;
+use grammers_session::types::{PeerId, PeerInfo, PeerRef};
 use grammers_session::Session;
 
 pub async fn resolve_peer(
     client: &Client,
+    session: &SqliteSession,
     target: &str,
 ) -> Result<grammers_client::peer::Peer, InvocationError> {
     let t = target.trim();
@@ -42,6 +44,10 @@ pub async fn resolve_peer(
         if id == 0 {
             return Err(rpc_error(400, "INVALID_PEER_ID"));
         }
+        let raw = id.unsigned_abs() as i64;
+        if let Some(pref) = cached_ref(session, id, raw).await {
+            return client.resolve_peer(pref).await;
+        }
         let pref: PeerRef = if id > 0 {
             tl::types::InputPeerUser {
                 user_id: id,
@@ -49,11 +55,8 @@ pub async fn resolve_peer(
             }
             .into()
         } else {
-            let channel_id = id
-                .checked_neg()
-                .ok_or_else(|| rpc_error(400, "INVALID_PEER_ID"))?;
             tl::types::InputPeerChannel {
-                channel_id,
+                channel_id: raw,
                 access_hash: 0,
             }
             .into()
@@ -69,6 +72,23 @@ pub async fn resolve_peer(
         Some(peer) => Ok(peer),
         None => Err(rpc_error(400, "USERNAME_NOT_FOUND")),
     }
+}
+
+async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRef> {
+    let ids: Vec<PeerId> = if id > 0 {
+        [PeerId::user(raw), PeerId::channel(raw)]
+            .into_iter()
+            .flatten()
+            .collect()
+    } else {
+        PeerId::channel(raw).into_iter().collect()
+    };
+    for pid in ids {
+        if let Ok(Some(pref)) = session.peer_ref(pid).await {
+            return Some(pref);
+        }
+    }
+    None
 }
 
 fn parse_username(raw: &str) -> &str {
@@ -211,5 +231,30 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn cached_ref_uses_stored_channel_hash() {
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 3975233726,
+            access_hash: 8913517700375938783,
+            title: "t".to_string(),
+            until_date: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let pref = cached_ref(&session, -3975233726, 3975233726)
+            .await
+            .expect("cached channel must resolve");
+        assert_eq!(pref.auth.hash(), 8913517700375938783);
+    }
+
+    #[tokio::test]
+    async fn cached_ref_misses_for_unknown_peer() {
+        let session = MemorySession::default();
+        assert!(cached_ref(&session, 12345, 12345).await.is_none());
     }
 }

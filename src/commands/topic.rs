@@ -54,7 +54,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let chat = entities::resolve_peer(&guard.client, &target)
+            let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
@@ -96,7 +96,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let chat = entities::resolve_peer(&guard.client, &target)
+            let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;

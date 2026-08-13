@@ -121,7 +121,7 @@ async fn add(args: AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let peer = entities::resolve_peer(&guard.client, &user_target)
+            let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), &user_target)
                 .await
                 .map_err(tele_invocation)?;
             let user_input = entities::input_user(&peer).await.map_err(tele_invocation)?;
@@ -168,7 +168,7 @@ async fn block(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let peer = entities::resolve_peer(&guard.client, &user_target)
+            let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), &user_target)
                 .await
                 .map_err(tele_invocation)?;
             let input = entities::input_peer(&peer).await.map_err(tele_invocation)?;
@@ -200,7 +200,7 @@ async fn unblock(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let peer = entities::resolve_peer(&guard.client, &user_target)
+            let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), &user_target)
                 .await
                 .map_err(tele_invocation)?;
             let input = entities::input_peer(&peer).await.map_err(tele_invocation)?;
