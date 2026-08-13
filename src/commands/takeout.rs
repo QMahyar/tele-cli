@@ -73,7 +73,7 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .map_err(tele_invocation)?;
             let tl::enums::account::Takeout::Takeout(info) = info;
             let dir = crate::config::app_data_dir().join("export").join(&name);
-            std::fs::create_dir_all(&dir)?;
+            crate::fs_util::create_dir_private(&dir)?;
             Ok(serde_json::json!({
                 "takeout_id": info.id,
                 "dir": dir.to_string_lossy(),
@@ -110,7 +110,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            std::fs::create_dir_all(&dir)?;
+            crate::fs_util::create_dir_private(&dir)?;
 
             let mut contacts = Vec::new();
             let raw: tl::enums::contacts::Contacts = guard
