@@ -105,6 +105,29 @@ fn matrix_rows() -> Vec<(String, String, String)> {
     rows
 }
 
+fn cell_token(cli: &str) -> &str {
+    match cli.split_once('`') {
+        Some((_, after)) => match after.split_once('`') {
+            Some((token, _)) => token.trim(),
+            None => after.trim(),
+        },
+        None => cli.trim(),
+    }
+}
+
+fn raw_registry_names() -> Vec<String> {
+    let src =
+        std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/raw.rs")).unwrap();
+    let start = src.find("pub const REGISTERED").expect("REGISTERED const");
+    let end = start + src[start..].find("];").expect("end of REGISTERED");
+    src[start..end]
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
+}
+
 #[test]
 fn help_lists_all_groups_and_exits_zero() {
     let out = tele()
@@ -126,9 +149,9 @@ fn help_lists_all_groups_and_exits_zero() {
 }
 
 #[test]
-fn unknown_command_exits_2() {
+fn unknown_command_exits_1() {
     let (code, _out, err) = run_isolated("unknown", &["bogus-group"]);
-    assert_eq!(code, 2);
+    assert_eq!(code, 1);
     assert!(err.contains("unrecognized subcommand"), "stderr: {err}");
 }
 
@@ -573,8 +596,13 @@ fn repeated_account_flags_union_with_config_only() {
 #[test]
 fn done_rows_have_cli_surface() {
     let root_help = help(&[]);
+    let registry = raw_registry_names();
+    let listen_src =
+        std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/listen.rs"))
+            .unwrap();
     for (id, cli) in matrix_rows().into_iter().map(|(id, _s, cli)| (id, cli)) {
-        if let Some(cmd) = cli.strip_prefix("tele ") {
+        let token = cell_token(&cli);
+        if let Some(cmd) = token.strip_prefix("tele ") {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             let group = parts[0];
             assert!(
@@ -615,13 +643,31 @@ fn done_rows_have_cli_surface() {
                     "row {id}: flag {flag} missing from `tele {group} {sub} --help`"
                 );
             }
-        } else if let Some(module) = cli.strip_prefix("src/") {
+        } else if let Some(module) = token.strip_prefix("src/") {
             assert!(
                 PathBuf::from(MANIFEST_DIR)
                     .join("src")
-                    .join(module.replace('`', ""))
+                    .join(module)
                     .exists(),
                 "row {id}: module {module} missing"
+            );
+        } else if token.starts_with("--") {
+            let lhelp = help(&["listen"]);
+            for flag in token.split_whitespace().filter(|p| p.starts_with("--")) {
+                assert!(
+                    lhelp.contains(flag),
+                    "row {id}: flag {flag} missing from `tele listen --help`"
+                );
+            }
+            for word in token.split_whitespace().filter(|p| !p.starts_with("--")) {
+                assert!(
+                    listen_src.contains(&format!("\"{word}\"")),
+                    "row {id}: event {word} missing from src/commands/listen.rs"
+                );
+            }
+        } else if !registry.iter().any(|r| r == token) {
+            panic!(
+                "row {id}: CLI cell `{cli}` has no CLI surface (no tele command, src module, listen flag, or raw registry entry)"
             );
         }
     }
@@ -631,14 +677,7 @@ fn done_rows_have_cli_surface() {
 fn raw_registry_names_are_offline_usable() {
     let src =
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/raw.rs")).unwrap();
-    let start = src.find("pub const REGISTERED").expect("REGISTERED const");
-    let end = start + src[start..].find("];").expect("end of REGISTERED");
-    let names: Vec<String> = src[start..end]
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_string)
-        .collect();
+    let names = raw_registry_names();
     assert!(names.len() >= 6, "registry should hold all raw arms");
     for name in &names {
         assert!(
