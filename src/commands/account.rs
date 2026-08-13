@@ -2,7 +2,7 @@ use crate::client::{self, ClientGuard};
 use crate::config;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
-use crate::output::{self, log_line};
+use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
 #[derive(Subcommand)]
@@ -60,10 +60,14 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
             .get(&name)
             .map(|a| a.tags.join(","))
             .unwrap_or_default();
-        rows.push(serde_json::json!({            "name": name,            "tags": tags,            "session": "present",        }));
+        rows.push(serde_json::json!({
+            "name": name,
+            "tags": tags,
+            "session": "present",
+        }));
     }
     if output::machine_mode(flags.json, flags.jsonl) {
-        output::print_json(&serde_json::json!({"accounts": rows}));
+        output::print_json(&list_envelope(&rows, flags)?);
         return Ok(crate::error::EXIT_OK);
     }
     let table_rows: Vec<Vec<String>> = rows
@@ -105,27 +109,57 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
         })
     })
     .await?;
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        let rows = status_table_rows(&envelope);
+        if !rows.is_empty() {
+            output::print_table(&["account", "authorized"], &rows);
+        }
+    }
     crate::executor::finish(flags, &envelope)
 }
 async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let path = flags
+        .config_path
+        .clone()
+        .unwrap_or_else(|| config::app_data_dir().join("config.toml"));
+    if flags.dry_run {
+        log_line(
+            "info",
+            &format!(
+                "[dry-run] would register account {} in {}",
+                args.name,
+                path.display()
+            ),
+        );
+        let would = format!(
+            "register account {} with tags {:?} in {}",
+            args.name,
+            args.tags.clone().unwrap_or_default(),
+            path.display()
+        );
+        return crate::executor::finish(
+            flags,
+            &dry_run_envelope(&args.name, &would, &flags.command),
+        );
+    }
     let mut cfg = config::load_config(flags.config_path.as_deref())?;
     cfg.accounts
         .entry(args.name.clone())
         .or_insert_with(config::AccountConfig::default)
         .tags = args.tags.clone().unwrap_or_default();
-    let path = flags
-        .config_path
-        .clone()
-        .unwrap_or_else(|| config::app_data_dir().join("config.toml"));
     config::write_config(&path, &cfg)?;
     log_line(
         "info",
         &format!("account {} registered in {}", args.name, path.display()),
     );
-    if output::machine_mode(flags.json, flags.jsonl) {
-        println!("{}", serde_json::json!({"ok": true, "name": args.name}));
-    }
-    Ok(crate::error::EXIT_OK)
+    let data = serde_json::json!({
+        "registered": true,
+        "config": path.display().to_string(),
+    });
+    crate::executor::finish(
+        flags,
+        &action_envelope(&args.name, data, flags.dry_run, &flags.command),
+    )
 }
 fn validate_login(args: &LoginArgs) -> TeleResult<()> {
     match args.method.as_str() {
@@ -149,7 +183,11 @@ fn validate_login(args: &LoginArgs) -> TeleResult<()> {
 async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if flags.dry_run {
         log_line("info", "[dry-run] would log in account");
-        return Ok(crate::error::EXIT_OK);
+        let would = format!("log in account {} via {}", args.name, args.method);
+        return crate::executor::finish(
+            flags,
+            &dry_run_envelope(&args.name, &would, &flags.command),
+        );
     }
     validate_login(args)?;
     let creds = config::credentials()?;
@@ -162,7 +200,14 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         .map_err(tele_invocation)?
     {
         log_line("info", "account already authorized");
-        return Ok(crate::error::EXIT_OK);
+        let data = serde_json::json!({
+            "authorized": true,
+            "method": args.method.clone(),
+        });
+        return crate::executor::finish(
+            flags,
+            &action_envelope(&args.name, data, flags.dry_run, &flags.command),
+        );
     }
     match args.method.as_str() {
         "qr" => {
@@ -181,21 +226,32 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .request_login_code(&phone, &creds.api_hash)
                 .await
                 .map_err(tele_invocation)?;
-            print!("Enter the code sent to {phone}: ");
-            std::io::Write::flush(&mut std::io::stdout())?;
-            let mut code = String::new();
-            std::io::stdin().read_line(&mut code)?;
-            let code = code.trim().to_string();
+            let mut stdin = std::io::stdin().lock();
+            let mut stderr = std::io::stderr();
+            let Some(code_line) = prompt_line(
+                &format!("Enter the code sent to {phone}: "),
+                &mut stdin,
+                &mut stderr,
+            )?
+            else {
+                return Err(TeleError::Usage(
+                    "no code entered (stdin closed)".to_string(),
+                ));
+            };
+            let code = code_line.trim().to_string();
             match guard.client.sign_in(&token, &code).await {
                 Ok(_user) => {
                     log_line("info", &format!("account {} logged in", args.name));
                 }
                 Err(grammers_client::SignInError::PasswordRequired(pw_token)) => {
-                    print!("Enter the 2FA password: ");
-                    std::io::Write::flush(&mut std::io::stdout())?;
-                    let mut password = String::new();
-                    std::io::stdin().read_line(&mut password)?;
-                    let password = password.trim().to_string();
+                    let Some(password_line) =
+                        prompt_line("Enter the 2FA password: ", &mut stdin, &mut stderr)?
+                    else {
+                        return Err(TeleError::Auth(
+                            "2FA password required; stdin closed".to_string(),
+                        ));
+                    };
+                    let password = strip_line_ending(&password_line).to_string();
                     match guard.client.check_password(pw_token, &password).await {
                         Ok(_) => log_line("info", "2FA passed"),
                         Err(grammers_client::SignInError::InvalidPassword(_)) => {
@@ -229,15 +285,23 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             )));
         }
     }
-    if output::machine_mode(flags.json, flags.jsonl) {
-        println!("{}", serde_json::json!({"ok": true, "account": args.name}));
-    }
-    Ok(crate::error::EXIT_OK)
+    let data = serde_json::json!({
+        "authorized": true,
+        "method": args.method.clone(),
+    });
+    crate::executor::finish(
+        flags,
+        &action_envelope(&args.name, data, flags.dry_run, &flags.command),
+    )
 }
 async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if flags.dry_run {
         log_line("info", "[dry-run] would log out account");
-        return Ok(crate::error::EXIT_OK);
+        let would = format!("log out account {}", args.name);
+        return crate::executor::finish(
+            flags,
+            &dry_run_envelope(&args.name, &would, &flags.command),
+        );
     }
     let creds = config::credentials()?;
     let guard =
@@ -252,15 +316,20 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     drop(guard);
     session::remove_session(&args.name)?;
     log_line("info", &format!("account {} logged out", args.name));
-    if output::machine_mode(flags.json, flags.jsonl) {
-        println!("{}", serde_json::json!({"ok": true, "account": args.name}));
-    }
-    Ok(crate::error::EXIT_OK)
+    let data = serde_json::json!({"signed_out": true});
+    crate::executor::finish(
+        flags,
+        &action_envelope(&args.name, data, flags.dry_run, &flags.command),
+    )
 }
 async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if flags.dry_run {
         log_line("info", "[dry-run] would remove account");
-        return Ok(crate::error::EXIT_OK);
+        let would = format!("remove account {} and its session", args.name);
+        return crate::executor::finish(
+            flags,
+            &dry_run_envelope(&args.name, &would, &flags.command),
+        );
     }
     session::remove_session(&args.name)?;
     let mut cfg = config::load_config(flags.config_path.as_deref())?;
@@ -271,11 +340,90 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         .unwrap_or_else(|| config::app_data_dir().join("config.toml"));
     config::write_config(&path, &cfg)?;
     log_line("info", &format!("account {} removed", args.name));
-    if output::machine_mode(flags.json, flags.jsonl) {
-        println!("{}", serde_json::json!({"ok": true, "account": args.name}));
-    }
-    Ok(crate::error::EXIT_OK)
+    let data = serde_json::json!({
+        "removed": true,
+        "config": path.display().to_string(),
+    });
+    crate::executor::finish(
+        flags,
+        &action_envelope(&args.name, data, flags.dry_run, &flags.command),
+    )
 }
+fn single_outcome(account: &str, data: serde_json::Value) -> AccountOutcome {
+    AccountOutcome {
+        account: account.to_string(),
+        ok: true,
+        error: None,
+        data: Some(data),
+        exit_code: None,
+    }
+}
+
+fn action_envelope(
+    account: &str,
+    data: serde_json::Value,
+    dry_run: bool,
+    command: &str,
+) -> Envelope {
+    Envelope::new(vec![single_outcome(account, data)], dry_run, command)
+}
+
+fn dry_run_envelope(account: &str, would: &str, command: &str) -> Envelope {
+    action_envelope(
+        account,
+        serde_json::json!({"would": would, "dry_run": true}),
+        true,
+        command,
+    )
+}
+
+fn list_envelope(rows: &[serde_json::Value], flags: &GlobalFlags) -> TeleResult<serde_json::Value> {
+    let outcomes: Vec<AccountOutcome> = rows
+        .iter()
+        .map(|r| single_outcome(r["name"].as_str().unwrap_or_default(), r.clone()))
+        .collect();
+    let mut value = serde_json::to_value(Envelope::new(outcomes, flags.dry_run, &flags.command))?;
+    value["accounts"] = serde_json::Value::Array(rows.to_vec());
+    Ok(value)
+}
+
+fn status_table_rows(envelope: &Envelope) -> Vec<Vec<String>> {
+    envelope
+        .accounts
+        .iter()
+        .filter(|o| o.ok)
+        .map(|o| {
+            let authorized = o
+                .data
+                .as_ref()
+                .and_then(|d| d["authorized"].as_bool())
+                .unwrap_or(false);
+            vec![
+                o.account.clone(),
+                if authorized { "yes" } else { "no" }.to_string(),
+            ]
+        })
+        .collect()
+}
+
+fn prompt_line(
+    prompt: &str,
+    reader: &mut impl std::io::BufRead,
+    writer: &mut impl std::io::Write,
+) -> TeleResult<Option<String>> {
+    writer.write_all(prompt.as_bytes())?;
+    writer.flush()?;
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(line))
+}
+
+fn strip_line_ending(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+
 pub fn tele_invocation(e: grammers_client::InvocationError) -> TeleError {
     if crate::error::invocation_is_unauthorized(&e) {
         TeleError::Auth("not logged in (session invalid)".to_string())
@@ -315,6 +463,25 @@ mod tests {
         }
     }
 
+    fn test_flags(
+        command: &str,
+        json: bool,
+        dry_run: bool,
+        config: &std::path::Path,
+    ) -> GlobalFlags {
+        GlobalFlags {
+            account: vec![],
+            tag: vec![],
+            parallel: None,
+            json,
+            jsonl: false,
+            dry_run,
+            quiet: false,
+            config_path: Some(config.to_path_buf()),
+            command: command.to_string(),
+        }
+    }
+
     #[test]
     fn login_code_requires_phone() {
         assert!(matches!(
@@ -335,5 +502,165 @@ mod tests {
             validate_login(&login_args("sms", Some("+1"))),
             Err(TeleError::Usage(_))
         ));
+    }
+
+    #[test]
+    fn prompt_line_writes_prompt_then_reads_line() {
+        let mut out = Vec::new();
+        let line = prompt_line(
+            "Enter the code: ",
+            &mut std::io::Cursor::new(b"12345\n"),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(line.as_deref(), Some("12345\n"));
+        assert_eq!(String::from_utf8(out).unwrap(), "Enter the code: ");
+    }
+
+    #[test]
+    fn prompt_line_eof_returns_none() {
+        let mut out = Vec::new();
+        let line =
+            prompt_line("Enter password: ", &mut std::io::Cursor::new(b""), &mut out).unwrap();
+        assert!(line.is_none());
+        assert_eq!(String::from_utf8(out).unwrap(), "Enter password: ");
+    }
+
+    #[test]
+    fn strip_line_ending_preserves_password_spaces() {
+        assert_eq!(strip_line_ending(" pass word \r\n"), " pass word ");
+        assert_eq!(strip_line_ending(" pass word \n"), " pass word ");
+    }
+
+    #[test]
+    fn strip_line_ending_removes_only_line_terminator() {
+        assert_eq!(strip_line_ending("password"), "password");
+        assert_eq!(strip_line_ending("pass\n"), "pass");
+    }
+
+    #[test]
+    fn action_envelope_matches_contract_shape() {
+        let envelope = action_envelope(
+            "work",
+            serde_json::json!({"authorized": true}),
+            false,
+            "account login",
+        );
+        let v = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["command"], serde_json::json!("account login"));
+        assert_eq!(v["dry_run"], serde_json::json!(false));
+        let r = &v["results"][0];
+        assert_eq!(r["account"], serde_json::json!("work"));
+        assert_eq!(r["ok"], serde_json::json!(true));
+        assert_eq!(r["data"]["authorized"], serde_json::json!(true));
+        assert!(r["error"].is_null());
+    }
+
+    #[test]
+    fn dry_run_envelope_marks_dry_run_and_describes_action() {
+        let envelope = dry_run_envelope(
+            "work",
+            "register account work in config.toml",
+            "account add",
+        );
+        let v = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["results"][0]["data"]["dry_run"], serde_json::json!(true));
+        assert_eq!(
+            v["results"][0]["data"]["would"],
+            serde_json::json!("register account work in config.toml")
+        );
+    }
+
+    #[test]
+    fn list_envelope_keeps_accounts_and_adds_results() {
+        let dir = std::env::temp_dir().join(format!("telecli-list-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account list", true, false, &dir.join("config.toml"));
+        let rows = vec![serde_json::json!({
+            "name": "work",
+            "tags": "a,b",
+            "session": "present",
+        })];
+        let v = list_envelope(&rows, &flags).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["command"], serde_json::json!("account list"));
+        assert_eq!(v["dry_run"], serde_json::json!(false));
+        assert_eq!(v["accounts"][0]["name"], serde_json::json!("work"));
+        let r = &v["results"][0];
+        assert_eq!(r["account"], serde_json::json!("work"));
+        assert_eq!(r["ok"], serde_json::json!(true));
+        assert_eq!(r["data"]["tags"], serde_json::json!("a,b"));
+        assert!(r["error"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_human_rows_report_authorization() {
+        let mut failed = single_outcome("bad", serde_json::json!({}));
+        failed.ok = false;
+        let envelope = Envelope::new(
+            vec![
+                single_outcome("home", serde_json::json!({"authorized": true})),
+                single_outcome("work", serde_json::json!({"authorized": false})),
+                failed,
+            ],
+            false,
+            "account status",
+        );
+        let rows = status_table_rows(&envelope);
+        assert_eq!(
+            rows,
+            vec![
+                vec!["home".to_string(), "yes".to_string()],
+                vec!["work".to_string(), "no".to_string()],
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_add_writes_no_config() {
+        let dir = std::env::temp_dir().join(format!("telecli-add-dryrun-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account add", false, true, &dir.join("config.toml"));
+        let code = add(
+            &AddArgs {
+                name: "work".to_string(),
+                tags: None,
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(
+            !dir.join("config.toml").exists(),
+            "dry-run must not write config"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn add_registers_account_and_writes_config() {
+        let dir = std::env::temp_dir().join(format!("telecli-add-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account add", false, false, &dir.join("config.toml"));
+        let code = add(
+            &AddArgs {
+                name: "work".to_string(),
+                tags: Some(vec!["a".to_string()]),
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(text.contains("work"), "config: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
