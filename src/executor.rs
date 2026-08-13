@@ -9,7 +9,7 @@ use crate::output::{log_line, AccountOutcome};
 pub struct GlobalFlags {
     pub account: Vec<String>,
     pub tag: Vec<String>,
-    pub parallel: u32,
+    pub parallel: Option<u32>,
     pub json: bool,
     pub jsonl: bool,
     pub dry_run: bool,
@@ -32,7 +32,8 @@ pub async fn run_fanout(
             "no accounts selected: use --account <name> or --tag <tag>".to_string(),
         ));
     }
-    let parallel = flags.parallel.clamp(1, 3) as usize;
+    let cfg = crate::config::load_config(flags.config_path.as_deref())?;
+    let parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
     let semaphore = Arc::new(Semaphore::new(parallel));
     let mut handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)> =
         Vec::new();
@@ -92,6 +93,10 @@ fn failed_outcome(account: String, e: TeleError) -> AccountOutcome {
         data: None,
         exit_code: Some(e.exit_code()),
     }
+}
+
+fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
+    flag.unwrap_or(cfg_max).clamp(1, 3)
 }
 
 pub fn select_accounts(flags: &GlobalFlags) -> TeleResult<Vec<String>> {
@@ -158,4 +163,31 @@ pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
         return EXIT_AUTH;
     }
     EXIT_ALL_FAILED
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flag_overrides_config() {
+        assert_eq!(effective_parallel(Some(1), 3), 1);
+        assert_eq!(effective_parallel(Some(2), 1), 2);
+        assert_eq!(effective_parallel(Some(3), 1), 3);
+    }
+
+    #[test]
+    fn config_is_fallback_default() {
+        assert_eq!(effective_parallel(None, 1), 1);
+        assert_eq!(effective_parallel(None, 2), 2);
+        assert_eq!(effective_parallel(None, 3), 3);
+    }
+
+    #[test]
+    fn both_sides_clamped_to_one_to_three() {
+        assert_eq!(effective_parallel(Some(0), 3), 1);
+        assert_eq!(effective_parallel(Some(9), 1), 3);
+        assert_eq!(effective_parallel(None, 0), 1);
+        assert_eq!(effective_parallel(None, 99), 3);
+    }
 }

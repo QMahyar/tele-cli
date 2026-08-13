@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use grammers_client::client::{ClientConfiguration, UpdatesConfiguration};
+use grammers_client::client::{AutoSleep, ClientConfiguration, UpdatesConfiguration};
 use grammers_client::session::updates::UpdatesLike;
 use grammers_client::{Client, SenderPool};
 use tokio::sync::mpsc;
@@ -33,7 +34,14 @@ impl ClientGuard {
             updates,
         } = pool;
         tokio::spawn(runner.run());
-        let client = Client::with_configuration(handle, ClientConfiguration::default());
+        let conf = ClientConfiguration {
+            retry_policy: Box::new(AutoSleep {
+                threshold: Duration::from_secs(cfg.flood_sleep_threshold),
+                io_errors_as_flood_of: Some(Duration::from_secs(1)),
+            }),
+            ..Default::default()
+        };
+        let client = Client::with_configuration(handle, conf);
         Ok(Self { client, updates })
     }
 }

@@ -54,7 +54,7 @@ fn default_flood() -> u64 {
 }
 
 fn default_parallel_max() -> u32 {
-    3
+    1
 }
 
 #[derive(Clone)]
@@ -225,5 +225,24 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(proxy_url_for(&cfg, "work").unwrap(), None);
+    }
+
+    #[test]
+    fn parallel_max_clamped_to_one_to_three_on_load() {
+        let dir = std::env::temp_dir().join(format!("telecli-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "parallel_max = 9\n").unwrap();
+        assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 3);
+        std::fs::write(&path, "parallel_max = 0\n").unwrap();
+        assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unset_knobs_use_documented_defaults() {
+        let cfg: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.flood_sleep_threshold, 60);
+        assert_eq!(cfg.parallel_max, 1);
     }
 }

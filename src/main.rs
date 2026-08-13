@@ -40,10 +40,9 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        default_value_t = 1,
-        help = "parallel accounts (1-3)"
+        help = "parallel accounts (1-3; default from config parallel_max)"
     )]
-    parallel: u32,
+    parallel: Option<u32>,
     #[arg(long, global = true, help = "machine output: single JSON envelope")]
     json: bool,
     #[arg(long, global = true, help = "machine output: JSON lines")]
