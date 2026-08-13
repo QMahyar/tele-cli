@@ -173,6 +173,22 @@ pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::*;
+    use crate::output::{AccountOutcome, Envelope};
+
+    fn outcome(account: &str, ok: bool, code: Option<i32>) -> AccountOutcome {
+        AccountOutcome {
+            account: account.to_string(),
+            ok,
+            error: None,
+            data: None,
+            exit_code: code,
+        }
+    }
+
+    fn envelope(accounts: Vec<AccountOutcome>) -> Envelope {
+        Envelope::new(accounts, false, "msg send")
+    }
 
     #[test]
     fn flag_overrides_config() {
@@ -194,5 +210,38 @@ mod tests {
         assert_eq!(effective_parallel(Some(9), 1), 3);
         assert_eq!(effective_parallel(None, 0), 1);
         assert_eq!(effective_parallel(None, 99), 3);
+    }
+
+    #[test]
+    fn all_auth_failures_exit_auth() {
+        let env = envelope(vec![
+            outcome("a", false, Some(EXIT_AUTH)),
+            outcome("b", false, Some(EXIT_AUTH)),
+        ]);
+        assert_eq!(envelope_exit_code(&env), EXIT_AUTH);
+    }
+
+    #[test]
+    fn all_failed_exits_all_failed_even_with_auth_mix() {
+        let env = envelope(vec![
+            outcome("a", false, Some(EXIT_AUTH)),
+            outcome("b", false, Some(EXIT_ALL_FAILED)),
+        ]);
+        assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
+    }
+
+    #[test]
+    fn mixed_success_and_auth_failure_is_partial() {
+        let env = envelope(vec![
+            outcome("a", true, None),
+            outcome("b", false, Some(EXIT_AUTH)),
+        ]);
+        assert_eq!(envelope_exit_code(&env), EXIT_PARTIAL);
+    }
+
+    #[test]
+    fn all_success_exits_ok() {
+        let env = envelope(vec![outcome("a", true, None), outcome("b", true, None)]);
+        assert_eq!(envelope_exit_code(&env), EXIT_OK);
     }
 }

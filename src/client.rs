@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::error::{TeleError, TeleResult};
 use grammers_client::client::{AutoSleep, ClientConfiguration, UpdatesConfiguration};
 use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::updates::UpdatesLike;
@@ -58,13 +59,17 @@ impl Drop for ClientGuard {
     }
 }
 
-pub async fn authorize(client: &Client, _creds: &crate::config::Credentials) -> anyhow::Result<()> {
-    if client.is_authorized().await? {
-        return Ok(());
+pub async fn authorize(client: &Client, _creds: &crate::config::Credentials) -> TeleResult<()> {
+    match client.is_authorized().await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(TeleError::Auth(
+            "account is not logged in: run tele account login --name <name> first".to_string(),
+        )),
+        Err(e) if crate::error::invocation_is_unauthorized(&e) => Err(TeleError::Auth(
+            "not logged in (session invalid)".to_string(),
+        )),
+        Err(e) => Err(TeleError::Other(e.to_string())),
     }
-    Err(anyhow::anyhow!(
-        "account is not logged in: run tele account login --name <name> first"
-    ))
 }
 
 pub async fn qr_login(
