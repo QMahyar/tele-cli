@@ -3,6 +3,7 @@ use crate::error::{TeleError, TeleResult};
 use crate::executor::GlobalFlags;
 use crate::output;
 use clap::Args;
+use grammers_session::types::{PeerId, PeerKind};
 #[derive(Args)]
 pub struct ListenArgs {
     #[arg(long, default_value_t = 0)]
@@ -17,7 +18,8 @@ pub struct ListenArgs {
     quiet: bool,
 }
 const VALID_EVENTS: &[&str] = &["NewMessage", "MessageEdited", "MessageDeleted", "Raw"];
-pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<()> {
+const MAX_RECONNECT_BACKOFF: u32 = 30;
+pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     use grammers_client::update::Update;
     let mut events: Vec<String> = args.events.clone();
@@ -29,7 +31,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<()> {
     }
     if flags.dry_run {
         output::log_line("info", "[dry-run] would stream updates");
-        return Ok(());
+        return Ok(crate::error::EXIT_OK);
     }
     if !flags.json && !flags.jsonl {
         output::log_line("info", "listen streams JSONL events on stdout");
@@ -50,133 +52,205 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<()> {
         let events = events.clone();
         tasks.spawn(async move {
             let result: TeleResult<()> = async {
-                let creds = crate::config::credentials()
-                    .map_err(|e| TeleError::Config(e.to_string()))?;
+                let creds =
+                    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
                 let mut guard =
                     ClientGuard::connect(&name, creds.api_id, config_path.as_deref()).await?;
                 client::authorize(&guard.client, &creds).await?;
-                let receiver = std::mem::replace(
-                    &mut guard.updates,
-                    tokio::sync::mpsc::unbounded_channel().1,
-                );
-                let mut stream = guard
-                    .client
-                    .stream_updates(
-                        receiver,
-                        grammers_client::client::UpdatesConfiguration::default(),
-                    )
-                    .await
-                    .map_err(|e| TeleError::Other(e.to_string()))?;
+                let resolved = match &chat_filter {
+                    Some(target) => Some(
+                        crate::entities::resolve_peer(&guard.client, &guard.session, target)
+                            .await
+                            .map_err(|e| {
+                                TeleError::Other(format!("cannot resolve chat {target:?}: {e}"))
+                            })?
+                            .id(),
+                    ),
+                    None => None,
+                };
                 let deadline = if timeout_secs > 0 {
-                    Some(
-                        std::time::Instant::now()
-                            + std::time::Duration::from_secs(timeout_secs),
-                    )
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs))
                 } else {
                     None
                 };
+                let mut backoff: u32 = 1;
                 loop {
                     if let Some(d) = deadline {
                         if std::time::Instant::now() >= d {
                             break;
                         }
                     }
-                    let update = match tokio::time::timeout(
-                        std::time::Duration::from_secs(3600),
-                        stream.next(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(u)) => u,
-                        Ok(Err(e)) => {
-                            if crate::error::invocation_is_unauthorized(&e) {
+                    let receiver = std::mem::replace(
+                        &mut guard.updates,
+                        tokio::sync::mpsc::unbounded_channel().1,
+                    );
+                    let mut stream = guard
+                        .client
+                        .stream_updates(
+                            receiver,
+                            grammers_client::client::UpdatesConfiguration::default(),
+                        )
+                        .await
+                        .map_err(|e| TeleError::Other(e.to_string()))?;
+                    loop {
+                        if let Some(d) = deadline {
+                            if std::time::Instant::now() >= d {
+                                break;
+                            }
+                        }
+                        let update = match tokio::time::timeout(
+                            std::time::Duration::from_secs(3600),
+                            stream.next(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(u)) => u,
+                            Ok(Err(e)) => {
+                                if crate::error::invocation_is_unauthorized(&e) {
+                                    output::log_line(
+                                        "error",
+                                        &format!("{name}: not authorized, stopping stream"),
+                                    );
+                                    return Err(TeleError::Auth(
+                                        "not authorized, stopping stream".to_string(),
+                                    ));
+                                }
                                 output::log_line(
                                     "error",
-                                    &format!("{name}: not authorized, stopping stream"),
+                                    &format!(
+                                        "{name}: stream error, reconnecting in {backoff}s: {}",
+                                        crate::error::invocation_message(&e)
+                                    ),
                                 );
+                                tokio::time::sleep(std::time::Duration::from_secs(backoff.into()))
+                                    .await;
+                                backoff = next_backoff(backoff);
+                                break;
                             }
-                            break;
-                        }
-                        Err(_) => continue,
-                    };
-                    if raw {
-                        if let Update::Raw(_) = &update {
-                            output::print_json(&event_row("Raw", &name, None, None, None));
-                            continue;
-                        }
-                    }
-                    match update {
-                        Update::NewMessage(m) => {
-                            if !events.iter().any(|e| e == "NewMessage") {
+                            Err(_) => continue,
+                        };
+                        backoff = 1;
+                        if raw {
+                            if let Update::Raw(_) = &update {
+                                output::print_json_result(&event_row(
+                                    "Raw", &name, None, None, None,
+                                ))?;
                                 continue;
                             }
-                            if let Some(filter) = &chat_filter {
-                                let chat_name = m
-                                    .peer()
-                                    .map(crate::serialize::peer_name)
-                                    .unwrap_or_default();
-                                if !chat_name.contains(filter)
-                                    && !m.peer_id().to_string().contains(filter)
-                                {
+                        }
+                        match update {
+                            Update::NewMessage(m) => {
+                                if !events.iter().any(|e| e == "NewMessage") {
                                     continue;
                                 }
+                                if let Some(target) = &resolved {
+                                    if !message_matches(m.peer_id(), *target) {
+                                        continue;
+                                    }
+                                }
+                                let row = crate::serialize::message_to_json(&m)?;
+                                output::print_json_result(&event_row(
+                                    "NewMessage",
+                                    &name,
+                                    m.peer_id().bare_id(),
+                                    None,
+                                    Some(row),
+                                ))?;
                             }
-                            let row = crate::serialize::message_to_json(&m)?;
-                            output::print_json(&event_row(
-                                "NewMessage",
-                                &name,
-                                m.peer_id().bare_id(),
-                                None,
-                                Some(row),
-                            ));
-                        }
-                        Update::MessageEdited(m) => {
-                            if !events.iter().any(|e| e == "MessageEdited") {
-                                continue;
+                            Update::MessageEdited(m) => {
+                                if !events.iter().any(|e| e == "MessageEdited") {
+                                    continue;
+                                }
+                                if let Some(target) = &resolved {
+                                    if !message_matches(m.peer_id(), *target) {
+                                        continue;
+                                    }
+                                }
+                                let row = crate::serialize::message_to_json(&m)?;
+                                output::print_json_result(&event_row(
+                                    "MessageEdited",
+                                    &name,
+                                    m.peer_id().bare_id(),
+                                    None,
+                                    Some(row),
+                                ))?;
                             }
-                            let row = crate::serialize::message_to_json(&m)?;
-                            output::print_json(&event_row(
-                                "MessageEdited",
-                                &name,
-                                m.peer_id().bare_id(),
-                                None,
-                                Some(row),
-                            ));
-                        }
-                        Update::MessageDeleted(d) => {
-                            if !events.iter().any(|e| e == "MessageDeleted") {
-                                continue;
+                            Update::MessageDeleted(d) => {
+                                if !events.iter().any(|e| e == "MessageDeleted") {
+                                    continue;
+                                }
+                                if let Some(target) = &resolved {
+                                    if !deleted_matches(d.channel_id(), *target) {
+                                        continue;
+                                    }
+                                }
+                                output::print_json_result(&event_row(
+                                    "MessageDeleted",
+                                    &name,
+                                    d.channel_id(),
+                                    Some(d.messages()),
+                                    None,
+                                ))?;
                             }
-                            output::print_json(&event_row(
-                                "MessageDeleted",
-                                &name,
-                                d.channel_id(),
-                                Some(d.messages()),
-                                None,
-                            ));
-                        }
-                        _ => {
-                            if !events.iter().any(|e| e == "Raw") {
-                                continue;
+                            _ => {
+                                if !events.iter().any(|e| e == "Raw") {
+                                    continue;
+                                }
+                                output::print_json_result(&event_row(
+                                    "Raw", &name, None, None, None,
+                                ))?;
                             }
-                            output::print_json(&event_row("Raw", &name, None, None, None));
                         }
                     }
                 }
                 Ok(())
             }
             .await;
-            if let Err(e) = result {
+            if let Err(e) = &result {
                 output::log_line("error", &format!("{name}: {}", e.message()));
             }
-            Ok::<(), ()>(())
+            result
         });
     }
-    while tasks.join_next().await.is_some() {}
+    let mut ok_count = 0usize;
+    let mut failed: Vec<i32> = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(Ok(())) => ok_count += 1,
+            Ok(Err(e)) => failed.push(e.exit_code()),
+            Err(_) => failed.push(crate::error::EXIT_ALL_FAILED),
+        }
+    }
     if timeout_secs > 0 {
         output::log_line("info", "listen timeout reached");
     }
-    Ok(())
+    if failed.is_empty() {
+        Ok(crate::error::EXIT_OK)
+    } else if ok_count > 0 {
+        Ok(crate::error::EXIT_PARTIAL)
+    } else if failed.iter().all(|c| *c == crate::error::EXIT_AUTH) {
+        Ok(crate::error::EXIT_AUTH)
+    } else {
+        Ok(crate::error::EXIT_ALL_FAILED)
+    }
+}
+
+fn message_matches(peer: PeerId, resolved: PeerId) -> bool {
+    peer == resolved
+}
+
+fn deleted_matches(bare_id: Option<i64>, resolved: PeerId) -> bool {
+    if resolved.kind() == PeerKind::User {
+        return false;
+    }
+    match (bare_id, resolved.bare_id()) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn next_backoff(secs: u32) -> u32 {
+    (secs * 2).min(MAX_RECONNECT_BACKOFF)
 }
 
 fn event_row(
@@ -215,7 +289,13 @@ mod tests {
 
     #[test]
     fn message_row_matches_contract_keys() {
-        let row = event_row("NewMessage", "work", Some(456), None, Some(base_message_row()));
+        let row = event_row(
+            "NewMessage",
+            "work",
+            Some(456),
+            None,
+            Some(base_message_row()),
+        );
         let obj = row.as_object().unwrap();
         assert_eq!(obj["event"], "NewMessage");
         assert_eq!(obj["account"], "work");
@@ -259,5 +339,50 @@ mod tests {
         let obj = row.as_object().unwrap();
         assert_eq!(obj.len(), 2);
         assert_eq!(obj["event"], "Raw");
+    }
+
+    use grammers_session::types::PeerId;
+
+    #[test]
+    fn message_matches_same_peer() {
+        let chat = PeerId::channel_unchecked(1234567890);
+        assert!(message_matches(chat, chat));
+    }
+
+    #[test]
+    fn message_matches_rejects_other_peer() {
+        let a = PeerId::channel_unchecked(1234567890);
+        let b = PeerId::channel_unchecked(42);
+        assert!(!message_matches(a, b));
+    }
+
+    #[test]
+    fn message_matches_distinguishes_user_from_chat_with_same_bare_id() {
+        let user = PeerId::user_unchecked(123);
+        let chat = PeerId::chat_unchecked(123);
+        assert!(!message_matches(user, chat));
+    }
+
+    #[test]
+    fn deleted_matches_bare_channel_id() {
+        let resolved = PeerId::channel_unchecked(1234567890);
+        assert!(deleted_matches(Some(1234567890), resolved));
+        assert!(!deleted_matches(Some(999), resolved));
+        assert!(!deleted_matches(None, resolved));
+    }
+
+    #[test]
+    fn deleted_matches_never_matches_a_user() {
+        let resolved = PeerId::user_unchecked(7);
+        assert!(!deleted_matches(Some(7), resolved));
+    }
+
+    #[test]
+    fn reconnect_backoff_doubles_up_to_cap() {
+        assert_eq!(next_backoff(1), 2);
+        assert_eq!(next_backoff(2), 4);
+        assert_eq!(next_backoff(8), 16);
+        assert_eq!(next_backoff(16), 30);
+        assert_eq!(next_backoff(30), 30);
     }
 }

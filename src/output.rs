@@ -49,6 +49,16 @@ pub fn print_json(value: &serde_json::Value) {
     println!("{}", serde_json::to_string(value).expect("serialize"));
 }
 
+pub fn print_json_result(value: &serde_json::Value) -> crate::error::TeleResult<()> {
+    use std::io::Write;
+    let line = serde_json::to_string(value)?;
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    writeln!(lock, "{line}")?;
+    lock.flush()?;
+    Ok(())
+}
+
 pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     let mut table = Table::new();
     table.set_header(headers.iter().map(|h| Cell::new(*h)));
