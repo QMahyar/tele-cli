@@ -314,7 +314,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         }
     }
     drop(guard);
-    session::remove_session(&args.name)?;
+    remove_session_file_retry(&session::session_path(&args.name)).await?;
     log_line("info", &format!("account {} logged out", args.name));
     let data = serde_json::json!({"signed_out": true});
     crate::executor::finish(
@@ -349,6 +349,30 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         &action_envelope(&args.name, data, flags.dry_run, &flags.command),
     )
 }
+const SESSION_REMOVE_RETRIES: usize = 20;
+const SESSION_REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+
+async fn remove_session_file_retry(path: &std::path::Path) -> TeleResult<()> {
+    let mut last_error: Option<std::io::Error> = None;
+    for _ in 0..SESSION_REMOVE_RETRIES {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                last_error = Some(e);
+                tokio::time::sleep(SESSION_REMOVE_RETRY_DELAY).await;
+            }
+        }
+    }
+    Err(TeleError::Other(format!(
+        "could not remove session file {}: {}",
+        path.display(),
+        last_error
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string())
+    )))
+}
+
 fn single_outcome(account: &str, data: serde_json::Value) -> AccountOutcome {
     AccountOutcome {
         account: account.to_string(),
@@ -454,6 +478,7 @@ fn render_qr(uri: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grammers_session::storages::SqliteSession;
 
     fn login_args(method: &str, phone: Option<&str>) -> LoginArgs {
         LoginArgs {
@@ -661,6 +686,64 @@ mod tests {
         assert_eq!(code, 0);
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(text.contains("work"), "config: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_session_file_retry_tolerates_missing_file() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-logout-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        remove_session_file_retry(&dir.join("ghost.session"))
+            .await
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_session_file_retry_waits_for_handle_release() {
+        let dir = std::env::temp_dir().join(format!("telecli-logout-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("locked.session");
+        let file = std::fs::File::create(&path).unwrap();
+        let holder = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            drop(file);
+        });
+        remove_session_file_retry(&path).await.unwrap();
+        assert!(!path.exists());
+        holder.await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_drop_then_remove_succeeds() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-session-close-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("closed.session");
+        let session = SqliteSession::open(&path).await.unwrap();
+        drop(session);
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn held_sqlite_session_blocks_removal_on_windows() {
+        let dir = std::env::temp_dir().join(format!("telecli-session-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("held.session");
+        let session = SqliteSession::open(&path).await.unwrap();
+        let err = std::fs::remove_file(&path).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(32), "sharing violation: {err:?}");
+        drop(session);
+        std::fs::remove_file(&path).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
