@@ -48,20 +48,10 @@ pub async fn resolve_peer(
         if let Some(pref) = cached_ref(session, id, raw).await {
             return client.resolve_peer(pref).await;
         }
-        let pref: PeerRef = if id > 0 {
-            tl::types::InputPeerUser {
-                user_id: id,
-                access_hash: 0,
-            }
-            .into()
-        } else {
-            tl::types::InputPeerChannel {
-                channel_id: raw,
-                access_hash: 0,
-            }
-            .into()
-        };
-        return client.resolve_peer(pref).await;
+        if let Some(pref) = checked_fallback_ref(id) {
+            return client.resolve_peer(pref).await;
+        }
+        return Err(rpc_error(400, "INVALID_PEER_ID"));
     }
     let username = parse_username(t);
     if username == "me" {
@@ -89,6 +79,27 @@ async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRe
         }
     }
     None
+}
+
+fn checked_fallback_ref(id: i64) -> Option<PeerRef> {
+    let raw = id.unsigned_abs() as i64;
+    if id > 0 {
+        PeerId::user(raw).map(|_| {
+            tl::types::InputPeerUser {
+                user_id: raw,
+                access_hash: 0,
+            }
+            .into()
+        })
+    } else {
+        PeerId::channel(raw).map(|_| {
+            tl::types::InputPeerChannel {
+                channel_id: raw,
+                access_hash: 0,
+            }
+            .into()
+        })
+    }
 }
 
 fn parse_username(raw: &str) -> &str {
@@ -242,6 +253,28 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn checked_fallback_ref_accepts_valid_user_id() {
+        let pref = checked_fallback_ref(8997636887).expect("valid user id must resolve");
+        assert_eq!(pref.id.bare_id_unchecked(), 8997636887);
+    }
+
+    #[test]
+    fn checked_fallback_ref_accepts_valid_channel_id() {
+        let pref = checked_fallback_ref(-3975233726).expect("valid channel id must resolve");
+        assert_eq!(pref.id.bare_id_unchecked(), 3975233726);
+    }
+
+    #[test]
+    fn checked_fallback_ref_rejects_out_of_range_channel() {
+        assert!(checked_fallback_ref(-1001234567890).is_none());
+    }
+
+    #[test]
+    fn checked_fallback_ref_rejects_i64_min() {
+        assert!(checked_fallback_ref(i64::MIN).is_none());
     }
 
     #[tokio::test]
