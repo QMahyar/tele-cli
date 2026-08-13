@@ -207,7 +207,7 @@ pub async fn input_user(
 mod tests {
     use super::*;
     use grammers_session::storages::MemorySession;
-    use grammers_session::types::PeerId;
+    use grammers_session::types::{PeerAuth, PeerId, PeerInfo, PeerKind};
 
     #[tokio::test]
     async fn cache_chat_stores_channel_access_hash() {
@@ -280,6 +280,42 @@ mod tests {
         assert!(checked_fallback_ref(i64::MIN).is_none());
     }
 
+    #[test]
+    fn checked_fallback_ref_accepts_channel_range_top() {
+        let pref = checked_fallback_ref(-997852516352).expect("channel range top must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Channel);
+        assert_eq!(pref.id.bare_id_unchecked(), 997852516352);
+    }
+
+    #[test]
+    fn checked_fallback_ref_accepts_monoforum_low_end() {
+        let pref = checked_fallback_ref(-1002147483649).expect("monoforum low end must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Channel);
+        assert_eq!(pref.id.bare_id_unchecked(), 1002147483649);
+    }
+
+    #[test]
+    fn checked_fallback_ref_accepts_user_range_top() {
+        let pref = checked_fallback_ref(0xffffffffff).expect("user range top must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::User);
+        assert_eq!(pref.id.bare_id_unchecked(), 0xffffffffff);
+    }
+
+    #[test]
+    fn checked_fallback_ref_rejects_user_id_over_range() {
+        assert!(checked_fallback_ref(0x10000000000).is_none());
+    }
+
+    #[test]
+    fn checked_fallback_ref_rejects_chat_range_top() {
+        assert!(checked_fallback_ref(-999999999999).is_none());
+    }
+
+    #[test]
+    fn checked_fallback_ref_rejects_empty_chat_sentinel() {
+        assert!(checked_fallback_ref(-1000000000000).is_none());
+    }
+
     #[tokio::test]
     async fn cached_ref_uses_stored_channel_hash() {
         let session = MemorySession::default();
@@ -330,5 +366,72 @@ mod tests {
     async fn cached_ref_misses_for_unknown_peer() {
         let session = MemorySession::default();
         assert!(cached_ref(&session, 12345, 12345).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cached_ref_prefers_channel_over_chat_for_negative_id() {
+        let session = MemorySession::default();
+        let channel = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 123456,
+            access_hash: 111,
+            title: "c".to_string(),
+            until_date: None,
+        });
+        cache_chat(&session, &channel).await.unwrap();
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123456,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let pref = cached_ref(&session, -123456, 123456)
+            .await
+            .expect("cached peer must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Channel);
+        assert_eq!(pref.auth.hash(), 111);
+    }
+
+    #[tokio::test]
+    async fn cached_ref_prefers_user_over_channel_for_positive_id() {
+        let session = MemorySession::default();
+        session
+            .cache_peer(&PeerInfo::User {
+                id: 4242,
+                auth: Some(PeerAuth::from_hash(222)),
+                bot: Some(false),
+                is_self: Some(false),
+            })
+            .await
+            .unwrap();
+        let channel = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 4242,
+            access_hash: 333,
+            title: "c".to_string(),
+            until_date: None,
+        });
+        cache_chat(&session, &channel).await.unwrap();
+        let pref = cached_ref(&session, 4242, 4242)
+            .await
+            .expect("cached user must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::User);
+        assert_eq!(pref.auth.hash(), 222);
     }
 }
