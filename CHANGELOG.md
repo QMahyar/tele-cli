@@ -81,6 +81,9 @@ versioned as `0.1.0` at first tag.
 - **Peer resolution** (`--chat` / `--user` targets) — numeric id (cached access
   hash), `@username`, `t.me/…` links, `me` (via `get_me`), `+phone` via raw
   `contacts.ImportContacts`.
+- **JSON envelope** — `command` field populated with the invoked subcommand path
+  (e.g. `"msg send"`); flood-wait errors carry `seconds` on the per-account
+  `error` object (absent otherwise).
 
 ### Fixed
 

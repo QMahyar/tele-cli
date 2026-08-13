@@ -21,10 +21,10 @@ pub struct AccountOutcome {
 }
 
 impl Envelope {
-    pub fn new(accounts: Vec<AccountOutcome>, dry_run: bool) -> Self {
+    pub fn new(accounts: Vec<AccountOutcome>, dry_run: bool, command: &str) -> Self {
         Envelope {
             ok: accounts.iter().all(|a| a.ok),
-            command: None,
+            command: Some(command.to_string()),
             dry_run,
             accounts,
         }

@@ -97,7 +97,10 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
                 if crate::error::invocation_is_unauthorized(&e) {
                     TeleError::Auth("not logged in".to_string())
                 } else {
-                    TeleError::Invocation(crate::error::invocation_message(&e))
+                    TeleError::Invocation(
+                        crate::error::invocation_message(&e),
+                        crate::error::invocation_wait_seconds(&e),
+                    )
                 }
             })?;
             Ok(serde_json::json!({ "authorized": authorized }))
@@ -277,7 +280,10 @@ pub fn tele_invocation(e: grammers_client::InvocationError) -> TeleError {
     if crate::error::invocation_is_unauthorized(&e) {
         TeleError::Auth("not logged in (session invalid)".to_string())
     } else {
-        TeleError::Invocation(crate::error::invocation_message(&e))
+        TeleError::Invocation(
+            crate::error::invocation_message(&e),
+            crate::error::invocation_wait_seconds(&e),
+        )
     }
 }
 fn render_qr(uri: &str) {

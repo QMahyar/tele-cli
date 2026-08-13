@@ -40,7 +40,7 @@ Stdout is **one JSON object** (pretty=false, UTF-8). No logs on stdout.
 ```json
 {
   "ok": true,
-  "command": "msg.send",
+  "command": "msg send",
   "dry_run": false,
   "results": [
     {
@@ -57,11 +57,13 @@ Stdout is **one JSON object** (pretty=false, UTF-8). No logs on stdout.
 
 ```json
 {
-  "type": "FloodWaitError",
+  "type": "InvocationError",
   "message": "A wait of 17 seconds is required",
   "seconds": 17
 }
 ```
+
+`seconds` is present only for flood-wait errors (FLOOD_WAIT / SLOWMODE_WAIT, RPC 420) and carries the wait duration in seconds.
 
 Rules:
 
