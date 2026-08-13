@@ -1,0 +1,49 @@
+use comfy_table::{Cell, Table};
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Envelope {
+    pub ok: bool,
+    pub accounts: Vec<AccountOutcome>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountOutcome {
+    pub account: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing)]
+    pub exit_code: Option<i32>,
+}
+
+impl Envelope {
+    pub fn new(accounts: Vec<AccountOutcome>) -> Self {
+        Envelope {
+            ok: accounts.iter().all(|a| a.ok),
+            accounts,
+        }
+    }
+}
+
+pub fn log_line(level: &str, message: &str) {
+    eprintln!("[{level}] {message}");
+}
+
+pub fn print_json(value: &serde_json::Value) {
+    println!("{}", serde_json::to_string(value).expect("serialize"));
+}
+
+pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    let mut table = Table::new();
+    table.set_header(headers.iter().map(|h| Cell::new(*h)));
+    for row in rows {
+        table.add_row(row.iter().map(Cell::new));
+    }
+    println!("{table}");
+}
+
+pub fn machine_mode(json: bool, jsonl: bool) -> bool {
+    json || jsonl
+}
