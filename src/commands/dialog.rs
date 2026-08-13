@@ -127,6 +127,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
@@ -274,4 +275,35 @@ fn creds() -> crate::TeleResult<crate::config::Credentials> {
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn drafts_rejects_over_limit() {
+        let flags = GlobalFlags {
+            account: Vec::new(),
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: false,
+            quiet: false,
+            config_path: None,
+            command: "dialog drafts".to_string(),
+        };
+        let err = drafts(
+            ListArgs {
+                limit: 10_001,
+                folder: None,
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("too large"));
+    }
 }

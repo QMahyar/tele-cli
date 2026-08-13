@@ -103,12 +103,22 @@ fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
     }
     match name {
         "contacts.Search" => {
+            let valid = ["q", "limit", "broadcasts", "bots"];
+            reject_unknown_keys(name, p, &valid)?;
             req_str(p, "q")?;
             opt_i32(p, "limit")?;
             opt_bool(p, "broadcasts")?;
             opt_bool(p, "bots")?;
         }
         "messages.ExportChatInvite" => {
+            let valid = [
+                "chat",
+                "request_needed",
+                "expire_date",
+                "usage_limit",
+                "title",
+            ];
+            reject_unknown_keys(name, p, &valid)?;
             req_str(p, "chat")?;
             opt_bool(p, "request_needed")?;
             opt_i32(p, "expire_date")?;
@@ -116,17 +126,42 @@ fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
             opt_str(p, "title")?;
         }
         "stats.GetBroadcastStats" | "stats.GetMegagroupStats" => {
+            let valid = ["channel", "dark"];
+            reject_unknown_keys(name, p, &valid)?;
             req_str(p, "channel")?;
             opt_bool(p, "dark")?;
         }
         "account.UpdateProfile" => {
+            let valid = ["first_name", "last_name", "about"];
+            reject_unknown_keys(name, p, &valid)?;
             opt_str(p, "first_name")?;
             opt_str(p, "last_name")?;
             opt_str(p, "about")?;
         }
+        "messages.GetAllDrafts" => {
+            reject_unknown_keys(name, p, &[])?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn reject_unknown_keys(name: &str, p: &serde_json::Value, valid: &[&str]) -> TeleResult<()> {
+    let Some(obj) = p.as_object() else {
+        return Ok(());
+    };
+    let mut unknown: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !valid.contains(k))
+        .collect();
+    unknown.sort_unstable();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(TeleError::Usage(format!(
+        "unknown --args key(s) {unknown:?} for {name} (valid keys: {valid:?})"
+    )))
 }
 
 async fn dispatch(
@@ -137,7 +172,8 @@ async fn dispatch(
 ) -> Result<serde_json::Value, grammers_client::InvocationError> {
     match name {
         "messages.ExportChatInvite" => {
-            let chat = crate::entities::resolve_peer(client, session, &str_field(p, "chat")?).await?;
+            let chat =
+                crate::entities::resolve_peer(client, session, &str_field(p, "chat")?).await?;
             let peer = crate::entities::input_peer(&chat).await?;
             let r: tl::enums::ExportedChatInvite = client
                 .invoke(&tl::functions::messages::ExportChatInvite {
@@ -218,7 +254,8 @@ async fn dispatch(
             }))
         }
         "stats.GetBroadcastStats" => {
-            let chat = crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
+            let chat =
+                crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
             let channel = crate::entities::input_channel(&chat).await?;
             let r: tl::enums::stats::BroadcastStats = client
                 .invoke(&tl::functions::stats::GetBroadcastStats {
@@ -238,7 +275,8 @@ async fn dispatch(
             }))
         }
         "stats.GetMegagroupStats" => {
-            let chat = crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
+            let chat =
+                crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
             let channel = crate::entities::input_channel(&chat).await?;
             let r: tl::enums::stats::MegagroupStats = client
                 .invoke(&tl::functions::stats::GetMegagroupStats {
@@ -459,5 +497,55 @@ mod tests {
         )
         .is_ok());
         assert!(validate_params("messages.GetAllDrafts", &serde_json::json!({})).is_ok());
+    }
+
+    #[test]
+    fn params_unknown_key_fails() {
+        let err = validate_params(
+            "contacts.Search",
+            &serde_json::json!({"q": "a", "invite_policy": true}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("invite_policy"));
+        assert!(err.message().contains("valid"));
+        assert!(matches!(
+            validate_params("messages.GetAllDrafts", &serde_json::json!({"nope": 1})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_params("account.UpdateProfile", &serde_json::json!({"bio": "dev"})),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn params_all_known_keys_pass() {
+        assert!(validate_params(
+            "contacts.Search",
+            &serde_json::json!({"q": "a", "limit": 5, "broadcasts": true, "bots": false})
+        )
+        .is_ok());
+        assert!(validate_params(
+            "messages.ExportChatInvite",
+            &serde_json::json!({
+                "chat": "@x",
+                "request_needed": true,
+                "expire_date": 100,
+                "usage_limit": 10,
+                "title": "t"
+            })
+        )
+        .is_ok());
+        assert!(validate_params(
+            "stats.GetBroadcastStats",
+            &serde_json::json!({"channel": "@x", "dark": true})
+        )
+        .is_ok());
+        assert!(validate_params(
+            "account.UpdateProfile",
+            &serde_json::json!({"first_name": "a", "last_name": "b", "about": "c"})
+        )
+        .is_ok());
     }
 }

@@ -130,13 +130,25 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let tl_key = set_key(&args.key)?;
+fn validate_set(args: &SetArgs) -> TeleResult<tl::enums::InputPrivacyKey> {
+    let key = set_key(&args.key)?;
     if args.allow.is_none() && args.deny.is_none() {
         return Err(TeleError::Usage(
             "privacy set requires --allow or --deny".to_string(),
         ));
     }
+    if let Some(allow) = &args.allow {
+        if allow.is_empty() || allow.iter().any(|t| t.trim().is_empty()) {
+            return Err(TeleError::Usage(
+                "privacy set --allow must name at least one user; got an empty value".to_string(),
+            ));
+        }
+    }
+    Ok(key)
+}
+
+async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let tl_key = validate_set(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -156,9 +168,10 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if !allow.is_empty() {
                 let mut users = Vec::new();
                 for target in &allow {
-                    let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
-                        .await
-                        .map_err(tele_invocation)?;
+                    let peer =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
+                            .await
+                            .map_err(tele_invocation)?;
                     users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
                 }
                 rules.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
@@ -168,9 +181,10 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if !deny.is_empty() {
                 let mut users = Vec::new();
                 for target in &deny {
-                    let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
-                        .await
-                        .map_err(tele_invocation)?;
+                    let peer =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
+                            .await
+                            .map_err(tele_invocation)?;
                     users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
                 }
                 rules.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
@@ -234,6 +248,7 @@ fn creds_api_id() -> crate::TeleResult<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn get_rejects_unknown_key() {
@@ -253,5 +268,56 @@ mod tests {
     fn set_rejects_unknown_key() {
         assert!(matches!(set_key("nope"), Err(TeleError::Usage(_))));
         assert!(set_key("calls").is_ok());
+    }
+
+    #[test]
+    fn set_rejects_empty_allow() {
+        let cases = vec![
+            Some(vec![]),
+            Some(vec!["".to_string()]),
+            Some(vec!["   ".to_string()]),
+            Some(vec!["@alice".to_string(), " ".to_string()]),
+        ];
+        for allow in cases {
+            let label = format!("{allow:?}");
+            let args = SetArgs {
+                key: "status".to_string(),
+                allow,
+                deny: None,
+            };
+            assert!(
+                matches!(validate_set(&args), Err(TeleError::Usage(_))),
+                "allow = {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_absent_allow_unchanged() {
+        let with_deny = SetArgs {
+            key: "calls".to_string(),
+            allow: None,
+            deny: Some(vec!["@x".to_string()]),
+        };
+        assert!(validate_set(&with_deny).is_ok());
+        let neither = SetArgs {
+            key: "calls".to_string(),
+            allow: None,
+            deny: None,
+        };
+        assert!(matches!(validate_set(&neither), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn set_empty_allow_flag_rejected() {
+        let parsed = crate::Cli::try_parse_from([
+            "tele", "privacy", "set", "--key", "status", "--allow", "",
+        ]);
+        if let Ok(cli) = parsed {
+            let crate::Command::Privacy(PrivacyCmd::Set(args)) = cli.command else {
+                panic!("expected privacy set");
+            };
+            assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
+        }
     }
 }
