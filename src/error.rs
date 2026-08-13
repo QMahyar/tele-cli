@@ -145,4 +145,89 @@ mod tests {
         });
         assert_eq!(invocation_wait_seconds(&e), None);
     }
+
+    #[test]
+    fn flood_wait_zero_seconds_is_some_zero() {
+        let e = grammers_client::InvocationError::Rpc(RpcError {
+            code: 420,
+            name: "FLOOD_WAIT".to_string(),
+            value: Some(0),
+            caused_by: None,
+        });
+        assert_eq!(invocation_wait_seconds(&e), Some(0));
+        let v = TeleError::Invocation("FLOOD_WAIT 0".to_string(), Some(0)).as_json();
+        assert_eq!(v["seconds"], 0);
+    }
+
+    #[test]
+    fn flood_code_without_seconds_is_none() {
+        let e = grammers_client::InvocationError::Rpc(RpcError {
+            code: 420,
+            name: "FLOOD_WAIT".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        assert_eq!(invocation_wait_seconds(&e), None);
+    }
+
+    #[test]
+    fn exit_code_taxonomy_is_locked() {
+        assert_eq!(EXIT_OK, 0);
+        assert_eq!(EXIT_USAGE, 1);
+        assert_eq!(EXIT_PARTIAL, 2);
+        assert_eq!(EXIT_ALL_FAILED, 3);
+        assert_eq!(EXIT_AUTH, 4);
+        assert_eq!(EXIT_INTERRUPTED, 130);
+    }
+
+    #[test]
+    fn usage_errors_exit_one() {
+        assert_eq!(TeleError::Usage("x".to_string()).exit_code(), EXIT_USAGE);
+    }
+
+    #[test]
+    fn auth_errors_exit_four() {
+        assert_eq!(TeleError::Auth("x".to_string()).exit_code(), EXIT_AUTH);
+    }
+
+    #[test]
+    fn config_invocation_other_exit_three() {
+        assert_eq!(
+            TeleError::Config("x".to_string()).exit_code(),
+            EXIT_ALL_FAILED
+        );
+        assert_eq!(
+            TeleError::Invocation("x".to_string(), None).exit_code(),
+            EXIT_ALL_FAILED
+        );
+        assert_eq!(
+            TeleError::Other("x".to_string()).exit_code(),
+            EXIT_ALL_FAILED
+        );
+    }
+
+    #[test]
+    fn auth_error_json_kind() {
+        let v = TeleError::Auth("session invalid".to_string()).as_json();
+        assert_eq!(v["type"], "AuthError");
+        assert!(v.get("seconds").is_none());
+    }
+
+    #[test]
+    fn unauthorized_invocation_is_rpc_401() {
+        let unauthorized = grammers_client::InvocationError::Rpc(RpcError {
+            code: 401,
+            name: "AUTH_KEY_UNREGISTERED".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        assert!(invocation_is_unauthorized(&unauthorized));
+        let denied = grammers_client::InvocationError::Rpc(RpcError {
+            code: 403,
+            name: "AUTH_KEY_INVALID".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        assert!(!invocation_is_unauthorized(&denied));
+    }
 }
