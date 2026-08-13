@@ -27,7 +27,7 @@ pub struct SendArgs {
     #[arg(long)]
     chat: String,
     #[arg(long)]
-    text: String,
+    text: Option<String>,
     #[arg(long)]
     schedule: Option<String>,
     #[arg(long)]
@@ -162,6 +162,11 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "unknown --format {other} (use plain or markdown)"
         ))),
     }?;
+    if args.text.is_none() && args.file.is_none() {
+        return Err(TeleError::Usage(
+            "msg send requires --text or --file".to_string(),
+        ));
+    }
     if let Some(path) = &args.file {
         validate_upload_path(path)?;
     }
@@ -235,9 +240,10 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     base.document(uploaded)
                 }
             } else {
+                let text = text.as_deref().unwrap_or_default();
                 let base = match format.as_str() {
-                    "markdown" => InputMessage::new().markdown(text.clone()),
-                    _ => InputMessage::new().text(text.clone()),
+                    "markdown" => InputMessage::new().markdown(text),
+                    _ => InputMessage::new().text(text),
                 };
                 base.link_preview(preview)
             };
@@ -721,7 +727,7 @@ mod tests {
     fn send_args(format: &str) -> SendArgs {
         SendArgs {
             chat: "me".to_string(),
-            text: "hi".to_string(),
+            text: Some("hi".to_string()),
             schedule: None,
             file: None,
             caption: None,
