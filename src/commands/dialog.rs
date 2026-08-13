@@ -50,6 +50,7 @@ pub async fn run(cmd: DialogCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
@@ -58,6 +59,9 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
 
         Box::pin(async move {
+            if dry_run {
+                return Ok(list_dry_run_data(limit, folder));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -129,12 +133,16 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit as usize;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(drafts_dry_run_data(limit));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -184,6 +192,14 @@ async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn list_dry_run_data(limit: u32, folder: Option<i32>) -> serde_json::Value {
+    serde_json::json!({"dry_run": true, "limit": limit, "folder": folder})
+}
+
+fn drafts_dry_run_data(limit: usize) -> serde_json::Value {
+    serde_json::json!({"dry_run": true, "limit": limit})
 }
 
 fn collect_updates(updates: &tl::enums::Updates) -> Vec<&tl::enums::Update> {
@@ -305,5 +321,128 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn drafts_accepts_max_limit_with_dry_run() {
+        let dir = temp_app("drafts-max");
+        let flags = dialog_flags("dialog drafts", &dir.join("config.toml"));
+        let code = drafts(
+            ListArgs {
+                limit: 10_000,
+                folder: None,
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn list_dry_run_exits_ok_before_connect() {
+        let dir = temp_app("list-dry");
+        let flags = dialog_flags("dialog list", &dir.join("config.toml"));
+        let code = list(
+            ListArgs {
+                limit: 20,
+                folder: Some(1),
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn drafts_dry_run_still_validates_limit() {
+        let flags = GlobalFlags {
+            account: Vec::new(),
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: None,
+            command: "dialog drafts".to_string(),
+        };
+        let err = drafts(
+            ListArgs {
+                limit: 10_001,
+                folder: None,
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn list_dry_run_still_validates_limit() {
+        let flags = GlobalFlags {
+            account: Vec::new(),
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: None,
+            command: "dialog list".to_string(),
+        };
+        let err = list(
+            ListArgs {
+                limit: 10_001,
+                folder: None,
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("too large"));
+    }
+
+    #[test]
+    fn list_dry_run_data_marks_dry_run_and_echoes_args() {
+        let v = list_dry_run_data(7, Some(1));
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["limit"], serde_json::json!(7));
+        assert_eq!(v["folder"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn drafts_dry_run_data_marks_dry_run_and_echoes_limit() {
+        let v = drafts_dry_run_data(100);
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["limit"], serde_json::json!(100));
+    }
+
+    fn dialog_flags(command: &str, config: &std::path::Path) -> GlobalFlags {
+        GlobalFlags {
+            account: vec!["work".to_string()],
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: Some(config.to_path_buf()),
+            command: command.to_string(),
+        }
+    }
+
+    fn temp_app(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-dialog-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[accounts.work]\ntags = []\n").unwrap();
+        dir
     }
 }

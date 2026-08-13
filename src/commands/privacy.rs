@@ -90,10 +90,14 @@ fn set_key(key: &str) -> TeleResult<tl::enums::InputPrivacyKey> {
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_get(&args)?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let key_filter = args.key.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(dry_run_get_data(key_filter));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -130,6 +134,10 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn dry_run_get_data(key: Option<String>) -> serde_json::Value {
+    serde_json::json!({"dry_run": true, "key": key})
+}
+
 fn validate_set(args: &SetArgs) -> TeleResult<tl::enums::InputPrivacyKey> {
     let key = set_key(&args.key)?;
     if args.allow.is_none() && args.deny.is_none() {
@@ -137,11 +145,16 @@ fn validate_set(args: &SetArgs) -> TeleResult<tl::enums::InputPrivacyKey> {
             "privacy set requires --allow or --deny".to_string(),
         ));
     }
-    if let Some(allow) = &args.allow {
-        if allow.is_empty() || allow.iter().any(|t| t.trim().is_empty()) {
-            return Err(TeleError::Usage(
-                "privacy set --allow must name at least one user; got an empty value".to_string(),
-            ));
+    for (name, values) in [
+        ("--allow", args.allow.as_ref()),
+        ("--deny", args.deny.as_ref()),
+    ] {
+        if let Some(values) = values {
+            if values.is_empty() || values.iter().any(|t| t.trim().is_empty()) {
+                return Err(TeleError::Usage(format!(
+                    "privacy set {name} must name at least one user; got an empty value"
+                )));
+            }
         }
     }
     Ok(key)
@@ -190,9 +203,6 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 rules.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
                     tl::types::InputPrivacyValueDisallowUsers { users },
                 ));
-            }
-            if rules.is_empty() {
-                rules.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowAll);
             }
             let _: tl::enums::account::PrivacyRules = guard
                 .client
@@ -293,6 +303,58 @@ mod tests {
     }
 
     #[test]
+    fn set_rejects_empty_deny() {
+        let cases = vec![
+            Some(vec![]),
+            Some(vec!["".to_string()]),
+            Some(vec!["   ".to_string()]),
+            Some(vec!["@bob".to_string(), "\t".to_string()]),
+        ];
+        for deny in cases {
+            let label = format!("{deny:?}");
+            let args = SetArgs {
+                key: "status".to_string(),
+                allow: None,
+                deny,
+            };
+            assert!(
+                matches!(validate_set(&args), Err(TeleError::Usage(_))),
+                "deny = {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_rejects_all_blank_allow() {
+        let args = SetArgs {
+            key: "status".to_string(),
+            allow: Some(vec!["  ".to_string(), "\t".to_string(), "".to_string()]),
+            deny: None,
+        };
+        assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn set_rejects_all_blank_deny() {
+        let args = SetArgs {
+            key: "status".to_string(),
+            allow: None,
+            deny: Some(vec!["  ".to_string(), "\t".to_string()]),
+        };
+        assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn set_accepts_allow_and_deny_together() {
+        let args = SetArgs {
+            key: "status".to_string(),
+            allow: Some(vec!["@alice".to_string()]),
+            deny: Some(vec!["@bob".to_string()]),
+        };
+        assert!(validate_set(&args).is_ok());
+    }
+
+    #[test]
     fn set_absent_allow_unchanged() {
         let with_deny = SetArgs {
             key: "calls".to_string(),
@@ -319,5 +381,84 @@ mod tests {
             };
             assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
         }
+    }
+
+    #[test]
+    fn set_empty_deny_flag_rejected() {
+        let parsed =
+            crate::Cli::try_parse_from(["tele", "privacy", "set", "--key", "status", "--deny", ""]);
+        if let Ok(cli) = parsed {
+            let crate::Command::Privacy(PrivacyCmd::Set(args)) = cli.command else {
+                panic!("expected privacy set");
+            };
+            assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
+        }
+    }
+
+    fn privacy_flags(command: &str, config: &std::path::Path) -> GlobalFlags {
+        GlobalFlags {
+            account: vec!["work".to_string()],
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: Some(config.to_path_buf()),
+            command: command.to_string(),
+        }
+    }
+
+    fn temp_app(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-privacy-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[accounts.work]\ntags = []\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn dry_run_get_data_marks_dry_run_and_echoes_key() {
+        let filtered = dry_run_get_data(Some("status".to_string()));
+        assert_eq!(filtered["dry_run"], serde_json::json!(true));
+        assert_eq!(filtered["key"], serde_json::json!("status"));
+        let all = dry_run_get_data(None);
+        assert_eq!(all["dry_run"], serde_json::json!(true));
+        assert_eq!(all["key"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn get_dry_run_exits_ok_before_connect() {
+        let dir = temp_app("get-dry");
+        let flags = privacy_flags("privacy get", &dir.join("config.toml"));
+        let code = get(
+            GetArgs {
+                key: Some("status".to_string()),
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let code_all = get(GetArgs { key: None }, &flags).await.unwrap();
+        assert_eq!(code_all, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn get_dry_run_still_validates_key() {
+        let dir = temp_app("get-key");
+        let flags = privacy_flags("privacy get", &dir.join("config.toml"));
+        let err = get(
+            GetArgs {
+                key: Some("bogus".to_string()),
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
