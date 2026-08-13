@@ -7,7 +7,7 @@ This document is the contract so we do not invent a second process later.
 
 Open release-readiness work:
 
-- **CI is not yet implemented** (plan below is the contract for when it lands).
+- CI exists (`ci` workflow in `.github/workflows/ci.yml`); plan below is the contract it implements.
 - Current branch is `master`; trunk target is `main` (rename pending).
 - No release tags exist yet; `CHANGELOG.md` has the first `Unreleased` entry.
 
@@ -43,9 +43,10 @@ Security). **Write the entry with the change**, not at release archaeology time 
 a change without its entry is unfinished. It is consumer-facing: describe CLI
 behavior, not `git log`.
 
-## CI (not yet implemented — contract for when it lands)
+## CI
 
-On PR and push to `main`, in a fresh checkout:
+The `ci` workflow runs on PR and push to `master`/`main` (both until the branch
+rename lands), on `ubuntu-latest` and `windows-latest`. In a fresh checkout:
 
 1. `cargo fmt --all -- --check`
 2. `cargo clippy --all-targets -- -D warnings`
