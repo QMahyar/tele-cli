@@ -4,6 +4,7 @@ mod config;
 mod entities;
 mod error;
 mod executor;
+mod fs_util;
 mod logging;
 mod output;
 mod serialize;
