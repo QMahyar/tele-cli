@@ -41,42 +41,48 @@ Cargo skeleton
 
 ### Phase 0: Scaffold
 
-- [ ] Task 1: Cargo skeleton (clap, modules, cargo test green)
-- [ ] Task 2: Capability contract test (matrix ↔ declared CLI groups)
+- [x] Task 1: Cargo skeleton (clap, modules, cargo test green)
+- [x] Task 2: Capability contract test (matrix ↔ declared CLI groups)
 
 ### Phase 1: Kernel
 
-- [ ] Task 3: Config + `.env` (`TELE_API_ID` / `TELE_API_HASH`) + TOML accounts/tags/proxy
-- [ ] Task 4: Session path policy + account selection (`--account` / `--tag` / `all`)
-- [ ] Task 5: Client factory + executor (sequential / parallel ≤3 / flood surfacing)
-- [ ] Task 6: Output (`--json`, tables, `--dry-run`, `-q`/`-v`)
+- [x] Task 3: Config + `.env` (`TELE_API_ID` / `TELE_API_HASH`) + TOML accounts/tags/proxy
+- [x] Task 4: Session path policy + account selection (`--account` / `--tag`; default = all sessions)
+- [x] Task 5: Client factory + executor (sequential / parallel ≤3 / flood surfacing)
+- [x] Task 6: Output (`--json`, tables, `--dry-run`, `--quiet`, `TELE_LOG`)
 
 ### Phase 2: First Telegram slice (Auth)
 
-- [ ] Task 7: `tele account add|list|status`
-- [ ] Task 8: `tele account login` (code + 2FA + QR — QR via raw `auth.exportLoginToken`)
-- [ ] Task 9: `tele account logout` vs `remove --keep-remote`
+- [x] Task 7: `tele account add|list|status`
+- [x] Task 8: `tele account login` (code + 2FA + QR — QR via raw `auth.exportLoginToken`)
+- [x] Task 9: `tele account logout` vs `remove` (local-only)
 
 ### Phase 3: Daily operators
 
-- [ ] Task 10: `tele msg send` (+ `--schedule` via raw, `--file`)
-- [ ] Task 11: `tele msg edit|delete|forward|pin|get|read|react|search`
-- [ ] Task 12: `tele chat join|leave|invite|participants|kick|admin|adminlog|stats|create`
-- [ ] Task 13: `tele dialog list` + `tele topic create|list`
+- [x] Task 10: `tele msg send` (+ `--schedule`, `--file`)
+- [x] Task 11: `tele msg edit|delete|forward|pin|get|read|react|search` (+ `download`)
+- [x] Task 12: `tele chat join|leave|invite|participants|kick|admin|admin-log|stats|create`
+- [x] Task 13: `tele dialog list|drafts|archive|delete` + `tele topic create|list`
 
 ### Phase 4: Listen + raw
 
-- [ ] Task 14: `tele listen` (default NewMessage; `--events` allowlist; JSONL)
-- [ ] Task 15: `tele raw` (typed registry)
+- [x] Task 14: `tele listen` (default NewMessage; `--events` allowlist; JSONL)
+- [x] Task 15: `tele raw` (typed registry)
 
 ### Phase 5: Remaining `want` rows
 
-contact, profile, privacy, takeout. Split at implement time.
+- [x] contact: list/add/block/unblock
+- [x] profile: get/set (name, bio, photo)
+- [x] privacy: get/set rules
+- [x] takeout: start/export/finish
+- [x] kernel.proxy — wired (global + per-account, socks5-only; see `tasks/todo.md`)
+- [x] kernel.peers — phone targets via raw `contacts.ImportContacts`
+- [ ] msg.poll — deferred to `later`: grammers 0.10 has no friendly poll (no raw arm yet)
 
-### Phase 6: Last (ask first)
+### Phase 6: Last (do not start, ask first)
 
-- MCP `tele mcp serve`
-- Agent skill
+- [ ] MCP `tele mcp serve`
+- [ ] Agent skill
 
 ## Risks and Mitigations
 
@@ -91,4 +97,5 @@ contact, profile, privacy, takeout. Split at implement time.
 
 ## Open Questions
 
-None blocking. Live sessions: you provide paths / `TELE_LIVE_ACCOUNT` when we reach Task 8.
+None blocking. Live verification checklist and status: `tasks/todo.md` (verified
+2026-08-13 against real sessions; remaining user-side items listed there).

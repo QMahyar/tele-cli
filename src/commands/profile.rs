@@ -115,7 +115,17 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_set(args: &SetArgs) -> TeleResult<()> {
+    if args.name.is_none() && args.bio.is_none() && args.photo.is_none() {
+        return Err(TeleError::Usage(
+            "at least one of --name, --bio, --photo required".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_set(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -206,4 +216,31 @@ fn creds() -> crate::TeleResult<crate::config::Credentials> {
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_requires_at_least_one_flag() {
+        let none = SetArgs {
+            name: None,
+            bio: None,
+            photo: None,
+        };
+        assert!(matches!(validate_set(&none), Err(TeleError::Usage(_))));
+        let with_bio = SetArgs {
+            name: None,
+            bio: Some("b".to_string()),
+            photo: None,
+        };
+        assert!(validate_set(&with_bio).is_ok());
+        let with_name = SetArgs {
+            name: Some("n".to_string()),
+            bio: None,
+            photo: None,
+        };
+        assert!(validate_set(&with_name).is_ok());
+    }
 }

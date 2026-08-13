@@ -126,11 +126,31 @@ async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     Ok(crate::error::EXIT_OK)
 }
+fn validate_login(args: &LoginArgs) -> TeleResult<()> {
+    match args.method.as_str() {
+        "qr" => {}
+        "code" => {
+            if args.phone.is_none() {
+                return Err(TeleError::Usage(
+                    "--phone required for code login".to_string(),
+                ));
+            }
+        }
+        other => {
+            return Err(TeleError::Usage(format!(
+                "unknown login method {other} (use code or qr)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if flags.dry_run {
         log_line("info", "[dry-run] would log in account");
         return Ok(crate::error::EXIT_OK);
     }
+    validate_login(args)?;
     let creds = config::credentials()?;
     let mut guard =
         ClientGuard::connect(&args.name, creds.api_id, flags.config_path.as_deref()).await?;
@@ -274,5 +294,41 @@ fn render_qr(uri: &str) {
         Err(_) => {
             eprintln!("URI: {uri}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn login_args(method: &str, phone: Option<&str>) -> LoginArgs {
+        LoginArgs {
+            name: "x".to_string(),
+            method: method.to_string(),
+            phone: phone.map(str::to_string),
+            password: None,
+        }
+    }
+
+    #[test]
+    fn login_code_requires_phone() {
+        assert!(matches!(
+            validate_login(&login_args("code", None)),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_login(&login_args("code", Some("+1"))).is_ok());
+    }
+
+    #[test]
+    fn login_qr_needs_no_phone() {
+        assert!(validate_login(&login_args("qr", None)).is_ok());
+    }
+
+    #[test]
+    fn login_unknown_method_rejected() {
+        assert!(matches!(
+            validate_login(&login_args("sms", Some("+1"))),
+            Err(TeleError::Usage(_))
+        ));
     }
 }

@@ -66,7 +66,29 @@ fn key_to_tl(key: &str) -> Option<tl::enums::InputPrivacyKey> {
     }
 }
 
+fn validate_get(args: &GetArgs) -> TeleResult<()> {
+    if let Some(key) = &args.key {
+        if !keys().contains(&key.as_str()) {
+            return Err(TeleError::Usage(format!(
+                "unknown privacy key {key} (one of {})",
+                keys().join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn set_key(key: &str) -> TeleResult<tl::enums::InputPrivacyKey> {
+    key_to_tl(key).ok_or_else(|| {
+        TeleError::Usage(format!(
+            "unknown privacy key {key} (one of {})",
+            keys().join(", ")
+        ))
+    })
+}
+
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_get(&args)?;
     let config_path = flags.config_path.clone();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
@@ -91,9 +113,14 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     .await
                     .map_err(tele_invocation)?;
                 let tl::enums::account::PrivacyRules::Rules(rules) = rules;
+                let summary = rules
+                    .rules
+                    .iter()
+                    .map(privacy_rule_summary)
+                    .collect::<Vec<serde_json::Value>>();
                 rows.push(serde_json::json!({
                     "key": key,
-                    "rules": format!("{rules:?}"),
+                    "rules": summary,
                 }));
             }
             Ok(serde_json::json!({"privacy": rows}))
@@ -104,6 +131,12 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let tl_key = set_key(&args.key)?;
+    if args.allow.is_none() && args.deny.is_none() {
+        return Err(TeleError::Usage(
+            "privacy set requires --allow or --deny".to_string(),
+        ));
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -111,6 +144,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let key_name = args.key.clone();
         let allow = args.allow.clone().unwrap_or_default();
         let deny = args.deny.clone().unwrap_or_default();
+        let tl_key = tl_key.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({"dry_run": true, "key": key_name}));
@@ -118,12 +152,6 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let tl_key = key_to_tl(&key_name).ok_or_else(|| {
-                TeleError::Usage(format!(
-                    "unknown privacy key {key_name} (one of {})",
-                    keys().join(", ")
-                ))
-            })?;
             let mut rules: Vec<tl::enums::InputPrivacyRule> = Vec::new();
             if !allow.is_empty() {
                 let mut users = Vec::new();
@@ -164,10 +192,66 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn privacy_rule_summary(r: &tl::enums::PrivacyRule) -> serde_json::Value {
+    match r {
+        tl::enums::PrivacyRule::PrivacyValueAllowAll => serde_json::json!("allow_all"),
+        tl::enums::PrivacyRule::PrivacyValueDisallowAll => serde_json::json!("disallow_all"),
+        tl::enums::PrivacyRule::PrivacyValueAllowContacts => {
+            serde_json::json!("allow_contacts")
+        }
+        tl::enums::PrivacyRule::PrivacyValueDisallowContacts => {
+            serde_json::json!("disallow_contacts")
+        }
+        tl::enums::PrivacyRule::PrivacyValueAllowCloseFriends => {
+            serde_json::json!("allow_close_friends")
+        }
+        tl::enums::PrivacyRule::PrivacyValueAllowPremium => serde_json::json!("allow_premium"),
+        tl::enums::PrivacyRule::PrivacyValueAllowBots => serde_json::json!("allow_bots"),
+        tl::enums::PrivacyRule::PrivacyValueDisallowBots => serde_json::json!("disallow_bots"),
+        tl::enums::PrivacyRule::PrivacyValueAllowUsers(v) => {
+            serde_json::json!({"kind": "allow_users", "ids": v.users})
+        }
+        tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => {
+            serde_json::json!({"kind": "disallow_users", "ids": v.users})
+        }
+        tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(v) => {
+            serde_json::json!({"kind": "allow_chats", "ids": v.chats})
+        }
+        tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(v) => {
+            serde_json::json!({"kind": "disallow_chats", "ids": v.chats})
+        }
+    }
+}
+
 fn creds() -> crate::TeleResult<crate::config::Credentials> {
     crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
 }
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_rejects_unknown_key() {
+        let args = GetArgs {
+            key: Some("shoe_size".to_string()),
+        };
+        assert!(matches!(validate_get(&args), Err(TeleError::Usage(_))));
+        let ok = GetArgs {
+            key: Some("status".to_string()),
+        };
+        assert!(validate_get(&ok).is_ok());
+        let all = GetArgs { key: None };
+        assert!(validate_get(&all).is_ok());
+    }
+
+    #[test]
+    fn set_rejects_unknown_key() {
+        assert!(matches!(set_key("nope"), Err(TeleError::Usage(_))));
+        assert!(set_key("calls").is_ok());
+    }
 }

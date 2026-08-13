@@ -14,7 +14,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 |---|---|---|---|---|---|
 | auth.code | Phone login code | `auth.sendCode` / `auth.signIn` | `request_login_code`, `sign_in` | `tele account login` | done |
 | auth.2fa | 2FA password | `auth.checkPassword` | `check_password` | `tele account login --password` | done |
-| auth.qr | QR login | `auth.exportLoginToken` | raw flow (no friendly helper) | `tele account login --qr` | done |
+| auth.qr | QR login | `auth.exportLoginToken` | raw flow (no friendly helper) | `tele account login --method qr` | done |
 | auth.logout | Logout + delete session | `auth.logOut` | `sign_out` | `tele account logout` | done |
 | auth.session-ttl | Session TTL / auth settings | `account.setAuthorizationTTL` | raw | `tele raw` registry | later |
 | auth.passkey | Passkeys | `/api/passkeys` | none friendly | — | later |

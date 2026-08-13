@@ -178,7 +178,7 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .invoke(&tl::functions::messages::DeleteChatUser {
                             chat_id: peer.id().bare_id().unwrap_or_default(),
                             user_id,
-                            revoke_history: true,
+                            revoke_history: false,
                         })
                         .await
                         .map_err(tele_invocation)?;
@@ -342,7 +342,17 @@ async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_admin(args: &AdminArgs) -> TeleResult<()> {
+    if args.promote && args.demote {
+        return Err(TeleError::Usage(
+            "--promote and --demote are mutually exclusive".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_admin(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let promote = args.promote;
@@ -359,6 +369,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "chat": target,
                     "user": user,
                     "promote": promote,
+                    "demote": demote,
                 }));
             }
             let guard =
@@ -450,7 +461,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 rows.push(serde_json::json!({
                     "id": event.id,
                     "date": date,
-                    "action": format!("{:?}", event.action),
+                    "action": admin_action_summary(&event.action),
                 }));
             }
             if !output::machine_mode(json, jsonl) {
@@ -503,7 +514,16 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     })
                     .await
                     .map_err(tele_invocation)?;
-                format!("{r:?}")
+                let tl::enums::stats::BroadcastStats::Stats(r) = r;
+                serde_json::json!({
+                    "period": stats_period(&r.period),
+                    "followers": stats_abs(&r.followers),
+                    "views_per_post": stats_abs(&r.views_per_post),
+                    "shares_per_post": stats_abs(&r.shares_per_post),
+                    "reactions_per_post": stats_abs(&r.reactions_per_post),
+                    "enabled_notifications": stats_percent(&r.enabled_notifications),
+                    "recent_posts_interactions": r.recent_posts_interactions.len(),
+                })
             } else {
                 let r: tl::enums::stats::MegagroupStats = guard
                     .client
@@ -513,7 +533,17 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     })
                     .await
                     .map_err(tele_invocation)?;
-                format!("{r:?}")
+                let tl::enums::stats::MegagroupStats::Stats(r) = r;
+                serde_json::json!({
+                    "period": stats_period(&r.period),
+                    "members": stats_abs(&r.members),
+                    "messages": stats_abs(&r.messages),
+                    "viewers": stats_abs(&r.viewers),
+                    "posters": stats_abs(&r.posters),
+                    "top_posters": r.top_posters.len(),
+                    "top_admins": r.top_admins.len(),
+                    "top_inviters": r.top_inviters.len(),
+                })
             };
             Ok(serde_json::json!({"chat": target, "stats": raw}))
         })
@@ -522,7 +552,17 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_create(args: &CreateArgs) -> TeleResult<()> {
+    match args.kind.as_str() {
+        "group" | "supergroup" | "channel" => Ok(()),
+        other => Err(TeleError::Usage(format!(
+            "unknown chat kind {other} (use group, supergroup or channel)"
+        ))),
+    }
+}
+
 async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_create(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let forum = args.forum;
@@ -535,7 +575,8 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if dry_run {
                 return Ok(serde_json::json!({"dry_run": true, "title": title}));
             }
-            let guard = ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
             let result = match kind.as_str() {
                 "group" => {
@@ -548,7 +589,14 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    serde_json::json!({"kind": "group", "updates": format!("{r:?}")})
+                    let tl::enums::messages::InvitedUsers::Users(r) = r;
+                    let chat_id = match r.updates {
+                        tl::enums::Updates::Updates(u) => {
+                            u.chats.first().map(|c| c.id()).unwrap_or(0)
+                        }
+                        _ => 0,
+                    };
+                    serde_json::json!({"kind": "group", "chat_id": chat_id})
                 }
                 "supergroup" => {
                     let r: tl::enums::Updates = guard
@@ -566,7 +614,8 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    serde_json::json!({"kind": "supergroup", "forum": forum, "updates": format!("{r:?}")})
+                    let chat_id = created_chat_id(r);
+                    serde_json::json!({"kind": "supergroup", "forum": forum, "chat_id": chat_id})
                 }
                 "channel" => {
                     let r: tl::enums::Updates = guard
@@ -584,7 +633,8 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    serde_json::json!({"kind": "channel", "updates": format!("{r:?}")})
+                    let chat_id = created_chat_id(r);
+                    serde_json::json!({"kind": "channel", "chat_id": chat_id})
                 }
                 other => {
                     return Err(TeleError::Usage(format!(
@@ -605,4 +655,191 @@ fn creds() -> crate::TeleResult<crate::config::Credentials> {
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+fn created_chat_id(r: tl::enums::Updates) -> i64 {
+    match r {
+        tl::enums::Updates::Updates(u) => u.chats.first().map(|c| c.id()).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn peer_id(peer: &tl::enums::Peer) -> i64 {
+    match peer {
+        tl::enums::Peer::User(p) => p.user_id,
+        tl::enums::Peer::Chat(p) => p.chat_id,
+        tl::enums::Peer::Channel(p) => p.channel_id,
+    }
+}
+
+fn participant_user_id(p: &tl::enums::ChannelParticipant) -> i64 {
+    match p {
+        tl::enums::ChannelParticipant::Participant(p) => p.user_id,
+        tl::enums::ChannelParticipant::Creator(p) => p.user_id,
+        tl::enums::ChannelParticipant::Admin(p) => p.user_id,
+        tl::enums::ChannelParticipant::Banned(p) => peer_id(&p.peer),
+        tl::enums::ChannelParticipant::Left(p) => peer_id(&p.peer),
+        _ => 0,
+    }
+}
+
+fn admin_action_summary(a: &tl::enums::ChannelAdminLogEventAction) -> serde_json::Value {
+    match a {
+        tl::enums::ChannelAdminLogEventAction::ChangeTitle(v) => {
+            serde_json::json!({"kind": "change_title", "title": v.new_value})
+        }
+        tl::enums::ChannelAdminLogEventAction::ChangeAbout(v) => {
+            serde_json::json!({"kind": "change_about", "text": v.new_value})
+        }
+        tl::enums::ChannelAdminLogEventAction::ChangeUsername(v) => {
+            serde_json::json!({"kind": "change_username", "username": v.new_value})
+        }
+        tl::enums::ChannelAdminLogEventAction::SendMessage(v) => {
+            message_action_summary("send_message", &v.message)
+        }
+        tl::enums::ChannelAdminLogEventAction::EditMessage(v) => {
+            message_action_summary("edit_message", &v.new_message)
+        }
+        tl::enums::ChannelAdminLogEventAction::DeleteMessage(v) => match &v.message {
+            tl::enums::Message::Message(m) => {
+                serde_json::json!({"kind": "delete_message", "id": m.id})
+            }
+            _ => serde_json::json!({"kind": "delete_message"}),
+        },
+        tl::enums::ChannelAdminLogEventAction::ParticipantJoin => {
+            serde_json::json!({"kind": "participant_join"})
+        }
+        tl::enums::ChannelAdminLogEventAction::ParticipantLeave => {
+            serde_json::json!({"kind": "participant_leave"})
+        }
+        tl::enums::ChannelAdminLogEventAction::ParticipantInvite(v) => {
+            serde_json::json!({
+                "kind": "participant_invite",
+                "user_id": participant_user_id(&v.participant),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ParticipantToggleBan(v) => {
+            serde_json::json!({
+                "kind": "toggle_ban",
+                "user_id": participant_user_id(&v.new_participant),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ParticipantToggleAdmin(v) => {
+            serde_json::json!({
+                "kind": "toggle_admin",
+                "user_id": participant_user_id(&v.new_participant),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ChangePhoto(_) => {
+            serde_json::json!({"kind": "change_photo"})
+        }
+        tl::enums::ChannelAdminLogEventAction::ToggleInvites(v) => {
+            serde_json::json!({"kind": "toggle_invites", "enabled": v.new_value})
+        }
+        tl::enums::ChannelAdminLogEventAction::ToggleSignatures(v) => {
+            serde_json::json!({"kind": "toggle_signatures", "enabled": v.new_value})
+        }
+        tl::enums::ChannelAdminLogEventAction::UpdatePinned(_) => {
+            serde_json::json!({"kind": "update_pinned"})
+        }
+        tl::enums::ChannelAdminLogEventAction::ParticipantJoinByInvite(_) => {
+            serde_json::json!({"kind": "join_by_invite"})
+        }
+        tl::enums::ChannelAdminLogEventAction::ParticipantJoinByRequest(v) => {
+            serde_json::json!({"kind": "join_by_request", "approved_by": v.approved_by})
+        }
+        _ => serde_json::json!({"kind": "other"}),
+    }
+}
+
+fn message_action_summary(kind: &str, message: &tl::enums::Message) -> serde_json::Value {
+    match message {
+        tl::enums::Message::Message(m) => {
+            serde_json::json!({"kind": kind, "id": m.id, "text": m.message})
+        }
+        _ => serde_json::json!({"kind": kind}),
+    }
+}
+
+fn stats_period(v: &tl::enums::StatsDateRangeDays) -> serde_json::Value {
+    match v {
+        tl::enums::StatsDateRangeDays::Days(d) => {
+            serde_json::json!({"min_date": d.min_date, "max_date": d.max_date})
+        }
+    }
+}
+
+fn stats_abs(v: &tl::enums::StatsAbsValueAndPrev) -> serde_json::Value {
+    match v {
+        tl::enums::StatsAbsValueAndPrev::Prev(p) => {
+            serde_json::json!({"current": p.current, "previous": p.previous})
+        }
+    }
+}
+
+fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Value {
+    match v {
+        tl::enums::StatsPercentValue::Value(p) => {
+            serde_json::json!({"part": p.part, "total": p.total})
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_args(kind: &str) -> CreateArgs {
+        CreateArgs {
+            title: "t".to_string(),
+            description: None,
+            kind: kind.to_string(),
+            forum: false,
+        }
+    }
+
+    #[test]
+    fn create_rejects_unknown_kind() {
+        assert!(matches!(
+            validate_create(&create_args("broadcast")),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn create_accepts_known_kinds() {
+        for kind in ["group", "supergroup", "channel"] {
+            assert!(
+                validate_create(&create_args(kind)).is_ok(),
+                "kind {kind} should pass"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_promote_and_demote_conflict() {
+        let both = AdminArgs {
+            chat: "c".to_string(),
+            user: "u".to_string(),
+            promote: true,
+            demote: true,
+            title: None,
+        };
+        assert!(matches!(validate_admin(&both), Err(TeleError::Usage(_))));
+        let promote_only = AdminArgs {
+            chat: "c".to_string(),
+            user: "u".to_string(),
+            promote: true,
+            demote: false,
+            title: None,
+        };
+        assert!(validate_admin(&promote_only).is_ok());
+        let demote_only = AdminArgs {
+            chat: "c".to_string(),
+            user: "u".to_string(),
+            promote: false,
+            demote: true,
+            title: None,
+        };
+        assert!(validate_admin(&demote_only).is_ok());
+    }
 }

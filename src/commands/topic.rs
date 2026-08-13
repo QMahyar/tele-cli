@@ -59,7 +59,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .map_err(tele_invocation)?;
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
             let icon_emoji_id = emoji.and_then(|e| emoji_to_icon_id(&e));
-            let updates: tl::enums::Updates = guard
+            let _: tl::enums::Updates = guard
                 .client
                 .invoke(&tl::functions::messages::CreateForumTopic {
                     title_missing: false,
@@ -75,7 +75,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             Ok(serde_json::json!({
                 "chat": target,
                 "title": title,
-                "updates": format!("{updates:?}"),
+                "ok": true,
             }))
         })
     })

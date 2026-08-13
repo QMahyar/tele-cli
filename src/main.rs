@@ -23,10 +23,20 @@ use executor::GlobalFlags;
     disable_help_subcommand = true
 )]
 struct Cli {
-    #[arg(long, global = true, help = "account name (defaults to all sessions)")]
-    account: Option<String>,
-    #[arg(long, global = true, help = "select accounts by config tag")]
-    tag: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        action = clap::ArgAction::Append,
+        help = "account name (NAME or all; repeatable)"
+    )]
+    account: Vec<String>,
+    #[arg(
+        long,
+        global = true,
+        action = clap::ArgAction::Append,
+        help = "select accounts by config tag (repeatable)"
+    )]
+    tag: Vec<String>,
     #[arg(
         long,
         global = true,
@@ -40,8 +50,16 @@ struct Cli {
     jsonl: bool,
     #[arg(long, global = true, help = "validate without touching Telegram")]
     dry_run: bool,
-    #[arg(long, global = true, help = "suppress stderr logs")]
+    #[arg(long, short = 'q', global = true, help = "suppress stderr logs")]
     quiet: bool,
+    #[arg(
+        long,
+        short = 'v',
+        global = true,
+        action = clap::ArgAction::Count,
+        help = "verbose stderr logs (-vv = debug)"
+    )]
+    verbose: u8,
     #[arg(long, global = true, help = "config.toml path")]
     config: Option<std::path::PathBuf>,
     #[command(subcommand)]
@@ -96,6 +114,14 @@ fn main() {
         quiet: cli.quiet,
         config_path: cli.config,
     };
+    logging::set_flags(cli.verbose, flags.quiet);
+    if flags.json && flags.jsonl {
+        output::log_line(
+            "error",
+            "--json and --jsonl are mutually exclusive; pick one",
+        );
+        std::process::exit(error::EXIT_USAGE);
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

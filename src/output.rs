@@ -3,6 +3,10 @@ use comfy_table::{Cell, Table};
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Envelope {
     pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub dry_run: bool,
+    #[serde(rename = "results")]
     pub accounts: Vec<AccountOutcome>,
 }
 
@@ -10,24 +14,34 @@ pub struct Envelope {
 pub struct AccountOutcome {
     pub account: String,
     pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<serde_json::Value>,
     pub data: Option<serde_json::Value>,
     #[serde(skip_serializing)]
     pub exit_code: Option<i32>,
 }
 
 impl Envelope {
-    pub fn new(accounts: Vec<AccountOutcome>) -> Self {
+    pub fn new(accounts: Vec<AccountOutcome>, dry_run: bool) -> Self {
         Envelope {
             ok: accounts.iter().all(|a| a.ok),
+            command: None,
+            dry_run,
             accounts,
         }
     }
 }
 
 pub fn log_line(level: &str, message: &str) {
+    let min = crate::logging::min_line_level();
+    let lv = match level {
+        "error" => 3,
+        "warn" => 2,
+        "info" => 1,
+        _ => 0,
+    };
+    if lv < min {
+        return;
+    }
     eprintln!("[{level}] {message}");
 }
 

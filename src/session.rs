@@ -6,6 +6,20 @@ pub fn session_dir() -> PathBuf {
     crate::config::app_data_dir().join("sessions")
 }
 
+pub fn validate_name(name: &str) -> Result<(), String> {
+    let ok = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid account name {name:?}: use [A-Za-z0-9._-] only"
+        ))
+    }
+}
+
 pub fn session_path(name: &str) -> PathBuf {
     session_dir().join(format!("{name}.session"))
 }
@@ -26,6 +40,7 @@ pub fn list_session_names() -> Vec<String> {
 }
 
 pub fn remove_session(name: &str) -> anyhow::Result<()> {
+    validate_name(name).map_err(anyhow::Error::msg)?;
     let path = session_path(name);
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
@@ -35,6 +50,7 @@ pub fn remove_session(name: &str) -> anyhow::Result<()> {
 }
 
 pub async fn open_session(name: &str) -> anyhow::Result<SqliteSession> {
+    validate_name(name).map_err(anyhow::Error::msg)?;
     let path = session_path(name);
     let dir = session_dir();
     std::fs::create_dir_all(&dir)?;

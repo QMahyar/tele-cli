@@ -11,6 +11,9 @@ pub async fn resolve_peer(
         .strip_prefix('+')
         .map(|p| p.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
     {
+        if digits.is_empty() {
+            return Err(rpc_error(400, "INVALID_PHONE"));
+        }
         let res = client
             .invoke(&tl::functions::contacts::ImportContacts {
                 contacts: vec![tl::enums::InputContact::InputPhoneContact(
@@ -31,15 +34,13 @@ pub async fn resolve_peer(
             Some(user) => Ok(grammers_client::peer::Peer::User(
                 grammers_client::peer::User::from_raw(client, user),
             )),
-            None => Err(InvocationError::Rpc(grammers_client::sender::RpcError {
-                code: 400,
-                name: "USER_NOT_FOUND".to_string(),
-                value: None,
-                caused_by: None,
-            })),
+            None => Err(rpc_error(400, "USER_NOT_FOUND")),
         };
     }
     if let Ok(id) = t.parse::<i64>() {
+        if id == 0 {
+            return Err(rpc_error(400, "INVALID_PEER_ID"));
+        }
         let pref: PeerRef = if id > 0 {
             tl::types::InputPeerUser {
                 user_id: id,
@@ -47,38 +48,55 @@ pub async fn resolve_peer(
             }
             .into()
         } else {
+            let channel_id = id
+                .checked_neg()
+                .ok_or_else(|| rpc_error(400, "INVALID_PEER_ID"))?;
             tl::types::InputPeerChannel {
-                channel_id: -id,
+                channel_id,
                 access_hash: 0,
             }
             .into()
         };
         return client.resolve_peer(pref).await;
     }
-    let username = t
-        .strip_prefix('@')
-        .or_else(|| t.strip_prefix("t.me/"))
-        .unwrap_or(t);
-    let username = username
-        .split('/')
-        .next()
-        .unwrap_or(username)
-        .split('?')
-        .next()
-        .unwrap_or(username);
+    let username = parse_username(t);
     if username == "me" {
         let user = client.get_me().await?;
         return Ok(grammers_client::peer::Peer::User(user));
     }
     match client.resolve_username(username).await? {
         Some(peer) => Ok(peer),
-        None => Err(InvocationError::Rpc(grammers_client::sender::RpcError {
-            code: 400,
-            name: "USERNAME_NOT_FOUND".to_string(),
-            value: None,
-            caused_by: None,
-        })),
+        None => Err(rpc_error(400, "USERNAME_NOT_FOUND")),
     }
+}
+
+fn parse_username(raw: &str) -> &str {
+    let mut s = raw;
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            s = rest;
+        }
+    }
+    for prefix in ["t.me/", "telegram.me/"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+        }
+    }
+    for sep in ['/', '?', '#'] {
+        if let Some(head) = s.split(sep).next() {
+            s = head;
+        }
+    }
+    s.strip_prefix('@').unwrap_or(s)
+}
+
+fn rpc_error(code: i32, name: &str) -> InvocationError {
+    InvocationError::Rpc(grammers_client::sender::RpcError {
+        code,
+        name: name.to_string(),
+        value: None,
+        caused_by: None,
+    })
 }
 
 pub async fn peer_ref(peer: &grammers_client::peer::Peer) -> Result<PeerRef, InvocationError> {

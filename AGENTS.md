@@ -12,7 +12,7 @@ Load additional workflow skills per task as routed (e.g. `test-driven-developmen
 ## Status (2026-08)
 
 - Capability matrix fully resolved: no `want` rows left (`docs/capabilities.md` — all `done`/`later`/`never`). Per ADR-005 the release gate is met.
-- Remaining product surface: Phase 6 — MCP server + agent skill (ask first). Release readiness is open work: no CI, no CHANGELOG, branch is `master` (release.md wants `main`), `docs/release.md` is Python-era stale.
+- Remaining product surface: Phase 6 — MCP server + agent skill (ask first). Release readiness is open work: no CI, branch is `master` (release.md wants `main`). `docs/release.md` and `CHANGELOG.md` were rewritten to the Rust era by the docs-agent pass (2026-08); keep them current.
 - Live-verified against real sessions: send/get/edit/delete, cross-account listen, profile get, takeout export, raw registry, dry-runs, proxy negative path. Remaining live items are user-side (2FA/QR login, chat participants/adminlog on a real group, socks5 positive path, `--file`/`--schedule`, listen MessageEdited/MessageDeleted/Raw, takeout finish, logout).
 
 ## Stack
@@ -73,6 +73,6 @@ $env:TELE_LOG="debug"; cargo run ...   (structured stderr logs; trace = grammers
 - CLI contract: `docs/cli-contract.md`
 - Threat model: `docs/security.md`
 - Logs: `docs/observability.md`
-- Release: `docs/release.md` (STALE — Python/uv/pytest era; Rust rewrite pending)
+- Release: `docs/release.md` — versioning, CI plan, publish gate (Rust era; keep current)
 - ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 005 = no release until no `want` rows)
 - Plan: `tasks/plan.md` (checkboxes stale; `tasks/todo.md` is the live tracker)

@@ -33,6 +33,17 @@ impl TeleError {
             | TeleError::Other(m) => m,
         }
     }
+
+    pub fn as_json(&self) -> serde_json::Value {
+        let kind = match self {
+            TeleError::Usage(_) => "UsageError",
+            TeleError::Auth(_) => "AuthError",
+            TeleError::Config(_) => "ConfigError",
+            TeleError::Invocation(_) => "InvocationError",
+            TeleError::Other(_) => "Error",
+        };
+        serde_json::json!({ "type": kind, "message": self.message() })
+    }
 }
 
 impl std::fmt::Display for TeleError {

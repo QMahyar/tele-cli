@@ -84,16 +84,32 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_export(args: &ExportArgs) -> TeleResult<()> {
+    if args.message_limit == 0 {
+        return Err(TeleError::Usage("--message-limit must be >= 1".to_string()));
+    }
+    Ok(())
+}
+
 async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_export(&args)?;
     let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let limit = args.message_limit;
         Box::pin(async move {
+            let dir = crate::config::app_data_dir().join("export").join(&name);
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "dir": dir.to_string_lossy(),
+                    "message_limit": limit,
+                }));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
-            let dir = crate::config::app_data_dir().join("export").join(&name);
             std::fs::create_dir_all(&dir)?;
 
             let mut contacts = Vec::new();
@@ -199,4 +215,17 @@ fn creds() -> crate::TeleResult<crate::config::Credentials> {
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_rejects_zero_message_limit() {
+        let args = ExportArgs { message_limit: 0 };
+        assert!(matches!(validate_export(&args), Err(TeleError::Usage(_))));
+        let one = ExportArgs { message_limit: 1 };
+        assert!(validate_export(&one).is_ok());
+    }
 }

@@ -155,14 +155,30 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     }
 }
 
+fn validate_send(args: &SendArgs) -> TeleResult<()> {
+    match args.format.as_str() {
+        "plain" | "markdown" => Ok(()),
+        other => Err(TeleError::Usage(format!(
+            "unknown --format {other} (use plain or markdown)"
+        ))),
+    }
+}
+
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_send(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let schedule = args
         .schedule
         .as_deref()
         .map(crate::commands::parse_unixtime)
-        .transpose()?;
+        .transpose()?
+        .and_then(|s| {
+            let ts = s.timestamp();
+            u32::try_from(ts)
+                .ok()
+                .or_else(|| ts.is_negative().then_some(0))
+        });
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -170,7 +186,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let caption = args.caption.clone();
         let file = args.file.clone();
         let format = args.format.clone();
-        let schedule = schedule.map(|s| s.timestamp() as u64);
+        let schedule = schedule.map(|s| s as u64);
         let reply = args.reply;
         let preview = args.preview;
         let silent = args.silent;
@@ -255,7 +271,17 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
+    if !args.all && args.ids.is_empty() {
+        return Err(TeleError::Usage(
+            "--ids required unless --all is used".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_delete(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let all = args.all;
@@ -299,7 +325,15 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
+    if args.ids.is_empty() {
+        return Err(TeleError::Usage("--ids required".to_string()));
+    }
+    Ok(())
+}
+
 async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_forward(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -476,7 +510,17 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_react(args: &ReactArgs) -> TeleResult<()> {
+    if args.reaction.is_none() && !args.remove {
+        return Err(TeleError::Usage(
+            "--reaction <emoji> or --remove required".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_react(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
@@ -616,7 +660,7 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 fn download_name(msg: &grammers_client::message::Message) -> String {
     use grammers_client::media::Media;
-    match msg.media() {
+    let name = match msg.media() {
         Some(Media::Document(d)) => d
             .name()
             .map(str::to_string)
@@ -625,7 +669,10 @@ fn download_name(msg: &grammers_client::message::Message) -> String {
         Some(Media::Sticker(_)) => "sticker.webp".to_string(),
         Some(_) => "media.bin".to_string(),
         None => "media.bin".to_string(),
-    }
+    };
+    let base = name.rsplit('/').next().unwrap_or(&name);
+    let base = base.rsplit('\\').next().unwrap_or(base);
+    base.replace(['\0', ':', '*', '?', '"', '<', '>', '|'], "_")
 }
 
 fn looks_like_image(path: &str) -> bool {
@@ -642,4 +689,91 @@ fn creds() -> crate::TeleResult<crate::config::Credentials> {
 
 fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn send_args(format: &str) -> SendArgs {
+        SendArgs {
+            chat: "me".to_string(),
+            text: "hi".to_string(),
+            schedule: None,
+            file: None,
+            caption: None,
+            reply: None,
+            preview: true,
+            format: format.to_string(),
+            silent: false,
+        }
+    }
+
+    #[test]
+    fn send_rejects_unknown_format() {
+        assert!(matches!(
+            validate_send(&send_args("html")),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_send(&send_args("plain")).is_ok());
+        assert!(validate_send(&send_args("markdown")).is_ok());
+    }
+
+    #[test]
+    fn delete_requires_ids_unless_all() {
+        let args = DeleteArgs {
+            chat: "me".to_string(),
+            ids: Vec::new(),
+            all: false,
+        };
+        assert!(matches!(validate_delete(&args), Err(TeleError::Usage(_))));
+        let mut with_all = args;
+        with_all.all = true;
+        assert!(validate_delete(&with_all).is_ok());
+        let with_ids = DeleteArgs {
+            chat: "me".to_string(),
+            ids: vec![1, 2],
+            all: false,
+        };
+        assert!(validate_delete(&with_ids).is_ok());
+    }
+
+    #[test]
+    fn forward_requires_ids() {
+        let args = ForwardArgs {
+            from: "a".to_string(),
+            ids: Vec::new(),
+            to: "b".to_string(),
+            silent: false,
+        };
+        assert!(matches!(validate_forward(&args), Err(TeleError::Usage(_))));
+        let mut with_ids = args;
+        with_ids.ids = vec![3];
+        assert!(validate_forward(&with_ids).is_ok());
+    }
+
+    #[test]
+    fn react_requires_reaction_or_remove() {
+        let none = ReactArgs {
+            chat: "me".to_string(),
+            id: 5,
+            reaction: None,
+            remove: false,
+        };
+        assert!(matches!(validate_react(&none), Err(TeleError::Usage(_))));
+        let with_remove = ReactArgs {
+            chat: "me".to_string(),
+            id: 5,
+            reaction: None,
+            remove: true,
+        };
+        assert!(validate_react(&with_remove).is_ok());
+        let with_reaction = ReactArgs {
+            chat: "me".to_string(),
+            id: 5,
+            reaction: Some("+1".to_string()),
+            remove: false,
+        };
+        assert!(validate_react(&with_reaction).is_ok());
+    }
 }
