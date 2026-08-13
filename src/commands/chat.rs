@@ -590,12 +590,9 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .await
                         .map_err(tele_invocation)?;
                     let tl::enums::messages::InvitedUsers::Users(r) = r;
-                    let chat_id = match r.updates {
-                        tl::enums::Updates::Updates(u) => {
-                            u.chats.first().map(|c| c.id()).unwrap_or(0)
-                        }
-                        _ => 0,
-                    };
+                    let chat = created_chat(&r.updates);
+                    let chat_id = chat.map(|c| c.id()).unwrap_or(0);
+                    cache_created_chat(&guard, chat).await;
                     serde_json::json!({"kind": "group", "chat_id": chat_id})
                 }
                 "supergroup" => {
@@ -614,7 +611,9 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    let chat_id = created_chat_id(r);
+                    let chat = created_chat(&r);
+                    let chat_id = chat.map(|c| c.id()).unwrap_or(0);
+                    cache_created_chat(&guard, chat).await;
                     serde_json::json!({"kind": "supergroup", "forum": forum, "chat_id": chat_id})
                 }
                 "channel" => {
@@ -633,7 +632,9 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    let chat_id = created_chat_id(r);
+                    let chat = created_chat(&r);
+                    let chat_id = chat.map(|c| c.id()).unwrap_or(0);
+                    cache_created_chat(&guard, chat).await;
                     serde_json::json!({"kind": "channel", "chat_id": chat_id})
                 }
                 other => {
@@ -657,10 +658,21 @@ fn creds_api_id() -> crate::TeleResult<i32> {
     Ok(creds()?.api_id)
 }
 
-fn created_chat_id(r: tl::enums::Updates) -> i64 {
+fn created_chat(r: &tl::enums::Updates) -> Option<&tl::enums::Chat> {
     match r {
-        tl::enums::Updates::Updates(u) => u.chats.first().map(|c| c.id()).unwrap_or(0),
-        _ => 0,
+        tl::enums::Updates::Updates(u) => u.chats.first(),
+        _ => None,
+    }
+}
+
+async fn cache_created_chat(guard: &client::ClientGuard, chat: Option<&tl::enums::Chat>) {
+    if let Some(chat) = chat {
+        if let Err(e) = entities::cache_chat(guard.session.as_ref(), chat).await {
+            log::warn!(
+                "failed to cache access_hash for created chat {}: {e}",
+                chat.id()
+            );
+        }
     }
 }
 

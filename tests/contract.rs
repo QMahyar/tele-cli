@@ -232,9 +232,10 @@ fn success_envelope_shape() {
         obj.contains_key("results"),
         "envelope missing results: {out}"
     );
-    assert!(
-        obj.get("command").is_none(),
-        "command not plumbed yet: {out}"
+    assert_eq!(
+        obj.get("command"),
+        Some(&serde_json::json!("msg send")),
+        "command must name the invoked subcommand path: {out}"
     );
     assert_eq!(v["ok"], serde_json::json!(true));
     let results = v["results"].as_array().expect("results array");

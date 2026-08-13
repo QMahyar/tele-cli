@@ -113,4 +113,4 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | kernel.proxy | Global + per-account SOCKS5 (grammers 0.10 proxy feature is socks5-only) | `src/client.rs` | done |
 | kernel.json | Serialize results | `src/serialize.rs` | done |
 | kernel.raw | Typed TL registry | `tele raw` (`src/commands/raw.rs`) | done |
-| kernel.peers | Chat-target resolution: numeric id (cached auth), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path) | `src/entities.rs` | done |
+| kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path) | `src/entities.rs` | done |
