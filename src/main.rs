@@ -103,7 +103,18 @@ enum Command {
 
 fn main() {
     logging::init();
-    let matches = Cli::command().get_matches();
+    let matches = match Cli::command().try_get_matches() {
+        Ok(matches) => matches,
+        Err(e) => {
+            let code = if e.use_stderr() {
+                error::EXIT_USAGE
+            } else {
+                error::EXIT_OK
+            };
+            let _ = e.print();
+            std::process::exit(code);
+        }
+    };
     let cli = Cli::from_arg_matches(&matches).expect("clap matches parse");
     let flags = GlobalFlags {
         account: cli.account,
@@ -153,7 +164,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Profile(c) => profile::run(c, flags).await,
         Command::Privacy(c) => privacy::run(c, flags).await,
         Command::Takeout(c) => takeout::run(c, flags).await,
-        Command::Listen(c) => listen::run(&c, flags).await.map(|_| error::EXIT_OK),
+        Command::Listen(c) => listen::run(&c, flags).await,
         Command::Raw(c) => raw::run(&c, flags).await,
     };
     match result {
