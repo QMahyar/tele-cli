@@ -50,6 +50,7 @@ pub async fn run(cmd: ContactCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;

@@ -161,7 +161,28 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
         other => Err(TeleError::Usage(format!(
             "unknown --format {other} (use plain or markdown)"
         ))),
+    }?;
+    if let Some(path) = &args.file {
+        validate_upload_path(path)?;
     }
+    Ok(())
+}
+
+fn validate_upload_path(path: &str) -> TeleResult<()> {
+    let app_dir = crate::config::app_data_dir();
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    if canonical.starts_with(&app_dir) {
+        return Err(TeleError::Usage(
+            "refusing to upload a file from the telecli app data directory".to_string(),
+        ));
+    }
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    if base == ".env" || base.ends_with(".session") || base.ends_with(".session-journal") {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload sensitive file {base}"
+        )));
+    }
+    Ok(())
 }
 
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -406,6 +427,7 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
@@ -563,6 +585,7 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
@@ -707,6 +730,27 @@ mod tests {
             format: format.to_string(),
             silent: false,
         }
+    }
+
+    #[test]
+    fn upload_rejects_sensitive_basenames() {
+        assert!(matches!(
+            validate_upload_path("C:/secrets/.env"),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_upload_path("C:/telecli-data/1.session"),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_upload_path("2.session-journal"),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn upload_allows_regular_files() {
+        assert!(validate_upload_path("C:/tmp/report.pdf").is_ok());
     }
 
     #[test]

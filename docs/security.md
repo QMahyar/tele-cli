@@ -27,6 +27,9 @@ Assets: live user sessions (full account), `TELE_API_HASH`, phone numbers, 2FA p
 - `.gitignore`: `.env`, `*.session`, `*.session-journal`, app-dir copies
 - Session path = `{app_dir}/sessions/{safe_name}.session` (`safe_name` = `[A-Za-z0-9._-]+` only)
 - `--config` / `--file` must be real files; no `~` surprises without expanduser; reject directories
+- `--file` upload refuses anything under the app data dir and `.env` / `*.session` / `*.session-journal` basenames
+- 2FA passwords are never accepted on argv; read from stdin only
+- `--limit` / `--message-limit` are capped (10k lists, 1M takeout) with a usage error
 - Invite URLs parsed; do not fetch arbitrary HTTP (Telegram only)
 - Live tests: designated chat only
 - `tele raw` does not eval Python; only known `telethon.tl.functions` classes

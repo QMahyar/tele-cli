@@ -54,8 +54,8 @@ TELE_API_HASH=0123456789abcdef0123456789abcdef
 
 Process environment overrides the file, so `TELE_API_ID=... tele ...` works too.
 
-**3. Register and log in an account** (prompts for the SMS code; `--password` for
-2FA; `--method qr` to scan a QR instead):
+**3. Register and log in an account** (prompts for the SMS code; 2FA password is
+prompted on stdin; `--method qr` to scan a QR instead):
 
 ```bash
 tele account add --name work --tags iran,work

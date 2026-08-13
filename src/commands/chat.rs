@@ -258,6 +258,7 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
@@ -421,6 +422,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;

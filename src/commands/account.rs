@@ -29,8 +29,6 @@ pub struct LoginArgs {
     method: String,
     #[arg(long)]
     phone: Option<String>,
-    #[arg(long)]
-    password: Option<String>,
 }
 #[derive(Args)]
 pub struct LogoutArgs {
@@ -193,9 +191,11 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     log_line("info", &format!("account {} logged in", args.name));
                 }
                 Err(grammers_client::SignInError::PasswordRequired(pw_token)) => {
-                    let password = args.password.clone().ok_or_else(|| {
-                        TeleError::Auth("2FA password required (use --password)".to_string())
-                    })?;
+                    print!("Enter the 2FA password: ");
+                    std::io::Write::flush(&mut std::io::stdout())?;
+                    let mut password = String::new();
+                    std::io::stdin().read_line(&mut password)?;
+                    let password = password.trim().to_string();
                     match guard.client.check_password(pw_token, &password).await {
                         Ok(_) => log_line("info", "2FA passed"),
                         Err(grammers_client::SignInError::InvalidPassword(_)) => {
@@ -312,7 +312,6 @@ mod tests {
             name: "x".to_string(),
             method: method.to_string(),
             phone: phone.map(str::to_string),
-            password: None,
         }
     }
 

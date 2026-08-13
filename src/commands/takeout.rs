@@ -93,6 +93,7 @@ fn validate_export(args: &ExportArgs) -> TeleResult<()> {
 
 async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_export(&args)?;
+    crate::commands::validate_limit(args.message_limit, 1_000_000, "message-limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
