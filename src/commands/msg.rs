@@ -193,21 +193,49 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
 }
 
 fn validate_markdown(text: &str) -> TeleResult<()> {
-    let mut rest = text;
-    while let Some(pos) = rest.find("tg://user?id=") {
-        let after = &rest[pos + "tg://user?id=".len()..];
-        let id = after
-            .split(|c: char| c == ')' || c == '"' || c == '>' || c.is_whitespace())
-            .next()
-            .unwrap_or("");
-        if !matches!(id.parse::<i64>(), Ok(v) if v > 0) {
+    let bytes = text.as_bytes();
+    let mut search_from = 0;
+    while let Some(pos) = text[search_from..].find("tg://user?id=") {
+        let abs = search_from + pos;
+        let after = &text[abs + "tg://user?id=".len()..];
+        let raw_form = abs > 0 && bytes[abs - 1] == b'<';
+        let id = mention_id(after, raw_form);
+        if !is_valid_mention_id(id) {
             return Err(TeleError::Usage(format!(
                 "invalid tg://user?id= mention in --text: id must be a positive number (got {id:?})"
             )));
         }
-        rest = after;
+        search_from = abs + "tg://user?id=".len();
     }
     Ok(())
+}
+
+fn mention_id(after: &str, raw_form: bool) -> &str {
+    if let Some(rest) = after.strip_prefix('<') {
+        return rest.split('>').next().unwrap_or("");
+    }
+    if raw_form {
+        return after.split('>').next().unwrap_or("");
+    }
+    let mut end = 0;
+    let mut depth = 0i32;
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => break,
+            ')' => depth -= 1,
+            c if c.is_whitespace() => break,
+            _ => {}
+        }
+        end = i + c.len_utf8();
+    }
+    &after[..end]
+}
+
+fn is_valid_mention_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_digit())
+        && matches!(id.parse::<i64>(), Ok(v) if v > 0)
 }
 
 fn validate_upload_path(path: &str) -> TeleResult<()> {
@@ -563,6 +591,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
+    let dry_run = flags.dry_run;
     let limit = args.limit as usize;
     let offset_id = args.offset_id;
     let last = args.last;
@@ -570,6 +599,15 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": chat_target,
+                    "limit": limit,
+                    "offset_id": offset_id,
+                    "last": last,
+                }));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -721,12 +759,21 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
+    let dry_run = flags.dry_run;
     let limit = args.limit as usize;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
         let query = args.query.clone();
         Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": chat_target,
+                    "query": query,
+                    "limit": limit,
+                }));
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client, &creds()?).await?;
@@ -1101,5 +1148,245 @@ mod tests {
             remove: false,
         };
         assert!(validate_react(&with_reaction).is_ok());
+    }
+
+    #[test]
+    fn markdown_accepts_angle_bracket_link_dest() {
+        let mut args = send_args("markdown");
+        args.text = Some("[x](<tg://user?id=12345678>)".to_string());
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
+    fn markdown_rejects_junk_embedded_in_bare_link_dest() {
+        let mut args = send_args("markdown");
+        for bad in [
+            "[x](tg://user?id=123\"456)",
+            "[x](tg://user?id=123>456)",
+            "[x](tg://user?id=123<456)",
+            "[x](tg://user?id=123+456)",
+        ] {
+            args.text = Some(bad.to_string());
+            assert!(
+                matches!(validate_send(&args), Err(TeleError::Usage(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_accepts_id_terminated_by_space_like_grammers() {
+        let mut args = send_args("markdown");
+        args.text = Some("[x](tg://user?id=123 456)".to_string());
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
+    fn markdown_validates_every_link_in_text() {
+        let mut args = send_args("markdown");
+        args.text = Some("[a](tg://user?id=1)[b](tg://user?id=abc)".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.text = Some("[a](tg://user?id=1)[b](tg://user?id=2)".to_string());
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
+    fn markdown_rejects_overflowing_and_accepts_max_mention_ids() {
+        let mut args = send_args("markdown");
+        args.text = Some("[x](tg://user?id=99999999999999999999999)".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.text = Some("[x](tg://user?id=9223372036854775807)".to_string());
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
+    fn schedule_rejects_now_and_recent_past() {
+        let now = chrono::Utc::now().timestamp();
+        for v in [(now - 1).to_string(), now.to_string(), "+3600".to_string()] {
+            assert!(
+                matches!(parse_schedule(Some(&v)), Err(TeleError::Usage(_))),
+                "{v}"
+            );
+        }
+    }
+
+    #[test]
+    fn schedule_accepts_max_i32_boundary() {
+        assert_eq!(
+            parse_schedule(Some("2147483647")).unwrap().unwrap(),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    fn schedule_rejects_empty_and_leap_second_strings() {
+        for v in ["", "2016-12-31T23:59:60Z"] {
+            assert!(
+                matches!(parse_schedule(Some(v)), Err(TeleError::Usage(_))),
+                "{v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn schedule_normalizes_rfc3339_offsets_before_comparing() {
+        let future = chrono::Utc::now() + chrono::Duration::hours(2);
+        let with_offset = future
+            .with_timezone(&chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap())
+            .to_rfc3339();
+        assert!(parse_schedule(Some(&with_offset)).unwrap().is_some());
+        let past = chrono::Utc::now() - chrono::Duration::hours(2);
+        let with_offset = past
+            .with_timezone(&chrono::FixedOffset::west_opt(8 * 3600).unwrap())
+            .to_rfc3339();
+        assert!(matches!(
+            parse_schedule(Some(&with_offset)),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn batches_splits_101_into_two_and_1000_into_ten() {
+        let ids: Vec<i32> = (1..=101).collect();
+        assert_eq!(
+            batches(&ids).iter().map(|b| b.len()).collect::<Vec<_>>(),
+            vec![100, 1]
+        );
+        let ids: Vec<i32> = (1..=1000).collect();
+        let parts = batches(&ids);
+        assert_eq!(parts.len(), 10);
+        assert!(parts.iter().all(|b| b.len() == 100));
+    }
+
+    #[test]
+    fn upload_rejects_any_sensitive_basename_and_allows_lookalikes() {
+        for bad in [
+            "a.session",
+            "a.SESSION",
+            "a.session-journal",
+            ".ENV",
+            ".env",
+        ] {
+            assert!(
+                matches!(
+                    validate_upload_path(&format!("C:/tmp/{bad}")),
+                    Err(TeleError::Usage(_))
+                ),
+                "{bad}"
+            );
+        }
+        for good in ["C:/tmp/session", "C:/tmp/env", "C:/tmp/x.env"] {
+            assert!(validate_upload_path(good).is_ok(), "{good}");
+        }
+    }
+
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().await
+    }
+
+    fn dryrun_flags(command: &str, dry_run: bool) -> GlobalFlags {
+        GlobalFlags {
+            account: vec!["me".to_string()],
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run,
+            quiet: true,
+            config_path: None,
+            command: command.to_string(),
+        }
+    }
+
+    fn fake_app_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-msg-dryrun-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions").join("me.session"), b"").unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn get_dry_run_short_circuits_before_connect() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = get(
+            GetArgs {
+                chat: "me".to_string(),
+                limit: 10,
+                offset_id: None,
+                last: false,
+            },
+            &dryrun_flags("msg get", true),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn get_without_dry_run_requires_a_real_session() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = get(
+            GetArgs {
+                chat: "me".to_string(),
+                limit: 10,
+                offset_id: None,
+                last: false,
+            },
+            &dryrun_flags("msg get", false),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_ne!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn search_dry_run_short_circuits_before_connect() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = search(
+            SearchArgs {
+                chat: "me".to_string(),
+                query: "hello".to_string(),
+                limit: 10,
+            },
+            &dryrun_flags("msg search", true),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn search_without_dry_run_requires_a_real_session() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = search(
+            SearchArgs {
+                chat: "me".to_string(),
+                query: "hello".to_string(),
+                limit: 10,
+            },
+            &dryrun_flags("msg search", false),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_ne!(code, 0);
     }
 }
