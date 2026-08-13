@@ -8,7 +8,7 @@ This document is the contract so we do not invent a second process later.
 Open release-readiness work:
 
 - CI exists (`ci` workflow in `.github/workflows/ci.yml`); plan below is the contract it implements.
-- Current branch is `master`; trunk target is `main` (rename pending).
+- Trunk is `main` (renamed from `master`); the `ci` workflow triggers on both until stale refs clear.
 - No release tags exist yet; `CHANGELOG.md` has the first `Unreleased` entry.
 
 ## Versioning
@@ -45,8 +45,8 @@ behavior, not `git log`.
 
 ## CI
 
-The `ci` workflow runs on PR and push to `master`/`main` (both until the branch
-rename lands), on `ubuntu-latest` and `windows-latest`. In a fresh checkout:
+The `ci` workflow runs on PR and push to `main` (and `master` until stale refs
+clear), on `ubuntu-latest` and `windows-latest`. In a fresh checkout:
 
 1. `cargo fmt --all -- --check`
 2. `cargo clippy --all-targets -- -D warnings`

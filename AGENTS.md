@@ -12,7 +12,7 @@ Load additional workflow skills per task as routed (e.g. `test-driven-developmen
 ## Status (2026-08)
 
 - Capability matrix fully resolved: no `want` rows left (`docs/capabilities.md` — all `done`/`later`/`never`). Per ADR-005 the release gate is met.
-- Remaining product surface: Phase 6 — MCP server + agent skill (ask first). Release readiness is open work: no CI, branch is `master` (release.md wants `main`). `docs/release.md` and `CHANGELOG.md` were rewritten to the Rust era by the docs-agent pass (2026-08); keep them current.
+- Remaining product surface: Phase 6 — MCP server + agent skill (ask first). Release readiness is open work: CI is live (fmt/clippy/test on push+PR). `docs/release.md` and `CHANGELOG.md` were rewritten to the Rust era by the docs-agent pass (2026-08); keep them current.
 - Live-verified against real sessions: send/get/edit/delete, cross-account listen, profile get, takeout export, raw registry, dry-runs, proxy negative path. Remaining live items are user-side (2FA/QR login, chat participants/adminlog on a real group, socks5 positive path, `--file`/`--schedule`, listen MessageEdited/MessageDeleted/Raw, takeout finish, logout).
 
 ## Stack
