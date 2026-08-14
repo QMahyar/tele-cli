@@ -4,3 +4,4 @@ sessions/
 *.session
 *.session-journal
 .pi/
+dist/
