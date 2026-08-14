@@ -10,6 +10,7 @@ anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 comfy-table = "7"
 grammers-client = { version = "0.10", features = ["proxy", "parse_invite_link", "markdown", "fs"] }
 grammers-session = { version = "0.10", features = ["sqlite-storage"] }

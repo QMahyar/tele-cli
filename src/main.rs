@@ -99,6 +99,9 @@ enum Command {
     Listen(listen::ListenArgs),
     /// Raw TL invocation (typed registry)
     Raw(raw::RawArgs),
+    /// Generate shell completions
+    #[command(subcommand)]
+    Completions(completions::Shell),
 }
 
 fn main() {
@@ -143,6 +146,10 @@ fn main() {
     std::process::exit(code);
 }
 
+pub(crate) fn command_for_completions() -> clap::Command {
+    Cli::command()
+}
+
 fn invoked_path(matches: &clap::ArgMatches) -> String {
     let mut parts = Vec::new();
     let mut m = matches;
@@ -166,6 +173,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Takeout(c) => takeout::run(c, flags).await,
         Command::Listen(c) => listen::run(&c, flags).await,
         Command::Raw(c) => raw::run(&c, flags).await,
+        Command::Completions(s) => completions::run(s, flags).await,
     };
     match result {
         Ok(code) => code,

@@ -5,6 +5,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 
@@ -17,17 +18,21 @@ pub enum TakeoutCmd {
 
 #[derive(Args)]
 pub struct StartArgs {
-    #[arg(long)]
+    #[arg(long, help = "include contacts in export")]
     contacts: bool,
-    #[arg(long)]
+    #[arg(long, help = "include messages in export")]
     messages: bool,
-    #[arg(long)]
+    #[arg(long, help = "include photos in export")]
     photos: bool,
 }
 
 #[derive(Args)]
 pub struct ExportArgs {
-    #[arg(long, default_value_t = 1000)]
+    #[arg(
+        long,
+        default_value_t = 1000,
+        help = "max messages per dialog to export"
+    )]
     message_limit: u32,
 }
 
@@ -260,14 +265,6 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
-}
-
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
 }
 
 #[cfg(test)]

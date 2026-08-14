@@ -71,3 +71,131 @@ pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
 pub fn machine_mode(json: bool, jsonl: bool) -> bool {
     json || jsonl
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn success_outcome(account: &str) -> AccountOutcome {
+        AccountOutcome {
+            account: account.to_string(),
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({"test": true})),
+            exit_code: None,
+        }
+    }
+
+    fn failure_outcome(account: &str) -> AccountOutcome {
+        AccountOutcome {
+            account: account.to_string(),
+            ok: false,
+            error: Some(serde_json::json!({"message": "failed"})),
+            data: None,
+            exit_code: Some(3),
+        }
+    }
+
+    #[test]
+    fn envelope_all_success_is_ok() {
+        let env = Envelope::new(
+            vec![success_outcome("a"), success_outcome("b")],
+            false,
+            "test",
+        );
+        assert!(env.ok);
+        assert_eq!(env.accounts.len(), 2);
+    }
+
+    #[test]
+    fn envelope_all_failure_is_not_ok() {
+        let env = Envelope::new(
+            vec![failure_outcome("a"), failure_outcome("b")],
+            false,
+            "test",
+        );
+        assert!(!env.ok);
+    }
+
+    #[test]
+    fn envelope_mixed_is_not_ok() {
+        let env = Envelope::new(
+            vec![success_outcome("a"), failure_outcome("b")],
+            false,
+            "test",
+        );
+        assert!(!env.ok);
+    }
+
+    #[test]
+    fn envelope_empty_is_ok() {
+        let env = Envelope::new(vec![], false, "test");
+        assert!(env.ok);
+    }
+
+    #[test]
+    fn envelope_dry_run_field() {
+        let env = Envelope::new(vec![], true, "test");
+        assert!(env.dry_run);
+        let env = Envelope::new(vec![], false, "test");
+        assert!(!env.dry_run);
+    }
+
+    #[test]
+    fn envelope_command_field() {
+        let env = Envelope::new(vec![], false, "msg send");
+        assert_eq!(env.command.as_deref(), Some("msg send"));
+    }
+
+    #[test]
+    fn machine_mode_json() {
+        assert!(machine_mode(true, false));
+    }
+
+    #[test]
+    fn machine_mode_jsonl() {
+        assert!(machine_mode(false, true));
+    }
+
+    #[test]
+    fn machine_mode_both() {
+        assert!(machine_mode(true, true));
+    }
+
+    #[test]
+    fn machine_mode_neither() {
+        assert!(!machine_mode(false, false));
+    }
+
+    #[test]
+    fn envelope_serializes_ok_field() {
+        let env = Envelope::new(vec![success_outcome("a")], false, "test");
+        let json = serde_json::to_value(&env).unwrap();
+        assert_eq!(json["ok"], serde_json::json!(true));
+        assert_eq!(json["dry_run"], serde_json::json!(false));
+        assert_eq!(json["command"], serde_json::json!("test"));
+        assert!(json["results"].is_array());
+    }
+
+    #[test]
+    fn envelope_serializes_results_array() {
+        let env = Envelope::new(
+            vec![success_outcome("a"), failure_outcome("b")],
+            false,
+            "test",
+        );
+        let json = serde_json::to_value(&env).unwrap();
+        let results = json["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["account"], "a");
+        assert_eq!(results[1]["account"], "b");
+    }
+
+    #[test]
+    fn log_line_does_not_panic() {
+        log_line("info", "test message");
+        log_line("error", "test error");
+        log_line("warn", "test warn");
+        log_line("debug", "test debug");
+    }
+}

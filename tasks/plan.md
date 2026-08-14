@@ -95,6 +95,10 @@ Cargo skeleton
 | Login interactivity vs agents | Med | Prompts for humans; flags for non-TTY |
 | Scope explosion (“full from start”) | High | Matrix is DoD; slices mark rows; unpublished until `want` is `done` |
 
+## Audit
+
+Comprehensive audit completed 2026-08-14: `docs/audit-2026-08.md` — 96 findings across security, bugs, performance, test coverage, and UX. Implementation tracked below.
+
 ## Open Questions
 
 None blocking. Live verification checklist and status: `tasks/todo.md` (verified

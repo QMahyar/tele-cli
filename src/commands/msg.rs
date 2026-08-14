@@ -6,6 +6,7 @@ use grammers_client::message::InputMessage;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -27,120 +28,131 @@ pub enum MsgCmd {
 
 #[derive(Args)]
 pub struct SendArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "message text (mutually exclusive with --file)")]
     text: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "send time: Unix timestamp or RFC3339 datetime (must be in the future)"
+    )]
     schedule: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "file path to upload (mutually exclusive with --text)")]
     file: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "caption for uploaded file (requires --file)")]
     caption: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "message ID to reply to")]
     reply: Option<i32>,
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, help = "show link preview")]
     preview: bool,
-    #[arg(long, default_value = "plain")]
+    #[arg(long, default_value = "plain", help = "text format: plain or markdown")]
     format: String,
-    #[arg(long)]
+    #[arg(long, help = "send without notification sound")]
     silent: bool,
 }
 
 #[derive(Args)]
 pub struct EditArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "message ID to edit")]
     id: i32,
-    #[arg(long)]
+    #[arg(long, help = "new message text")]
     text: String,
 }
 
 #[derive(Args)]
 pub struct DeleteArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "comma-separated message IDs to delete"
+    )]
     ids: Vec<i32>,
-    #[arg(long)]
+    #[arg(long, help = "delete all messages in chat")]
     all: bool,
 }
 
 #[derive(Args)]
 pub struct ForwardArgs {
-    #[arg(long)]
+    #[arg(long, help = "source chat to forward from")]
     from: String,
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "comma-separated message IDs to forward"
+    )]
     ids: Vec<i32>,
-    #[arg(long)]
+    #[arg(long, help = "destination chat to forward to")]
     to: String,
-    #[arg(long)]
+    #[arg(long, help = "forward without notification sound")]
     silent: bool,
 }
 
 #[derive(Args)]
 pub struct PinArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "message ID to pin or unpin")]
     id: i32,
-    #[arg(long)]
+    #[arg(long, help = "remove pin instead of adding")]
     unpin: bool,
-    #[arg(long)]
+    #[arg(long, help = "pin without notification sound")]
     silent: bool,
 }
 
 #[derive(Args)]
 pub struct GetArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     limit: u32,
-    #[arg(long)]
+    #[arg(long, help = "fetch messages before this ID")]
     offset_id: Option<i32>,
-    #[arg(long)]
+    #[arg(long, help = "fetch only the most recent message")]
     last: bool,
 }
 
 #[derive(Args)]
 pub struct ReadArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "mark as unread instead of read")]
     mark_unread: bool,
 }
 
 #[derive(Args)]
 pub struct ReactArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "message ID to react to")]
     id: i32,
-    #[arg(long)]
+    #[arg(long, help = "emoji reaction to add")]
     reaction: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "remove reaction instead of adding")]
     remove: bool,
 }
 
 #[derive(Args)]
 pub struct SearchArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "search query text")]
     query: String,
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     limit: u32,
 }
 
 #[derive(Args)]
 pub struct DownloadArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "message ID to download media from")]
     id: i32,
-    #[arg(long)]
-    out: String,
+    #[arg(long, help = "output directory for downloaded media")]
+    dir: String,
 }
 
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -182,6 +194,11 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
         return Err(TeleError::Usage("--caption requires --file".to_string()));
     }
     if let Some(path) = &args.file {
+        if !args.preview {
+            return Err(TeleError::Usage(
+                "--no-preview is not supported with --file".to_string(),
+            ));
+        }
         validate_upload_path(path)?;
     }
     if args.format == "markdown" {
@@ -401,16 +418,30 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .await
                 .map_err(tele_invocation)?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let ids = if all {
+            if all {
                 let mut iter = guard.client.iter_messages(chat_ref);
-                let mut collected = Vec::new();
+                let mut count = 0usize;
+                let mut batch: Vec<i32> = Vec::with_capacity(100);
                 while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-                    collected.push(msg.id());
+                    batch.push(msg.id());
+                    if batch.len() >= 100 {
+                        count += guard
+                            .client
+                            .delete_messages(chat_ref, &batch)
+                            .await
+                            .map_err(tele_invocation)?;
+                        batch.clear();
+                    }
                 }
-                collected
-            } else {
-                ids
-            };
+                if !batch.is_empty() {
+                    count += guard
+                        .client
+                        .delete_messages(chat_ref, &batch)
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                return Ok(serde_json::json!({"deleted": count}));
+            }
             if ids.is_empty() {
                 return Ok(serde_json::json!({"deleted": 0}));
             }
@@ -636,12 +667,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             r["id"].to_string(),
                             r["date"].as_str().unwrap_or_default().to_string(),
                             r["sender"]["name"].as_str().unwrap_or_default().to_string(),
-                            r["text"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .chars()
-                                .take(80)
-                                .collect(),
+                            truncate_text(r["text"].as_str().unwrap_or_default(), 80),
                         ]
                     })
                     .collect();
@@ -652,6 +678,16 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -798,12 +834,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             r["id"].to_string(),
                             r["date"].as_str().unwrap_or_default().to_string(),
                             r["sender"]["name"].as_str().unwrap_or_default().to_string(),
-                            r["text"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .chars()
-                                .take(80)
-                                .collect(),
+                            truncate_text(r["text"].as_str().unwrap_or_default(), 80),
                         ]
                     })
                     .collect();
@@ -823,7 +854,7 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
-        let out_dir = args.out.clone();
+        let out_dir = args.dir.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({"dry_run": true, "id": id}));
@@ -883,14 +914,6 @@ fn looks_like_image(path: &str) -> bool {
         ext.as_str(),
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic"
     )
-}
-
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
 }
 
 #[cfg(test)]

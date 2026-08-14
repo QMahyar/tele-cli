@@ -19,6 +19,7 @@ impl TeleError {
     pub fn exit_code(&self) -> i32 {
         match self {
             TeleError::Usage(_) => EXIT_USAGE,
+            TeleError::Config(_) => EXIT_USAGE,
             TeleError::Auth(_) => EXIT_AUTH,
             _ => EXIT_ALL_FAILED,
         }
@@ -191,11 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn config_invocation_other_exit_three() {
-        assert_eq!(
-            TeleError::Config("x".to_string()).exit_code(),
-            EXIT_ALL_FAILED
-        );
+    fn config_exits_usage() {
+        assert_eq!(TeleError::Config("x".to_string()).exit_code(), EXIT_USAGE);
+    }
+
+    #[test]
+    fn invocation_and_other_exit_all_failed() {
         assert_eq!(
             TeleError::Invocation("x".to_string(), None).exit_code(),
             EXIT_ALL_FAILED

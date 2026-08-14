@@ -3,13 +3,15 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 
 #[derive(Args)]
 pub struct RawArgs {
+    #[arg(help = "TL method name (e.g. contacts.Search, messages.GetAllDrafts)")]
     name: String,
-    #[arg(long, default_value = "{}")]
+    #[arg(long, default_value = "{}", help = "JSON object of method parameters")]
     args: String,
 }
 
@@ -420,14 +422,6 @@ fn opt_int_field(
 
 fn bool_field(p: &serde_json::Value, key: &str) -> Result<bool, grammers_client::InvocationError> {
     Ok(p.get(key).and_then(|v| v.as_bool()).unwrap_or(false))
-}
-
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -15,17 +16,28 @@ pub enum PrivacyCmd {
 
 #[derive(Args)]
 pub struct GetArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "privacy key: status, profile_photo, phone_number, calls, forwards, chat_invite, added_by_phone, voice_messages, about"
+    )]
     key: Option<String>,
 }
 
 #[derive(Args)]
 pub struct SetArgs {
-    #[arg(long)]
+    #[arg(long, help = "privacy key to change")]
     key: String,
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "users to allow: comma-separated @username, ID, or me"
+    )]
     allow: Option<Vec<String>>,
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "users to deny: comma-separated @username, ID, or me"
+    )]
     deny: Option<Vec<String>>,
 }
 
@@ -245,14 +257,6 @@ fn privacy_rule_summary(r: &tl::enums::PrivacyRule) -> serde_json::Value {
             serde_json::json!({"kind": "disallow_chats", "ids": v.chats})
         }
     }
-}
-
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
 }
 
 #[cfg(test)]

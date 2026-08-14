@@ -3,8 +3,9 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::entities;
-use crate::error::{TeleError, TeleResult};
+use crate::error::TeleResult;
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;
 
@@ -18,23 +19,23 @@ pub enum DialogCmd {
 
 #[derive(Args)]
 pub struct ListArgs {
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 20, help = "max dialogs to list (1-10000)")]
     limit: u32,
-    #[arg(long)]
+    #[arg(long, help = "folder ID: 0=main, 1=archive")]
     folder: Option<i32>,
 }
 
 #[derive(Args)]
 pub struct ArchiveArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "unarchive (restore) instead of archive")]
     unarchive: bool,
 }
 
 #[derive(Args)]
 pub struct ChatArgs {
-    #[arg(long)]
+    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
 }
 
@@ -285,17 +286,10 @@ async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TeleError;
 
     #[tokio::test]
     async fn drafts_rejects_over_limit() {

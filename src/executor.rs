@@ -27,13 +27,13 @@ pub async fn run_fanout(
         > + Send
         + 'static,
 ) -> TeleResult<crate::output::Envelope> {
+    let cfg = crate::config::load_config(flags.config_path.as_deref())?;
     let names = select_accounts(flags)?;
     if names.is_empty() {
         return Err(TeleError::Usage(
             "no accounts selected: use --account <name> or --tag <tag>".to_string(),
         ));
     }
-    let cfg = crate::config::load_config(flags.config_path.as_deref())?;
     let parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
     let semaphore = Arc::new(Semaphore::new(parallel));
     let mut handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)> =

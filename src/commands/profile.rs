@@ -3,6 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -16,17 +17,17 @@ pub enum ProfileCmd {
 
 #[derive(Args)]
 pub struct GetArgs {
-    #[arg(long)]
+    #[arg(long, help = "target user: @username, numeric ID, or me (default)")]
     chat: Option<String>,
 }
 
 #[derive(Args)]
 pub struct SetArgs {
-    #[arg(long)]
+    #[arg(long, help = "new display name (first and last)")]
     name: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "new bio/about text")]
     bio: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "path to new profile photo")]
     photo: Option<String>,
 }
 
@@ -219,14 +220,6 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
-}
-
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
 }
 
 #[cfg(test)]

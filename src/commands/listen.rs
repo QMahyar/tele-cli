@@ -6,16 +6,23 @@ use clap::Args;
 use grammers_session::types::{PeerId, PeerKind};
 #[derive(Args)]
 pub struct ListenArgs {
-    #[arg(long, default_value_t = 0)]
+    #[arg(
+        long = "timeout-secs",
+        default_value_t = 0,
+        help = "max listen duration in seconds (0 = forever)"
+    )]
     timeout_secs: u64,
-    #[arg(long, value_delimiter = ',', default_value = "NewMessage")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "NewMessage",
+        help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw"
+    )]
     events: Vec<String>,
-    #[arg(long)]
+    #[arg(long, help = "output raw TL updates instead of parsed events")]
     raw: bool,
-    #[arg(long)]
+    #[arg(long, help = "only show events from this chat")]
     chat: Option<String>,
-    #[arg(long)]
-    quiet: bool,
 }
 const VALID_EVENTS: &[&str] = &["NewMessage", "MessageEdited", "MessageDeleted", "Raw"];
 const MAX_RECONNECT_BACKOFF: u32 = 30;

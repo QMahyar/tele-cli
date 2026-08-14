@@ -3,8 +3,9 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::entities;
-use crate::error::{TeleError, TeleResult};
+use crate::error::TeleResult;
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;
 
@@ -18,25 +19,25 @@ pub enum ContactCmd {
 
 #[derive(Args)]
 pub struct ListArgs {
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 100, help = "max contacts to list (1-10000)")]
     limit: u32,
 }
 
 #[derive(Args)]
 pub struct AddArgs {
-    #[arg(long)]
+    #[arg(long, help = "user to add: @username, numeric ID, or me")]
     user: String,
-    #[arg(long)]
+    #[arg(long, help = "first name (defaults to peer name)")]
     first: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "last name (defaults to peer name)")]
     last: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "phone number to associate")]
     phone: Option<String>,
 }
 
 #[derive(Args)]
 pub struct BlockArgs {
-    #[arg(long)]
+    #[arg(long, help = "user to block/unblock: @username, numeric ID, or me")]
     user: String,
 }
 
@@ -221,14 +222,6 @@ async fn unblock(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
-}
-
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
 }
 
 fn dry_run_payload(user: Option<&str>) -> serde_json::Value {

@@ -1,7 +1,10 @@
 pub mod account;
 pub mod chat;
+pub mod completions;
 pub mod contact;
+pub mod credentials;
 pub mod dialog;
+pub mod helpers;
 pub mod listen;
 pub mod msg;
 pub mod privacy;

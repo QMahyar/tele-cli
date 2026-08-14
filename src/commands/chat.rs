@@ -3,6 +3,8 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
+use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -23,73 +25,111 @@ pub enum ChatCmd {
 
 #[derive(Args)]
 pub struct ChatArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, or invite link"
+    )]
     chat: String,
 }
 
 #[derive(Args)]
 pub struct InviteArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, or invite link"
+    )]
     chat: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "user to invite: @username, t.me link, numeric ID, or phone"
+    )]
     user: String,
 }
 
 #[derive(Args)]
 pub struct ParticipantsArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, or invite link"
+    )]
     chat: String,
-    #[arg(long, default_value_t = 100)]
+    #[arg(
+        long,
+        default_value_t = 100,
+        help = "max participants to return (1-10000)"
+    )]
     limit: u32,
 }
 
 #[derive(Args)]
 pub struct KickArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, or invite link"
+    )]
     chat: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "user to kick: @username, t.me link, numeric ID, or phone"
+    )]
     user: String,
 }
 
 #[derive(Args)]
 pub struct AdminArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, or invite link"
+    )]
     chat: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "user to promote or demote: @username, t.me link, numeric ID, or phone"
+    )]
     user: String,
-    #[arg(long)]
+    #[arg(long, help = "grant admin rights (mutually exclusive with --demote)")]
     promote: bool,
-    #[arg(long)]
+    #[arg(long, help = "revoke admin rights (mutually exclusive with --promote)")]
     demote: bool,
-    #[arg(long)]
+    #[arg(long, help = "admin rank title (e.g. Mod, Admin)")]
     title: Option<String>,
 }
 
 #[derive(Args)]
 pub struct AdminLogArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, or invite link"
+    )]
     chat: String,
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 20, help = "max events to return (1-10000)")]
     limit: u32,
 }
 
 #[derive(Args)]
 pub struct StatsArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, or invite link"
+    )]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "use broadcast channel stats (default: megagroup stats)")]
     broadcast: bool,
 }
 
 #[derive(Args)]
 pub struct CreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "chat title")]
     title: String,
-    #[arg(long)]
+    #[arg(long, help = "chat description (for supergroups and channels)")]
     description: Option<String>,
-    #[arg(long, default_value = "group")]
+    #[arg(
+        long,
+        default_value = "group",
+        help = "chat type: group, supergroup, or channel"
+    )]
     kind: String,
-    #[arg(long)]
+    #[arg(long, help = "enable forum topics (supergroups only)")]
     forum: bool,
 }
 
@@ -513,12 +553,14 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         vec![
                             r["id"].to_string(),
                             r["date"].as_str().unwrap_or_default().to_string(),
-                            r["action"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .chars()
-                                .take(60)
-                                .collect(),
+                            {
+                                let action = r["action"].as_str().unwrap_or_default();
+                                if action.len() > 60 {
+                                    format!("{}...", &action[..57])
+                                } else {
+                                    action.to_string()
+                                }
+                            },
                         ]
                     })
                     .collect();
@@ -696,14 +738,6 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
-}
-
 fn created_chat(r: &tl::enums::Updates) -> Option<&tl::enums::Chat> {
     match r {
         tl::enums::Updates::Updates(u) => u.chats.first(),
@@ -719,14 +753,6 @@ async fn cache_created_chat(guard: &client::ClientGuard, chat: Option<&tl::enums
                 chat.id()
             );
         }
-    }
-}
-
-fn peer_id(peer: &tl::enums::Peer) -> i64 {
-    match peer {
-        tl::enums::Peer::User(p) => p.user_id,
-        tl::enums::Peer::Chat(p) => p.chat_id,
-        tl::enums::Peer::Channel(p) => p.channel_id,
     }
 }
 
@@ -842,29 +868,6 @@ fn message_action_summary(kind: &str, message: &tl::enums::Message) -> serde_jso
     }
 }
 
-fn stats_period(v: &tl::enums::StatsDateRangeDays) -> serde_json::Value {
-    match v {
-        tl::enums::StatsDateRangeDays::Days(d) => {
-            serde_json::json!({"min_date": d.min_date, "max_date": d.max_date})
-        }
-    }
-}
-
-fn stats_abs(v: &tl::enums::StatsAbsValueAndPrev) -> serde_json::Value {
-    match v {
-        tl::enums::StatsAbsValueAndPrev::Prev(p) => {
-            serde_json::json!({"current": p.current, "previous": p.previous})
-        }
-    }
-}
-
-fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Value {
-    match v {
-        tl::enums::StatsPercentValue::Value(p) => {
-            serde_json::json!({"part": p.part, "total": p.total})
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;

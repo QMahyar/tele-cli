@@ -57,3 +57,86 @@ pub fn set_flags(verbose: u8, quiet: bool) {
 pub fn min_line_level() -> u8 {
     MIN_LINE.load(Ordering::Relaxed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn min_line_level_default_is_info() {
+        let level = min_line_level();
+        assert_eq!(
+            level, LEVEL_INFO,
+            "default min_line_level should be LEVEL_INFO"
+        );
+    }
+
+    #[test]
+    fn set_flags_quiet_sets_error_level() {
+        // Save original
+        let original = MIN_LINE.load(Ordering::Relaxed);
+        let original_max = log::max_level();
+
+        set_flags(0, true);
+        assert_eq!(min_line_level(), LEVEL_ERROR);
+        assert_eq!(log::max_level(), LevelFilter::Error);
+
+        // Restore
+        MIN_LINE.store(original, Ordering::Relaxed);
+        log::set_max_level(original_max);
+    }
+
+    #[test]
+    fn set_flags_verbose_1_sets_info_level() {
+        let original = MIN_LINE.load(Ordering::Relaxed);
+        let original_max = log::max_level();
+
+        set_flags(1, false);
+        assert_eq!(log::max_level(), LevelFilter::Info);
+
+        // Restore
+        MIN_LINE.store(original, Ordering::Relaxed);
+        log::set_max_level(original_max);
+    }
+
+    #[test]
+    fn set_flags_verbose_2_sets_debug_level() {
+        let original = MIN_LINE.load(Ordering::Relaxed);
+        let original_max = log::max_level();
+
+        set_flags(2, false);
+        assert_eq!(log::max_level(), LevelFilter::Debug);
+
+        // Restore
+        MIN_LINE.store(original, Ordering::Relaxed);
+        log::set_max_level(original_max);
+    }
+
+    #[test]
+    fn set_flags_verbose_0_no_quiet_does_not_change_level() {
+        let original = MIN_LINE.load(Ordering::Relaxed);
+        let original_max = log::max_level();
+
+        set_flags(0, false);
+        // Should remain unchanged (whatever the default was)
+        assert_eq!(min_line_level(), original);
+
+        // Restore
+        MIN_LINE.store(original, Ordering::Relaxed);
+        log::set_max_level(original_max);
+    }
+
+    #[test]
+    fn set_flags_quiet_overrides_verbose() {
+        let original = MIN_LINE.load(Ordering::Relaxed);
+        let original_max = log::max_level();
+
+        set_flags(2, true);
+        assert_eq!(min_line_level(), LEVEL_ERROR);
+        assert_eq!(log::max_level(), LevelFilter::Error);
+
+        // Restore
+        MIN_LINE.store(original, Ordering::Relaxed);
+        log::set_max_level(original_max);
+    }
+}

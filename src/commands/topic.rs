@@ -3,8 +3,9 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
+use crate::commands::credentials::{creds, creds_api_id};
 use crate::entities;
-use crate::error::{TeleError, TeleResult};
+use crate::error::TeleResult;
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;
 
@@ -16,19 +17,19 @@ pub enum TopicCmd {
 
 #[derive(Args)]
 pub struct CreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "forum group: @username, numeric ID, or me")]
     chat: String,
-    #[arg(long)]
+    #[arg(long, help = "topic title")]
     title: String,
-    #[arg(long)]
+    #[arg(long, help = "4-byte emoji for topic icon (optional)")]
     emoji: Option<String>,
 }
 
 #[derive(Args)]
 pub struct ListArgs {
-    #[arg(long)]
+    #[arg(long, help = "forum group: @username, numeric ID, or me")]
     chat: String,
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 20, help = "max topics to list (1-10000)")]
     limit: u32,
 }
 
@@ -169,14 +170,6 @@ fn rand_seed() -> i64 {
 
 fn list_dry_run_payload(target: &str) -> serde_json::Value {
     serde_json::json!({"dry_run": true, "chat": target})
-}
-
-fn creds() -> crate::TeleResult<crate::config::Credentials> {
-    crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))
-}
-
-fn creds_api_id() -> crate::TeleResult<i32> {
-    Ok(creds()?.api_id)
 }
 
 #[cfg(test)]
