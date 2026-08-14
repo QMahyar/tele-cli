@@ -2,8 +2,13 @@
 name = "telecli"
 version = "0.1.0"
 edition = "2021"
-description = "Telegram user-account CLI (Rust, grammers)"
+description = "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming. No bot tokens."
 license = "MIT"
+repository = "https://github.com/QMahyar/tele-cli"
+homepage = "https://github.com/QMahyar/tele-cli#readme"
+keywords = ["telegram", "cli", "mtproto", "messaging", "chat"]
+categories = ["command-line-utilities", "network-programming"]
+readme = "README.md"
 
 [dependencies]
 anyhow = "1"

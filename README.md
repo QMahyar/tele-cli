@@ -1,219 +1,123 @@
-# Tele-Cli (`tele`)
+# tele
 
-A Rust CLI that operates **real Telegram phone accounts** at native-user depth — one
-session per account, messages, chats, dialogs, contacts, privacy, takeout, and live
-update streaming. Built on [grammers](https://docs.rs/grammers-client) 0.10 (MTProto).
+> A Rust CLI for driving real Telegram user accounts — messages, chats, groups, contacts, privacy, live streaming, and more. No bot tokens.
 
-- **Many accounts, one tool.** Name them, tag them, fan out a command across all of
-  them — sequentially by default, `--parallel 1–3` when you need speed.
-- **For humans and agents.** comfy-tables for you; one JSON envelope (or JSONL from
-  `listen`) on stdout for scripts and AI agents. Logs go to stderr only.
-- **No bot tokens.** Full user-client surface: scheduled sends, forum topics, admin
-  log, takeout export, raw TL calls via a typed registry.
+[![npm version](https://img.shields.io/npm/v/tele-cli.svg)](https://www.npmjs.com/package/tele-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 
-**Status:** pre-release `0.1.0`. Capability matrix has no open `want` rows (release
-gate met, see [ADR-005](docs/decisions/005-unpublished-until-want-done.md)); the
-remaining product surface is [Phase 6](tasks/plan.md) (MCP server + agent skill, ask
-first). CI and publishing are not set up yet — see [docs/release.md](docs/release.md).
+---
 
-## Quickstart
+## Why?
 
-Requires a stable Rust toolchain. Build once:
+- **User accounts, not bots.** Full MTProto client surface — scheduled messages, forum topics, admin log, takeout export, raw TL calls. Anything your Telegram account can do, `tele` can do.
+- **Multi-account.** Name them, tag them, fan out a command across all of them. Sequential by default, `--parallel 1–3` when you need speed.
+- **Human + machine.** Comfy tables on your terminal; a single JSON envelope (or JSONL from `listen`) on stdout for scripts and AI agents. Logs on stderr only.
+- **Pure Rust.** Built on [grammers](https://docs.rs/grammers-client) 0.10 (MTProto). Zero C/C++ dependencies. `cargo build` and done.
 
-```
-cargo build --release
-```
+---
 
-The binary is `target/release/telecli` (`telecli.exe` on Windows); rename it to
-`tele` if you like — that's the name used throughout this README.
+## Install
 
-**1. Set up the app data dir.** Everything lives here — never in the repo:
-
-PowerShell (Windows):
-
-```powershell
-$dir = Join-Path $env:APPDATA "telecli"
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
-Copy-Item .env.example (Join-Path $dir ".env")
-```
-
-Bash (Linux/macOS):
+**npm** (recommended — works on Windows, macOS, Linux):
 
 ```bash
-mkdir -p ~/.config/telecli
-cp .env.example ~/.config/telecli/.env
+npm install -g tele-cli
 ```
 
-**2. Fill in your API credentials** in `{app-dir}/.env` (from
-my.telegram.org — **never commit these**):
+**Cargo** (from source):
+
+```bash
+cargo install --locked telecli
+```
+
+**Binary download** — grab the latest from [GitHub Releases](https://github.com/QMahyar/tele-cli/releases).
+
+**Shell completions** (after install):
+
+```bash
+tele completions bash >> ~/.bashrc
+tele completions zsh  >> ~/.zshrc
+tele completions fish > ~/.config/fish/completions/tele.fish
+```
+
+---
+
+## Quick start
+
+```bash
+# 1. Add an account (prompts for phone + code)
+tele account add --name work
+tele account login --name work --method code --phone +1XXXXXXXXXX
+
+# 2. Send a message (dry-run first — touches nothing)
+tele msg send --chat me --text "hello from tele" --dry-run
+tele msg send --chat me --text "hello from tele"
+
+# 3. Stream updates as JSONL
+tele listen --events NewMessage --chat me --timeout-secs 30
+```
+
+That's it. Every command supports `--dry-run`, `--json`, and `--account` / `--tag` for account selection.
+
+---
+
+## Commands
+
+| Group | Commands |
+|---|---|
+| **Accounts** | `account list`, `account add`, `account login`, `account logout`, `account remove`, `account status` |
+| **Messages** | `msg send`, `msg get`, `msg edit`, `msg delete`, `msg forward`, `msg search`, `msg react`, `msg download`, `msg read`, `msg pin` |
+| **Chats** | `chat join`, `chat create`, `chat leave`, `chat participants`, `chat kick`, `chat admin`, `chat admin-log`, `chat stats`, `chat invite` |
+| **Dialogs** | `dialog list`, `dialog drafts`, `dialog archive`, `dialog delete` |
+| **Topics** | `topic list`, `topic create` |
+| **Contacts** | `contact list`, `contact add`, `contact block` |
+| **Profile** | `profile get`, `profile set` |
+| **Privacy** | `privacy get`, `privacy set` |
+| **Takeout** | `takeout start`, `takeout export`, `takeout finish` |
+| **Listen** | `listen` — stream JSONL updates in real time |
+| **Raw** | `raw` — typed registry for any supported TL method |
+| **Completions** | `completions bash`, `completions zsh`, `completions fish`, `completions powershell` |
+
+Run `tele --help` for the full reference, or `tele <command> --help` for a specific command.
+
+---
+
+## Global flags
+
+| Flag | Description |
+|---|---|
+| `--account <name>` | Target a specific account (default: all sessions) |
+| `--tag <tag>` | Target accounts with this tag |
+| `--json` | Machine-readable JSON output |
+| `--jsonl` | JSON Lines output (one object per line) |
+| `--dry-run` | Validate and print what would happen — no network calls |
+| `--parallel <1-3>` | Fan out across accounts in parallel |
+| `--config <path>` | Override config file location |
+| `-v` / `-vv` | Verbose logging (info / debug) on stderr |
+| `-q` | Quiet — errors only |
+| `--verbose` | Shorthand for `-v` |
+
+---
+
+## Configuration
+
+Config lives at `%APPDATA%\telecli` (Windows) or `~/.config/telecli` (macOS/Linux). Override with `--config` or `TELE_APP_DIR`.
+
+**`.env`** — API credentials (from [my.telegram.org](https://my.telegram.org)):
 
 ```
 TELE_API_ID=1234567
 TELE_API_HASH=0123456789abcdef0123456789abcdef
 ```
 
-Process environment overrides the file, so `TELE_API_ID=... tele ...` works too.
-
-**3. Register and log in an account** (prompts for the SMS code; 2FA password is
-prompted on stdin; `--method qr` to scan a QR instead):
-
-```bash
-tele account add --name work --tags iran,work
-tele account login --name work --method code --phone +1XXXXXXXXXX
-tele account status --account work
-```
-
-**4. Send your first message** (try `--dry-run` first — it touches nothing):
-
-```bash
-tele msg send --account work --chat me --text "hello from tele" --dry-run
-tele msg send --account work --chat me --text "hello from tele"
-```
-
-## Command tour
-
-Account selection is global: `--account NAME` (defaults to **all** sessions) or
-`--tag TAG` (accounts having that tag *and* a session). All commands accept
-`--json`, `--dry-run`, `--config PATH`.
-
-### Accounts
-
-```
-tele account list                    # sessions + tags
-tele account login --name work --method code --phone +1XXXXXXXXXX
-tele account login --name work --method qr            # QR on stderr
-tele account logout --name work      # server sign-out + delete session
-tele account remove --name work      # local delete only
-```
-
-### Messages
-
-```
-tele msg send --chat @username --text "hi"                    # --format markdown, --silent, --reply ID, --no-preview
-tele msg send --chat me --file ./doc.pdf --caption "here"     # images go as photos
-tele msg send --chat me --text "later" --schedule 2026-08-14T09:00:00Z
-tele msg get  --chat me --limit 5 --json                      # id, date, sender, text
-tele msg edit --chat me --id 42 --text "v2"
-tele msg delete --chat me --ids 42,43     # or --all
-tele msg forward --from @news --to me --ids 100,101
-tele msg react --chat me --id 42 --reaction 👍    # --remove
-tele msg search --chat me --query "invoice"
-tele msg download --chat me --id 42 --out ./media
-tele msg read --chat me                      # --mark-unread to invert
-```
-
-`--schedule` accepts a Unix timestamp or RFC3339. Pinning is `tele msg pin --chat me
---id 42` (`--unpin` to remove).
-
-### Chats & groups
-
-```
-tele chat join --chat https://t.me/joinchat/AbCdEf           # invite link or @username
-tele chat create --kind channel --title "Announcements" --description "..."
-tele chat participants --chat @somegroup --limit 100
-tele chat kick --chat @somegroup --user @spammer
-tele chat admin --chat @somegroup --user @mod --promote --title "Mod"
-tele chat admin-log --chat @somegroup                       # admin actions
-tele chat stats --chat @somegroup                           # --broadcast for channels
-tele chat invite --chat @somegroup --user @friend
-tele chat leave --chat @somegroup
-```
-
-### Dialogs & topics
-
-```
-tele dialog list --limit 20                # --folder 1 = archive
-tele dialog drafts
-tele dialog archive --chat @old           # --unarchive to restore
-tele dialog delete --chat @old            # leave + delete history
-tele topic create --chat @forum --title "Off-topic" --emoji 🎮
-tele topic list --chat @forum
-```
-
-### Contacts, profile, privacy
-
-```
-tele contact list --limit 50
-tele contact add --user @friend --first "Jane" --last "Doe"
-tele contact block --user @spammer        # --unblock to undo
-tele profile get                          # your own profile (--chat me)
-tele profile get --chat @friend           # any user
-tele profile set --name "New Name" --bio "…" --photo ./pic.jpg
-tele privacy get --key phone_number
-tele privacy set --key status --allow @friend,@colleague --deny @rival
-```
-
-Privacy keys: `status`, `profile_photo`, `phone_number`, `calls`, `forwards`,
-`chat_invite`, `added_by_phone`, `voice_messages`, `about`.
-
-### Takeout (data export)
-
-```
-tele takeout start --contacts --messages --photos    # returns a takeout session id
-tele takeout export --message-limit 1000             # writes to {app-dir}/export/{account}/
-tele takeout finish
-```
-
-Exports `contacts.json`, `dialogs.json`, and `messages.jsonl` per account.
-
-### Listen (live update stream)
-
-`listen` streams **JSON Lines on stdout**, one update per line, until Ctrl-C
-(`--timeout-secs N` to bound it):
-
-```
-tele listen --account work --events NewMessage,MessageEdited,MessageDeleted --chat me
-```
-
-`--events` is an allowlist (default `NewMessage`); unknown names exit before
-connecting. `--raw` switches to raw `Update` dumps. Events:
-
-| event | JSONL `type` | payload |
-|---|---|---|
-| `NewMessage` | `new_message` | message JSON + `account` |
-| `MessageEdited` | `message_edited` | message JSON + `account` |
-| `MessageDeleted` | `message_deleted` | `chat_id`, `ids` |
-| `Raw` | `update` / `raw` | debug dump |
-
-### Raw TL
-
-The typed registry — one handler per supported TL method; unregistered names fail
-with a pointer to add an arm (see [docs/cli-contract.md](docs/cli-contract.md)):
-
-```
-tele raw messages.ExportChatInvite --args '{"chat": "@somegroup", "usage_limit": 100}'
-tele raw contacts.Search --args '{"q": "Jane", "limit": 5}'
-tele raw messages.GetAllDrafts
-```
-
-Registered: `account.UpdateProfile`, `contacts.Search`, `messages.ExportChatInvite`,
-`messages.GetAllDrafts`, `stats.GetBroadcastStats`, `stats.GetMegagroupStats`.
-
-## Machine output
-
-`--json` on one-shot commands prints a single JSON object on stdout:
-
-```json
-{"ok":true,"accounts":[{"account":"work","ok":true,"data":{"id":928,"date":"2026-08-13T12:00:00+00:00","out":true,"peer":{"id":123,"kind":"user","name":"me"},"sender":{"id":123,"kind":"user","name":"me"},"text":"hello from tele"}}]}
-```
-
-`data` is per-command and additive; failures carry `"error": "..."` and exit codes
-reflect per-account results. Dry runs return `ok: true, data.dry_run: true` and make
-**no network calls**.
-
-Exit codes: `0` all succeeded · `1` usage/validation (bad selection, bad JSON args,
-unknown raw name) · `2` clap parse errors, or partial success (some accounts failed)
-· `3` all accounts failed (Telegram/IO) · `4` auth required.
-
-## Configuration
-
-`{app-dir}/config.toml` (created by `tele account add`; `--config PATH` overrides):
+**`config.toml`** — accounts, proxy, tuning:
 
 ```toml
 flood_sleep_threshold = 60
 parallel_max = 3
 
-[proxy]                              # optional global proxy (socks5 only)
+[proxy]
 type = "socks5"
 host = "127.0.0.1"
 port = 9050
@@ -221,53 +125,76 @@ port = 9050
 [accounts.work]
 tags = ["iran", "work"]
 
-[accounts.work.proxy]                # per-account override
+[accounts.work.proxy]
 type = "socks5"
 host = "127.0.0.1"
 port = 1080
 ```
 
-- Proxy is **socks5-only** (grammers 0.10); `type = "http"` fails with a clear
-  error. Empty host/port = no proxy.
-- `--parallel` is clamped to 1–3 at runtime.
-- App data dir: `%APPDATA%\telecli` on Windows, `$XDG_CONFIG_HOME/telecli` or
-  `~/.config/telecli` elsewhere. Override with `TELE_APP_DIR`.
+---
 
-## Security notes
+## Machine output
 
-- **Secrets live outside the repo**: `.env` (api_id/api_hash), `config.toml`
-  (proxy, tags), and `sessions/{name}.session` all live under the app data dir.
-  `.env`, sessions, and Cargo.lock are gitignored; never commit them.
-- One session file per account, one client per session. Never share a session
-  across processes.
-- Structured logs on stderr only; secrets, phone numbers, and session data are
-  never logged. Set `TELE_LOG=debug` (or `trace` for grammers internals) to see
-  them.
-- `--chat` accepts numeric id (cached access hash required), `@username`,
-  `t.me/...` links, `me`, or `+phone` (imports the number as a contact — only
-  works if the target's phone privacy allows it). See
-  [docs/security.md](docs/security.md) for the full threat model.
-- `tele raw` is full account power: it can call anything the account can. `--dry-run`
-  is honored (no invocation), but treat raw calls with care.
+Every one-shot command prints a single JSON object on stdout with `--json`:
 
-## Live verification status
+```json
+{
+  "ok": true,
+  "command": "msg.send",
+  "accounts": [
+    {
+      "account": "work",
+      "ok": true,
+      "data": { "id": 42, "date": "2026-08-13T12:00:00+00:00", "text": "hello" }
+    }
+  ]
+}
+```
 
-Verified 2026-08-13 against real sessions: account status/list, send/get/edit/delete
-round-trip, cross-account `listen` (account 2 → account 1, JSONL received), profile
-get, takeout export, raw registry (registered → ok, unknown → exit 1), all dry-runs,
-and the proxy negative path. Still user-side to verify: 2FA/QR login, chat
-participants/admin-log on a real group, socks5 positive path, `--file`/`--schedule`,
-MessageEdited/MessageDeleted/Raw listen events, takeout finish, logout.
+`listen` streams one JSONL object per update on stdout. Events: `new_message`, `message_edited`, `message_deleted`, `update` (raw).
 
-## Docs
+**Exit codes:** `0` all succeeded · `1` usage error · `2` partial failure · `3` all failed · `4` auth required.
 
-- [Capability matrix](docs/capabilities.md) — the spine: every Telegram domain, its
-  grammers path, CLI command, and status
-- [CLI contract](docs/cli-contract.md) — exit codes, JSON envelope, listen JSONL, raw
-  registry (the machine API)
-- [Security](docs/security.md) — threat model and boundaries
-- [Observability](docs/observability.md) — stderr logging
-- [Release](docs/release.md) — versioning, CI plan, publish path
-- [Spec](docs/spec.md) and [product intent](docs/ideas/tele-cli.md)
-- [ADRs](docs/decisions/) — 001–006
-- [Tasks](tasks/todo.md) and [plan](tasks/plan.md)
+See [docs/cli-contract.md](docs/cli-contract.md) for the full machine API reference.
+
+---
+
+## Security
+
+- Secrets (API keys, sessions, phone numbers) live **outside the repo** under the app data dir and are never logged.
+- One session file per account. Never share a session across processes.
+- `--dry-run` is honored everywhere — no network calls, no file writes.
+- `tele raw` is full account power. Treat it with the same care as your Telegram client.
+
+See [docs/security.md](docs/security.md) for the full threat model.
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/QMahyar/tele-cli.git
+cd tele-cli
+cargo build
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+268 tests across unit, contract, and selection suites. All run offline by default.
+
+---
+
+## Contributing
+
+Contributions welcome. Open an issue first for anything non-trivial. Run the full test suite before submitting:
+
+```bash
+cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check
+```
+
+---
+
+## License
+
+[MIT](LICENSE)
