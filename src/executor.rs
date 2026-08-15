@@ -166,7 +166,7 @@ fn select_from(
 pub fn print_envelope(flags: &GlobalFlags, envelope: &crate::output::Envelope) -> TeleResult<()> {
     if flags.json || flags.jsonl {
         let value = serde_json::to_value(envelope)?;
-        crate::output::print_json(&value);
+        crate::output::print_json(&value)?;
     }
     Ok(())
 }
