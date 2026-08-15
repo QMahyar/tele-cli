@@ -255,7 +255,7 @@ fn is_valid_mention_id(id: &str) -> bool {
         && matches!(id.parse::<i64>(), Ok(v) if v > 0)
 }
 
-fn validate_upload_path(path: &str) -> TeleResult<()> {
+pub fn validate_upload_path(path: &str) -> TeleResult<()> {
     let app_dir = crate::config::app_data_dir();
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
     if canonical.starts_with(&app_dir) {

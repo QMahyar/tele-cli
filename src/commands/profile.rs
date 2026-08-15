@@ -4,6 +4,7 @@ use grammers_client::tl;
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
 use crate::commands::credentials::creds_api_id;
+use crate::commands::msg::validate_upload_path;
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -19,6 +20,8 @@ pub enum ProfileCmd {
 pub struct GetArgs {
     #[arg(long, help = "target user: @username, numeric ID, or me (default)")]
     chat: Option<String>,
+    #[arg(long, help = "include the account phone number (redacted by default)")]
+    show_phone: bool,
 }
 
 #[derive(Args)]
@@ -43,6 +46,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
+    let show_phone = args.show_phone;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
@@ -73,7 +77,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 "id": user.id().bare_id().unwrap_or_default(),
                                 "name": user.full_name(),
                                 "username": user.username().unwrap_or_default(),
-                                "phone": user.phone().unwrap_or_default(),
+                                "phone": redact_phone(user.phone(), show_phone),
                                 "bio": full_user.about,
                                 "bot": user.is_bot(),
                             })
@@ -102,7 +106,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         "id": me.id().bare_id().unwrap_or_default(),
                         "name": me.full_name(),
                         "username": me.username().unwrap_or_default(),
-                        "phone": me.phone().unwrap_or_default(),
+                        "phone": redact_phone(me.phone(), show_phone),
                         "bio": full_user.about,
                         "bot": me.is_bot(),
                     })
@@ -126,7 +130,18 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
             "at least one of --name, --bio, --photo required".to_string(),
         ));
     }
+    if let Some(path) = &args.photo {
+        validate_upload_path(path)?;
+    }
     Ok(())
+}
+
+fn redact_phone(phone: Option<&str>, show_phone: bool) -> Option<&str> {
+    if show_phone {
+        phone
+    } else {
+        None
+    }
 }
 
 fn get_dry_run_payload(target: Option<&str>) -> serde_json::Value {
@@ -260,5 +275,67 @@ mod tests {
         let v = get_dry_run_payload(Some("me"));
         assert_eq!(v["dry_run"], serde_json::json!(true));
         assert_eq!(v["chat"], serde_json::json!("me"));
+    }
+
+    #[test]
+    fn phone_redacted_by_default() {
+        assert_eq!(redact_phone(Some("+123456789"), false), None);
+        assert_eq!(redact_phone(None, false), None);
+    }
+
+    #[test]
+    fn phone_shown_when_flag_set() {
+        assert_eq!(redact_phone(Some("+123456789"), true), Some("+123456789"));
+        assert_eq!(redact_phone(None, true), None);
+    }
+
+    #[test]
+    fn phone_json_key_is_null_or_string() {
+        let row = serde_json::json!({"phone": redact_phone(Some("+123456789"), false)});
+        assert!(row["phone"].is_null());
+        let row = serde_json::json!({"phone": redact_phone(Some("+123456789"), true)});
+        assert_eq!(row["phone"], serde_json::json!("+123456789"));
+    }
+
+    fn set_args(photo: Option<&str>) -> SetArgs {
+        SetArgs {
+            name: None,
+            bio: None,
+            photo: photo.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn set_rejects_sensitive_photo_basenames() {
+        for bad in [
+            "C:/secrets/.env",
+            "C:/telecli-data/1.session",
+            "2.session-journal",
+        ] {
+            assert!(
+                matches!(validate_set(&set_args(Some(bad))), Err(TeleError::Usage(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_rejects_photo_from_app_data_dir() {
+        let dir = crate::config::app_data_dir();
+        for bad in ["telecli-profile-test.toml", "telecli-profile-test.env"] {
+            let path = dir.join(bad).to_string_lossy().into_owned();
+            assert!(
+                matches!(
+                    validate_set(&set_args(Some(&path))),
+                    Err(TeleError::Usage(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_accepts_regular_photo_paths() {
+        assert!(validate_set(&set_args(Some("C:/tmp/photo.jpg"))).is_ok());
     }
 }
