@@ -846,7 +846,7 @@ fn role_name(role: &grammers_client::peer::Role) -> &'static str {
 
 fn ensure_chat_peer(peer: &grammers_client::peer::Peer, action: &str) -> TeleResult<()> {
     if matches!(peer, grammers_client::peer::Peer::User(_)) {
-        return Err(TeleError::Other(format!(
+        return Err(TeleError::Usage(format!(
             "{action} requires a chat, got a user"
         )));
     }
@@ -1299,7 +1299,7 @@ mod tests {
         ));
         let err = ensure_chat_peer(&user_peer, "kick").unwrap_err();
         assert!(err.message().contains("kick requires a chat, got a user"));
-        assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
     }
 
     #[tokio::test]

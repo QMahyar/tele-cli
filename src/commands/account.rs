@@ -1,4 +1,5 @@
 use crate::client::{self, ClientGuard};
+use crate::commands::credentials::creds;
 use crate::config;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -90,12 +91,13 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
 }
 async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
-    let creds = config::credentials()?;
+    let credentials = creds()?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let creds = creds.clone();
+        let credentials = credentials.clone();
         Box::pin(async move {
-            let guard = ClientGuard::connect(&name, creds.api_id, config_path.as_deref()).await?;
+            let guard =
+                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
             let authorized = guard.client.is_authorized().await.map_err(|e| {
                 if crate::error::invocation_is_unauthorized(&e) {
                     TeleError::Auth("not logged in".to_string())
@@ -197,9 +199,9 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             &dry_run_envelope(&args.name, &would, &flags.command),
         );
     }
-    let creds = config::credentials()?;
+    let credentials = creds()?;
     let mut guard =
-        ClientGuard::connect(&args.name, creds.api_id, flags.config_path.as_deref()).await?;
+        ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref()).await?;
     if guard
         .client
         .is_authorized()
@@ -218,7 +220,7 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     match args.method.as_str() {
         "qr" => {
-            client::qr_login(&guard.client, &mut guard.updates, &creds, |uri| {
+            client::qr_login(&guard.client, &mut guard.updates, &credentials, |uri| {
                 render_qr(uri);
             })
             .await?;
@@ -230,7 +232,7 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .ok_or_else(|| TeleError::Usage("--phone required for code login".to_string()))?;
             let token = guard
                 .client
-                .request_login_code(&phone, &creds.api_hash)
+                .request_login_code(&phone, &credentials.api_hash)
                 .await
                 .map_err(tele_invocation)?;
             let mut stdin = std::io::stdin().lock();
@@ -306,9 +308,9 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             &dry_run_envelope(&args.name, &would, &flags.command),
         );
     }
-    let creds = config::credentials()?;
+    let credentials = creds()?;
     let guard =
-        ClientGuard::connect(&args.name, creds.api_id, flags.config_path.as_deref()).await?;
+        ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref()).await?;
     if let Err(e) = guard.client.sign_out().await {
         if crate::error::invocation_is_unauthorized(&e) {
             log_line("info", "account was not authorized; removing session");
