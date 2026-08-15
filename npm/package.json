@@ -1,5 +1,5 @@
 {
-  "name": "tele-cli",
+  "name": "@qmahyar/tele-cli",
   "version": "0.1.0",
   "description": "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming. No bot tokens.",
   "license": "MIT",
@@ -31,10 +31,10 @@
     "install.js"
   ],
   "optionalDependencies": {
-    "tele-cli-win32-x64": "0.1.0",
-    "tele-cli-darwin-arm64": "0.1.0",
-    "tele-cli-darwin-x64": "0.1.0",
-    "tele-cli-linux-x64": "0.1.0",
-    "tele-cli-linux-arm64": "0.1.0"
+    "@qmahyar/tele-cli-win32-x64": "0.1.0",
+    "@qmahyar/tele-cli-darwin-arm64": "0.1.0",
+    "@qmahyar/tele-cli-darwin-x64": "0.1.0",
+    "@qmahyar/tele-cli-linux-x64": "0.1.0",
+    "@qmahyar/tele-cli-linux-arm64": "0.1.0"
   }
 }

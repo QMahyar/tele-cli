@@ -7,11 +7,11 @@ const fs = require("fs");
 const path = require("path");
 
 const PLATFORM_PACKAGES = {
-  "win32-x64": "tele-cli-win32-x64",
-  "darwin-arm64": "tele-cli-darwin-arm64",
-  "darwin-x64": "tele-cli-darwin-x64",
-  "linux-x64": "tele-cli-linux-x64",
-  "linux-arm64": "tele-cli-linux-arm64",
+  "win32-x64": "@qmahyar/tele-cli-win32-x64",
+  "darwin-arm64": "@qmahyar/tele-cli-darwin-arm64",
+  "darwin-x64": "@qmahyar/tele-cli-darwin-x64",
+  "linux-x64": "@qmahyar/tele-cli-linux-x64",
+  "linux-arm64": "@qmahyar/tele-cli-linux-arm64",
 };
 
 const BINARY_NAMES = {
@@ -58,7 +58,7 @@ function findBinary() {
 const binPath = findBinary();
 if (!binPath) {
   console.error(
-    "[tele-cli] Binary not found. Install with: npm install -g tele-cli"
+    "[tele-cli] Binary not found. Install with: npm install -g @qmahyar/tele-cli"
   );
   process.exit(1);
 }

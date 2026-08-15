@@ -9,11 +9,11 @@ const https = require("https");
 const http = require("http");
 
 const PLATFORM_PACKAGES = {
-  "win32-x64": "tele-cli-win32-x64",
-  "darwin-arm64": "tele-cli-darwin-arm64",
-  "darwin-x64": "tele-cli-darwin-x64",
-  "linux-x64": "tele-cli-linux-x64",
-  "linux-arm64": "tele-cli-linux-arm64",
+  "win32-x64": "@qmahyar/tele-cli-win32-x64",
+  "darwin-arm64": "@qmahyar/tele-cli-darwin-arm64",
+  "darwin-x64": "@qmahyar/tele-cli-darwin-x64",
+  "linux-x64": "@qmahyar/tele-cli-linux-x64",
+  "linux-arm64": "@qmahyar/tele-cli-linux-arm64",
 };
 
 const BINARY_NAMES = {
