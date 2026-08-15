@@ -543,22 +543,41 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let channel = entities::input_channel(&chat)
                 .await
                 .map_err(tele_invocation)?;
-            let raw: tl::enums::channels::AdminLogResults = guard
-                .client
-                .invoke(&tl::functions::channels::GetAdminLog {
-                    channel,
-                    q: String::new(),
-                    events_filter: None,
-                    admins: None,
-                    max_id: 0,
-                    min_id: 0,
-                    limit: limit as i32,
+            let events = {
+                let guard_ref = &guard;
+                let channel_ref = &channel;
+                collect_admin_log(limit, move |max_id, page_limit| async move {
+                    let raw: tl::enums::channels::AdminLogResults = guard_ref
+                        .client
+                        .invoke(&tl::functions::channels::GetAdminLog {
+                            channel: (*channel_ref).clone(),
+                            q: String::new(),
+                            events_filter: None,
+                            admins: None,
+                            max_id,
+                            min_id: 0,
+                            limit: page_limit as i32,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                    let tl::enums::channels::AdminLogResults::Results(results) = raw;
+                    let next_max_id = results
+                        .events
+                        .iter()
+                        .last()
+                        .map(|e| match e {
+                            tl::enums::ChannelAdminLogEvent::Event(e) => e.id,
+                        })
+                        .unwrap_or_default();
+                    Ok(AdminLogPage {
+                        events: results.events,
+                        max_id: next_max_id,
+                    })
                 })
-                .await
-                .map_err(tele_invocation)?;
-            let tl::enums::channels::AdminLogResults::Results(results) = raw;
+            }
+            .await?;
             let mut rows = Vec::new();
-            for event in results.events {
+            for event in events {
                 let tl::enums::ChannelAdminLogEvent::Event(event) = event;
                 let date = chrono::DateTime::from_timestamp(event.date as i64, 0)
                     .map(|d| d.to_rfc3339())
@@ -587,6 +606,37 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+struct AdminLogPage {
+    events: Vec<tl::enums::ChannelAdminLogEvent>,
+    max_id: i64,
+}
+
+async fn collect_admin_log<F, Fut>(
+    limit: u32,
+    mut fetch: F,
+) -> TeleResult<Vec<tl::enums::ChannelAdminLogEvent>>
+where
+    F: FnMut(i64, u32) -> Fut,
+    Fut: std::future::Future<Output = TeleResult<AdminLogPage>>,
+{
+    let mut events = Vec::new();
+    let mut max_id = 0i64;
+    loop {
+        let remaining = limit.saturating_sub(events.len() as u32);
+        if remaining == 0 {
+            break;
+        }
+        let page = fetch(max_id, remaining.min(100)).await?;
+        max_id = page.max_id;
+        let page_len = page.events.len();
+        events.extend(page.events);
+        if page_len == 0 {
+            break;
+        }
+    }
+    Ok(events)
 }
 
 async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -943,6 +993,124 @@ mod tests {
             let err = validate_invite_link(input).unwrap_err();
             assert!(matches!(err, TeleError::Usage(_)), "for {input}");
         }
+    }
+
+    fn fake_event(id: i64) -> tl::enums::ChannelAdminLogEvent {
+        tl::enums::ChannelAdminLogEvent::Event(tl::types::ChannelAdminLogEvent {
+            id,
+            date: 0,
+            user_id: 0,
+            action: tl::enums::ChannelAdminLogEventAction::ParticipantJoin,
+        })
+    }
+
+    #[tokio::test]
+    async fn collect_admin_log_stops_on_empty_page() {
+        let mut calls = Vec::new();
+        let events = collect_admin_log(10, |max_id, page_limit| {
+            calls.push((max_id, page_limit));
+            async move {
+                Ok(AdminLogPage {
+                    events: Vec::new(),
+                    max_id: 0,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert!(events.is_empty());
+        assert_eq!(calls, vec![(0, 10)]);
+    }
+
+    #[tokio::test]
+    async fn collect_admin_log_probes_after_partial_page() {
+        let pages: [(i64, u32, Vec<i64>, i64); 2] = [(0, 5, vec![10, 9], 9), (9, 3, Vec::new(), 0)];
+        let mut next = 0usize;
+        let mut calls = Vec::new();
+        let events = collect_admin_log(5, |max_id, page_limit| {
+            let (want_max, want_limit, ids, new_max) = pages[next].clone();
+            next += 1;
+            calls.push((max_id, page_limit));
+            async move {
+                assert_eq!(max_id, want_max);
+                assert_eq!(page_limit, want_limit);
+                Ok(AdminLogPage {
+                    events: ids.into_iter().map(fake_event).collect(),
+                    max_id: new_max,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(calls, vec![(0, 5), (9, 3)]);
+    }
+
+    #[tokio::test]
+    async fn collect_admin_log_paginates_until_limit() {
+        let pages: [(i64, u32, Vec<i64>, i64); 2] =
+            [(0, 5, vec![10, 9, 8], 8), (8, 2, vec![7, 6], 6)];
+        let mut next = 0usize;
+        let mut calls = Vec::new();
+        let events = collect_admin_log(5, |max_id, page_limit| {
+            let (want_max, want_limit, ids, new_max) = pages[next].clone();
+            next += 1;
+            calls.push((max_id, page_limit));
+            async move {
+                assert_eq!(max_id, want_max);
+                assert_eq!(page_limit, want_limit);
+                Ok(AdminLogPage {
+                    events: ids.into_iter().map(fake_event).collect(),
+                    max_id: new_max,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(events.len(), 5);
+        assert_eq!(calls, vec![(0, 5), (8, 2)]);
+    }
+
+    #[tokio::test]
+    async fn collect_admin_log_stops_when_limit_reached_exactly() {
+        let mut calls = Vec::new();
+        let events = collect_admin_log(3, |max_id, page_limit| {
+            calls.push((max_id, page_limit));
+            async move {
+                Ok(AdminLogPage {
+                    events: vec![fake_event(7), fake_event(6), fake_event(5)],
+                    max_id: 5,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(calls, vec![(0, 3)]);
+    }
+
+    #[tokio::test]
+    async fn collect_admin_log_page_size_capped_at_100() {
+        let mut next = 0usize;
+        let mut calls = Vec::new();
+        let events = collect_admin_log(250, |max_id, page_limit| {
+            let ids: Vec<i64> = (0..page_limit)
+                .map(|i| 1000 - next as i64 * 100 - i as i64)
+                .collect();
+            let new_max = ids.last().copied().unwrap_or(0);
+            next += 1;
+            calls.push((max_id, page_limit));
+            async move {
+                Ok(AdminLogPage {
+                    events: ids.into_iter().map(fake_event).collect(),
+                    max_id: new_max,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(events.len(), 250);
+        assert_eq!(calls, vec![(0, 100), (901, 100), (801, 50)]);
     }
 
     fn admin_rights() -> tl::enums::ChatAdminRights {
