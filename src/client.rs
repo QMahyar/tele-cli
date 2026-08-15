@@ -79,7 +79,13 @@ pub async fn qr_login(
 
     let receiver = std::mem::replace(updates, mpsc::unbounded_channel().1);
     let mut stream = client
-        .stream_updates(receiver, UpdatesConfiguration::default())
+        .stream_updates(
+            receiver,
+            UpdatesConfiguration {
+                catch_up: true,
+                update_queue_limit: Some(1000),
+            },
+        )
         .await
         .map_err(|e| anyhow::anyhow!("stream updates failed: {e}"))?;
 
