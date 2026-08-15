@@ -387,7 +387,7 @@ fn error_envelope_shape() {
             "--json",
         ],
     );
-    assert_eq!(code, 3);
+    assert_eq!(code, 1);
     let v = parse_json(&out);
     assert_eq!(v["ok"], serde_json::json!(false));
     assert_eq!(v["dry_run"], serde_json::json!(false));

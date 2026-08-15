@@ -196,7 +196,7 @@ pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
     let usage = envelope.accounts.iter().any(|a| {
         a.error
             .as_ref()
-            .is_some_and(|e| e["type"].as_str() == Some("UsageError"))
+            .is_some_and(|e| matches!(e["type"].as_str(), Some("UsageError") | Some("ConfigError")))
     });
     if usage {
         return EXIT_USAGE;
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn config_failure_exits_all_failed_not_usage() {
+    fn config_failure_exits_usage() {
         let env = envelope(vec![AccountOutcome {
             account: "a".to_string(),
             ok: false,
@@ -470,7 +470,7 @@ mod tests {
             data: None,
             exit_code: Some(EXIT_USAGE),
         }]);
-        assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
+        assert_eq!(envelope_exit_code(&env), EXIT_USAGE);
     }
 
     #[test]
