@@ -27,6 +27,10 @@ pub fn session_path(name: &str) -> PathBuf {
     session_dir().join(format!("{name}.session"))
 }
 
+pub fn lock_path(name: &str) -> PathBuf {
+    session_dir().join(format!("{name}.session.lock"))
+}
+
 pub fn list_session_names() -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(session_dir()) else {
         return Vec::new();
@@ -44,23 +48,43 @@ pub fn list_session_names() -> Vec<String> {
 
 pub fn remove_session(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
-    let path = session_path(name);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
+    for path in [session_path(name), lock_path(name)] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
     }
+    Ok(())
 }
 
-pub async fn open_session(name: &str) -> anyhow::Result<SqliteSession> {
+pub struct LockedSession {
+    pub session: SqliteSession,
+    pub(crate) lock: std::fs::File,
+}
+
+pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     let path = session_path(name);
     let dir = session_dir();
     crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&dir)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(lock_path(name))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            return Err(anyhow::anyhow!(
+                "session {name} is in use by another process"
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    }
     let session = SqliteSession::open(&path).await?;
     crate::fs_util::restrict_file_private(&path)?;
-    Ok(session)
+    Ok(LockedSession { session, lock })
 }
 
 #[cfg(test)]
@@ -86,5 +110,59 @@ mod tests {
         for name in ["", " ", "a/b", "a\\b", "../x"] {
             assert!(validate_name(name).is_err(), "{name}");
         }
+    }
+
+    fn test_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("telecli-{tag}-{}", std::process::id()))
+    }
+
+    async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::config::TEST_ENV_LOCK.lock().await
+    }
+
+    #[tokio::test]
+    async fn open_session_lock_is_released_on_drop() {
+        let _guard = lock_env().await;
+        let dir = test_dir("session-lock-drop");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let first = open_session("work").await.unwrap();
+        drop(first);
+        let second = open_session("work").await.unwrap();
+        drop(second);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn open_session_rejects_concurrent_use() {
+        let _guard = lock_env().await;
+        let dir = test_dir("session-lock-held");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let held = open_session("work").await.unwrap();
+        let err = open_session("work").await.unwrap_err();
+        assert!(err.to_string().contains("is in use by another process"));
+        drop(held);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_session_cleans_session_and_lock_files() {
+        let _guard = lock_env().await;
+        let dir = test_dir("session-lock-remove");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let held = open_session("work").await.unwrap();
+        drop(held);
+        remove_session("work").unwrap();
+        assert!(!session_path("work").exists());
+        assert!(!lock_path("work").exists());
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

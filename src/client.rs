@@ -12,6 +12,7 @@ pub struct ClientGuard {
     pub client: Client,
     pub session: Arc<SqliteSession>,
     pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
+    _session_lock: std::fs::File,
 }
 
 impl ClientGuard {
@@ -22,7 +23,8 @@ impl ClientGuard {
     ) -> anyhow::Result<Self> {
         let cfg = crate::config::load_config(config_path)?;
         let proxy = crate::config::proxy_url_for(&cfg, name)?;
-        let session = Arc::new(crate::session::open_session(name).await?);
+        let locked = crate::session::open_session(name).await?;
+        let session = Arc::new(locked.session);
         let pool = SenderPool::with_configuration(
             Arc::clone(&session),
             api_id,
@@ -49,6 +51,7 @@ impl ClientGuard {
             client,
             session,
             updates,
+            _session_lock: locked.lock,
         })
     }
 }
