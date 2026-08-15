@@ -44,35 +44,11 @@ pub async fn run_fanout(
         handles.push((
             name.clone(),
             tokio::task::spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
-                    .await
-                    .map_err(|e| TeleError::Other(e.to_string()))?;
-                match future.await {
-                    Ok(data) => Ok(AccountOutcome {
-                        account: name,
-                        ok: true,
-                        error: None,
-                        data: Some(data),
-                        exit_code: None,
-                    }),
-                    Err(e) => Err(e),
-                }
+                run_one(name, semaphore.acquire_owned().await, future).await
             }),
         ));
     }
-    let mut outcomes = Vec::new();
-    for (name, handle) in handles {
-        match handle.await {
-            Ok(Ok(outcome)) => outcomes.push(outcome),
-            Ok(Err(e)) => outcomes.push(failed_outcome(name, e)),
-            Err(_) => outcomes.push(failed_outcome(
-                name,
-                TeleError::Other("account task panicked".to_string()),
-            )),
-        }
-    }
-    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
+    let outcomes = collect_outcomes(handles).await;
     if !flags.quiet {
         for o in &outcomes {
             if let Some(err) = &o.error {
@@ -98,6 +74,46 @@ fn failed_outcome(account: String, e: TeleError) -> AccountOutcome {
         data: None,
         exit_code: Some(e.exit_code()),
     }
+}
+
+async fn run_one(
+    name: String,
+    permit: Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>,
+    future: impl std::future::Future<Output = TeleResult<serde_json::Value>>,
+) -> TeleResult<AccountOutcome> {
+    let _permit = permit.map_err(|e| TeleError::Other(e.to_string()))?;
+    match future.await {
+        Ok(data) => Ok(AccountOutcome {
+            account: name,
+            ok: true,
+            error: None,
+            data: Some(data),
+            exit_code: None,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+async fn collect_one(
+    name: String,
+    handle: tokio::task::JoinHandle<TeleResult<AccountOutcome>>,
+) -> AccountOutcome {
+    match handle.await {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(e)) => failed_outcome(name, e),
+        Err(_) => failed_outcome(name, TeleError::Other("account task panicked".to_string())),
+    }
+}
+
+async fn collect_outcomes(
+    handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
+) -> Vec<AccountOutcome> {
+    let mut outcomes = Vec::new();
+    for (name, handle) in handles {
+        outcomes.push(collect_one(name, handle).await);
+    }
+    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
+    outcomes
 }
 
 fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
@@ -176,6 +192,14 @@ pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
     if auth_count == envelope.accounts.len() {
         return EXIT_AUTH;
     }
+    let usage = envelope.accounts.iter().any(|a| {
+        a.error
+            .as_ref()
+            .is_some_and(|e| e["type"].as_str() == Some("UsageError"))
+    });
+    if usage {
+        return EXIT_USAGE;
+    }
     EXIT_ALL_FAILED
 }
 
@@ -192,6 +216,16 @@ mod tests {
             error: None,
             data: None,
             exit_code: code,
+        }
+    }
+
+    fn usage_outcome(account: &str) -> AccountOutcome {
+        AccountOutcome {
+            account: account.to_string(),
+            ok: false,
+            error: Some(serde_json::json!({"type": "UsageError"})),
+            data: None,
+            exit_code: Some(EXIT_USAGE),
         }
     }
 
@@ -388,17 +422,165 @@ mod tests {
     }
 
     #[test]
-    fn mixed_failure_kinds_exit_all_failed() {
+    fn usage_among_failures_exits_usage() {
         let env = envelope(vec![
-            outcome("a", false, Some(EXIT_USAGE)),
+            usage_outcome("a"),
+            outcome("b", false, Some(EXIT_ALL_FAILED)),
+        ]);
+        assert_eq!(envelope_exit_code(&env), EXIT_USAGE);
+    }
+
+    #[test]
+    fn telegram_and_other_failures_exit_all_failed() {
+        let env = envelope(vec![
+            outcome("a", false, Some(EXIT_ALL_FAILED)),
             outcome("b", false, Some(EXIT_ALL_FAILED)),
         ]);
         assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
     }
 
     #[test]
+    fn single_usage_failure_exits_usage() {
+        let env = envelope(vec![usage_outcome("a")]);
+        assert_eq!(envelope_exit_code(&env), EXIT_USAGE);
+    }
+
+    #[test]
+    fn all_usage_failures_exit_usage() {
+        let env = envelope(vec![usage_outcome("a"), usage_outcome("b")]);
+        assert_eq!(envelope_exit_code(&env), EXIT_USAGE);
+    }
+
+    #[test]
+    fn auth_mixed_with_usage_exits_usage() {
+        let env = envelope(vec![
+            outcome("a", false, Some(EXIT_AUTH)),
+            usage_outcome("b"),
+        ]);
+        assert_eq!(envelope_exit_code(&env), EXIT_USAGE);
+    }
+
+    #[test]
+    fn config_failure_exits_all_failed_not_usage() {
+        let env = envelope(vec![AccountOutcome {
+            account: "a".to_string(),
+            ok: false,
+            error: Some(serde_json::json!({"type": "ConfigError"})),
+            data: None,
+            exit_code: Some(EXIT_USAGE),
+        }]);
+        assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
+    }
+
+    #[test]
+    fn usage_mixed_with_success_is_partial() {
+        let env = envelope(vec![outcome("a", true, None), usage_outcome("b")]);
+        assert_eq!(envelope_exit_code(&env), EXIT_PARTIAL);
+    }
+
+    #[test]
     fn empty_envelope_is_vacuous_ok() {
         let env = envelope(vec![]);
         assert_eq!(envelope_exit_code(&env), EXIT_OK);
+    }
+
+    async fn permit() -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        Ok(Arc::new(tokio::sync::Semaphore::new(1))
+            .acquire_owned()
+            .await
+            .unwrap())
+    }
+
+    fn ok_data() -> TeleResult<serde_json::Value> {
+        Ok(serde_json::json!({"sent": true}))
+    }
+
+    #[tokio::test]
+    async fn successful_task_yields_ok_outcome() {
+        let outcome = run_one("a".to_string(), permit().await, async { ok_data() })
+            .await
+            .unwrap();
+        assert!(outcome.ok);
+        assert_eq!(outcome.account, "a");
+        assert_eq!(outcome.data, Some(serde_json::json!({"sent": true})));
+        assert_eq!(outcome.exit_code, None);
+        assert!(outcome.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn erroring_task_yields_failed_outcome() {
+        let handle = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async {
+                Err(TeleError::Auth("session invalid".to_string()))
+            })
+            .await
+        });
+        let outcome = collect_one("a".to_string(), handle).await;
+        assert!(!outcome.ok);
+        assert_eq!(outcome.exit_code, Some(EXIT_AUTH));
+        assert_eq!(outcome.error.unwrap()["type"], "AuthError");
+    }
+
+    #[tokio::test]
+    async fn panicking_task_yields_failed_outcome_not_abort() {
+        let handle = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async { panic!("boom") }).await
+        });
+        let outcome = collect_one("a".to_string(), handle).await;
+        assert!(!outcome.ok);
+        assert_eq!(outcome.exit_code, Some(EXIT_ALL_FAILED));
+        let error = outcome.error.unwrap();
+        assert_eq!(error["type"], "Error");
+        assert_eq!(error["message"], "account task panicked");
+    }
+
+    #[tokio::test]
+    async fn closed_semaphore_yields_error_outcome() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        sem.close();
+        let outcome = run_one("a".to_string(), sem.acquire_owned().await, async {
+            ok_data()
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(outcome, TeleError::Other(_)));
+    }
+
+    #[tokio::test]
+    async fn outcomes_collected_in_account_order_regardless_of_completion() {
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let slow = tokio::task::spawn(async move {
+            let _ = wait.await;
+            run_one("b".to_string(), permit().await, async { ok_data() }).await
+        });
+        let fast = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async { ok_data() }).await
+        });
+        let _ = release.send(());
+        let outcomes =
+            collect_outcomes(vec![("b".to_string(), slow), ("a".to_string(), fast)]).await;
+        let names: Vec<&str> = outcomes.iter().map(|o| o.account.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+        assert!(outcomes.iter().all(|o| o.ok));
+    }
+
+    #[tokio::test]
+    async fn panicking_task_does_not_abort_other_accounts() {
+        let panicking = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async { panic!("boom") }).await
+        });
+        let healthy = tokio::task::spawn(async {
+            run_one("b".to_string(), permit().await, async { ok_data() }).await
+        });
+        let outcomes = collect_outcomes(vec![
+            ("a".to_string(), panicking),
+            ("b".to_string(), healthy),
+        ])
+        .await;
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].account, "a");
+        assert!(!outcomes[0].ok);
+        assert_eq!(outcomes[1].account, "b");
+        assert!(outcomes[1].ok);
     }
 }
