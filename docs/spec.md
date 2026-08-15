@@ -1,5 +1,12 @@
 # Spec: Tele-Cli
 
+> **SUPERSEDED.** This spec is the original intent document. It is superseded by
+> the living capability matrix (`docs/capabilities.md`) and
+> [ADR-006: Rust CLI with grammers (drop Python)](decisions/006-rust-grammers.md);
+> where they conflict, the matrix and the ADRs win. Stale details below (e.g.
+> `src/accounts.rs`, `msg poll`, `chat permissions`) describe plans that were
+> re-scoped or dropped — check the matrix before relying on them.
+
 ## Objective
 
 Build `tele`: a long-lived Rust CLI that operates **real phone-number user accounts** at
@@ -61,8 +68,8 @@ Command groups (gh-style):
 
 ```
 tele account login|logout|list|add|remove|status
-tele msg    send|edit|delete|forward|pin|unpin|get|react|poll|download
-tele chat   join|leave|invite|participants|kick|admin|permissions|adminlog|stats|create
+tele msg    send|edit|delete|forward|pin|unpin|get|react|download   # msg poll: deferred (later), no friendly path in grammers 0.10
+tele chat   join|leave|invite|participants|kick|admin|admin-log|stats|create   # chat permissions: deferred (later)
 tele topic  create|list|...
 tele dialog list|archive|delete|drafts
 tele contact list|add|block|unblock
@@ -84,7 +91,7 @@ docs/
 src/
   main.rs                 clap root, dispatch, exit codes
   config.rs               TOML + .env load, app dir policy
-  accounts.rs             Named accounts, tags, resolve selection
+  accounts.rs             (superseded — never shipped; account/tag selection lives in src/executor.rs select_accounts)
   session.rs              Session path policy (never CWD)
   client.rs               grammers Client factory (flood, proxy, reconnect)
   executor.rs             Sequential / parallel fan-out + flood surfacing

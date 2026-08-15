@@ -9,7 +9,7 @@ Open release-readiness work:
 
 - CI exists (`ci` workflow in `.github/workflows/ci.yml`); plan below is the contract it implements.
 - Trunk is `main` (renamed from `master`); the `ci` workflow triggers on both until stale refs clear.
-- No release tags exist yet; `CHANGELOG.md` has the first `Unreleased` entry.
+- No release tags exist yet; `CHANGELOG.md` has a dated `[0.1.0] - 2026-08-13` section.
 
 ## Versioning
 
@@ -33,8 +33,8 @@ release commit. The contract for what counts as breaking lives in
   commit.
 - Never commit `.env`, `*.session`, `*.session-journal`, phones, or api hashes
   (`.gitignore` covers these; `docs/` must also be scrubbed of real numbers).
-- Cargo.lock is currently gitignored; for a binary crate it should be committed.
-  Decide when CI lands.
+- `Cargo.lock` is committed (it is a binary crate); keep it in sync in the
+  release commit.
 
 ## Changelog
 

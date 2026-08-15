@@ -38,7 +38,7 @@ src/
 ├── serialize.rs         message_to_json(), peer_key(), media_name()
 ├── session.rs           FileSession (SQLite) per named account
 ├── logging.rs           stderr-only structured logging
-├── fs_util.rs           Sensitive file detection
+├── fs_util.rs           Permission helpers (create_dir_private, restrict_file_private); sensitive-file detection lives in msg.rs validate_upload_path()
 └── commands/
     ├── mod.rs           Subcommand enum dispatch
     ├── account.rs       add, login (code/QR), logout, remove, status, list

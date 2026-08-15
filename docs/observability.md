@@ -11,33 +11,34 @@ On-call questions this CLI must answer without reading source:
 
 | Question | Signal | Where |
 |---|---|---|
-| 1 | log `command_finished` | stderr JSON or key=value |
-| 2 | log `telegram_wait` + JSON `error.seconds` | stderr + stdout `--json` |
-| 3 | log `session_lock` / `connect_failed` | stderr |
-| 4 | log `listen_started` / `listen_event` (counts, not bodies at info) | stderr |
+| 1 | per-account `ok` / `error` in the stdout envelope | stdout `--json` |
+| 2 | `error.seconds` on flood/slowmode wait | stdout `--json` |
+| 3 | `[error] ...` freeform stderr line from the failing command | stderr |
+| 4 | `[info]` listen lifecycle lines (`listen streams JSONL events on stdout`, `listen timeout reached`, per-account stream failures) | stderr + stdout JSONL rows |
 
-No Prometheus in v1. Structured logs are enough for a local CLI.
+No Prometheus in v1. Two freeform stderr channels are enough for a local CLI.
 
 ## Log rules
 
 - Destination: **stderr only**. stdout is tables or `--json`.
-- Default level: WARNING. `-v` → INFO. `-vv` / `--verbose` twice → DEBUG. `-q` → ERROR.
-- Shape: `event=<name>` plus fields. Prefer JSON logs when `--json` so agents can ignore stderr or parse it.
-- Correlation: `run_id` (uuid4 per process invocation) on every line.
-- Cardinality: fields from small sets (`account`, `command`, `event`, `ok`). Message text only at DEBUG, truncated.
+- The `log` crate is **Off by default** (no `[LEVEL] message` lines at all).
+  `TELE_LOG=trace|debug|info|warn|error` enables it and selects the level.
+  With `TELE_LOG` unset, `-v` → INFO, `-vv` → DEBUG, `-q` → ERROR.
+- Freeform `log_line` lines (`[info] ...`, `[warn] ...`, `[error] ...`) default to a
+  minimum of INFO; `-q` raises the floor to ERROR. They are independent of
+  `TELE_LOG` and of the `-v` flags.
+- Shape: freeform `[level] message`. There are **no structured events and no
+  `run_id`**; correlate by reading the whole stderr stream.
 - Never: api_hash, session, phone, password, full `--args` for raw at INFO.
 
-## Event names (stable)
+## What actually gets logged
 
-| event | level | fields |
-|---|---|---|
-| `command_started` | info | run_id, command, accounts, dry_run, parallel |
-| `command_finished` | info | run_id, command, ok, failed_count |
-| `telegram_wait` | warn | run_id, account, seconds, kind=flood\|slowmode |
-| `session_lock` | error | run_id, account, path (basename only) |
-| `connect_failed` | error | run_id, account, type |
-| `listen_started` | info | run_id, account, events |
-| `listen_reconnect` | warn | run_id, account |
+- `[info]` freeform lines: lifecycle notices (dry-run would-do, login/logout/
+  remove results, listen start/timeout).
+- `[error]` freeform lines: per-account failures (account name + error message),
+  listen reconnect attempts, top-level command errors.
+- `TELE_LOG`-gated `[LEVEL] message` lines from the `log` crate (grammers
+  internals at `trace`).
 
 ## Alerting
 

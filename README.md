@@ -2,7 +2,6 @@
 
 > A Rust CLI for driving real Telegram user accounts — messages, chats, groups, contacts, privacy, live streaming, and more. No bot tokens.
 
-[![npm version](https://img.shields.io/npm/v/tele-cli.svg)](https://www.npmjs.com/package/tele-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 
@@ -19,19 +18,19 @@
 
 ## Install
 
-**npm** (recommended — works on Windows, macOS, Linux):
+Unpublished for now — no npm package, no GitHub Releases, no crates.io upload
+until the release gate is met ([ADR-005](docs/decisions/005-unpublished-until-want-done.md)).
+Build from source (requires [Rust stable](https://www.rust-lang.org/)):
 
 ```bash
-npm install -g tele-cli
+git clone https://github.com/QMahyar/tele-cli.git
+cd tele-cli
+cargo build --release
+cargo run -- --help          # smoke-test
 ```
 
-**Cargo** (from source):
-
-```bash
-cargo install --locked telecli
-```
-
-**Binary download** — grab the latest from [GitHub Releases](https://github.com/QMahyar/tele-cli/releases).
+The binary is `target/release/tele` (`.exe` on Windows). For development builds use
+`cargo build` and `cargo run -- ...` instead.
 
 **Shell completions** (after install):
 
@@ -140,18 +139,20 @@ Every one-shot command prints a single JSON object on stdout with `--json`:
 ```json
 {
   "ok": true,
-  "command": "msg.send",
-  "accounts": [
+  "command": "msg send",
+  "dry_run": false,
+  "results": [
     {
       "account": "work",
       "ok": true,
-      "data": { "id": 42, "date": "2026-08-13T12:00:00+00:00", "text": "hello" }
+      "data": { "id": 42, "date": "2026-08-13T12:00:00+00:00", "text": "hello" },
+      "error": null
     }
   ]
 }
 ```
 
-`listen` streams one JSONL object per update on stdout. Events: `new_message`, `message_edited`, `message_deleted`, `update` (raw).
+`listen` streams one JSONL object per update on stdout. Events: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw` (selected via the `--events` allowlist; `Raw` rows carry a base64 `raw` payload plus a `state` object).
 
 **Exit codes:** `0` all succeeded · `1` usage error · `2` partial failure · `3` all failed · `4` auth required.
 
@@ -181,7 +182,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-268 tests across unit, contract, and selection suites. All run offline by default.
+353 tests across unit, contract, and selection suites. All run offline by default.
 
 ---
 

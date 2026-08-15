@@ -72,7 +72,7 @@ Verified 2026-08-13 by agent against real sessions 1 and 2 (personal +98 numbers
 
 - [x] `tele account status` / `list` against existing sessions — status `{"authorized":true}` exit 0
 - [x] `tele msg send --chat me --text ...` then `get`/`edit`/`delete` — full roundtrip (msg 928) exit 0
-- [x] `tele listen --events NewMessage` — full cross-account proof: `listen` on account 1 + `msg send --chat <account1-phone>` from account 2 → JSONL `{"type":"new_message","text":"LISTEN-TEST ..."}` received; self-sends don't emit updates
+- [x] `tele listen --events NewMessage` — full cross-account proof: `listen` on account 1 + `msg send --chat <account1-phone>` from account 2 → JSONL `{"event":"NewMessage","account":"1","chat_id":...,"id":...,"out":false,"text":"LISTEN-TEST ...","date":"..."}` received; self-sends don't emit updates; `--events Raw` rows carry base64 `raw` + `state` (`date`/`seq` plus `pts`/`qts`/`channel_id` per message-box variant)
 - [ ] `tele chat participants` on a group; `adminlog` on a channel you admin — no group/channel on test accounts
 - [x] `tele profile get --chat me` — real profile (name/bio/phone/username) exit 0
 - [x] `tele takeout export --message-limit 3` — 3 contacts, 16 dialogs → `%APPDATA%\telecli\export\1` exit 0

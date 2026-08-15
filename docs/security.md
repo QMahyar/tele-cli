@@ -17,10 +17,24 @@ Assets: live user sessions (full account), `TELE_API_HASH`, phone numbers, 2FA p
 
 - **Spoofing:** stolen `.session` is the user. Mitigate: app-dir only, `0o600`, never CWD, never git, `logout` revokes server-side.
 - **Tampering:** two processes on one session → `AUTH_KEY_DUPLICATED` / DB locked. Mitigate: exclusive lock; refuse start if locked.
-- **Repudiation:** fan-out with no audit. Mitigate: structured event `command_finished` with account + command (not message body by default).
+- **Repudiation:** fan-out with no audit. Mitigate: per-account outcome in the stdout envelope (`results[].account` + `ok`/`error`) and `[error]` stderr lines on failure; message bodies are never logged.
 - **Info disclosure:** logs printing hash/phone/code. Mitigate: field allowlist; never log secrets; `--json` allowlist.
 - **DoS:** `--parallel` + join/send → FloodWait / SpamBot. Mitigate: default sequential, max 3, surface wait, no silent retry storms.
 - **Elevation:** `tele raw` can call anything the user can. Mitigate: same account selection; dry-run; document as full power; MCP later must not widen this.
+
+## Known exposure
+
+- `contact list` prints phone numbers, and `takeout export` writes them — this is
+  intended behavior (the contact list shows phones; takeout exports them). Scrub
+  phone numbers from any output you share before pasting it into a ticket or log.
+- QR-login fallback prints the `tg://login?token=…` URI to stderr when QR
+  rendering fails (terminal too small, etc.). Transient and low risk, but treat
+  stderr during login as potentially sensitive.
+- The code-login prompt omits the account phone number when stderr is not a
+  terminal, so non-TTY stderr redirected to logs never carries the number.
+- `account login --phone …` puts the number on argv: visible in process
+  listings and shell history on non-TTY flows. Prefer the stdin prompt or the
+  `TELE_PHONE` env for automation.
 
 ## Always
 

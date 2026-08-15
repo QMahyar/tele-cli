@@ -1,6 +1,6 @@
 # CLI contract
 
-Public interface for humans and agents. Hyrum: `--json` shape, exit codes, and stderr event names are commitments. Add fields; do not rename or remove without a major version.
+Public interface for humans and agents. Hyrum: `--json` shape and exit codes are commitments. Add fields; do not rename or remove without a major version. Stderr carries freeform `[level] message` lines only (see `docs/observability.md`), never machine output.
 
 ## Invocation
 
@@ -68,6 +68,9 @@ Stdout is **one JSON object** (pretty=false, UTF-8). No logs on stdout.
 Rules:
 
 - `data` is additive per command. Document new keys in this file when added.
+- `account list --json` also emits a top-level `accounts` key: an array of the
+  same rows as `results[].data` (each `{"name","tags","session"}`). It duplicates
+  the data — consumers should prefer `results`.
 - Telegram objects are serialized via an allowlist (`id`, `date`, `message`, `peer`, …). Never dump raw `api_hash`, session, or auth keys.
 - `--dry-run`: `ok=true`, `dry_run=true`, `data.would` describes the action; no network.
 
@@ -81,7 +84,17 @@ Human mode (no `--json`): Rich tables on stdout. Same exit codes.
 {"event":"NewMessage","account":"work","id":123,"chat_id":456,"text":"...","date":"2026-08-13T12:00:00+00:00"}
 ```
 
-Default event type: `NewMessage` only. `--events` is an allowlist. Unknown event names → exit 1 before connect.
+`Raw` rows (from `--events Raw`, or `--raw` which implies it) carry the raw update
+base64-encoded in a `raw` field plus a `state` object with `date`/`seq` and, per
+the message-box variant, `pts` (common/channel box), `qts` (secondary box), or
+`channel_id` + `pts` (channel box):
+
+```json
+{"event":"Raw","account":"work","raw":"<base64 TL serialization>","state":{"date":123,"seq":456,"pts":42}}
+```
+
+Default event type: `NewMessage` only. `--events` is an allowlist that gates all
+rows, including `Raw`. Unknown event names → exit 1 before connect.
 
 ## `tele raw`
 
@@ -89,8 +102,10 @@ Default event type: `NewMessage` only. `--events` is an allowlist. Unknown event
 tele raw TL_NAME --args JSON
 ```
 
-`TL_NAME` is a **registry name** from `src/commands/raw.rs` (e.g. `messages.SendMessage`
-for scheduling, `channels.ExportInvite`, `account.GetPrivacy`, `account.Takeout`).
+`TL_NAME` is a **registry name** from `src/commands/raw.rs` (e.g.
+`messages.GetAllDrafts` with `--args '{}'`, `contacts.Search` with
+`--args '{"q":"alice"}'`, `messages.ExportChatInvite` with
+`--args '{"chat":"@mychat"}'`).
 Rust TL types are static, so the registry is a typed match: each supported method
 has a handler arm and documented `--args` shape. Unregistered names exit 1 with
 the message `raw method not in registry; add an arm in src/commands/raw.rs`.
