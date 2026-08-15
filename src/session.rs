@@ -53,6 +53,7 @@ pub async fn open_session(name: &str) -> anyhow::Result<SqliteSession> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     let path = session_path(name);
     let dir = session_dir();
+    crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&dir)?;
     let session = SqliteSession::open(&path).await?;
     crate::fs_util::restrict_file_private(&path)?;

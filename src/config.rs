@@ -6,6 +6,10 @@ pub fn app_data_dir() -> PathBuf {
     app_data_dir_from_env(|k| std::env::var(k))
 }
 
+pub fn ensure_app_data_dir() -> std::io::Result<()> {
+    crate::fs_util::create_dir_private(&app_data_dir())
+}
+
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -135,8 +139,49 @@ fn strip_env_value(v: &str) -> String {
     value.to_string()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FileStamp {
+    exists: bool,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    fn of(path: &std::path::Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(meta) => Self {
+                exists: true,
+                len: meta.len(),
+                modified: meta.modified().ok(),
+            },
+            Err(_) => Self {
+                exists: false,
+                len: 0,
+                modified: None,
+            },
+        }
+    }
+}
+
+static CONFIG_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, FileStamp), AppConfig>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+static CREDS_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, FileStamp), Credentials>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+static ENV_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub fn credentials() -> anyhow::Result<Credentials> {
-    let mut env = load_env(&app_data_dir().join(".env"));
+    let path = app_data_dir().join(".env");
+    let _ = crate::fs_util::restrict_file_private(&path);
+    let stamp = FileStamp::of(&path);
+    if let Some(creds) = CREDS_CACHE.lock().unwrap().get(&(path.clone(), stamp)) {
+        return Ok(creds.clone());
+    }
+    let mut env = load_env(&path);
     for (k, v) in std::env::vars() {
         env.insert(k, v);
     }
@@ -144,10 +189,17 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     let api_hash = env
         .get("TELE_API_HASH")
         .ok_or_else(|| anyhow::anyhow!("TELE_API_HASH must be set (see .env.example)"))?;
-    Ok(Credentials {
+    let creds = Credentials {
         api_id,
         api_hash: api_hash.clone(),
-    })
+    };
+    CREDS_CACHE
+        .lock()
+        .unwrap()
+        .insert((path, stamp), creds.clone());
+    #[cfg(test)]
+    ENV_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(creds)
 }
 
 fn parse_api_id(env: &std::collections::HashMap<String, String>) -> anyhow::Result<i32> {
@@ -168,10 +220,23 @@ pub fn load_config(path: Option<&std::path::Path>) -> anyhow::Result<AppConfig> 
         Some(p) => p.to_path_buf(),
         None => app_data_dir().join("config.toml"),
     };
+    let stamp = FileStamp::of(&cfg_path);
+    if let Some(cfg) = CONFIG_CACHE.lock().unwrap().get(&(cfg_path.clone(), stamp)) {
+        return Ok(cfg.clone());
+    }
+    let cfg = read_config(&cfg_path)?;
+    CONFIG_CACHE
+        .lock()
+        .unwrap()
+        .insert((cfg_path, stamp), cfg.clone());
+    Ok(cfg)
+}
+
+fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     if !cfg_path.exists() {
         return Ok(AppConfig::default());
     }
-    let text = std::fs::read_to_string(&cfg_path)?;
+    let text = std::fs::read_to_string(cfg_path)?;
     let mut cfg: AppConfig = toml::from_str(&text)
         .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", cfg_path.display()))?;
     cfg.parallel_max = cfg.parallel_max.clamp(1, 3);
@@ -203,11 +268,16 @@ pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<Strin
 }
 
 pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<()> {
+    let app_dir = app_data_dir();
+    if path.starts_with(&app_dir) {
+        crate::fs_util::create_dir_private(&app_dir)?;
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let text = toml::to_string_pretty(cfg)?;
     std::fs::write(path, text)?;
+    crate::fs_util::restrict_file_private(path)?;
     Ok(())
 }
 
@@ -521,5 +591,61 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         assert_eq!(parse_api_id(&ok).unwrap(), 1234567);
+    }
+
+    fn creds_env_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-config-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        dir
+    }
+
+    #[test]
+    fn credentials_same_path_is_read_once() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir = creds_env_dir("creds-once");
+        std::fs::write(dir.join(".env"), "TELE_API_ID=111\nTELE_API_HASH=dddd\n").unwrap();
+        let before = ENV_READS.load(std::sync::atomic::Ordering::SeqCst);
+        let c1 = credentials().unwrap();
+        let c2 = credentials().unwrap();
+        let after = ENV_READS.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(c1.api_id, 111);
+        assert_eq!(c2.api_id, 111);
+        assert_eq!(after - before, 1, "second call must hit the cache");
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn credentials_refresh_when_env_file_changes() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir = creds_env_dir("creds-refresh");
+        std::fs::write(
+            dir.join(".env"),
+            "TELE_API_ID=1234567\nTELE_API_HASH=aaaa\n",
+        )
+        .unwrap();
+        assert_eq!(credentials().unwrap().api_id, 1234567);
+        std::fs::write(dir.join(".env"), "TELE_API_ID=9\nTELE_API_HASH=bbbb\n").unwrap();
+        assert_eq!(credentials().unwrap().api_id, 9);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credentials_tighten_exposed_env_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir = creds_env_dir("creds-tighten");
+        let path = dir.join(".env");
+        std::fs::write(&path, "TELE_API_ID=5\nTELE_API_HASH=cccc\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        credentials().unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
