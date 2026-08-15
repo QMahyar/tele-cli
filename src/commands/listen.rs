@@ -3,7 +3,9 @@ use crate::error::{TeleError, TeleResult};
 use crate::executor::GlobalFlags;
 use crate::output;
 use clap::Args;
+use grammers_client::tl::{self, Serializable};
 use grammers_session::types::{PeerId, PeerKind};
+use grammers_session::updates::State;
 #[derive(Args)]
 pub struct ListenArgs {
     #[arg(
@@ -26,6 +28,7 @@ pub struct ListenArgs {
 }
 const VALID_EVENTS: &[&str] = &["NewMessage", "MessageEdited", "MessageDeleted", "Raw"];
 const MAX_RECONNECT_BACKOFF: u32 = 30;
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     use grammers_client::update::Update;
@@ -35,6 +38,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         return Err(TeleError::Usage(format!(
             "unknown event name in --events (valid: {VALID_EVENTS:?})"
         )));
+    }
+    if args.raw && !events.iter().any(|e| e == "Raw") {
+        events.push("Raw".to_string());
     }
     if flags.dry_run {
         output::log_line("info", "[dry-run] would stream updates");
@@ -50,96 +56,119 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         ));
     }
     let timeout_secs = args.timeout_secs;
-    let raw = args.raw;
     let chat_filter = args.chat.clone();
+    let cfg = crate::config::load_config(flags.config_path.as_deref())?;
+    let parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel));
     let mut tasks = tokio::task::JoinSet::new();
     for name in names {
         let config_path = config_path.clone();
         let chat_filter = chat_filter.clone();
         let events = events.clone();
+        let semaphore = std::sync::Arc::clone(&semaphore);
         tasks.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|e| TeleError::Other(e.to_string()))?;
             let result: TeleResult<()> = async {
                 let creds =
                     crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
-                let mut guard =
-                    ClientGuard::connect(&name, creds.api_id, config_path.as_deref()).await?;
-                client::authorize(&guard.client, &creds).await?;
-                let resolved = match &chat_filter {
-                    Some(target) => Some(
-                        crate::entities::resolve_peer(&guard.client, &guard.session, target)
-                            .await
-                            .map_err(|e| {
-                                TeleError::Other(format!("cannot resolve chat {target:?}: {e}"))
-                            })?
-                            .id(),
-                    ),
-                    None => None,
-                };
                 let deadline = if timeout_secs > 0 {
                     Some(std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs))
                 } else {
                     None
                 };
-                let receiver =
-                    std::mem::replace(&mut guard.updates, tokio::sync::mpsc::unbounded_channel().1);
-                let mut stream = guard
-                    .client
-                    .stream_updates(
-                        receiver,
-                        grammers_client::client::UpdatesConfiguration::default(),
-                    )
-                    .await
-                    .map_err(|e| TeleError::Other(e.to_string()))?;
+                let mut resolved: Option<PeerId> = None;
                 let mut backoff: u32 = 1;
+                let mut failures: u32 = 0;
                 loop {
                     if let Some(d) = deadline {
                         if std::time::Instant::now() >= d {
                             break;
                         }
                     }
-                    let update = match tokio::time::timeout(
-                        std::time::Duration::from_secs(3600),
-                        stream.next(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(u)) => u,
-                        Ok(Err(e)) => {
-                            if crate::error::invocation_is_unauthorized(&e) {
+                    let mut guard =
+                        ClientGuard::connect(&name, creds.api_id, config_path.as_deref()).await?;
+                    client::authorize(&guard.client, &creds).await?;
+                    if resolved.is_none() {
+                        resolved = match &chat_filter {
+                            Some(target) => Some(
+                                crate::entities::resolve_peer(&guard.client, &guard.session, target)
+                                    .await
+                                    .map_err(|e| {
+                                        TeleError::Other(format!("cannot resolve chat {target:?}: {e}"))
+                                    })?
+                                    .id(),
+                            ),
+                            None => None,
+                        };
+                    }
+                    let receiver = std::mem::replace(
+                        &mut guard.updates,
+                        tokio::sync::mpsc::unbounded_channel().1,
+                    );
+                    let mut stream = guard
+                        .client
+                        .stream_updates(
+                            receiver,
+                            grammers_client::client::UpdatesConfiguration::default(),
+                        )
+                        .await
+                        .map_err(|e| TeleError::Other(e.to_string()))?;
+                    loop {
+                        if let Some(d) = deadline {
+                            if std::time::Instant::now() >= d {
+                                break;
+                            }
+                        }
+                        let update = match tokio::time::timeout(
+                            poll_timeout(deadline, std::time::Instant::now()),
+                            stream.next(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(u)) => u,
+                            Ok(Err(e)) => {
+                                if crate::error::invocation_is_unauthorized(&e) {
+                                    output::log_line(
+                                        "error",
+                                        &format!("{name}: not authorized, stopping stream"),
+                                    );
+                                    return Err(TeleError::Auth(
+                                        "not authorized, stopping stream".to_string(),
+                                    ));
+                                }
+                                failures += 1;
+                                if !reconnect_allowed(failures) {
+                                    return Err(TeleError::Other(format!(
+                                        "{name}: updates stream failed {failures} consecutive times, giving up: {}",
+                                        crate::error::invocation_message(&e)
+                                    )));
+                                }
+                                let sleep_for = match deadline {
+                                    Some(d) => std::time::Duration::from_secs(backoff.into())
+                                        .min(d.saturating_duration_since(std::time::Instant::now())),
+                                    None => std::time::Duration::from_secs(backoff.into()),
+                                };
                                 output::log_line(
                                     "error",
-                                    &format!("{name}: not authorized, stopping stream"),
+                                    &reconnect_message(
+                                        &name,
+                                        failures,
+                                        backoff,
+                                        &crate::error::invocation_message(&e),
+                                    ),
                                 );
-                                return Err(TeleError::Auth(
-                                    "not authorized, stopping stream".to_string(),
-                                ));
+                                tokio::time::sleep(sleep_for).await;
+                                backoff = next_backoff(backoff);
+                                break;
                             }
-                            output::log_line(
-                                "error",
-                                &format!(
-                                    "{name}: stream error, reconnecting in {backoff}s: {}",
-                                    crate::error::invocation_message(&e)
-                                ),
-                            );
-                            let sleep_for = match deadline {
-                                Some(d) => std::time::Duration::from_secs(backoff.into())
-                                    .min(d.saturating_duration_since(std::time::Instant::now())),
-                                None => std::time::Duration::from_secs(backoff.into()),
-                            };
-                            tokio::time::sleep(sleep_for).await;
-                            backoff = next_backoff(backoff);
-                            continue;
-                        }
-                        Err(_) => continue,
-                    };
-                    backoff = 1;
-                    if raw {
-                        if let Update::Raw(_) = &update {
-                            output::print_json_result(&event_row("Raw", &name, None, None, None))?;
-                            continue;
-                        }
-                    }
-                    match update {
+                            Err(_) => continue,
+                        };
+                        failures = 0;
+                        backoff = 1;
+                        match &update {
                         Update::NewMessage(m) => {
                             if !events.iter().any(|e| e == "NewMessage") {
                                 continue;
@@ -149,7 +178,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     continue;
                                 }
                             }
-                            let row = crate::serialize::message_to_json(&m)?;
+                            let row = crate::serialize::message_to_json(m)?;
                             output::print_json_result(&event_row(
                                 "NewMessage",
                                 &name,
@@ -167,7 +196,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     continue;
                                 }
                             }
-                            let row = crate::serialize::message_to_json(&m)?;
+                            let row = crate::serialize::message_to_json(m)?;
                             output::print_json_result(&event_row(
                                 "MessageEdited",
                                 &name,
@@ -197,9 +226,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             if !events.iter().any(|e| e == "Raw") {
                                 continue;
                             }
-                            output::print_json_result(&event_row("Raw", &name, None, None, None))?;
+                            output::print_json_result(&raw_row(
+                                &name,
+                                update.raw(),
+                                update.state(),
+                            ))?;
                         }
                     }
+                }
                 }
                 Ok(())
             }
@@ -251,8 +285,32 @@ fn deleted_matches(bare_id: Option<i64>, resolved: PeerId) -> bool {
     }
 }
 
+fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
+    flag.unwrap_or(cfg_max).clamp(1, 3)
+}
+
+fn reconnect_allowed(consecutive_failures: u32) -> bool {
+    consecutive_failures <= MAX_RECONNECT_ATTEMPTS
+}
+
+fn reconnect_message(account: &str, failures: u32, backoff: u32, cause: &str) -> String {
+    format!(
+        "{account}: updates stream error ({cause}), reconnecting (attempt {failures}/{MAX_RECONNECT_ATTEMPTS}) in {backoff}s"
+    )
+}
+
 fn next_backoff(secs: u32) -> u32 {
     (secs * 2).min(MAX_RECONNECT_BACKOFF)
+}
+
+fn poll_timeout(
+    deadline: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> std::time::Duration {
+    match deadline {
+        Some(d) => std::time::Duration::from_secs(3600).min(d.saturating_duration_since(now)),
+        None => std::time::Duration::from_secs(3600),
+    }
 }
 
 fn event_row(
@@ -275,6 +333,45 @@ fn event_row(
         row.insert("ids".into(), serde_json::json!(ids));
     }
     serde_json::Value::Object(row)
+}
+
+fn raw_row(account: &str, raw: &tl::enums::Update, state: &State) -> serde_json::Value {
+    let mut row = event_row("Raw", account, None, None, None);
+    if let serde_json::Value::Object(map) = &mut row {
+        map.insert(
+            "raw".into(),
+            serde_json::Value::from(base64_encode(&raw.to_bytes())),
+        );
+        map.insert("state".into(), state_to_json(state));
+    }
+    row
+}
+
+fn state_to_json(state: &State) -> serde_json::Value {
+    use grammers_session::updates::MessageBox;
+    let mut out = serde_json::Map::new();
+    out.insert("date".into(), serde_json::json!(state.date));
+    out.insert("seq".into(), serde_json::json!(state.seq));
+    match &state.message_box {
+        Some(MessageBox::Common { pts }) => {
+            out.insert("pts".into(), serde_json::json!(pts));
+        }
+        Some(MessageBox::Secondary { qts }) => {
+            out.insert("qts".into(), serde_json::json!(qts));
+        }
+        Some(MessageBox::Channel { channel_id, pts }) => {
+            out.insert("channel_id".into(), serde_json::json!(channel_id));
+            out.insert("pts".into(), serde_json::json!(pts));
+        }
+        None => {}
+    }
+    serde_json::Value::Object(out)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    STANDARD.encode(bytes)
 }
 
 #[cfg(test)]
@@ -389,6 +486,102 @@ mod tests {
     }
 
     use grammers_session::types::PeerId;
+    use grammers_session::updates::{MessageBox, State};
+
+    #[test]
+    fn raw_row_embeds_encoded_payload_and_state() {
+        use base64::Engine;
+        let raw = tl::enums::Update::PtsChanged;
+        let state = State {
+            date: 123,
+            seq: 456,
+            message_box: None,
+        };
+        let row = raw_row("work", &raw, &state);
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "Raw");
+        assert_eq!(obj["account"], "work");
+        let encoded = obj["raw"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        assert_eq!(decoded, raw.to_bytes());
+        assert_eq!(obj["state"]["date"], 123);
+        assert_eq!(obj["state"]["seq"], 456);
+        assert!(obj["state"].get("pts").is_none());
+        assert!(obj["state"].get("qts").is_none());
+        assert!(obj["state"].get("channel_id").is_none());
+    }
+
+    #[test]
+    fn raw_row_keeps_existing_event_and_account_fields() {
+        let raw = tl::enums::Update::PtsChanged;
+        let state = State {
+            date: 1,
+            seq: 2,
+            message_box: None,
+        };
+        let row = raw_row("work", &raw, &state);
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj.len(), 4);
+        assert_eq!(obj["event"], "Raw");
+        assert_eq!(obj["account"], "work");
+    }
+
+    #[test]
+    fn state_json_without_message_box_has_only_date_and_seq() {
+        let state = State {
+            date: 7,
+            seq: 8,
+            message_box: None,
+        };
+        let v = state_to_json(&state);
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.len(), 2);
+        assert_eq!(obj["date"], 7);
+        assert_eq!(obj["seq"], 8);
+    }
+
+    #[test]
+    fn state_json_common_box_has_pts() {
+        let state = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Common { pts: 42 }),
+        };
+        let v = state_to_json(&state);
+        assert_eq!(v["pts"], 42);
+        assert!(v.get("qts").is_none());
+        assert!(v.get("channel_id").is_none());
+    }
+
+    #[test]
+    fn state_json_secondary_box_has_qts() {
+        let state = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Secondary { qts: 43 }),
+        };
+        let v = state_to_json(&state);
+        assert_eq!(v["qts"], 43);
+        assert!(v.get("pts").is_none());
+    }
+
+    #[test]
+    fn state_json_channel_box_has_channel_id_and_pts() {
+        let state = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Channel {
+                channel_id: 9_876_543_210,
+                pts: 44,
+            }),
+        };
+        let v = state_to_json(&state);
+        assert_eq!(v["channel_id"], 9_876_543_210i64);
+        assert_eq!(v["pts"], 44);
+        assert!(v.get("qts").is_none());
+    }
 
     #[test]
     fn message_matches_same_peer() {
@@ -437,6 +630,82 @@ mod tests {
     fn deleted_matches_never_matches_a_user() {
         let resolved = PeerId::user_unchecked(7);
         assert!(!deleted_matches(Some(7), resolved));
+    }
+
+    #[test]
+    fn poll_timeout_without_deadline_is_full_window() {
+        let now = std::time::Instant::now();
+        assert_eq!(
+            poll_timeout(None, now),
+            std::time::Duration::from_secs(3600)
+        );
+    }
+
+    #[test]
+    fn poll_timeout_uses_remaining_when_below_window() {
+        let now = std::time::Instant::now();
+        let deadline = Some(now + std::time::Duration::from_secs(30));
+        assert_eq!(
+            poll_timeout(deadline, now),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn poll_timeout_caps_remaining_at_window() {
+        let now = std::time::Instant::now();
+        let deadline = Some(now + std::time::Duration::from_secs(7200));
+        assert_eq!(
+            poll_timeout(deadline, now),
+            std::time::Duration::from_secs(3600)
+        );
+    }
+
+    #[test]
+    fn poll_timeout_zero_when_deadline_passed() {
+        let now = std::time::Instant::now();
+        let deadline = Some(now - std::time::Duration::from_secs(1));
+        assert_eq!(poll_timeout(deadline, now), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn effective_parallel_flag_overrides_config() {
+        assert_eq!(effective_parallel(Some(1), 3), 1);
+        assert_eq!(effective_parallel(Some(2), 1), 2);
+        assert_eq!(effective_parallel(Some(3), 1), 3);
+    }
+
+    #[test]
+    fn effective_parallel_config_is_fallback_default() {
+        assert_eq!(effective_parallel(None, 1), 1);
+        assert_eq!(effective_parallel(None, 2), 2);
+        assert_eq!(effective_parallel(None, 3), 3);
+    }
+
+    #[test]
+    fn effective_parallel_clamped_one_to_three() {
+        assert_eq!(effective_parallel(Some(0), 3), 1);
+        assert_eq!(effective_parallel(Some(9), 1), 3);
+        assert_eq!(effective_parallel(None, 0), 1);
+        assert_eq!(effective_parallel(None, 99), 3);
+    }
+
+    #[test]
+    fn reconnect_allowed_up_to_max_attempts() {
+        assert!(reconnect_allowed(0));
+        assert!(reconnect_allowed(1));
+        assert!(reconnect_allowed(MAX_RECONNECT_ATTEMPTS));
+        assert!(!reconnect_allowed(MAX_RECONNECT_ATTEMPTS + 1));
+    }
+
+    #[test]
+    fn reconnect_message_reports_attempt_backoff_and_cause() {
+        let msg = reconnect_message("work", 3, 4, "request error: dropped (cancelled)");
+        assert!(msg.contains("work"));
+        assert!(msg.contains("reconnect"));
+        assert!(msg.contains(&format!("3/{MAX_RECONNECT_ATTEMPTS}")));
+        assert!(msg.contains("4s"));
+        assert!(msg.contains("dropped"));
     }
 
     #[test]
