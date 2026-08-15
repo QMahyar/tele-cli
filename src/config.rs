@@ -13,28 +13,35 @@ pub fn ensure_app_data_dir() -> std::io::Result<()> {
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+fn env_nonempty(
+    get: &mut impl FnMut(&str) -> Result<String, std::env::VarError>,
+    key: &str,
+) -> Option<String> {
+    get(key).ok().filter(|v| !v.trim().is_empty())
+}
+
 fn app_data_dir_from_env(
     mut get: impl FnMut(&str) -> Result<String, std::env::VarError>,
 ) -> PathBuf {
-    if let Ok(dir) = get("TELE_APP_DIR") {
+    if let Some(dir) = env_nonempty(&mut get, "TELE_APP_DIR") {
         return PathBuf::from(dir);
     }
     if cfg!(windows) {
-        if let Ok(appdata) = get("APPDATA") {
+        if let Some(appdata) = env_nonempty(&mut get, "APPDATA") {
             return PathBuf::from(appdata).join(APP_DIR_NAME);
         }
-        if let Ok(local) = get("LOCALAPPDATA") {
+        if let Some(local) = env_nonempty(&mut get, "LOCALAPPDATA") {
             return PathBuf::from(local).join(APP_DIR_NAME);
         }
-        if let Ok(profile) = get("USERPROFILE") {
+        if let Some(profile) = env_nonempty(&mut get, "USERPROFILE") {
             return PathBuf::from(profile).join(".config").join(APP_DIR_NAME);
         }
-    } else if let Ok(xdg) = get("XDG_CONFIG_HOME") {
+    } else if let Some(xdg) = env_nonempty(&mut get, "XDG_CONFIG_HOME") {
         return PathBuf::from(xdg).join(APP_DIR_NAME);
     }
-    match get("HOME") {
-        Ok(home) => PathBuf::from(home).join(".config").join(APP_DIR_NAME),
-        Err(_) => std::env::temp_dir().join(APP_DIR_NAME),
+    match env_nonempty(&mut get, "HOME") {
+        Some(home) => PathBuf::from(home).join(".config").join(APP_DIR_NAME),
+        None => std::env::temp_dir().join(APP_DIR_NAME),
     }
 }
 
@@ -183,7 +190,9 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     }
     let mut env = load_env(&path);
     for (k, v) in std::env::vars() {
-        env.insert(k, v);
+        if !v.trim().is_empty() {
+            env.insert(k, v);
+        }
     }
     let api_id = parse_api_id(&env)?;
     let api_hash = env
@@ -478,6 +487,65 @@ mod tests {
         assert_eq!(dir, std::env::temp_dir().join(APP_DIR_NAME));
         assert!(dir.is_absolute());
         assert_ne!(dir, std::env::current_dir().unwrap().join(APP_DIR_NAME));
+    }
+
+    #[test]
+    fn app_data_dir_ignores_empty_override() {
+        let get = |k: &str| match k {
+            "TELE_APP_DIR" => Ok(String::new()),
+            "HOME" => Ok("/home/tester".to_string()),
+            _ => Err(std::env::VarError::NotPresent),
+        };
+        assert_eq!(
+            app_data_dir_from_env(get),
+            PathBuf::from("/home/tester")
+                .join(".config")
+                .join(APP_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn app_data_dir_ignores_whitespace_override() {
+        let get = |k: &str| match k {
+            "TELE_APP_DIR" => Ok("   ".to_string()),
+            "HOME" => Ok("/home/tester".to_string()),
+            _ => Err(std::env::VarError::NotPresent),
+        };
+        assert_eq!(
+            app_data_dir_from_env(get),
+            PathBuf::from("/home/tester")
+                .join(".config")
+                .join(APP_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn app_data_dir_ignores_empty_home() {
+        let get = |k: &str| match k {
+            "HOME" => Ok(String::new()),
+            _ => Err(std::env::VarError::NotPresent),
+        };
+        assert_eq!(
+            app_data_dir_from_env(get),
+            std::env::temp_dir().join(APP_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn env_nonempty_falls_through_for_empty_and_whitespace() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        std::env::set_var("TELE_TEST_ENV_NONEMPTY", "");
+        let mut get = |k: &str| std::env::var(k);
+        assert!(env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").is_none());
+        std::env::set_var("TELE_TEST_ENV_NONEMPTY", " \t ");
+        assert!(env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").is_none());
+        std::env::set_var("TELE_TEST_ENV_NONEMPTY", "/tmp/x");
+        assert_eq!(
+            env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").as_deref(),
+            Some("/tmp/x")
+        );
+        std::env::remove_var("TELE_TEST_ENV_NONEMPTY");
+        assert!(env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").is_none());
     }
 
     #[cfg(not(windows))]
