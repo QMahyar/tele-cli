@@ -280,8 +280,18 @@ fn account_list_human_empty() {
 
 #[test]
 fn dry_run_login_needs_no_session() {
-    let (code, _out, _err) =
-        run_isolated("dryrun", &["account", "login", "--name", "x", "--dry-run"]);
+    let (code, _out, _err) = run_isolated(
+        "dryrun",
+        &[
+            "account",
+            "login",
+            "--name",
+            "x",
+            "--method",
+            "qr",
+            "--dry-run",
+        ],
+    );
     assert_eq!(code, 0);
 }
 

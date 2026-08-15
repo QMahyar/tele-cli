@@ -5,6 +5,7 @@ use crate::executor::{run_fanout, GlobalFlags};
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
+use std::io::IsTerminal;
 #[derive(Subcommand)]
 pub enum AccountCmd {
     List,
@@ -181,6 +182,12 @@ fn validate_login(args: &LoginArgs) -> TeleResult<()> {
 }
 
 async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_login(args)?;
+    if let Some(message) =
+        argv_phone_warning(args.phone.as_deref(), std::io::stderr().is_terminal())
+    {
+        log_line("warn", message);
+    }
     if flags.dry_run {
         log_line("info", "[dry-run] would log in account");
         let would = format!("log in account {} via {}", args.name, args.method);
@@ -189,7 +196,6 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             &dry_run_envelope(&args.name, &would, &flags.command),
         );
     }
-    validate_login(args)?;
     let creds = config::credentials()?;
     let mut guard =
         ClientGuard::connect(&args.name, creds.api_id, flags.config_path.as_deref()).await?;
@@ -228,12 +234,8 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .map_err(tele_invocation)?;
             let mut stdin = std::io::stdin().lock();
             let mut stderr = std::io::stderr();
-            let Some(code_line) = prompt_line(
-                &format!("Enter the code sent to {phone}: "),
-                &mut stdin,
-                &mut stderr,
-            )?
-            else {
+            let prompt = code_prompt(Some(&phone), stderr.is_terminal());
+            let Some(code_line) = prompt_line(&prompt, &mut stdin, &mut stderr)? else {
                 return Err(TeleError::Usage(
                     "no code entered (stdin closed)".to_string(),
                 ));
@@ -430,6 +432,23 @@ fn status_table_rows(envelope: &Envelope) -> Vec<Vec<String>> {
         .collect()
 }
 
+fn code_prompt(phone: Option<&str>, stderr_is_terminal: bool) -> String {
+    match phone {
+        Some(phone) if stderr_is_terminal => format!("Enter the code sent to {phone}: "),
+        _ => "Enter the code: ".to_string(),
+    }
+}
+
+fn argv_phone_warning(phone: Option<&str>, stderr_is_terminal: bool) -> Option<&'static str> {
+    if phone.is_some() && !stderr_is_terminal {
+        Some(
+            "--phone is visible in process listings and shell history; prefer TELE_PHONE env or a stdin prompt",
+        )
+    } else {
+        None
+    }
+}
+
 fn prompt_line(
     prompt: &str,
     reader: &mut impl std::io::BufRead,
@@ -519,6 +538,25 @@ mod tests {
             validate_login(&login_args("sms", Some("+1"))),
             Err(TeleError::Usage(_))
         ));
+    }
+
+    #[test]
+    fn code_prompt_includes_phone_only_on_terminal_stderr() {
+        assert_eq!(
+            code_prompt(Some("+15551234567"), true),
+            "Enter the code sent to +15551234567: "
+        );
+        assert_eq!(code_prompt(Some("+15551234567"), false), "Enter the code: ");
+        assert_eq!(code_prompt(None, true), "Enter the code: ");
+        assert_eq!(code_prompt(None, false), "Enter the code: ");
+    }
+
+    #[test]
+    fn argv_phone_warning_fires_only_on_non_terminal_stderr() {
+        assert!(argv_phone_warning(Some("+15551234567"), false).is_some());
+        assert!(argv_phone_warning(Some("+15551234567"), true).is_none());
+        assert!(argv_phone_warning(None, false).is_none());
+        assert!(argv_phone_warning(None, true).is_none());
     }
 
     #[test]
@@ -635,6 +673,30 @@ mod tests {
                 vec!["work".to_string(), "no".to_string()],
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn login_dry_run_still_validates_method() {
+        let dir = std::env::temp_dir().join(format!("telecli-login-drybad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account login", false, true, &dir.join("config.toml"));
+        let err = login(&login_args("sms", Some("+15551234567")), &flags)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn login_dry_run_with_valid_method_exits_ok() {
+        let dir = std::env::temp_dir().join(format!("telecli-login-dryok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account login", false, true, &dir.join("config.toml"));
+        let code = login(&login_args("qr", None), &flags).await.unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
