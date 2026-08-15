@@ -115,29 +115,22 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let topics = {
                 let guard_ref = &guard;
                 let peer_ref = &peer;
-                collect_forum_topics(limit, move |offset_id, page_limit| async move {
+                collect_forum_topics(limit, move |cursor, page_limit| async move {
                     let results: tl::enums::messages::ForumTopics = guard_ref
                         .client
                         .invoke(&tl::functions::messages::GetForumTopics {
                             peer: (*peer_ref).clone(),
                             q: None,
-                            offset_date: 0,
-                            offset_id,
-                            offset_topic: 0,
+                            offset_date: cursor.date,
+                            offset_id: cursor.message_id,
+                            offset_topic: cursor.topic_id,
                             limit: page_limit as i32,
                         })
                         .await
                         .map_err(tele_invocation)?;
                     let tl::enums::messages::ForumTopics::Topics(topics) = results;
-                    let next_offset_id = topics
-                        .topics
-                        .iter()
-                        .last()
-                        .map(tl::enums::ForumTopic::id)
-                        .unwrap_or_default();
                     Ok(ForumTopicsPage {
                         topics: topics.topics,
-                        next_offset_id,
                     })
                 })
             }
@@ -173,9 +166,33 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ForumCursor {
+    date: i32,
+    message_id: i32,
+    topic_id: i32,
+}
+
 struct ForumTopicsPage {
     topics: Vec<tl::enums::ForumTopic>,
-    next_offset_id: i32,
+}
+
+fn next_cursor(prev: ForumCursor, page: &[tl::enums::ForumTopic]) -> ForumCursor {
+    let Some(last) = page.last() else {
+        return prev;
+    };
+    match last {
+        tl::enums::ForumTopic::Topic(t) => ForumCursor {
+            date: t.date,
+            message_id: t.top_message,
+            topic_id: t.id,
+        },
+        tl::enums::ForumTopic::Deleted(t) => ForumCursor {
+            date: prev.date,
+            message_id: prev.message_id,
+            topic_id: t.id,
+        },
+    }
 }
 
 async fn collect_forum_topics<F, Fut>(
@@ -183,19 +200,19 @@ async fn collect_forum_topics<F, Fut>(
     mut fetch: F,
 ) -> TeleResult<Vec<tl::enums::ForumTopic>>
 where
-    F: FnMut(i32, u32) -> Fut,
+    F: FnMut(ForumCursor, u32) -> Fut,
     Fut: std::future::Future<Output = TeleResult<ForumTopicsPage>>,
 {
     let mut topics = Vec::new();
-    let mut offset_id = 0i32;
+    let mut cursor = ForumCursor::default();
     loop {
         let remaining = limit.saturating_sub(topics.len() as u32);
         if remaining == 0 {
             break;
         }
-        let page = fetch(offset_id, remaining.min(100)).await?;
-        offset_id = page.next_offset_id;
+        let page = fetch(cursor, remaining.min(100)).await?;
         let page_len = page.topics.len();
+        cursor = next_cursor(cursor, &page.topics);
         topics.extend(page.topics);
         if page_len == 0 {
             break;
@@ -332,6 +349,10 @@ mod tests {
     }
 
     fn fake_topic(id: i32) -> tl::enums::ForumTopic {
+        fake_topic_at(id, id, id * 10)
+    }
+
+    fn fake_topic_at(id: i32, date: i32, top_message: i32) -> tl::enums::ForumTopic {
         tl::enums::ForumTopic::Topic(tl::types::ForumTopic {
             my: false,
             closed: false,
@@ -340,12 +361,12 @@ mod tests {
             hidden: false,
             title_missing: false,
             id,
-            date: 0,
+            date,
             peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 0 }),
             title: String::new(),
             icon_color: 0,
             icon_emoji_id: None,
-            top_message: 0,
+            top_message,
             read_inbox_max_id: 0,
             read_outbox_max_id: 0,
             unread_count: 0,
@@ -375,63 +396,65 @@ mod tests {
     #[tokio::test]
     async fn collect_forum_topics_stops_on_empty_page() {
         let mut calls = Vec::new();
-        let topics = collect_forum_topics(10, |offset_id, page_limit| {
-            calls.push((offset_id, page_limit));
-            async move {
-                Ok(ForumTopicsPage {
-                    topics: Vec::new(),
-                    next_offset_id: 0,
-                })
-            }
+        let topics = collect_forum_topics(10, |cursor, page_limit| {
+            calls.push((cursor, page_limit));
+            async move { Ok(ForumTopicsPage { topics: Vec::new() }) }
         })
         .await
         .unwrap();
         assert!(topics.is_empty());
-        assert_eq!(calls, vec![(0, 10)]);
+        assert_eq!(calls, vec![(ForumCursor::default(), 10)]);
     }
 
     #[tokio::test]
     async fn collect_forum_topics_probes_after_partial_page() {
         let mut calls = Vec::new();
-        let topics = collect_forum_topics(5, |offset_id, page_limit| {
+        let topics = collect_forum_topics(5, |cursor, page_limit| {
             let page_index = calls.len();
-            calls.push((offset_id, page_limit));
+            calls.push((cursor, page_limit));
             async move {
                 if page_index == 0 {
                     Ok(ForumTopicsPage {
                         topics: vec![fake_topic(10), fake_topic(9)],
-                        next_offset_id: 9,
                     })
                 } else {
-                    Ok(ForumTopicsPage {
-                        topics: Vec::new(),
-                        next_offset_id: 0,
-                    })
+                    Ok(ForumTopicsPage { topics: Vec::new() })
                 }
             }
         })
         .await
         .unwrap();
         assert_eq!(topics.len(), 2);
-        assert_eq!(calls, vec![(0, 5), (9, 3)]);
+        assert_eq!(
+            calls,
+            vec![
+                (ForumCursor::default(), 5),
+                (
+                    ForumCursor {
+                        date: 9,
+                        message_id: 90,
+                        topic_id: 9,
+                    },
+                    3
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
     async fn collect_forum_topics_paginates_until_limit() {
         let mut calls = Vec::new();
-        let topics = collect_forum_topics(5, |offset_id, page_limit| {
+        let topics = collect_forum_topics(5, |cursor, page_limit| {
             let page_index = calls.len();
-            calls.push((offset_id, page_limit));
+            calls.push((cursor, page_limit));
             async move {
                 if page_index == 0 {
                     Ok(ForumTopicsPage {
                         topics: vec![fake_topic(10), fake_topic(9), fake_topic(8)],
-                        next_offset_id: 8,
                     })
                 } else {
                     Ok(ForumTopicsPage {
                         topics: vec![fake_topic(7), fake_topic(6)],
-                        next_offset_id: 6,
                     })
                 }
             }
@@ -439,56 +462,87 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(topics.len(), 5);
-        assert_eq!(calls, vec![(0, 5), (8, 2)]);
+        assert_eq!(
+            calls,
+            vec![
+                (ForumCursor::default(), 5),
+                (
+                    ForumCursor {
+                        date: 8,
+                        message_id: 80,
+                        topic_id: 8,
+                    },
+                    2
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
     async fn collect_forum_topics_stops_when_limit_reached_exactly() {
         let mut calls = Vec::new();
-        let topics = collect_forum_topics(3, |offset_id, page_limit| {
-            calls.push((offset_id, page_limit));
+        let topics = collect_forum_topics(3, |cursor, page_limit| {
+            calls.push((cursor, page_limit));
             async move {
                 Ok(ForumTopicsPage {
                     topics: vec![fake_topic(7), fake_topic(6), fake_topic(5)],
-                    next_offset_id: 5,
                 })
             }
         })
         .await
         .unwrap();
         assert_eq!(topics.len(), 3);
-        assert_eq!(calls, vec![(0, 3)]);
+        assert_eq!(calls, vec![(ForumCursor::default(), 3)]);
     }
 
     #[tokio::test]
     async fn collect_forum_topics_page_size_capped_at_100() {
         let mut calls = Vec::new();
-        let topics = collect_forum_topics(250, |offset_id, page_limit| {
+        let topics = collect_forum_topics(250, |cursor, page_limit| {
             let page_index = calls.len();
-            calls.push((offset_id, page_limit));
+            calls.push((cursor, page_limit));
             async move {
                 let ids: Vec<i32> = (0..page_limit)
                     .map(|i| 1000 - page_index as i32 * 100 - i as i32)
                     .collect();
-                let next = ids.last().copied().unwrap_or(0);
                 Ok(ForumTopicsPage {
                     topics: ids.into_iter().map(fake_topic).collect(),
-                    next_offset_id: next,
                 })
             }
         })
         .await
         .unwrap();
         assert_eq!(topics.len(), 250);
-        assert_eq!(calls, vec![(0, 100), (901, 100), (801, 50)]);
+        assert_eq!(
+            calls,
+            vec![
+                (ForumCursor::default(), 100),
+                (
+                    ForumCursor {
+                        date: 901,
+                        message_id: 9010,
+                        topic_id: 901,
+                    },
+                    100
+                ),
+                (
+                    ForumCursor {
+                        date: 801,
+                        message_id: 8010,
+                        topic_id: 801,
+                    },
+                    50
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
     async fn collect_forum_topics_next_offset_uses_last_topic_even_if_deleted() {
         let mut calls = Vec::new();
-        let topics = collect_forum_topics(5, |offset_id, page_limit| {
+        let topics = collect_forum_topics(5, |cursor, page_limit| {
             let page_index = calls.len();
-            calls.push((offset_id, page_limit));
+            calls.push((cursor, page_limit));
             async move {
                 if page_index == 0 {
                     Ok(ForumTopicsPage {
@@ -496,19 +550,28 @@ mod tests {
                             fake_topic(10),
                             tl::enums::ForumTopic::Deleted(tl::types::ForumTopicDeleted { id: 9 }),
                         ],
-                        next_offset_id: 9,
                     })
                 } else {
-                    Ok(ForumTopicsPage {
-                        topics: Vec::new(),
-                        next_offset_id: 0,
-                    })
+                    Ok(ForumTopicsPage { topics: Vec::new() })
                 }
             }
         })
         .await
         .unwrap();
         assert_eq!(topics.len(), 2);
-        assert_eq!(calls, vec![(0, 5), (9, 3)]);
+        assert_eq!(
+            calls,
+            vec![
+                (ForumCursor::default(), 5),
+                (
+                    ForumCursor {
+                        date: 0,
+                        message_id: 0,
+                        topic_id: 9,
+                    },
+                    3
+                ),
+            ]
+        );
     }
 }
