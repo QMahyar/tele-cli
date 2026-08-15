@@ -276,8 +276,17 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
         std::fs::create_dir_all(parent)?;
     }
     let text = toml::to_string_pretty(cfg)?;
-    std::fs::write(path, text)?;
-    crate::fs_util::restrict_file_private(path)?;
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp_path = std::path::PathBuf::from(tmp_name);
+    let result = std::fs::write(&tmp_path, text).and_then(|()| {
+        crate::fs_util::restrict_file_private(&tmp_path)?;
+        std::fs::rename(&tmp_path, path)
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result?;
     Ok(())
 }
 
@@ -646,6 +655,63 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn atomic_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-config-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn tmp_leftovers(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect()
+    }
+
+    #[test]
+    fn write_config_round_trips_and_leaves_no_temp() {
+        let dir = atomic_dir("atomic");
+        let path = dir.join("config.toml");
+        let cfg = AppConfig {
+            flood_sleep_threshold: 42,
+            parallel_max: 2,
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec!["team".to_string()],
+                    proxy: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            proxy: Some(socks5("127.0.0.1", 9050)),
+        };
+        write_config(&path, &cfg).unwrap();
+        let back = read_config(&path).unwrap();
+        assert_eq!(back.flood_sleep_threshold, 42);
+        assert_eq!(back.parallel_max, 2);
+        assert_eq!(back.accounts["work"].tags, vec!["team".to_string()]);
+        assert_eq!(back.proxy.unwrap().host, "127.0.0.1");
+        assert!(tmp_leftovers(&dir).is_empty(), "temp files left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_config_failure_cleans_up_temp_file() {
+        let dir = atomic_dir("atomic-fail");
+        let path = dir.join("config.toml");
+        std::fs::create_dir(&path).unwrap();
+        assert!(write_config(&path, &AppConfig::default()).is_err());
+        assert!(
+            tmp_leftovers(&dir).is_empty(),
+            "temp file not cleaned up on failure"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
