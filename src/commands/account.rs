@@ -119,6 +119,7 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    session::validate_name(&args.name).map_err(TeleError::Usage)?;
     let path = flags
         .config_path
         .clone()
@@ -696,6 +697,31 @@ mod tests {
         let flags = test_flags("account login", false, true, &dir.join("config.toml"));
         let code = login(&login_args("qr", None), &flags).await.unwrap();
         assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn add_rejects_invalid_names_before_any_write() {
+        let dir = std::env::temp_dir().join(format!("telecli-add-badname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account add", false, true, &dir.join("config.toml"));
+        for bad in ["all", ".", "..", "a/b", ""] {
+            let err = add(
+                &AddArgs {
+                    name: bad.to_string(),
+                    tags: None,
+                },
+                &flags,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+        }
+        assert!(
+            !dir.join("config.toml").exists(),
+            "invalid names must not write config"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

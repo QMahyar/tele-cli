@@ -7,6 +7,9 @@ pub fn session_dir() -> PathBuf {
 }
 
 pub fn validate_name(name: &str) -> Result<(), String> {
+    if matches!(name, "all" | "." | "..") {
+        return Err(format!("invalid account name {name:?}: reserved"));
+    }
     let ok = !name.is_empty()
         && name
             .chars()
@@ -58,4 +61,30 @@ pub async fn open_session(name: &str) -> anyhow::Result<SqliteSession> {
     let session = SqliteSession::open(&path).await?;
     crate::fs_util::restrict_file_private(&path)?;
     Ok(session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_name_accepts_plain_names() {
+        for name in ["work", "home2", "a.b-c_d", "all-1", "All"] {
+            assert!(validate_name(name).is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn validate_name_rejects_reserved_names() {
+        for name in ["all", ".", ".."] {
+            assert!(validate_name(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn validate_name_rejects_empty_and_separators() {
+        for name in ["", " ", "a/b", "a\\b", "../x"] {
+            assert!(validate_name(name).is_err(), "{name}");
+        }
+    }
 }
