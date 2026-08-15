@@ -451,12 +451,22 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
+    if args.all && !args.ids.is_empty() {
+        return Err(TeleError::Usage(
+            "--all and --ids are mutually exclusive".to_string(),
+        ));
+    }
     if !args.all && args.ids.is_empty() {
         return Err(TeleError::Usage(
             "--ids required unless --all is used".to_string(),
         ));
     }
     Ok(())
+}
+
+fn delete_report(requested: usize, deleted: usize) -> (serde_json::Value, bool) {
+    let value = serde_json::json!({"requested": requested, "deleted": deleted});
+    (value, requested > 0 && deleted == 0)
 }
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -482,8 +492,10 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if all {
                 let mut iter = guard.client.iter_messages(chat_ref);
                 let mut count = 0usize;
+                let mut requested = 0usize;
                 let mut batch: Vec<i32> = Vec::with_capacity(100);
                 while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                    requested += 1;
                     batch.push(msg.id());
                     if batch.len() >= 100 {
                         count += guard
@@ -501,10 +513,14 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .await
                         .map_err(tele_invocation)?;
                 }
-                return Ok(serde_json::json!({"deleted": count}));
-            }
-            if ids.is_empty() {
-                return Ok(serde_json::json!({"deleted": 0}));
+                let (report, should_warn) = delete_report(requested, count);
+                if should_warn {
+                    crate::output::log_line(
+                        "warn",
+                        &format!("delete reported 0 deleted for {requested} requested message(s)"),
+                    );
+                }
+                return Ok(report);
             }
             let mut count = 0usize;
             for chunk in batches(&ids) {
@@ -514,7 +530,17 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     .await
                     .map_err(tele_invocation)?;
             }
-            Ok(serde_json::json!({"deleted": count}))
+            let (report, should_warn) = delete_report(ids.len(), count);
+            if should_warn {
+                crate::output::log_line(
+                    "warn",
+                    &format!(
+                        "delete reported 0 deleted for {} requested id(s)",
+                        ids.len()
+                    ),
+                );
+            }
+            Ok(report)
         })
     })
     .await?;
@@ -553,27 +579,47 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .map_err(tele_invocation)?;
             let from_ref = entities::peer_ref(&from).await.map_err(tele_invocation)?;
             let to_ref = entities::peer_ref(&to).await.map_err(tele_invocation)?;
-            let mut msgs: Vec<serde_json::Value> = Vec::new();
+            let mut forwarded: Vec<serde_json::Value> = Vec::new();
+            let mut dropped: Vec<i32> = Vec::new();
+            let mut failed: Vec<i32> = Vec::new();
             for chunk in batches(&ids) {
                 let sent = if silent {
                     let from_peer = entities::input_peer(&from).await.map_err(tele_invocation)?;
                     let to_peer = entities::input_peer(&to).await.map_err(tele_invocation)?;
-                    forward_silent(&guard.client, to_ref, from_peer, to_peer, chunk).await?
+                    forward_silent(&guard.client, to_ref, from_peer, to_peer, chunk).await
                 } else {
                     guard
                         .client
                         .forward_messages(to_ref, chunk, from_ref)
                         .await
-                        .map_err(tele_invocation)?
+                        .map_err(tele_invocation)
                 };
-                msgs.extend(
-                    sent.iter()
-                        .filter_map(|m| m.as_ref())
-                        .map(crate::serialize::message_to_json)
-                        .collect::<TeleResult<Vec<_>>>()?,
+                match sent {
+                    Ok(results) => {
+                        for (i, m) in results.into_iter().enumerate() {
+                            match m {
+                                Some(m) => forwarded.push(crate::serialize::message_to_json(&m)?),
+                                None => dropped.push(chunk[i]),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::output::log_line(
+                            "warn",
+                            &format!("forward failed for {} id(s): {e}", chunk.len()),
+                        );
+                        failed.extend_from_slice(chunk);
+                    }
+                }
+            }
+            let (report, should_warn) = forward_report(ids.len(), &forwarded, &dropped, &failed);
+            if should_warn {
+                crate::output::log_line(
+                    "warn",
+                    &format!("forward confirmed 0 of {} requested id(s)", ids.len()),
                 );
             }
-            Ok(serde_json::json!({"forwarded": msgs}))
+            Ok(report)
         })
     })
     .await?;
@@ -582,6 +628,23 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 fn batches(ids: &[i32]) -> Vec<&[i32]> {
     ids.chunks(100).collect()
+}
+
+fn forward_report(
+    requested: usize,
+    forwarded: &[serde_json::Value],
+    dropped: &[i32],
+    failed: &[i32],
+) -> (serde_json::Value, bool) {
+    let mut value = serde_json::json!({"requested": requested, "forwarded": forwarded});
+    if !dropped.is_empty() {
+        value["dropped"] = serde_json::json!({"count": dropped.len(), "ids": dropped});
+    }
+    if !failed.is_empty() {
+        value["failed"] = serde_json::json!({"count": failed.len(), "ids": failed});
+    }
+    let should_warn = requested > 0 && forwarded.is_empty();
+    (value, should_warn)
 }
 
 static RANDOM_ID: AtomicI64 = AtomicI64::new(0);
@@ -1346,6 +1409,58 @@ mod tests {
             all: false,
         };
         assert!(validate_delete(&with_ids).is_ok());
+    }
+
+    #[test]
+    fn delete_rejects_all_with_ids() {
+        let args = DeleteArgs {
+            chat: "me".to_string(),
+            ids: vec![1, 2],
+            all: true,
+        };
+        assert!(matches!(validate_delete(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn delete_report_counts_and_warns_on_zero() {
+        let (report, warn) = delete_report(3, 3);
+        assert_eq!(report["requested"], serde_json::json!(3));
+        assert_eq!(report["deleted"], serde_json::json!(3));
+        assert!(!warn);
+        let (report, warn) = delete_report(3, 1);
+        assert_eq!(report["requested"], serde_json::json!(3));
+        assert_eq!(report["deleted"], serde_json::json!(1));
+        assert!(!warn);
+        let (report, warn) = delete_report(3, 0);
+        assert_eq!(report["deleted"], serde_json::json!(0));
+        assert!(warn);
+        let (_, warn) = delete_report(0, 0);
+        assert!(!warn);
+    }
+
+    #[test]
+    fn forward_report_tracks_dropped_and_failed() {
+        let forwarded = vec![serde_json::json!({"id": 1})];
+        let (report, warn) = forward_report(4, &forwarded, &[2], &[3, 4]);
+        assert_eq!(report["requested"], serde_json::json!(4));
+        assert_eq!(report["forwarded"], serde_json::json!([{"id": 1}]));
+        assert_eq!(report["dropped"]["count"], serde_json::json!(1));
+        assert_eq!(report["dropped"]["ids"], serde_json::json!([2]));
+        assert_eq!(report["failed"]["count"], serde_json::json!(2));
+        assert_eq!(report["failed"]["ids"], serde_json::json!([3, 4]));
+        assert!(!warn);
+    }
+
+    #[test]
+    fn forward_report_warns_when_nothing_confirmed() {
+        let (report, warn) = forward_report(2, &[], &[1, 2], &[]);
+        assert!(warn);
+        assert!(report.get("dropped").is_some());
+        assert!(report.get("failed").is_none());
+        let (report, warn) = forward_report(1, &[serde_json::json!({"id": 9})], &[], &[]);
+        assert!(!warn);
+        assert!(report.get("dropped").is_none());
+        assert!(report.get("failed").is_none());
     }
 
     #[test]
