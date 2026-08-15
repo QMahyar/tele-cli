@@ -537,6 +537,31 @@ fn random_ids(count: usize) -> Vec<i64> {
         .collect()
 }
 
+fn forwarded_ids(
+    updates: &grammers_client::tl::enums::Updates,
+    random_ids: &[i64],
+) -> TeleResult<Vec<i32>> {
+    let response_updates: &[grammers_client::tl::enums::Update] = match updates {
+        grammers_client::tl::enums::Updates::Updates(u) => &u.updates,
+        grammers_client::tl::enums::Updates::Combined(u) => &u.updates,
+        _ => &[],
+    };
+    let mut new_ids = Vec::new();
+    for update in response_updates {
+        if let grammers_client::tl::enums::Update::MessageId(m) = update {
+            if random_ids.contains(&m.random_id) {
+                new_ids.push(m.id);
+            }
+        }
+    }
+    if new_ids.is_empty() {
+        return Err(TeleError::Other(
+            "forward succeeded but no new message ids were reported".to_string(),
+        ));
+    }
+    Ok(new_ids)
+}
+
 async fn forward_silent(
     client: &grammers_client::Client,
     to_ref: grammers_session::types::PeerRef,
@@ -569,16 +594,7 @@ async fn forward_silent(
         suggested_post: None,
     };
     let updates = client.invoke(&request).await.map_err(tele_invocation)?;
-    let mut new_ids = Vec::new();
-    if let grammers_client::tl::enums::Updates::Updates(u) = updates {
-        for update in u.updates {
-            if let grammers_client::tl::enums::Update::MessageId(m) = update {
-                if random_ids.contains(&m.random_id) {
-                    new_ids.push(m.id);
-                }
-            }
-        }
-    }
+    let new_ids = forwarded_ids(&updates, &random_ids)?;
     client
         .get_messages_by_id(to_ref, &new_ids)
         .await
@@ -1113,6 +1129,65 @@ mod tests {
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), 10);
+    }
+
+    fn message_id_update(random_id: i64, id: i32) -> grammers_client::tl::enums::Update {
+        grammers_client::tl::enums::Update::MessageId(grammers_client::tl::types::UpdateMessageId {
+            id,
+            random_id,
+        })
+    }
+
+    fn plain_updates(
+        updates: Vec<grammers_client::tl::enums::Update>,
+    ) -> grammers_client::tl::enums::Updates {
+        grammers_client::tl::enums::Updates::Updates(grammers_client::tl::types::Updates {
+            updates,
+            users: Vec::new(),
+            chats: Vec::new(),
+            date: 0,
+            seq: 0,
+        })
+    }
+
+    fn combined_updates(
+        updates: Vec<grammers_client::tl::enums::Update>,
+    ) -> grammers_client::tl::enums::Updates {
+        grammers_client::tl::enums::Updates::Combined(grammers_client::tl::types::UpdatesCombined {
+            updates,
+            users: Vec::new(),
+            chats: Vec::new(),
+            date: 0,
+            seq_start: 0,
+            seq: 0,
+        })
+    }
+
+    #[test]
+    fn forwarded_ids_collect_matching_ids_from_plain_updates() {
+        let updates = plain_updates(vec![
+            message_id_update(101, 7),
+            message_id_update(999, 9),
+            message_id_update(102, 8),
+        ]);
+        assert_eq!(forwarded_ids(&updates, &[101, 102]).unwrap(), vec![7, 8]);
+    }
+
+    #[test]
+    fn forwarded_ids_collect_matching_ids_from_combined_updates() {
+        let updates = combined_updates(vec![message_id_update(101, 7), message_id_update(999, 9)]);
+        assert_eq!(forwarded_ids(&updates, &[101]).unwrap(), vec![7]);
+    }
+
+    #[test]
+    fn forwarded_ids_error_when_no_matching_ids_extracted() {
+        let updates = plain_updates(vec![message_id_update(999, 9)]);
+        assert!(matches!(
+            forwarded_ids(&updates, &[101]),
+            Err(TeleError::Other(_))
+        ));
+        let empty = combined_updates(Vec::new());
+        assert!(forwarded_ids(&empty, &[101]).is_err());
     }
 
     #[test]
