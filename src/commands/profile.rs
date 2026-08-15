@@ -321,6 +321,7 @@ mod tests {
 
     #[test]
     fn set_rejects_photo_from_app_data_dir() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
         let dir = crate::config::app_data_dir();
         for bad in ["telecli-profile-test.toml", "telecli-profile-test.env"] {
             let path = dir.join(bad).to_string_lossy().into_owned();
