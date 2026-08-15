@@ -155,7 +155,11 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("join chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -215,7 +219,11 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("leave chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -278,7 +286,12 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let user = args.user.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target, "user": user}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "user": user,
+                    "would": format!("invite user {user} to chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -355,7 +368,11 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("list participants of chat {target}")
+                }));
             }
             let guard = ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
@@ -407,7 +424,12 @@ async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let user = args.user.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target, "user": user}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "user": user,
+                    "would": format!("kick user {user} from chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -468,6 +490,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "user": user,
                     "promote": promote,
                     "demote": demote,
+                    "would": format!("change admin status of user {user} in chat {target}"),
                 }));
             }
             let guard =
@@ -524,7 +547,11 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("list admin log of chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -648,7 +675,11 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("show stats of chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -727,7 +758,11 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let kind = args.kind.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "title": title}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "title": title,
+                    "would": format!("create {kind} chat \"{title}\"")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;

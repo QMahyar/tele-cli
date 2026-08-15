@@ -370,7 +370,11 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let silent = args.silent;
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": chat_target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": chat_target,
+                    "would": format!("send message to chat {chat_target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -429,7 +433,11 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let text = args.text.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "id": id,
+                    "would": format!("edit message {id}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -480,7 +488,15 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let ids = args.ids.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "ids": ids}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "ids": ids,
+                    "would": if all {
+                        format!("delete all messages in chat {chat_target}")
+                    } else {
+                        format!("delete {} message(s) by id", ids.len())
+                    },
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -566,7 +582,11 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let ids = args.ids.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "ids": ids}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "ids": ids,
+                    "would": format!("forward {} message(s) to chat {to_target}", ids.len())
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -735,7 +755,12 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id, "unpin": unpin}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "id": id,
+                    "unpin": unpin,
+                    "would": format!("{} message {id}", if unpin { "unpin" } else { "pin" })
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -777,6 +802,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "limit": limit,
                     "offset_id": offset_id,
                     "last": last,
+                    "would": format!("get messages from chat {chat_target}"),
                 }));
             }
             let guard =
@@ -839,7 +865,14 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "unread": mark_unread}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "unread": mark_unread,
+                    "would": format!(
+                        "mark chat {chat_target} as {}",
+                        if mark_unread { "unread" } else { "read" }
+                    ),
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -899,7 +932,14 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let reaction = args.reaction.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id}));
+                let would = if remove {
+                    format!("remove reaction from message {id}")
+                } else if let Some(r) = &reaction {
+                    format!("react {r} to message {id}")
+                } else {
+                    format!("react to message {id}")
+                };
+                return Ok(serde_json::json!({"dry_run": true, "id": id, "would": would}));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -948,6 +988,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "chat": chat_target,
                     "query": query,
                     "limit": limit,
+                    "would": format!("search messages in chat {chat_target}"),
                 }));
             }
             let guard =
@@ -998,7 +1039,11 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let out_dir = args.dir.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "id": id,
+                    "would": format!("download message {id}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;

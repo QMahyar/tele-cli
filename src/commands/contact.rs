@@ -62,7 +62,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
         Box::pin(async move {
             if dry_run {
-                return Ok(dry_run_payload(None));
+                return Ok(dry_run_payload("list contacts", None));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -121,7 +121,7 @@ async fn add(args: AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let phone = args.phone.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(dry_run_payload(Some(&user_target)));
+                return Ok(dry_run_payload("add contact", Some(&user_target)));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -168,7 +168,7 @@ async fn block(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let user_target = args.user.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(dry_run_payload(Some(&user_target)));
+                return Ok(dry_run_payload("block", Some(&user_target)));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -200,7 +200,7 @@ async fn unblock(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let user_target = args.user.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(dry_run_payload(Some(&user_target)));
+                return Ok(dry_run_payload("unblock", Some(&user_target)));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -224,10 +224,17 @@ async fn unblock(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-fn dry_run_payload(user: Option<&str>) -> serde_json::Value {
+fn dry_run_payload(action: &str, user: Option<&str>) -> serde_json::Value {
     match user {
-        Some(u) => serde_json::json!({"dry_run": true, "user": u}),
-        None => serde_json::json!({"dry_run": true}),
+        Some(u) => serde_json::json!({
+            "dry_run": true,
+            "user": u,
+            "would": format!("{action} user {u}")
+        }),
+        None => serde_json::json!({
+            "dry_run": true,
+            "would": action
+        }),
     }
 }
 
@@ -237,15 +244,17 @@ mod tests {
 
     #[test]
     fn dry_run_payload_marks_dry_run_only() {
-        let v = dry_run_payload(None);
+        let v = dry_run_payload("list contacts", None);
         assert_eq!(v["dry_run"], serde_json::json!(true));
         assert!(v.get("user").is_none());
+        assert_eq!(v["would"], serde_json::json!("list contacts"));
     }
 
     #[test]
     fn dry_run_payload_carries_user_target() {
-        let v = dry_run_payload(Some("alice"));
+        let v = dry_run_payload("block", Some("alice"));
         assert_eq!(v["dry_run"], serde_json::json!(true));
         assert_eq!(v["user"], serde_json::json!("alice"));
+        assert_eq!(v["would"], serde_json::json!("block user alice"));
     }
 }

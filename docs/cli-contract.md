@@ -72,7 +72,11 @@ Rules:
   same rows as `results[].data` (each `{"name","tags","session"}`). It duplicates
   the data — consumers should prefer `results`.
 - Telegram objects are serialized via an allowlist (`id`, `date`, `message`, `peer`, …). Never dump raw `api_hash`, session, or auth keys.
-- `--dry-run`: `ok=true`, `dry_run=true`, `data.would` describes the action; no network.
+- `--dry-run`: `ok=true`, `dry_run=true`, no network. Every dry-run
+  `results[].data` envelope carries `dry_run`, a human-readable `would`
+  describing the exact intended action (using the command's argument values),
+  and the command's own argument keys — all additive. `account add` and
+  `tele listen` follow the same `would` convention where applicable.
 
 Human mode (no `--json`): Rich tables on stdout. Same exit codes.
 

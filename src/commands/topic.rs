@@ -53,7 +53,12 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let title = args.title.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target, "title": title}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "title": title,
+                    "would": format!("create topic \"{title}\" in chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -245,7 +250,11 @@ fn rand_seed() -> i64 {
 }
 
 fn list_dry_run_payload(target: &str) -> serde_json::Value {
-    serde_json::json!({"dry_run": true, "chat": target})
+    serde_json::json!({
+        "dry_run": true,
+        "chat": target,
+        "would": format!("list topics in chat {target}")
+    })
 }
 
 #[cfg(test)]

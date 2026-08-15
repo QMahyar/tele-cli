@@ -146,8 +146,15 @@ fn redact_phone(phone: Option<&str>, show_phone: bool) -> Option<&str> {
 
 fn get_dry_run_payload(target: Option<&str>) -> serde_json::Value {
     match target {
-        Some(t) => serde_json::json!({"dry_run": true, "chat": t}),
-        None => serde_json::json!({"dry_run": true}),
+        Some(t) => serde_json::json!({
+            "dry_run": true,
+            "chat": t,
+            "would": format!("get profile of user {t}")
+        }),
+        None => serde_json::json!({
+            "dry_run": true,
+            "would": "get own profile"
+        }),
     }
 }
 
@@ -162,7 +169,20 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let photo = args.photo.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true}));
+                let mut fields = Vec::new();
+                if new_name.is_some() {
+                    fields.push("name");
+                }
+                if new_bio.is_some() {
+                    fields.push("bio");
+                }
+                if photo.is_some() {
+                    fields.push("photo");
+                }
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "would": format!("set profile {}", fields.join(", "))
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;

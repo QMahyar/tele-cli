@@ -63,7 +63,14 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "takeout": true}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "takeout": true,
+                    "would": format!(
+                        "start takeout session (contacts: {}, messages: {}, photos: {})",
+                        contacts, messages, photos
+                    )
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -187,6 +194,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "dry_run": true,
                     "dir": dir.to_string_lossy(),
                     "message_limit": limit,
+                    "would": format!("export takeout data to {}", dir.to_string_lossy()),
                 }));
             }
             let takeout_id = read_takeout_state(&dir)?;
@@ -527,7 +535,11 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "finished": true}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "finished": true,
+                    "would": "finish takeout session"
+                }));
             }
             let dir = export_dir(&name);
             read_takeout_state(&dir)?;

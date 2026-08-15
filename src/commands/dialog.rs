@@ -202,7 +202,12 @@ async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn list_dry_run_data(limit: u32, folder: Option<i32>) -> serde_json::Value {
-    serde_json::json!({"dry_run": true, "limit": limit, "folder": folder})
+    serde_json::json!({
+        "dry_run": true,
+        "limit": limit,
+        "folder": folder,
+        "would": "list dialogs"
+    })
 }
 
 fn is_dialog_row(raw: &tl::enums::Dialog) -> bool {
@@ -217,7 +222,11 @@ fn matches_folder(raw: &tl::enums::Dialog, folder: i32) -> bool {
 }
 
 fn drafts_dry_run_data(limit: usize) -> serde_json::Value {
-    serde_json::json!({"dry_run": true, "limit": limit})
+    serde_json::json!({
+        "dry_run": true,
+        "limit": limit,
+        "would": "list drafts"
+    })
 }
 
 fn collect_updates(updates: &tl::enums::Updates) -> Vec<&tl::enums::Update> {
@@ -245,6 +254,7 @@ async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "dry_run": true,
                     "chat": target,
                     "archive": !unarchive,
+                    "would": format!("{} chat {target}", if unarchive { "unarchive" } else { "archive" }),
                 }));
             }
             let guard =
@@ -282,7 +292,11 @@ async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("delete dialog with chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;

@@ -166,7 +166,14 @@ async fn fetch_privacy_rules(
 }
 
 fn dry_run_get_data(key: Option<String>) -> serde_json::Value {
-    serde_json::json!({"dry_run": true, "key": key})
+    serde_json::json!({
+        "dry_run": true,
+        "key": key,
+        "would": match &key {
+            Some(k) => format!("get privacy rules for key {k}"),
+            None => "get privacy rules for all keys".to_string(),
+        }
+    })
 }
 
 fn validate_set(args: &SetArgs) -> TeleResult<tl::enums::InputPrivacyKey> {
@@ -203,7 +210,11 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let tl_key = tl_key.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "key": key_name}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "key": key_name,
+                    "would": format!("set privacy rules for key {key_name}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;

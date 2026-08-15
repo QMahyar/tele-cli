@@ -51,6 +51,7 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "method": name,
+                    "would": format!("invoke raw method {name}"),
                 }));
             }
             let guard =

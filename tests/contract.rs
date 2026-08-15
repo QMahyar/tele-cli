@@ -367,6 +367,11 @@ fn dry_run_envelope_shape() {
     let data = &v["results"][0]["data"];
     assert_eq!(data["dry_run"], serde_json::json!(true), "data: {data}");
     assert_eq!(data["chat"], serde_json::json!("me"), "data: {data}");
+    assert_eq!(
+        data["would"],
+        serde_json::json!("send message to chat me"),
+        "data: {data}"
+    );
 }
 
 #[test]
@@ -435,6 +440,10 @@ fn msg_delete_requires_ids_unless_all() {
     assert_eq!(code, 0, "stderr: {err}");
     let v = parse_json(&out);
     assert_eq!(v["results"][0]["data"]["dry_run"], serde_json::json!(true));
+    assert_eq!(
+        v["results"][0]["data"]["would"],
+        serde_json::json!("delete all messages in chat me")
+    );
 }
 
 #[test]
@@ -628,6 +637,10 @@ fn account_all_expands_deduplicated_and_sorted() {
     for r in results {
         assert_eq!(r["ok"], serde_json::json!(true));
         assert_eq!(r["data"]["dry_run"], serde_json::json!(true));
+        assert_eq!(
+            r["data"]["would"],
+            serde_json::json!("send message to chat me")
+        );
     }
 }
 
@@ -788,6 +801,11 @@ fn raw_registry_names_are_offline_usable() {
             "raw {name}: stdout: {out}"
         );
         assert_eq!(v["results"][0]["data"]["dry_run"], serde_json::json!(true));
+        assert_eq!(
+            v["results"][0]["data"]["would"],
+            serde_json::json!(format!("invoke raw method {name}")),
+            "raw {name}: stdout: {out}"
+        );
     }
 }
 
