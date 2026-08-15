@@ -160,10 +160,10 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            if let Some(link) = grammers_client::Client::parse_invite_link(&target) {
+            if validate_invite_link(&target).is_ok() {
                 guard
                     .client
-                    .accept_invite_link(&link)
+                    .accept_invite_link(&target)
                     .await
                     .map_err(tele_invocation)?;
             } else {
@@ -182,6 +182,29 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn validate_invite_link(input: &str) -> TeleResult<()> {
+    if grammers_client::Client::parse_invite_link(input).is_some() || is_bare_invite_hash(input) {
+        return Ok(());
+    }
+    Err(TeleError::Usage(format!(
+        "not a valid invite link or chat target: \"{input}\""
+    )))
+}
+
+fn is_bare_invite_hash(input: &str) -> bool {
+    if input.is_empty() || input.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if input.contains('/') || input.contains(':') || input.contains('@') {
+        return false;
+    }
+    let rest = input.strip_prefix('+').unwrap_or(input);
+    if rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    input.starts_with('+') || input.contains('_') || input.contains('-')
 }
 
 async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -884,6 +907,43 @@ fn admin_action_display(action: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_invite_link_accepts_full_invite_urls() {
+        for input in [
+            "https://t.me/+abc",
+            "https://t.me/joinchat/abc",
+            "http://telegram.me/+abc",
+            "https://t.me/+abc?start=1",
+        ] {
+            assert!(validate_invite_link(input).is_ok(), "for {input}");
+        }
+    }
+
+    #[test]
+    fn validate_invite_link_accepts_bare_hashes() {
+        for input in ["+abc", "+abc-xyz_123", "abc_def-123"] {
+            assert!(validate_invite_link(input).is_ok(), "for {input}");
+        }
+    }
+
+    #[test]
+    fn validate_invite_link_rejects_garbage_and_chat_targets() {
+        for input in [
+            "t.me/+abc",
+            "joinchat/abc",
+            "not a link",
+            "@telegram",
+            "12345",
+            "me",
+            "+9891234567",
+            "https://t.me/somepublic",
+            "",
+        ] {
+            let err = validate_invite_link(input).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {input}");
+        }
+    }
 
     fn admin_rights() -> tl::enums::ChatAdminRights {
         tl::enums::ChatAdminRights::Rights(tl::types::ChatAdminRights {
