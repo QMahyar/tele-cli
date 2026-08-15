@@ -291,10 +291,16 @@ fn merge_privacy_rules(
     disallow_users: &[tl::enums::InputUser],
 ) -> Vec<tl::enums::InputPrivacyRule> {
     let mut merged = Vec::with_capacity(base.len() + 2);
+    if !allow_users.is_empty() {
+        merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
+            tl::types::InputPrivacyValueAllowUsers {
+                users: allow_users.to_vec(),
+            },
+        ));
+    }
     for rule in base {
         match rule {
             tl::enums::PrivacyRule::PrivacyValueAllowUsers(_) if !allow_users.is_empty() => {}
-            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(_) if !disallow_users.is_empty() => {}
             tl::enums::PrivacyRule::PrivacyValueAllowUsers(v) => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
                     tl::types::InputPrivacyValueAllowUsers {
@@ -302,24 +308,8 @@ fn merge_privacy_rules(
                     },
                 ));
             }
-            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => {
-                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
-                    tl::types::InputPrivacyValueDisallowUsers {
-                        users: v.users.iter().map(|id| input_user_from_id(*id)).collect(),
-                    },
-                ));
-            }
-            tl::enums::PrivacyRule::PrivacyValueAllowAll => {
-                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowAll);
-            }
-            tl::enums::PrivacyRule::PrivacyValueDisallowAll => {
-                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowAll);
-            }
             tl::enums::PrivacyRule::PrivacyValueAllowContacts => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts);
-            }
-            tl::enums::PrivacyRule::PrivacyValueDisallowContacts => {
-                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowContacts);
             }
             tl::enums::PrivacyRule::PrivacyValueAllowCloseFriends => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowCloseFriends);
@@ -330,9 +320,6 @@ fn merge_privacy_rules(
             tl::enums::PrivacyRule::PrivacyValueAllowBots => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowBots);
             }
-            tl::enums::PrivacyRule::PrivacyValueDisallowBots => {
-                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowBots);
-            }
             tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(v) => {
                 merged.push(
                     tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
@@ -341,6 +328,32 @@ fn merge_privacy_rules(
                         },
                     ),
                 );
+            }
+            _ => {}
+        }
+    }
+    if !disallow_users.is_empty() {
+        merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
+            tl::types::InputPrivacyValueDisallowUsers {
+                users: disallow_users.to_vec(),
+            },
+        ));
+    }
+    for rule in base {
+        match rule {
+            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(_) if !disallow_users.is_empty() => {}
+            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => {
+                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
+                    tl::types::InputPrivacyValueDisallowUsers {
+                        users: v.users.iter().map(|id| input_user_from_id(*id)).collect(),
+                    },
+                ));
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowContacts => {
+                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowContacts);
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowBots => {
+                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowBots);
             }
             tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(v) => {
                 merged.push(
@@ -351,21 +364,19 @@ fn merge_privacy_rules(
                     ),
                 );
             }
+            _ => {}
         }
     }
-    if !allow_users.is_empty() {
-        merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
-            tl::types::InputPrivacyValueAllowUsers {
-                users: allow_users.to_vec(),
-            },
-        ));
-    }
-    if !disallow_users.is_empty() {
-        merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
-            tl::types::InputPrivacyValueDisallowUsers {
-                users: disallow_users.to_vec(),
-            },
-        ));
+    for rule in base {
+        match rule {
+            tl::enums::PrivacyRule::PrivacyValueAllowAll => {
+                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowAll);
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowAll => {
+                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowAll);
+            }
+            _ => {}
+        }
     }
     merged
 }
@@ -657,12 +668,12 @@ mod tests {
         assert_eq!(
             merged,
             vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
+                    tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
+                ),
                 tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts,
                 tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
                     tl::types::InputPrivacyValueDisallowUsers { users: vec![iu(3)] },
-                ),
-                tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
-                    tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
                 ),
             ]
         );
@@ -683,13 +694,13 @@ mod tests {
         assert_eq!(
             merged,
             vec![
-                tl::enums::InputPrivacyRule::InputPrivacyValueAllowAll,
                 tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
                     tl::types::InputPrivacyValueAllowUsers { users: vec![iu(1)] },
                 ),
                 tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
                     tl::types::InputPrivacyValueDisallowUsers { users: vec![iu(4)] },
                 ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowAll,
             ]
         );
     }
@@ -701,10 +712,10 @@ mod tests {
         assert_eq!(
             merged,
             vec![
-                tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts,
                 tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
                     tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
                 ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts,
                 tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
                     tl::types::InputPrivacyValueDisallowUsers { users: vec![iu(6)] },
                 ),
@@ -721,12 +732,90 @@ mod tests {
         assert_eq!(
             merged,
             vec![
-                tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
-                    tl::types::InputPrivacyValueAllowChatParticipants { chats: vec![777] },
-                ),
                 tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
                     tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
                 ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
+                    tl::types::InputPrivacyValueAllowChatParticipants { chats: vec![777] },
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_orders_deny_before_allow_all() {
+        let base = vec![tl::enums::PrivacyRule::PrivacyValueAllowAll];
+        let merged = merge_privacy_rules(&base, &[], &[iu(4)]);
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
+                    tl::types::InputPrivacyValueDisallowUsers { users: vec![iu(4)] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowAll,
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_orders_allow_before_disallow_all() {
+        let base = vec![tl::enums::PrivacyRule::PrivacyValueDisallowAll];
+        let merged = merge_privacy_rules(&base, &[iu(5)], &[]);
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
+                    tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowAll,
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_orders_contacts_deny_then_disallow_all() {
+        let base = vec![
+            tl::enums::PrivacyRule::PrivacyValueAllowContacts,
+            tl::enums::PrivacyRule::PrivacyValueDisallowAll,
+        ];
+        let merged = merge_privacy_rules(&base, &[], &[iu(4)]);
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts,
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
+                    tl::types::InputPrivacyValueDisallowUsers { users: vec![iu(4)] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowAll,
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_keeps_non_user_disallow_rules_in_place() {
+        let base = vec![
+            tl::enums::PrivacyRule::PrivacyValueAllowContacts,
+            tl::enums::PrivacyRule::PrivacyValueDisallowContacts,
+            tl::enums::PrivacyRule::PrivacyValueDisallowBots,
+            tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(
+                tl::types::PrivacyValueDisallowChatParticipants { chats: vec![555] },
+            ),
+            tl::enums::PrivacyRule::PrivacyValueDisallowAll,
+        ];
+        let merged = merge_privacy_rules(&base, &[iu(5)], &[]);
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
+                    tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts,
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowContacts,
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowBots,
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
+                    tl::types::InputPrivacyValueDisallowChatParticipants { chats: vec![555] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowAll,
             ]
         );
     }
