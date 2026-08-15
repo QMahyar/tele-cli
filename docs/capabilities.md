@@ -55,7 +55,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.participants | List members | `channels.getParticipants` | `iter_participants` | `tele chat participants` | done |
 | chat.kick | Kick / ban | `channels.editBanned` | `kick_participant`, `set_banned_rights` | `tele chat kick` | done |
 | chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` | `tele chat admin` | done |
-| chat.adminlog | Admin log | `channels.getAdminLog` | raw | `tele chat adminlog` | done |
+| chat.adminlog | Admin log | `channels.getAdminLog` | raw | `tele chat admin-log` | done |
 | chat.stats | Channel / group stats | `/api/stats` | raw | `tele chat stats` | done |
 | chat.forum | Forums / topics | `/api/forum` | raw | `tele topic *` | done |
 | chat.folders | Folders / archive | `/api/folders` | raw | `tele dialog archive` | done |
@@ -81,7 +81,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | listen.action | ChatAction | updates | `Update::UserStatus`/raw | `--events ChatAction` | later |
 | listen.user | UserUpdate | updates | `Update::*` | `--events UserUpdate` | later |
 | listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` | later |
-| listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` | later |
+| listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
 | listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
 
@@ -113,4 +113,4 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | kernel.proxy | Global + per-account SOCKS5 (grammers 0.10 proxy feature is socks5-only) | `src/client.rs` | done |
 | kernel.json | Serialize results | `src/serialize.rs` | done |
 | kernel.raw | Typed TL registry | `tele raw` (`src/commands/raw.rs`) | done |
-| kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path) | `src/entities.rs` | done |
+| kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after; `-100…` bot-API dialog ids via `PeerId::from_bot_api_dialog_id`), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path) | `src/entities.rs` | done |

@@ -89,3 +89,20 @@ New capability (user-approved): `kernel.peers` — `--chat +phone` targets via r
 - [x] `cargo clippy --all-targets -- -D warnings`
 - [x] `cargo test` (no network) — 14 contract tests
 - [x] `docs/capabilities.md` updated if a capability shipped
+
+## Deep-review follow-up (2026-08-15, docs/review-2026-08.md)
+
+Shipped (all clippy-clean, 353 tests green, one logical commit each):
+
+- [x] M1–M4 listen: real reconnect (bounded 5 attempts, RAII drop), `--timeout-secs` honored (`min(3600, remaining)`), `--raw` emits base64 payload + state through the `--events` allowlist, per-account connections clamped to `effective_parallel` (1–3)
+- [x] M5 `chat admin-log` human action column renders `kind: detail`, char-safe truncation
+- [x] M6 `-100…` bot-API channel ids resolve when cached (`PeerId::from_bot_api_dialog_id` first, bare probes fallback)
+- [x] M8 QR login imports the migrate-to token via `invoke_in_dc(dc_id, …)`
+- [x] M9 `msg forward --silent` extracts ids from `updatesCombined`; errors instead of empty success
+- [x] M10 shared `TEST_ENV_LOCK` across msg/takeout unit suites; REL-12 unique contract temp tags
+- [x] REL-05 `classify_target` extraction + exhaustive tests (phone/me/link/numeric/username/invalid)
+- [x] REL-07 machine-API JSON shape locked by tests; `media_name` panic-proof on empty documents
+- [x] REL-08 `run_fanout` panic containment + ordering tests via `run_one`/`collect_one` seam
+- [x] ARCH-07 per-account `UsageError` now exits 1 (cli-contract.md:28), keyed on JSON `type` so `ConfigError` keeps exit 3
+
+Still open (not in scope): M7 `topic create --emoji` (wrong ID type — needs `messages.searchCustomEmoji` or re-document), listen auto_reconnect config flag, SEC-01/02/03/05/06/09, OBS-01/02 docs drift, INT-07/08/09/10/12, REL-06/13, README/RAW-01 doc examples, MCP (Phase 6, ask first).
