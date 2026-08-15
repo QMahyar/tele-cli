@@ -94,6 +94,7 @@ pub fn load_env(path: &std::path::Path) -> std::collections::HashMap<String, Str
     let Ok(text) = std::fs::read_to_string(path) else {
         return out;
     };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     for line in text.lines() {
         let mut line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -649,6 +650,19 @@ mod tests {
         let env = write_env("no-equals", "TELE_API_ID\nnoise\nTELE_API_HASH=xyz\n");
         assert_eq!(env.len(), 1);
         assert_eq!(env_get(&env, "TELE_API_HASH"), Some("xyz"));
+    }
+
+    #[test]
+    fn env_parser_strips_utf8_bom() {
+        let dir = std::env::temp_dir().join(format!("telecli-env-bom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, b"\xef\xbb\xbfTELE_API_ID=123\nTELE_API_HASH=abc\n").unwrap();
+        let env = load_env(&path);
+        assert_eq!(env_get(&env, "TELE_API_ID"), Some("123"));
+        assert_eq!(env_get(&env, "TELE_API_HASH"), Some("abc"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
