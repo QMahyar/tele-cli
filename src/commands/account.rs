@@ -68,7 +68,7 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
         }));
     }
     if output::machine_mode(flags.json, flags.jsonl) {
-        output::print_json(&list_envelope(&rows, flags)?);
+        output::print_json(&list_envelope(&rows, flags)?)?;
         return Ok(crate::error::EXIT_OK);
     }
     let table_rows: Vec<Vec<String>> = rows
