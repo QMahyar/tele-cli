@@ -86,8 +86,6 @@ pub async fn qr_login(
         .await
         .map_err(|e| anyhow::anyhow!("stream updates failed: {e}"))?;
 
-    let mut last_token: Option<Vec<u8>> = None;
-
     loop {
         let response = client
             .invoke(&tl::functions::auth::ExportLoginToken {
@@ -99,7 +97,6 @@ pub async fn qr_login(
 
         match response {
             enums::auth::LoginToken::Token(t) => {
-                last_token = Some(t.token.clone());
                 let token = base64_url_encode(&t.token);
                 let uri = format!("tg://login?token={token}");
                 on_token(&uri);
@@ -117,14 +114,14 @@ pub async fn qr_login(
                     }
                 }
             }
-            enums::auth::LoginToken::MigrateTo(_) => {
-                let Some(bytes) = last_token.clone() else {
-                    return Err(anyhow::anyhow!(
-                        "login token migration requested before a token was issued"
-                    ));
-                };
+            enums::auth::LoginToken::MigrateTo(migrate_to) => {
                 let imported = client
-                    .invoke(&tl::functions::auth::ImportLoginToken { token: bytes })
+                    .invoke_in_dc(
+                        migrate_to.dc_id,
+                        &tl::functions::auth::ImportLoginToken {
+                            token: migrate_to.token,
+                        },
+                    )
                     .await?;
                 match imported {
                     enums::auth::LoginToken::Success(_) => return Ok(()),
