@@ -320,6 +320,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     drop(guard);
     remove_session_file_retry(&session::session_path(&args.name)).await?;
+    remove_session_file_retry(&session::lock_path(&args.name)).await?;
     log_line("info", &format!("account {} logged out", args.name));
     let data = serde_json::json!({"signed_out": true});
     crate::executor::finish(
