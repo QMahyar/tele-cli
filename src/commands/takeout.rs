@@ -187,14 +187,19 @@ async fn run_export(
             }));
         }
     }
-    std::fs::write(
-        dir.join("contacts.json"),
-        serde_json::to_string_pretty(&contacts)?,
-    )?;
+    let contacts_path = dir.join("contacts.json");
+    let contacts_json = serde_json::to_string_pretty(&contacts)?;
+    tokio::task::spawn_blocking(move || std::fs::write(&contacts_path, &contacts_json))
+        .await
+        .map_err(|e| TeleError::Other(e.to_string()))??;
 
     let mut dialogs = Vec::new();
-    let mut messages_file =
-        std::io::BufWriter::new(std::fs::File::create(dir.join("messages.jsonl"))?);
+    let messages_path = dir.join("messages.jsonl");
+    let mut messages_file = tokio::task::spawn_blocking(move || {
+        std::fs::File::create(&messages_path).map(std::io::BufWriter::new)
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))??;
     let mut dialog_iter = guard.client.iter_dialogs();
     while let Some(dialog) = dialog_iter.next().await.map_err(tele_invocation)? {
         let chat_name = crate::serialize::peer_name(&dialog.peer);
@@ -215,18 +220,28 @@ async fn run_export(
             match msg_iter.next().await.map_err(tele_invocation)? {
                 Some(msg) => {
                     let row = crate::serialize::message_to_json(&msg)?;
-                    writeln!(messages_file, "{}", serde_json::to_string(&row)?)?;
+                    let line = serde_json::to_string(&row)?;
+                    messages_file = tokio::task::spawn_blocking(move || {
+                        let mut file = messages_file;
+                        writeln!(file, "{line}")?;
+                        Ok::<_, std::io::Error>(file)
+                    })
+                    .await
+                    .map_err(|e| TeleError::Other(e.to_string()))??;
                     count += 1;
                 }
                 None => break,
             }
         }
     }
-    messages_file.flush()?;
-    std::fs::write(
-        dir.join("dialogs.json"),
-        serde_json::to_string_pretty(&dialogs)?,
-    )?;
+    tokio::task::spawn_blocking(move || messages_file.flush())
+        .await
+        .map_err(|e| TeleError::Other(e.to_string()))??;
+    let dialogs_path = dir.join("dialogs.json");
+    let dialogs_json = serde_json::to_string_pretty(&dialogs)?;
+    tokio::task::spawn_blocking(move || std::fs::write(&dialogs_path, &dialogs_json))
+        .await
+        .map_err(|e| TeleError::Other(e.to_string()))??;
     Ok(serde_json::json!({
         "dir": dir.to_string_lossy(),
         "contacts": contacts.len(),

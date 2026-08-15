@@ -257,7 +257,7 @@ fn is_valid_mention_id(id: &str) -> bool {
 
 pub fn validate_upload_path(path: &str) -> TeleResult<()> {
     let app_dir = crate::config::app_data_dir();
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    let canonical = canonical_guard_path(path);
     if canonical.starts_with(&app_dir) {
         return Err(TeleError::Usage(
             "refusing to upload a file from the telecli app data directory".to_string(),
@@ -271,6 +271,33 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_download_dir(dir: &str) -> TeleResult<()> {
+    let app_dir = crate::config::app_data_dir();
+    let sessions_dir = crate::session::session_dir();
+    let canonical = canonical_guard_path(dir);
+    if canonical.starts_with(&app_dir) || canonical.starts_with(&sessions_dir) {
+        return Err(TeleError::Usage(
+            "refusing to download into the telecli app data directory".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_guard_path(path: &str) -> std::path::PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    #[cfg(windows)]
+    let canonical = strip_verbatim_prefix(canonical);
+    canonical
+}
+
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    match path.to_string_lossy().strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => path,
+    }
 }
 
 fn parse_schedule(value: Option<&str>) -> TeleResult<Option<i32>> {
@@ -864,6 +891,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_download_dir(&args.dir)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
@@ -893,13 +921,23 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .next()
                 .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
             let name = download_name(&msg);
-            std::fs::create_dir_all(&out_dir)?;
+            tokio::task::spawn_blocking({
+                let out_dir = out_dir.clone();
+                move || std::fs::create_dir_all(&out_dir)
+            })
+            .await
+            .map_err(|e| TeleError::Other(e.to_string()))??;
             let path = std::path::Path::new(&out_dir).join(name);
             let ok = msg.download_media(&path).await.map_err(tele_invocation)?;
             if !ok {
                 return Err(TeleError::Usage("message has no media".to_string()));
             }
-            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let bytes = tokio::task::spawn_blocking({
+                let path = path.clone();
+                move || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            })
+            .await
+            .map_err(|e| TeleError::Other(e.to_string()))?;
             Ok(serde_json::json!({"path": path.to_string_lossy(), "bytes": bytes}))
         })
     })
@@ -910,18 +948,30 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 fn download_name(msg: &grammers_client::message::Message) -> String {
     use grammers_client::media::Media;
     let name = match msg.media() {
-        Some(Media::Document(d)) => d
-            .name()
-            .map(str::to_string)
-            .unwrap_or_else(|| "document.bin".to_string()),
+        Some(Media::Document(d)) => d.name().map(str::to_string).unwrap_or_default(),
         Some(Media::Photo(_)) => "photo.jpg".to_string(),
         Some(Media::Sticker(_)) => "sticker.webp".to_string(),
         Some(_) => "media.bin".to_string(),
         None => "media.bin".to_string(),
     };
-    let base = name.rsplit('/').next().unwrap_or(&name);
-    let base = base.rsplit('\\').next().unwrap_or(base);
-    base.replace(['\0', ':', '*', '?', '"', '<', '>', '|'], "_")
+    sanitize_download_name(&name)
+}
+
+fn sanitize_download_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let mut out = String::with_capacity(base.len());
+    for c in base.chars() {
+        out.push(match c {
+            '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        });
+    }
+    let trimmed = out.trim_end_matches([' ', '.']);
+    if trimmed.is_empty() {
+        "document.bin".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn looks_like_image(path: &str) -> bool {
@@ -1378,6 +1428,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sanitize_download_name_strips_parent_traversal() {
+        assert_eq!(sanitize_download_name("../x"), "x");
+        assert_eq!(sanitize_download_name("a/../b"), "b");
+        assert_eq!(sanitize_download_name("a\\..\\b"), "b");
+        assert_eq!(sanitize_download_name(".."), "document.bin");
+        assert_eq!(sanitize_download_name("."), "document.bin");
+    }
+
+    #[test]
+    fn sanitize_download_name_strips_trailing_dots_and_spaces() {
+        assert_eq!(sanitize_download_name("name.."), "name");
+        assert_eq!(sanitize_download_name("name "), "name");
+        assert_eq!(sanitize_download_name("name. "), "name");
+        assert_eq!(sanitize_download_name("..."), "document.bin");
+    }
+
+    #[test]
+    fn sanitize_download_name_keeps_valid_names_unchanged() {
+        assert_eq!(sanitize_download_name("report.pdf"), "report.pdf");
+        assert_eq!(sanitize_download_name("عکس.png"), "عکس.png");
+        assert_eq!(sanitize_download_name("photo.jpg"), "photo.jpg");
+    }
+
+    #[test]
+    fn sanitize_download_name_falls_back_on_empty() {
+        assert_eq!(sanitize_download_name(""), "document.bin");
+    }
+
+    #[test]
+    fn download_dir_rejects_app_data_and_sessions() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let base =
+            std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sessions")).unwrap();
+        std::env::set_var("TELE_APP_DIR", &base);
+        for bad in [
+            base.to_string_lossy().to_string(),
+            base.join("sessions").to_string_lossy().to_string(),
+            base.join("sessions")
+                .join("new")
+                .to_string_lossy()
+                .to_string(),
+            base.join("export").to_string_lossy().to_string(),
+            base.join("not-yet-created").to_string_lossy().to_string(),
+        ] {
+            assert!(
+                matches!(validate_download_dir(&bad), Err(TeleError::Usage(_))),
+                "{bad}"
+            );
+        }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn download_dir_allows_dirs_outside_app_data() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let base =
+            std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::env::set_var("TELE_APP_DIR", &base);
+        let sibling = std::env::temp_dir().join(format!(
+            "telecli-msg-dl-guard-{}-outside",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&sibling);
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(validate_download_dir(&sibling.to_string_lossy()).is_ok());
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&sibling);
+    }
+
     async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
         crate::config::TEST_ENV_LOCK.lock().await
     }
@@ -1484,5 +1610,27 @@ mod tests {
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
         assert_ne!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn download_dry_run_short_circuits_before_connect() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let out =
+            std::env::temp_dir().join(format!("telecli-msg-dl-dryrun-{}", std::process::id()));
+        let code = download(
+            DownloadArgs {
+                chat: "me".to_string(),
+                id: 1,
+                dir: out.to_string_lossy().to_string(),
+            },
+            &dryrun_flags("msg download", true),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
     }
 }
