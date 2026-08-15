@@ -42,18 +42,18 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if args.raw && !events.iter().any(|e| e == "Raw") {
         events.push("Raw".to_string());
     }
+    let names = crate::executor::select_accounts(flags)?;
+    if names.is_empty() {
+        return Err(TeleError::Usage(
+            "no accounts selected: use --account <name> or --tag <tag>".to_string(),
+        ));
+    }
     if flags.dry_run {
         output::log_line("info", "[dry-run] would stream updates");
         return Ok(crate::error::EXIT_OK);
     }
     if !flags.json && !flags.jsonl {
         output::log_line("info", "listen streams JSONL events on stdout");
-    }
-    let names = crate::executor::select_accounts(flags)?;
-    if names.is_empty() {
-        return Err(TeleError::Usage(
-            "no accounts selected: use --account <name> or --tag <tag>".to_string(),
-        ));
     }
     let timeout_secs = args.timeout_secs;
     let chat_filter = args.chat.clone();
