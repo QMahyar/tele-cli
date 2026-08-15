@@ -42,6 +42,7 @@ Assets: live user sessions (full account), `TELE_API_HASH`, phone numbers, 2FA p
 - Session path = `{app_dir}/sessions/{safe_name}.session` (`safe_name` = `[A-Za-z0-9._-]+` only)
 - `--config` / `--file` must be real files; no `~` surprises without expanduser; reject directories
 - `--file` upload refuses anything under the app data dir and `.env` / `*.session` / `*.session-journal` basenames
+- Upload basenames that Windows would alias are rejected up front: trailing `.`/space, `:`, and reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`)
 - 2FA passwords are never accepted on argv; read from stdin only
 - `--limit` / `--message-limit` are capped (10k lists, 1M takeout) with a usage error
 - Invite URLs parsed; do not fetch arbitrary HTTP (Telegram only)
