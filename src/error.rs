@@ -3,7 +3,6 @@ pub const EXIT_USAGE: i32 = 1;
 pub const EXIT_PARTIAL: i32 = 2;
 pub const EXIT_ALL_FAILED: i32 = 3;
 pub const EXIT_AUTH: i32 = 4;
-#[allow(dead_code)]
 pub const EXIT_INTERRUPTED: i32 = 130;
 
 #[derive(Debug)]

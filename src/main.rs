@@ -104,7 +104,7 @@ enum Command {
     Completions(completions::Shell),
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     logging::init();
     let matches = match Cli::command().try_get_matches() {
         Ok(matches) => matches,
@@ -142,8 +142,13 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let code = runtime.block_on(async { run_command(cli.command, &flags).await });
-    std::process::exit(code);
+    let code = runtime.block_on(async {
+        tokio::select! {
+            code = run_command(cli.command, &flags) => code,
+            _ = tokio::signal::ctrl_c() => error::EXIT_INTERRUPTED,
+        }
+    });
+    std::process::ExitCode::from(code as u8)
 }
 
 pub(crate) fn command_for_completions() -> clap::Command {

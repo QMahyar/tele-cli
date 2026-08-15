@@ -49,14 +49,9 @@ pub async fn run_fanout(
         ));
     }
     let outcomes = collect_outcomes(handles).await;
-    if !flags.quiet {
-        for o in &outcomes {
-            if let Some(err) = &o.error {
-                log_line(
-                    "error",
-                    &format!("{}: {}", o.account, err["message"].as_str().unwrap_or("")),
-                );
-            }
+    for o in &outcomes {
+        if let Some(line) = outcome_error_line(o) {
+            log_line("error", &line);
         }
     }
     Ok(crate::output::Envelope::new(
@@ -64,6 +59,12 @@ pub async fn run_fanout(
         flags.dry_run,
         &flags.command,
     ))
+}
+
+fn outcome_error_line(o: &AccountOutcome) -> Option<String> {
+    o.error
+        .as_ref()
+        .map(|err| format!("{}: {}", o.account, err["message"].as_str().unwrap_or("")))
 }
 
 fn failed_outcome(account: String, e: TeleError) -> AccountOutcome {
@@ -482,6 +483,41 @@ mod tests {
     fn empty_envelope_is_vacuous_ok() {
         let env = envelope(vec![]);
         assert_eq!(envelope_exit_code(&env), EXIT_OK);
+    }
+
+    #[test]
+    fn outcome_error_line_formats_account_and_message() {
+        let o = AccountOutcome {
+            account: "a".to_string(),
+            ok: false,
+            error: Some(serde_json::json!({
+                "type": "AuthError",
+                "message": "session invalid"
+            })),
+            data: None,
+            exit_code: Some(EXIT_AUTH),
+        };
+        assert_eq!(
+            outcome_error_line(&o),
+            Some("a: session invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn outcome_error_line_none_for_success_outcome() {
+        assert_eq!(outcome_error_line(&outcome("b", true, None)), None);
+    }
+
+    #[test]
+    fn outcome_error_line_handles_missing_message_key() {
+        let o = AccountOutcome {
+            account: "a".to_string(),
+            ok: false,
+            error: Some(serde_json::json!({"type": "Error"})),
+            data: None,
+            exit_code: Some(EXIT_ALL_FAILED),
+        };
+        assert_eq!(outcome_error_line(&o), Some("a: ".to_string()));
     }
 
     async fn permit() -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {
