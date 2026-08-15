@@ -14,6 +14,9 @@ pub async fn resolve_peer(
             if digits.is_empty() {
                 return Err(rpc_error(400, "INVALID_PHONE"));
             }
+            log::warn!(
+                "phone resolution imports the number as a contact; privacy settings may hide the account"
+            );
             let res = client
                 .invoke(&tl::functions::contacts::ImportContacts {
                     contacts: vec![tl::enums::InputContact::InputPhoneContact(
@@ -34,7 +37,7 @@ pub async fn resolve_peer(
                 Some(user) => Ok(grammers_client::peer::Peer::User(
                     grammers_client::peer::User::from_raw(client, user),
                 )),
-                None => Err(rpc_error(400, "USER_NOT_FOUND")),
+                None => Err(rpc_error(400, &phone_not_found_message())),
             }
         }
         Target::Numeric(id) => {
@@ -218,6 +221,10 @@ fn rpc_error(code: i32, name: &str) -> InvocationError {
         value: None,
         caused_by: None,
     })
+}
+
+fn phone_not_found_message() -> String {
+    "phone number not found: it may be unregistered, or its owner hides it from phone-number search (ask the person to message you first)".to_string()
 }
 
 pub fn is_channel(peer: &grammers_client::peer::Peer) -> bool {
@@ -685,6 +692,13 @@ mod tests {
             .await
             .expect("cached channel must still resolve via bare probe");
         assert_eq!(pref.auth.hash(), 111);
+    }
+
+    #[test]
+    fn phone_not_found_message_explains_privacy() {
+        let msg = phone_not_found_message();
+        assert!(msg.contains("hides it from phone-number search"));
+        assert!(msg.contains("message you first"));
     }
 
     #[test]
