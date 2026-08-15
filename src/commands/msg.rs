@@ -1378,10 +1378,8 @@ mod tests {
         }
     }
 
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().await
+        crate::config::TEST_ENV_LOCK.lock().await
     }
 
     fn dryrun_flags(command: &str, dry_run: bool) -> GlobalFlags {

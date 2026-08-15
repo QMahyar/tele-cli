@@ -6,6 +6,9 @@ pub fn app_data_dir() -> PathBuf {
     app_data_dir_from_env(|k| std::env::var(k))
 }
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn app_data_dir_from_env(
     mut get: impl FnMut(&str) -> Result<String, std::env::VarError>,
 ) -> PathBuf {

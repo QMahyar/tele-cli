@@ -69,7 +69,7 @@ fn help(args: &[&str]) -> String {
     let out = tele()
         .args(args)
         .arg("--help")
-        .env("TELE_APP_DIR", isolated_appdir("help"))
+        .env("TELE_APP_DIR", isolated_appdir("helptree"))
         .output()
         .expect("spawn telecli --help");
     String::from_utf8_lossy(&out.stdout).into_owned()
