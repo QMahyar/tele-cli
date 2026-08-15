@@ -57,9 +57,11 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` | `tele chat admin` | done |
 | chat.adminlog | Admin log | `channels.getAdminLog` | raw | `tele chat admin-log` | done |
 | chat.stats | Channel / group stats | `/api/stats` | raw | `tele chat stats` | done |
-| chat.forum | Forums / topics | `/api/forum` | raw | `tele topic *` | done |
+| chat.forum | Forums / topics | `/api/forum` | raw | `tele topic *` (`topic create --emoji` single-codepoint only, see note) | done |
 | chat.folders | Folders / archive | `/api/folders` | raw | `tele dialog archive` | done |
 | chat.create | Create channel / group | `channels.createChannel` | raw | `tele chat create` | done |
+
+Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (M7/UX-01 in docs/review-2026-08.md).
 
 ## Dialogs & users
 
