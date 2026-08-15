@@ -553,14 +553,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         vec![
                             r["id"].to_string(),
                             r["date"].as_str().unwrap_or_default().to_string(),
-                            {
-                                let action = r["action"].as_str().unwrap_or_default();
-                                if action.len() > 60 {
-                                    format!("{}...", &action[..57])
-                                } else {
-                                    action.to_string()
-                                }
-                            },
+                            admin_action_display(&r["action"]),
                         ]
                     })
                     .collect();
@@ -868,6 +861,26 @@ fn message_action_summary(kind: &str, message: &tl::enums::Message) -> serde_jso
     }
 }
 
+fn admin_action_display(action: &serde_json::Value) -> String {
+    let kind = action["kind"].as_str().unwrap_or("other");
+    let detail = action
+        .get("title")
+        .or_else(|| action.get("text"))
+        .or_else(|| action.get("username"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let text = if detail.is_empty() {
+        kind.to_string()
+    } else {
+        format!("{kind}: {detail}")
+    };
+    if text.len() > 60 {
+        format!("{}...", text.chars().take(57).collect::<String>())
+    } else {
+        text
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1070,5 +1083,59 @@ mod tests {
                 tl::enums::Chat::Empty(tl::types::ChatEmpty { id: 1 }),
             ));
         assert!(ensure_chat_peer(&group_peer, "participants").is_ok());
+    }
+
+    #[test]
+    fn admin_action_display_composes_kind_and_title() {
+        let action = serde_json::json!({"kind": "change_title", "title": "New Title"});
+        assert_eq!(admin_action_display(&action), "change_title: New Title");
+    }
+
+    #[test]
+    fn admin_action_display_uses_username_field() {
+        let action = serde_json::json!({"kind": "change_username", "username": "new_handle"});
+        assert_eq!(admin_action_display(&action), "change_username: new_handle");
+    }
+
+    #[test]
+    fn admin_action_display_uses_text_field() {
+        let action = serde_json::json!({"kind": "send_message", "id": 5, "text": "hello"});
+        assert_eq!(admin_action_display(&action), "send_message: hello");
+    }
+
+    #[test]
+    fn admin_action_display_ignores_number_fields() {
+        let action = serde_json::json!({"kind": "delete_message", "id": 7});
+        assert_eq!(admin_action_display(&action), "delete_message");
+    }
+
+    #[test]
+    fn admin_action_display_empty_title_falls_back_to_kind() {
+        let action = serde_json::json!({"kind": "change_title", "title": ""});
+        assert_eq!(admin_action_display(&action), "change_title");
+    }
+
+    #[test]
+    fn admin_action_display_missing_kind_is_other() {
+        assert_eq!(admin_action_display(&serde_json::json!({})), "other");
+    }
+
+    #[test]
+    fn admin_action_display_does_not_truncate_short() {
+        let action = serde_json::json!({"kind": "change_title", "title": "t".repeat(40)});
+        let out = admin_action_display(&action);
+        assert!(!out.ends_with("..."));
+        assert_eq!(out.chars().count(), 54);
+    }
+
+    #[test]
+    fn admin_action_display_truncates_at_char_boundary() {
+        let title = format!("{}{}", "a".repeat(42), "😀".repeat(4));
+        let action = serde_json::json!({"kind": "change_title", "title": title});
+        let out = admin_action_display(&action);
+        assert!(out.ends_with("..."));
+        assert_eq!(out.chars().count(), 60);
+        assert!(out.starts_with(&format!("change_title: {}", "a".repeat(42))));
+        assert!(out.contains('😀'));
     }
 }
