@@ -72,10 +72,11 @@ pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(lock_path(name))?;
     match lock.try_lock() {
         Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(std::fs::TryLockError::WouldBlock) => {
             return Err(anyhow::anyhow!(
                 "session {name} is in use by another process"
             ));
@@ -143,7 +144,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("TELE_APP_DIR", &dir);
         let held = open_session("work").await.unwrap();
-        let err = open_session("work").await.unwrap_err();
+        let err = match open_session("work").await {
+            Err(e) => e,
+            Ok(_) => panic!("second open should fail while lock is held"),
+        };
         assert!(err.to_string().contains("is in use by another process"));
         drop(held);
         std::env::remove_var("TELE_APP_DIR");
