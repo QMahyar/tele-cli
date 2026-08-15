@@ -1,7 +1,12 @@
+use std::collections::HashMap;
 use std::io::Write;
 
+use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
+use grammers_client::media::Media;
+use grammers_client::peer::{Peer, User};
 use grammers_client::tl;
+use grammers_session::types::{PeerId, PeerKind};
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
@@ -79,6 +84,7 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let tl::enums::account::Takeout::Takeout(info) = info;
             let dir = export_dir(&name);
             crate::fs_util::create_dir_private(&dir)?;
+            write_takeout_state(&dir, info.id)?;
             Ok(serde_json::json!({
                 "takeout_id": info.id,
                 "dir": dir.to_string_lossy(),
@@ -98,6 +104,43 @@ fn validate_export(args: &ExportArgs) -> TeleResult<()> {
 
 fn export_dir(name: &str) -> std::path::PathBuf {
     crate::config::app_data_dir().join("export").join(name)
+}
+
+const TAKEOUT_STATE_FILE: &str = "takeout.json";
+
+fn takeout_state_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join(TAKEOUT_STATE_FILE)
+}
+
+fn write_takeout_state(dir: &std::path::Path, takeout_id: i64) -> TeleResult<()> {
+    crate::fs_util::create_dir_private(dir)?;
+    let json = serde_json::to_string_pretty(&serde_json::json!({ "takeout_id": takeout_id }))?;
+    std::fs::write(takeout_state_path(dir), json)?;
+    Ok(())
+}
+
+fn read_takeout_state(dir: &std::path::Path) -> TeleResult<i64> {
+    let path = takeout_state_path(dir);
+    if !path.exists() {
+        return Err(TeleError::Other(
+            "no takeout session started (run takeout start first)".to_string(),
+        ));
+    }
+    let json = std::fs::read_to_string(&path)?;
+    let value: serde_json::Value = serde_json::from_str(&json)?;
+    value
+        .get("takeout_id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| {
+            TeleError::Other(format!(
+                "invalid takeout state at {} (run takeout start to renew)",
+                path.to_string_lossy()
+            ))
+        })
+}
+
+fn delete_takeout_state(dir: &std::path::Path) {
+    let _ = std::fs::remove_file(takeout_state_path(dir));
 }
 
 fn export_state(dir: &std::path::Path) -> String {
@@ -146,10 +189,11 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "message_limit": limit,
                 }));
             }
+            let takeout_id = read_takeout_state(&dir)?;
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            run_export(&guard, &dir, limit)
+            run_export(&guard, &dir, limit, takeout_id)
                 .await
                 .map_err(|e| TeleError::Other(export_error_message(&dir, &e.to_string())))
         })
@@ -162,6 +206,7 @@ async fn run_export(
     guard: &ClientGuard,
     dir: &std::path::Path,
     limit: u32,
+    takeout_id: i64,
 ) -> TeleResult<serde_json::Value> {
     crate::fs_util::create_dir_private(dir)?;
 
@@ -200,26 +245,118 @@ async fn run_export(
     })
     .await
     .map_err(|e| TeleError::Other(e.to_string()))??;
-    let mut dialog_iter = guard.client.iter_dialogs();
-    while let Some(dialog) = dialog_iter.next().await.map_err(tele_invocation)? {
-        let chat_name = crate::serialize::peer_name(&dialog.peer);
-        let unread = match &dialog.raw {
-            tl::enums::Dialog::Dialog(d) => d.unread_count,
-            tl::enums::Dialog::Folder(_) => 0,
-        };
-        dialogs.push(serde_json::json!({
-            "chat": chat_name,
-            "unread": unread,
-        }));
-        let chat_ref = crate::entities::peer_ref(&dialog.peer)
+    let mut exclude_pinned = false;
+    let mut offset_date = 0i32;
+    let mut offset_id = 0i32;
+    let mut offset_peer = tl::enums::InputPeer::Empty;
+    loop {
+        let res: tl::enums::messages::Dialogs = guard
+            .client
+            .invoke(&tl::functions::InvokeWithTakeout {
+                takeout_id,
+                query: tl::functions::messages::GetDialogs {
+                    exclude_pinned,
+                    folder_id: None,
+                    offset_date,
+                    offset_id,
+                    offset_peer,
+                    limit: PAGE_LIMIT,
+                    hash: 0,
+                },
+            })
             .await
             .map_err(tele_invocation)?;
-        let mut msg_iter = guard.client.iter_messages(chat_ref);
-        let mut count = 0u32;
-        while count < limit {
-            match msg_iter.next().await.map_err(tele_invocation)? {
-                Some(msg) => {
-                    let row = crate::serialize::message_to_json(&msg)?;
+        let (page_dialogs, page_messages, page_users, page_chats, last_chunk) = match res {
+            tl::enums::messages::Dialogs::Dialogs(d) => {
+                (d.dialogs, d.messages, d.users, d.chats, true)
+            }
+            tl::enums::messages::Dialogs::Slice(d) => {
+                let last_chunk = d.dialogs.len() < PAGE_LIMIT as usize;
+                (d.dialogs, d.messages, d.users, d.chats, last_chunk)
+            }
+            tl::enums::messages::Dialogs::NotModified(_) => break,
+        };
+        let peers = build_peers(&guard.client, page_users, page_chats);
+        let entries = page_dialogs
+            .into_iter()
+            .map(|dlg| {
+                let peer_id = PeerId::from(dlg.peer());
+                let peer = peers
+                    .get(&peer_id)
+                    .ok_or_else(|| {
+                        TeleError::Other(format!(
+                            "dialog references peer not in response: {peer_id}"
+                        ))
+                    })
+                    .cloned()?;
+                let last_message = page_messages
+                    .iter()
+                    .find(|m| raw_peer_from_message(m).map(PeerId::from).as_ref() == Some(&peer_id))
+                    .cloned();
+                Ok((dlg, peer, last_message))
+            })
+            .collect::<TeleResult<Vec<_>>>()?;
+        for (dlg, peer, _) in &entries {
+            let chat_name = crate::serialize::peer_name(peer);
+            let unread = match dlg {
+                tl::enums::Dialog::Dialog(d) => d.unread_count,
+                tl::enums::Dialog::Folder(_) => 0,
+            };
+            dialogs.push(serde_json::json!({
+                "chat": chat_name,
+                "unread": unread,
+            }));
+            let chat_ref = crate::entities::peer_ref(peer)
+                .await
+                .map_err(tele_invocation)?;
+            let chat_id = chat_ref.id;
+            let mut count = 0u32;
+            let mut msg_offset_date = 0i32;
+            let mut msg_offset_id = 0i32;
+            loop {
+                if count >= limit {
+                    break;
+                }
+                let mres: tl::enums::messages::Messages = guard
+                    .client
+                    .invoke(&tl::functions::InvokeWithTakeout {
+                        takeout_id,
+                        query: tl::functions::messages::GetHistory {
+                            peer: chat_ref.into(),
+                            offset_id: msg_offset_id,
+                            offset_date: msg_offset_date,
+                            add_offset: 0,
+                            limit: PAGE_LIMIT,
+                            max_id: 0,
+                            min_id: 0,
+                            hash: 0,
+                        },
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                let (msgs, m_users, m_chats, m_last_chunk) = match mres {
+                    tl::enums::messages::Messages::Messages(m) => {
+                        (m.messages, m.users, m.chats, true)
+                    }
+                    tl::enums::messages::Messages::Slice(m) => {
+                        let last_chunk = m.messages.is_empty() || m.messages[0].id() <= PAGE_LIMIT;
+                        (m.messages, m.users, m.chats, last_chunk)
+                    }
+                    tl::enums::messages::Messages::ChannelMessages(m) => {
+                        let last_chunk = m.messages.is_empty() || m.messages[0].id() <= PAGE_LIMIT;
+                        (m.messages, m.users, m.chats, last_chunk)
+                    }
+                    tl::enums::messages::Messages::NotModified(_) => break,
+                };
+                if msgs.is_empty() {
+                    break;
+                }
+                let m_peers = build_peers(&guard.client, m_users, m_chats);
+                for raw in &msgs {
+                    if count >= limit {
+                        break;
+                    }
+                    let row = raw_message_to_json(raw, &m_peers, Some(chat_id))?;
                     let line = serde_json::to_string(&row)?;
                     messages_file = tokio::task::spawn_blocking(move || {
                         let mut file = messages_file;
@@ -230,9 +367,30 @@ async fn run_export(
                     .map_err(|e| TeleError::Other(e.to_string()))??;
                     count += 1;
                 }
-                None => break,
+                if m_last_chunk {
+                    break;
+                }
+                let last = msgs.last().expect("non-empty page");
+                msg_offset_id = last.id();
+                msg_offset_date = raw_message_date(last);
             }
         }
+        if last_chunk || entries.is_empty() {
+            break;
+        }
+        exclude_pinned = true;
+        if let Some((_, _, Some(last_message))) = entries
+            .iter()
+            .rev()
+            .find(|(_, _, last_message)| last_message.is_some())
+        {
+            offset_date = raw_message_date(last_message);
+            offset_id = last_message.id();
+        }
+        let last_peer_ref = crate::entities::peer_ref(&entries[entries.len() - 1].1)
+            .await
+            .map_err(tele_invocation)?;
+        offset_peer = last_peer_ref.into();
     }
     tokio::task::spawn_blocking(move || messages_file.flush())
         .await
@@ -249,6 +407,119 @@ async fn run_export(
     }))
 }
 
+const PAGE_LIMIT: i32 = 100;
+
+fn build_peers(
+    client: &grammers_client::Client,
+    users: Vec<tl::enums::User>,
+    chats: Vec<tl::enums::Chat>,
+) -> HashMap<PeerId, Peer> {
+    users
+        .into_iter()
+        .map(|user| Peer::User(User::from_raw(client, user)))
+        .chain(chats.into_iter().map(|chat| Peer::from_raw(client, chat)))
+        .map(|peer| (peer.id(), peer))
+        .collect()
+}
+
+fn raw_peer_from_message(raw: &tl::enums::Message) -> Option<tl::enums::Peer> {
+    match raw {
+        tl::enums::Message::Empty(e) => e.peer_id.clone(),
+        tl::enums::Message::Message(m) => Some(m.peer_id.clone()),
+        tl::enums::Message::Service(s) => Some(s.peer_id.clone()),
+    }
+}
+
+fn raw_message_date(raw: &tl::enums::Message) -> i32 {
+    match raw {
+        tl::enums::Message::Empty(_) => 0,
+        tl::enums::Message::Message(m) => m.date,
+        tl::enums::Message::Service(s) => s.date,
+    }
+}
+
+fn raw_message_out(raw: &tl::enums::Message) -> bool {
+    match raw {
+        tl::enums::Message::Empty(_) => false,
+        tl::enums::Message::Message(m) => m.out,
+        tl::enums::Message::Service(s) => s.out,
+    }
+}
+
+fn raw_message_sender_id(raw: &tl::enums::Message, peer_id: PeerId) -> Option<PeerId> {
+    let from_id = match raw {
+        tl::enums::Message::Empty(_) => None,
+        tl::enums::Message::Message(m) => m.from_id.clone().map(PeerId::from),
+        tl::enums::Message::Service(s) => s.from_id.clone().map(PeerId::from),
+    };
+    from_id.or_else(|| {
+        if matches!(peer_id.kind(), PeerKind::User) {
+            if raw_message_out(raw) {
+                Some(PeerId::self_user())
+            } else {
+                Some(peer_id)
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn raw_message_to_json(
+    raw: &tl::enums::Message,
+    peers: &HashMap<PeerId, Peer>,
+    fetched_in: Option<PeerId>,
+) -> TeleResult<serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    out.insert("id".into(), serde_json::json!(raw.id()));
+    out.insert(
+        "date".into(),
+        serde_json::json!(
+            DateTime::<Utc>::from_timestamp(raw_message_date(raw) as i64, 0)
+                .expect("date out of range")
+                .to_rfc3339()
+        ),
+    );
+    out.insert("out".into(), serde_json::json!(raw_message_out(raw)));
+    let peer_id = raw_peer_from_message(raw)
+        .map(PeerId::from)
+        .or(fetched_in)
+        .ok_or_else(|| TeleError::Other("message has no peer".to_string()))?;
+    out.insert(
+        "peer".into(),
+        match peers.get(&peer_id) {
+            Some(peer) => serde_json::json!(crate::serialize::peer_key(peer)),
+            None => serde_json::Value::Null,
+        },
+    );
+    out.insert(
+        "sender".into(),
+        match raw_message_sender_id(raw, peer_id).and_then(|id| peers.get(&id)) {
+            Some(sender) => serde_json::json!(crate::serialize::peer_key(sender)),
+            None => serde_json::Value::Null,
+        },
+    );
+    out.insert(
+        "text".into(),
+        serde_json::json!(match raw {
+            tl::enums::Message::Empty(_) => "",
+            tl::enums::Message::Message(m) => m.message.as_str(),
+            tl::enums::Message::Service(_) => "",
+        }),
+    );
+    if let Some(media) = match raw {
+        tl::enums::Message::Empty(_) => None,
+        tl::enums::Message::Message(m) => m.media.clone().and_then(Media::from_raw),
+        tl::enums::Message::Service(_) => None,
+    } {
+        out.insert(
+            "media".into(),
+            serde_json::json!(crate::serialize::media_name(&media)),
+        );
+    }
+    Ok(serde_json::Value::Object(out))
+}
+
 async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -258,6 +529,8 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
             if dry_run {
                 return Ok(serde_json::json!({"dry_run": true, "finished": true}));
             }
+            let dir = export_dir(&name);
+            read_takeout_state(&dir)?;
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
@@ -265,17 +538,19 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
                 .client
                 .invoke(&tl::functions::account::FinishTakeoutSession { success: true })
                 .await;
-            let data = match result {
-                Ok(success) => serde_json::json!({"finished": success}),
-                Err(grammers_client::InvocationError::Rpc(e)) if e.name == "TAKEOUT_REQUIRED" => {
-                    serde_json::json!({
-                        "finished": false,
-                        "reason": "no active takeout session (run takeout start first)"
-                    })
+            match result {
+                Ok(success) => {
+                    delete_takeout_state(&dir);
+                    Ok(serde_json::json!({"finished": success}))
                 }
-                Err(e) => return Err(tele_invocation(e)),
-            };
-            Ok(data)
+                Err(grammers_client::InvocationError::Rpc(e)) if e.name == "TAKEOUT_REQUIRED" => {
+                    delete_takeout_state(&dir);
+                    Err(TeleError::Other(
+                        "no active takeout session (run takeout start first)".to_string(),
+                    ))
+                }
+                Err(e) => Err(tele_invocation(e)),
+            }
         })
     })
     .await?;
@@ -342,6 +617,79 @@ mod tests {
             "contacts.json: written, messages.jsonl: missing, dialogs.json: missing"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn takeout_state_round_trips() {
+        let dir = temp_dir("state-roundtrip");
+        write_takeout_state(&dir, 123456).unwrap();
+        assert_eq!(read_takeout_state(&dir).unwrap(), 123456);
+        delete_takeout_state(&dir);
+        assert!(matches!(read_takeout_state(&dir), Err(TeleError::Other(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn takeout_state_missing_mentions_start() {
+        let dir = temp_dir("state-missing");
+        let err = read_takeout_state(&dir).unwrap_err();
+        assert!(err.message().contains("takeout start first"), "err: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invoke_with_takeout_wrapper_serializes_with_constructor_and_fields() {
+        use grammers_client::tl::Identifiable;
+        use grammers_client::tl::Serializable;
+        let req = tl::functions::InvokeWithTakeout {
+            takeout_id: 42,
+            query: tl::functions::messages::GetHistory {
+                peer: tl::enums::InputPeer::Empty,
+                offset_id: 7,
+                offset_date: 0,
+                add_offset: 0,
+                limit: 100,
+                max_id: 0,
+                min_id: 0,
+                hash: 0,
+            },
+        };
+        let mut buf = Vec::new();
+        req.serialize(&mut buf);
+        assert_eq!(
+            u32::from_le_bytes(buf[0..4].try_into().unwrap()),
+            <tl::functions::InvokeWithTakeout<
+                tl::functions::messages::GetHistory,
+            > as Identifiable>::CONSTRUCTOR_ID
+        );
+        assert_eq!(i64::from_le_bytes(buf[4..12].try_into().unwrap()), 42);
+        assert_eq!(
+            u32::from_le_bytes(buf[12..16].try_into().unwrap()),
+            <tl::functions::messages::GetHistory as Identifiable>::CONSTRUCTOR_ID
+        );
+        assert_eq!(
+            u32::from_le_bytes(buf[16..20].try_into().unwrap()),
+            <tl::types::InputPeerEmpty as Identifiable>::CONSTRUCTOR_ID
+        );
+        assert_eq!(i32::from_le_bytes(buf[20..24].try_into().unwrap()), 7);
+        assert_eq!(i32::from_le_bytes(buf[28..32].try_into().unwrap()), 0);
+        assert_eq!(i32::from_le_bytes(buf[32..36].try_into().unwrap()), 100);
+        assert_eq!(&buf[36..], &[0u8; 16]);
+    }
+
+    #[test]
+    fn invoke_with_takeout_wrapper_round_trips_with_bare_query() {
+        use grammers_client::tl::{Deserializable, Serializable};
+        let req = tl::functions::InvokeWithTakeout {
+            takeout_id: 42,
+            query: tl::types::InputPeerEmpty {},
+        };
+        let mut buf = Vec::new();
+        req.serialize(&mut buf);
+        let out =
+            tl::functions::InvokeWithTakeout::<tl::types::InputPeerEmpty>::from_bytes(&buf[4..])
+                .unwrap();
+        assert_eq!(out, req);
     }
 
     #[test]
