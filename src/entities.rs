@@ -9,59 +9,111 @@ pub async fn resolve_peer(
     session: &SqliteSession,
     target: &str,
 ) -> Result<grammers_client::peer::Peer, InvocationError> {
-    let t = target.trim();
+    match classify_target(target) {
+        Target::Phone(digits) => {
+            if digits.is_empty() {
+                return Err(rpc_error(400, "INVALID_PHONE"));
+            }
+            let res = client
+                .invoke(&tl::functions::contacts::ImportContacts {
+                    contacts: vec![tl::enums::InputContact::InputPhoneContact(
+                        tl::types::InputPhoneContact {
+                            client_id: digits.parse::<i64>().unwrap_or(0),
+                            phone: digits,
+                            first_name: String::new(),
+                            last_name: String::new(),
+                            note: None,
+                        },
+                    )],
+                })
+                .await?;
+            let users = match res {
+                tl::enums::contacts::ImportedContacts::Contacts(res) => res.users,
+            };
+            match users.into_iter().next() {
+                Some(user) => Ok(grammers_client::peer::Peer::User(
+                    grammers_client::peer::User::from_raw(client, user),
+                )),
+                None => Err(rpc_error(400, "USER_NOT_FOUND")),
+            }
+        }
+        Target::Numeric(id) => {
+            if id == 0 {
+                return Err(rpc_error(400, "INVALID_PEER_ID"));
+            }
+            if let Some(pref) = cached_dialog_ref(session, id).await {
+                return client.resolve_peer(pref).await;
+            }
+            let raw = id.unsigned_abs() as i64;
+            if let Some(pref) = cached_ref(session, id, raw).await {
+                return client.resolve_peer(pref).await;
+            }
+            if let Some(pref) = checked_fallback_ref(id) {
+                return client.resolve_peer(pref).await;
+            }
+            Err(rpc_error(400, "INVALID_PEER_ID"))
+        }
+        Target::Me => {
+            let user = client.get_me().await?;
+            Ok(grammers_client::peer::Peer::User(user))
+        }
+        Target::Link(username) | Target::Username(username) => {
+            match client.resolve_username(&username).await? {
+                Some(peer) => Ok(peer),
+                None => Err(rpc_error(400, "USERNAME_NOT_FOUND")),
+            }
+        }
+        Target::Invalid => Err(rpc_error(400, "INVALID_PEER_ID")),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Target {
+    Phone(String),
+    Me,
+    Link(String),
+    Numeric(i64),
+    Username(String),
+    Invalid,
+}
+
+fn classify_target(raw: &str) -> Target {
+    let t = raw.trim();
     if let Some(digits) = t
         .strip_prefix('+')
         .map(|p| p.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
     {
-        if digits.is_empty() {
-            return Err(rpc_error(400, "INVALID_PHONE"));
-        }
-        let res = client
-            .invoke(&tl::functions::contacts::ImportContacts {
-                contacts: vec![tl::enums::InputContact::InputPhoneContact(
-                    tl::types::InputPhoneContact {
-                        client_id: digits.parse::<i64>().unwrap_or(0),
-                        phone: digits,
-                        first_name: String::new(),
-                        last_name: String::new(),
-                        note: None,
-                    },
-                )],
-            })
-            .await?;
-        let users = match res {
-            tl::enums::contacts::ImportedContacts::Contacts(res) => res.users,
-        };
-        return match users.into_iter().next() {
-            Some(user) => Ok(grammers_client::peer::Peer::User(
-                grammers_client::peer::User::from_raw(client, user),
-            )),
-            None => Err(rpc_error(400, "USER_NOT_FOUND")),
-        };
+        return Target::Phone(digits);
     }
     if let Ok(id) = t.parse::<i64>() {
-        if id == 0 {
-            return Err(rpc_error(400, "INVALID_PEER_ID"));
-        }
-        let raw = id.unsigned_abs() as i64;
-        if let Some(pref) = cached_ref(session, id, raw).await {
-            return client.resolve_peer(pref).await;
-        }
-        if let Some(pref) = checked_fallback_ref(id) {
-            return client.resolve_peer(pref).await;
-        }
-        return Err(rpc_error(400, "INVALID_PEER_ID"));
+        return Target::Numeric(id);
     }
     let username = parse_username(t);
     if username == "me" {
-        let user = client.get_me().await?;
-        return Ok(grammers_client::peer::Peer::User(user));
+        return Target::Me;
     }
-    match client.resolve_username(username).await? {
-        Some(peer) => Ok(peer),
-        None => Err(rpc_error(400, "USERNAME_NOT_FOUND")),
+    if is_link(t) {
+        return Target::Link(username.to_string());
     }
+    if username.is_empty() {
+        return Target::Invalid;
+    }
+    Target::Username(username.to_string())
+}
+
+fn is_link(raw: &str) -> bool {
+    let mut s = raw;
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            s = rest;
+        }
+    }
+    s.starts_with("t.me/") || s.starts_with("telegram.me/")
+}
+
+async fn cached_dialog_ref<S: Session>(session: &S, id: i64) -> Option<PeerRef> {
+    let pid = PeerId::from_bot_api_dialog_id(id)?;
+    session.peer_ref(pid).await.ok().flatten()
 }
 
 async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRef> {
@@ -270,9 +322,26 @@ mod tests {
         assert_eq!(pref.id.bare_id_unchecked(), 3975233726);
     }
 
-    #[test]
-    fn checked_fallback_ref_rejects_out_of_range_channel() {
+    #[tokio::test]
+    async fn cached_dialog_ref_resolves_cached_bot_api_channel() {
         assert!(checked_fallback_ref(-1001234567890).is_none());
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 1234567890,
+            access_hash: 8913517700375938783,
+            title: "t".to_string(),
+            until_date: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let pref = cached_dialog_ref(&session, -1001234567890)
+            .await
+            .expect("cached bot-api channel id must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Channel);
+        assert_eq!(pref.id.bare_id_unchecked(), 1234567890);
+        assert_eq!(pref.auth.hash(), 8913517700375938783);
     }
 
     #[test]
@@ -433,5 +502,234 @@ mod tests {
             .expect("cached user must resolve");
         assert_eq!(pref.id.kind(), PeerKind::User);
         assert_eq!(pref.auth.hash(), 222);
+    }
+
+    #[tokio::test]
+    async fn cached_dialog_ref_resolves_cached_plain_user_id() {
+        let session = MemorySession::default();
+        session
+            .cache_peer(&PeerInfo::User {
+                id: 4242,
+                auth: Some(PeerAuth::from_hash(222)),
+                bot: Some(false),
+                is_self: Some(false),
+            })
+            .await
+            .unwrap();
+        let pref = cached_dialog_ref(&session, 4242)
+            .await
+            .expect("cached plain id must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::User);
+        assert_eq!(pref.id.bare_id_unchecked(), 4242);
+        assert_eq!(pref.auth.hash(), 222);
+    }
+
+    #[tokio::test]
+    async fn cached_dialog_ref_resolves_cached_basic_group() {
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let pref = cached_dialog_ref(&session, -123)
+            .await
+            .expect("cached basic group must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Chat);
+        assert_eq!(pref.id.bare_id_unchecked(), 123);
+    }
+
+    #[tokio::test]
+    async fn cached_dialog_ref_misses_for_unknown_peer() {
+        let session = MemorySession::default();
+        assert!(cached_dialog_ref(&session, -1001234567890).await.is_none());
+        assert!(cached_dialog_ref(&session, 12345).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cached_dialog_ref_rejects_out_of_range_dialog_ids() {
+        let session = MemorySession::default();
+        assert!(cached_dialog_ref(&session, 0).await.is_none());
+        assert!(cached_dialog_ref(&session, i64::MIN).await.is_none());
+        assert!(cached_dialog_ref(&session, 0x10000000000).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cached_dialog_ref_treats_negative_bare_id_as_chat_not_channel() {
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 123456,
+            access_hash: 111,
+            title: "c".to_string(),
+            until_date: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        assert!(cached_dialog_ref(&session, -123456).await.is_none());
+        let pref = cached_ref(&session, -123456, 123456)
+            .await
+            .expect("cached channel must still resolve via bare probe");
+        assert_eq!(pref.auth.hash(), 111);
+    }
+
+    #[test]
+    fn classify_phone_precedes_numeric_parse() {
+        assert_eq!(
+            classify_target("+989121234567"),
+            Target::Phone("989121234567".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_phone_keeps_only_ascii_digits() {
+        assert_eq!(
+            classify_target("+98 912 123 4567"),
+            Target::Phone("989121234567".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_bare_plus_is_phone_with_no_digits() {
+        assert_eq!(classify_target("+"), Target::Phone(String::new()));
+    }
+
+    #[test]
+    fn classify_me_is_self() {
+        assert_eq!(classify_target("me"), Target::Me);
+    }
+
+    #[test]
+    fn classify_at_me_is_self() {
+        assert_eq!(classify_target("@me"), Target::Me);
+    }
+
+    #[test]
+    fn classify_tme_me_link_is_self() {
+        assert_eq!(classify_target("t.me/me"), Target::Me);
+    }
+
+    #[test]
+    fn classify_https_tme_me_link_is_self() {
+        assert_eq!(classify_target("https://t.me/me"), Target::Me);
+    }
+
+    #[test]
+    fn classify_tme_link_is_link() {
+        assert_eq!(
+            classify_target("t.me/durov"),
+            Target::Link("durov".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_https_tme_link_with_path_is_link() {
+        assert_eq!(
+            classify_target("https://t.me/durov/42?x=1"),
+            Target::Link("durov".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_telegram_me_link_is_link() {
+        assert_eq!(
+            classify_target("telegram.me/durov"),
+            Target::Link("durov".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_http_telegram_me_link_is_link() {
+        assert_eq!(
+            classify_target("http://telegram.me/durov"),
+            Target::Link("durov".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_zero_id_is_numeric_zero() {
+        assert_eq!(classify_target("0"), Target::Numeric(0));
+    }
+
+    #[test]
+    fn classify_positive_id_is_numeric() {
+        assert_eq!(classify_target("8997636887"), Target::Numeric(8997636887));
+    }
+
+    #[test]
+    fn classify_i64_max_is_numeric() {
+        assert_eq!(
+            classify_target("9223372036854775807"),
+            Target::Numeric(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn classify_i64_min_is_numeric() {
+        assert_eq!(
+            classify_target("-9223372036854775808"),
+            Target::Numeric(i64::MIN)
+        );
+    }
+
+    #[test]
+    fn classify_bot_api_channel_id_is_numeric() {
+        assert_eq!(
+            classify_target("-1001234567890"),
+            Target::Numeric(-1001234567890)
+        );
+    }
+
+    #[test]
+    fn classify_bare_negative_group_id_is_numeric() {
+        assert_eq!(classify_target("-123"), Target::Numeric(-123));
+    }
+
+    #[test]
+    fn classify_at_username_is_username() {
+        assert_eq!(
+            classify_target("@durov"),
+            Target::Username("durov".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_bare_username_is_username() {
+        assert_eq!(
+            classify_target("durov"),
+            Target::Username("durov".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_literal_id_zero_text_is_username() {
+        assert_eq!(
+            classify_target("id=0"),
+            Target::Username("id=0".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_empty_string_is_invalid() {
+        assert_eq!(classify_target(""), Target::Invalid);
+    }
+
+    #[test]
+    fn classify_whitespace_only_is_invalid() {
+        assert_eq!(classify_target(" \t "), Target::Invalid);
     }
 }
