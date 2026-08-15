@@ -255,7 +255,42 @@ fn is_valid_mention_id(id: &str) -> bool {
         && matches!(id.parse::<i64>(), Ok(v) if v > 0)
 }
 
+fn is_reserved_device_name(stem: &str) -> bool {
+    let lower = stem.to_ascii_lowercase();
+    if matches!(lower.as_str(), "con" | "prn" | "aux" | "nul") {
+        return true;
+    }
+    lower.len() == 4
+        && (lower.starts_with("com") || lower.starts_with("lpt"))
+        && lower
+            .as_bytes()
+            .get(3)
+            .is_some_and(|b| (b'1'..=b'9').contains(b))
+}
+
+fn validate_filename(name: &str) -> TeleResult<()> {
+    if name.ends_with([' ', '.']) {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload file {name:?}: name ends with a character Windows would strip"
+        )));
+    }
+    if name.contains(':') {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload file {name:?}: ':' is not allowed in a Windows file name"
+        )));
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    if is_reserved_device_name(stem) {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload file {name:?}: reserved Windows device name"
+        )));
+    }
+    Ok(())
+}
+
 pub fn validate_upload_path(path: &str) -> TeleResult<()> {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    validate_filename(base)?;
     let app_dir = crate::config::app_data_dir();
     let canonical = canonical_guard_path(path);
     if canonical.starts_with(&app_dir) {
@@ -263,7 +298,6 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
             "refusing to upload a file from the telecli app data directory".to_string(),
         ));
     }
-    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let lower = base.to_ascii_lowercase();
     if lower == ".env" || lower.ends_with(".session") || lower.ends_with(".session-journal") {
         return Err(TeleError::Usage(format!(
@@ -1425,6 +1459,94 @@ mod tests {
         }
         for good in ["C:/tmp/session", "C:/tmp/env", "C:/tmp/x.env"] {
             assert!(validate_upload_path(good).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn upload_rejects_windows_alias_names() {
+        for bad in [
+            "file.txt.",
+            "file.txt ",
+            "file.txt:stream",
+            "CON",
+            "con.txt",
+            "LPT1",
+            "COM9",
+            "NUL",
+            "AUX",
+            "PRN",
+            "COM1",
+            "LPT9",
+        ] {
+            assert!(
+                matches!(
+                    validate_upload_path(&format!("C:/tmp/{bad}")),
+                    Err(TeleError::Usage(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn upload_allows_windows_lookalike_names() {
+        for good in ["file.txt", "CONs", "COM10", "report.txt", "com0", "lpt10"] {
+            assert!(
+                validate_upload_path(&format!("C:/tmp/{good}")).is_ok(),
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filename_rejects_windows_aliases() {
+        for bad in [
+            "file.txt.",
+            "file.txt ",
+            "file.txt:stream",
+            "CON",
+            "con.txt",
+            "LPT1",
+            "COM9",
+            "NUL",
+            "aux",
+            "prn",
+            "com1",
+            "lpt9",
+        ] {
+            assert!(
+                matches!(validate_filename(bad), Err(TeleError::Usage(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filename_accepts_safe_names() {
+        for good in [
+            "file.txt",
+            "CONs",
+            "COM10",
+            "report.txt",
+            "com0",
+            "lpt10",
+            "a.b.c",
+        ] {
+            assert!(validate_filename(good).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn reserved_device_names_match_exact_base_names() {
+        for stem in [
+            "con", "CON", "prn", "aux", "nul", "com1", "COM9", "lpt1", "LPT9",
+        ] {
+            assert!(is_reserved_device_name(stem), "{stem}");
+        }
+        for stem in [
+            "cons", "console", "com0", "com10", "lpt0", "lpt10", "aux2", "",
+        ] {
+            assert!(!is_reserved_device_name(stem), "{stem}");
         }
     }
 
