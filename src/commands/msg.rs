@@ -962,10 +962,23 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             .await
             .map_err(|e| TeleError::Other(e.to_string()))??;
             let path = std::path::Path::new(&out_dir).join(name);
-            let ok = msg.download_media(&path).await.map_err(tele_invocation)?;
+            refuse_existing_download_target(&path)?;
+            let temp = download_temp_path(&path);
+            tokio::task::spawn_blocking({
+                let temp = temp.clone();
+                move || create_download_temp(&temp)
+            })
+            .await
+            .map_err(|e| TeleError::Other(e.to_string()))??;
+            let ok = msg.download_media(&temp).await.map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                tele_invocation(e)
+            })?;
             if !ok {
+                let _ = std::fs::remove_file(&temp);
                 return Err(TeleError::Usage("message has no media".to_string()));
             }
+            commit_download(&temp, &path)?;
             let bytes = tokio::task::spawn_blocking({
                 let path = path.clone();
                 move || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
@@ -1003,8 +1016,50 @@ fn sanitize_download_name(name: &str) -> String {
     let trimmed = out.trim_end_matches([' ', '.']);
     if trimmed.is_empty() {
         "document.bin".to_string()
+    } else if is_reserved_device_name(trimmed.split('.').next().unwrap_or(trimmed)) {
+        format!("_{trimmed}")
     } else {
         trimmed.to_string()
+    }
+}
+
+fn download_temp_path(final_path: &std::path::Path) -> std::path::PathBuf {
+    let name = final_path.file_name().unwrap_or_default().to_string_lossy();
+    final_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!(".{name}.part-{}", std::process::id()))
+}
+
+fn refuse_existing_download_target(path: &std::path::Path) -> TeleResult<()> {
+    if path.exists() {
+        return Err(TeleError::Usage(format!(
+            "download target exists: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn create_download_temp(temp: &std::path::Path) -> TeleResult<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)
+        .map(|_| ())
+        .map_err(|e| TeleError::Other(format!("cannot create temp file {}: {e}", temp.display())))
+}
+
+fn commit_download(temp: &std::path::Path, final_path: &std::path::Path) -> TeleResult<()> {
+    match std::fs::rename(temp, final_path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(temp);
+            Err(TeleError::Other(format!(
+                "cannot move download into place at {}: {e}",
+                final_path.display()
+            )))
+        }
     }
 }
 
@@ -1577,6 +1632,103 @@ mod tests {
     #[test]
     fn sanitize_download_name_falls_back_on_empty() {
         assert_eq!(sanitize_download_name(""), "document.bin");
+    }
+
+    #[test]
+    fn sanitize_download_name_maps_reserved_device_names() {
+        for (input, expected) in [
+            ("CON", "_CON"),
+            ("con.txt", "_con.txt"),
+            ("NUL", "_NUL"),
+            ("nul.log", "_nul.log"),
+            ("PRN", "_PRN"),
+            ("AUX", "_AUX"),
+            ("COM1", "_COM1"),
+            ("com3.bin", "_com3.bin"),
+            ("LPT9", "_LPT9"),
+            ("lpt5.txt", "_lpt5.txt"),
+            ("CON.", "_CON"),
+            ("COM10", "COM10"),
+            ("LPT10", "LPT10"),
+            ("conference.pdf", "conference.pdf"),
+            ("company.1", "company.1"),
+        ] {
+            assert_eq!(sanitize_download_name(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn download_temp_path_is_dot_prefixed_in_same_dir() {
+        let dir = std::env::temp_dir().join(format!("telecli-dl-tmp-{}", std::process::id()));
+        let final_path = dir.join("report.pdf");
+        let temp = download_temp_path(&final_path);
+        assert_eq!(temp.parent().unwrap(), dir);
+        let fname = temp.file_name().unwrap().to_string_lossy().to_string();
+        assert!(fname.starts_with(".report.pdf.part-"), "{fname}");
+        assert!(fname
+            .strip_prefix(".report.pdf.part-")
+            .unwrap()
+            .parse::<u32>()
+            .is_ok());
+    }
+
+    #[test]
+    fn refuse_existing_download_target_rejects_existing_file() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-exists-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let existing = base.join("x.bin");
+        std::fs::write(&existing, b"old").unwrap();
+        assert!(matches!(
+            refuse_existing_download_target(&existing),
+            Err(TeleError::Usage(_))
+        ));
+        let fresh = base.join("y.bin");
+        assert!(refuse_existing_download_target(&fresh).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn create_download_temp_refuses_existing_temp() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-ct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let temp = base.join(".a.part-1");
+        assert!(create_download_temp(&temp).is_ok());
+        assert!(matches!(
+            create_download_temp(&temp),
+            Err(TeleError::Other(_))
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn commit_download_moves_temp_into_place() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-commit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let temp = base.join(".x.bin.part-1");
+        let final_path = base.join("x.bin");
+        std::fs::write(&temp, b"payload").unwrap();
+        commit_download(&temp, &final_path).unwrap();
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"payload");
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn commit_download_cleans_temp_on_failure() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-cfail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let temp = base.join(".x.bin.part-1");
+        let occupied = base.join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+        std::fs::write(&temp, b"payload").unwrap();
+        assert!(commit_download(&temp, &occupied).is_err());
+        assert!(!temp.exists());
+        assert!(occupied.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
