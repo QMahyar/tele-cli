@@ -3,7 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
-use crate::commands::credentials::{creds, creds_api_id};
+use crate::commands::credentials::creds_api_id;
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -52,7 +52,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let row = match &target {
                 Some(t) => {
                     let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), t)
@@ -151,7 +151,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             if new_name.is_some() || new_bio.is_some() {
                 let (first, last) = match &new_name {
                     Some(n) => {

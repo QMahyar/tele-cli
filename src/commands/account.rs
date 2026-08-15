@@ -448,16 +448,8 @@ fn strip_line_ending(line: &str) -> &str {
     line.trim_end_matches(['\r', '\n'])
 }
 
-pub fn tele_invocation(e: grammers_client::InvocationError) -> TeleError {
-    if crate::error::invocation_is_unauthorized(&e) {
-        TeleError::Auth("not logged in (session invalid)".to_string())
-    } else {
-        TeleError::Invocation(
-            crate::error::invocation_message(&e),
-            crate::error::invocation_wait_seconds(&e),
-        )
-    }
-}
+pub use crate::error::invocation_error as tele_invocation;
+
 fn render_qr(uri: &str) {
     eprintln!("Scan this QR code with Telegram (Settings > Devices > Link Desktop Device):");
     match qrcode::QrCode::new(uri.as_bytes()) {

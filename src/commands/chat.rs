@@ -3,7 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
-use crate::commands::credentials::{creds, creds_api_id};
+use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
@@ -159,7 +159,7 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             if let Some(link) = grammers_client::Client::parse_invite_link(&target) {
                 guard
                     .client
@@ -196,7 +196,7 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
@@ -259,7 +259,7 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
@@ -335,7 +335,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
                 return Ok(serde_json::json!({"dry_run": true, "chat": target}));
             }
             let guard = ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
@@ -388,7 +388,7 @@ async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
@@ -449,7 +449,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
@@ -505,7 +505,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let own_id = guard
                 .client
                 .get_me()
@@ -579,7 +579,7 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await
                 .map_err(tele_invocation)?;
@@ -658,7 +658,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let result = match kind.as_str() {
                 "group" => {
                     let r: tl::enums::messages::InvitedUsers = guard

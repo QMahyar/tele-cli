@@ -59,16 +59,13 @@ impl Drop for ClientGuard {
     }
 }
 
-pub async fn authorize(client: &Client, _creds: &crate::config::Credentials) -> TeleResult<()> {
+pub async fn authorize(client: &Client) -> TeleResult<()> {
     match client.is_authorized().await {
         Ok(true) => Ok(()),
         Ok(false) => Err(TeleError::Auth(
             "account is not logged in: run tele account login --name <name> first".to_string(),
         )),
-        Err(e) if crate::error::invocation_is_unauthorized(&e) => Err(TeleError::Auth(
-            "not logged in (session invalid)".to_string(),
-        )),
-        Err(e) => Err(TeleError::Other(e.to_string())),
+        Err(e) => Err(crate::error::invocation_error(e)),
     }
 }
 

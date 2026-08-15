@@ -3,7 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
-use crate::commands::credentials::{creds, creds_api_id};
+use crate::commands::credentials::creds_api_id;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 
@@ -49,7 +49,7 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&account, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             dispatch(&guard.client, guard.session.as_ref(), &name, &params)
                 .await
                 .map_err(tele_invocation)

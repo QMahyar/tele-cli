@@ -90,7 +90,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     }
                     let mut guard =
                         ClientGuard::connect(&name, creds.api_id, config_path.as_deref()).await?;
-                    client::authorize(&guard.client, &creds).await?;
+                    client::authorize(&guard.client).await?;
                     if resolved.is_none() {
                         resolved = match &chat_filter {
                             Some(target) => Some(
@@ -135,16 +135,17 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         "error",
                                         &format!("{name}: not authorized, stopping stream"),
                                     );
-                                    return Err(TeleError::Auth(
-                                        "not authorized, stopping stream".to_string(),
-                                    ));
+                                    return Err(crate::error::invocation_error(e));
                                 }
                                 failures += 1;
                                 if !reconnect_allowed(failures) {
-                                    return Err(TeleError::Other(format!(
-                                        "{name}: updates stream failed {failures} consecutive times, giving up: {}",
-                                        crate::error::invocation_message(&e)
-                                    )));
+                                    let mut err = crate::error::invocation_error(e);
+                                    if let TeleError::Invocation(message, _) = &mut err {
+                                        *message = format!(
+                                            "{name}: updates stream failed {failures} consecutive times, giving up: {message}"
+                                        );
+                                    }
+                                    return Err(err);
                                 }
                                 let sleep_for = match deadline {
                                     Some(d) => std::time::Duration::from_secs(backoff.into())

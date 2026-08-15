@@ -5,7 +5,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
-use crate::commands::credentials::{creds, creds_api_id};
+use crate::commands::credentials::creds_api_id;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 
@@ -62,7 +62,7 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let info: tl::enums::account::Takeout = guard
                 .client
                 .invoke(&tl::functions::account::InitTakeoutSession {
@@ -148,7 +148,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             run_export(&guard, &dir, limit)
                 .await
                 .map_err(|e| TeleError::Other(export_error_message(&dir, &e.to_string())))
@@ -245,7 +245,7 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client, &creds()?).await?;
+            client::authorize(&guard.client).await?;
             let result = guard
                 .client
                 .invoke(&tl::functions::account::FinishTakeoutSession { success: true })

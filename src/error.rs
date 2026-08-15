@@ -99,6 +99,14 @@ pub fn invocation_wait_seconds(e: &grammers_client::InvocationError) -> Option<u
     }
 }
 
+pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
+    if invocation_is_unauthorized(&e) {
+        TeleError::Auth("not logged in (session invalid)".to_string())
+    } else {
+        TeleError::Invocation(invocation_message(&e), invocation_wait_seconds(&e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +239,46 @@ mod tests {
             caused_by: None,
         });
         assert!(!invocation_is_unauthorized(&denied));
+    }
+
+    #[test]
+    fn invocation_error_classifies_401_as_auth() {
+        let e = grammers_client::InvocationError::Rpc(RpcError {
+            code: 401,
+            name: "AUTH_KEY_UNREGISTERED".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        let err = invocation_error(e);
+        assert!(matches!(err, TeleError::Auth(_)));
+        assert_eq!(err.exit_code(), EXIT_AUTH);
+        assert_eq!(err.message(), "not logged in (session invalid)");
+    }
+
+    #[test]
+    fn invocation_error_classifies_other_rpc_as_invocation() {
+        let e = grammers_client::InvocationError::Rpc(RpcError {
+            code: 400,
+            name: "CHAT_INVALID".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        let err = invocation_error(e);
+        assert!(matches!(err, TeleError::Invocation(_, None)));
+        assert_eq!(err.exit_code(), EXIT_ALL_FAILED);
+        assert_eq!(err.message(), "rpc error 400: CHAT_INVALID");
+    }
+
+    #[test]
+    fn invocation_error_carries_flood_seconds() {
+        let e = grammers_client::InvocationError::Rpc(RpcError {
+            code: 420,
+            name: "FLOOD_WAIT".to_string(),
+            value: Some(17),
+            caused_by: None,
+        });
+        let err = invocation_error(e);
+        assert!(matches!(err, TeleError::Invocation(_, Some(17))));
+        assert_eq!(err.message(), "rpc error 420: FLOOD_WAIT (value: 17)");
     }
 }
