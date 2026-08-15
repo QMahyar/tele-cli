@@ -14,8 +14,9 @@ pub async fn resolve_peer(
             if digits.is_empty() {
                 return Err(rpc_error(400, "INVALID_PHONE"));
             }
-            log::warn!(
-                "phone resolution imports the number as a contact; privacy settings may hide the account"
+            crate::output::log_line(
+                "warn",
+                "phone resolution imports the number as a contact; privacy settings may hide the account",
             );
             let res = client
                 .invoke(&tl::functions::contacts::ImportContacts {
