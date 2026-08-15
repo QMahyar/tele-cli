@@ -39,18 +39,34 @@ pub fn init() {
 }
 
 pub fn set_flags(verbose: u8, quiet: bool) {
-    if std::env::var("TELE_LOG").is_ok() {
+    let Some(level) = resolve_log_level(verbose, quiet, std::env::var("TELE_LOG").ok().as_deref())
+    else {
         return;
-    }
+    };
+    log::set_max_level(level);
     if quiet {
-        log::set_max_level(LevelFilter::Error);
         MIN_LINE.store(LEVEL_ERROR, Ordering::Relaxed);
-    } else if verbose > 0 {
-        log::set_max_level(if verbose > 1 {
+    }
+}
+
+fn resolve_log_level(verbose: u8, quiet: bool, env: Option<&str>) -> Option<LevelFilter> {
+    if quiet {
+        return Some(LevelFilter::Error);
+    }
+    if verbose > 0 {
+        return Some(if verbose > 1 {
             LevelFilter::Debug
         } else {
             LevelFilter::Info
         });
+    }
+    match env {
+        Some("trace") => Some(LevelFilter::Trace),
+        Some("debug") => Some(LevelFilter::Debug),
+        Some("info") => Some(LevelFilter::Info),
+        Some("warn") => Some(LevelFilter::Warn),
+        Some("error") => Some(LevelFilter::Error),
+        _ => None,
     }
 }
 
@@ -136,6 +152,79 @@ mod tests {
         assert_eq!(log::max_level(), LevelFilter::Error);
 
         // Restore
+        MIN_LINE.store(original, Ordering::Relaxed);
+        log::set_max_level(original_max);
+    }
+
+    #[test]
+    fn resolve_quiet_beats_tele_log() {
+        assert_eq!(
+            resolve_log_level(2, true, Some("debug")),
+            Some(LevelFilter::Error)
+        );
+        assert_eq!(
+            resolve_log_level(0, true, Some("debug")),
+            Some(LevelFilter::Error)
+        );
+    }
+
+    #[test]
+    fn resolve_verbose_beats_tele_log() {
+        assert_eq!(
+            resolve_log_level(2, false, Some("off")),
+            Some(LevelFilter::Debug)
+        );
+        assert_eq!(
+            resolve_log_level(1, false, Some("error")),
+            Some(LevelFilter::Info)
+        );
+    }
+
+    #[test]
+    fn resolve_tele_log_applies_without_flags() {
+        assert_eq!(
+            resolve_log_level(0, false, Some("debug")),
+            Some(LevelFilter::Debug)
+        );
+        assert_eq!(
+            resolve_log_level(0, false, Some("trace")),
+            Some(LevelFilter::Trace)
+        );
+    }
+
+    #[test]
+    fn resolve_no_flags_no_env_keeps_default() {
+        assert_eq!(resolve_log_level(0, false, None), None);
+        assert_eq!(resolve_log_level(0, false, Some("garbage")), None);
+    }
+
+    #[test]
+    fn set_flags_quiet_beats_tele_log_env() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let original = MIN_LINE.load(Ordering::Relaxed);
+        let original_max = log::max_level();
+
+        std::env::set_var("TELE_LOG", "debug");
+        set_flags(0, true);
+        assert_eq!(min_line_level(), LEVEL_ERROR);
+        assert_eq!(log::max_level(), LevelFilter::Error);
+        std::env::remove_var("TELE_LOG");
+
+        MIN_LINE.store(original, Ordering::Relaxed);
+        log::set_max_level(original_max);
+    }
+
+    #[test]
+    fn set_flags_verbose_beats_tele_log_env() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let original = MIN_LINE.load(Ordering::Relaxed);
+        let original_max = log::max_level();
+
+        std::env::set_var("TELE_LOG", "off");
+        set_flags(2, false);
+        assert_eq!(log::max_level(), LevelFilter::Debug);
+        std::env::remove_var("TELE_LOG");
+
         MIN_LINE.store(original, Ordering::Relaxed);
         log::set_max_level(original_max);
     }
