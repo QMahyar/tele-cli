@@ -221,7 +221,10 @@ async fn run_export(
     let mut contacts = Vec::new();
     let raw: tl::enums::contacts::Contacts = guard
         .client
-        .invoke(&tl::functions::contacts::GetContacts { hash: 0 })
+        .invoke(&tl::functions::InvokeWithTakeout {
+            takeout_id,
+            query: tl::functions::contacts::GetContacts { hash: 0 },
+        })
         .await
         .map_err(tele_invocation)?;
     if let tl::enums::contacts::Contacts::Contacts(c) = raw {
@@ -701,6 +704,50 @@ mod tests {
         let out =
             tl::functions::InvokeWithTakeout::<tl::types::InputPeerEmpty>::from_bytes(&buf[4..])
                 .unwrap();
+        assert_eq!(out, req);
+    }
+
+    #[test]
+    fn invoke_with_takeout_wrapper_serializes_get_contacts_with_constructor_and_fields() {
+        use grammers_client::tl::Identifiable;
+        use grammers_client::tl::Serializable;
+        let req = tl::functions::InvokeWithTakeout {
+            takeout_id: 42,
+            query: tl::functions::contacts::GetContacts { hash: 0 },
+        };
+        let mut buf = Vec::new();
+        req.serialize(&mut buf);
+        assert_eq!(
+            u32::from_le_bytes(buf[0..4].try_into().unwrap()),
+            <tl::functions::InvokeWithTakeout<
+                tl::functions::contacts::GetContacts,
+            > as Identifiable>::CONSTRUCTOR_ID
+        );
+        assert_eq!(i64::from_le_bytes(buf[4..12].try_into().unwrap()), 42);
+        assert_eq!(
+            u32::from_le_bytes(buf[12..16].try_into().unwrap()),
+            <tl::functions::contacts::GetContacts as Identifiable>::CONSTRUCTOR_ID
+        );
+        assert_eq!(i64::from_le_bytes(buf[16..24].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn invoke_with_takeout_wrapper_round_trips_with_get_contacts_query() {
+        use grammers_client::tl::{Deserializable, Serializable};
+        let req = tl::functions::InvokeWithTakeout {
+            takeout_id: 42,
+            query: tl::functions::contacts::GetContacts { hash: 0 },
+        };
+        let mut buf = Vec::new();
+        req.serialize(&mut buf);
+        let mut body = Vec::new();
+        body.extend_from_slice(&buf[4..12]);
+        body.extend_from_slice(&buf[16..24]);
+        let out =
+            tl::functions::InvokeWithTakeout::<tl::functions::contacts::GetContacts>::from_bytes(
+                &body,
+            )
+            .unwrap();
         assert_eq!(out, req);
     }
 
