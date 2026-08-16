@@ -203,6 +203,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !raw_should_stream(peer, resolved) {
                                     continue;
                                 }
+                                if is_empty_update(&m.raw) {
+                                    continue;
+                                }
                                 let row = crate::serialize::message_to_json(m)?;
                                 output::print_json_result(&event_row(
                                     "NewMessage",
@@ -218,6 +221,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 }
                                 let peer = update_peer(&m.raw);
                                 if !raw_should_stream(peer, resolved) {
+                                    continue;
+                                }
+                                if is_empty_update(&m.raw) {
                                     continue;
                                 }
                                 let row = crate::serialize::message_to_json(m)?;
@@ -356,6 +362,20 @@ fn message_peer(msg: &tl::enums::Message) -> Option<PeerId> {
         tl::enums::Message::Message(m) => Some(PeerId::from(&m.peer_id)),
         tl::enums::Message::Service(m) => Some(PeerId::from(&m.peer_id)),
         tl::enums::Message::Empty(_) => None,
+    }
+}
+
+fn is_empty_message(msg: &tl::enums::Message) -> bool {
+    matches!(msg, tl::enums::Message::Empty(_))
+}
+
+fn is_empty_update(u: &tl::enums::Update) -> bool {
+    match u {
+        tl::enums::Update::NewMessage(x) => is_empty_message(&x.message),
+        tl::enums::Update::NewChannelMessage(x) => is_empty_message(&x.message),
+        tl::enums::Update::EditMessage(x) => is_empty_message(&x.message),
+        tl::enums::Update::EditChannelMessage(x) => is_empty_message(&x.message),
+        _ => false,
     }
 }
 
@@ -783,6 +803,89 @@ mod tests {
             pts_count: 1,
         });
         assert_eq!(update_peer(&u), None);
+    }
+
+    fn empty_message() -> tl::enums::Message {
+        tl::enums::Message::Empty(tl::types::MessageEmpty {
+            id: 7,
+            peer_id: None,
+        })
+    }
+
+    #[test]
+    fn is_empty_message_recognizes_peerless_empty() {
+        assert!(is_empty_message(&empty_message()));
+    }
+
+    #[test]
+    fn is_empty_message_rejects_real_and_service_messages() {
+        assert!(!is_empty_message(&tl_message(channel_peer())));
+        assert!(!is_empty_message(&tl::enums::Message::Service(
+            tl::types::MessageService {
+                out: false,
+                mentioned: false,
+                media_unread: false,
+                reactions_are_possible: false,
+                silent: false,
+                post: false,
+                legacy: false,
+                id: 1,
+                from_id: None,
+                peer_id: channel_peer(),
+                saved_peer_id: None,
+                reply_to: None,
+                date: 0,
+                action: tl::enums::MessageAction::Empty,
+                reactions: None,
+                ttl_period: None,
+            },
+        )));
+    }
+
+    #[test]
+    fn is_empty_update_recognizes_empty_edit_channel_message() {
+        let u = tl::enums::Update::EditChannelMessage(tl::types::UpdateEditChannelMessage {
+            message: empty_message(),
+            pts: 1,
+            pts_count: 1,
+        });
+        assert!(is_empty_update(&u));
+    }
+
+    #[test]
+    fn is_empty_update_recognizes_empty_new_message() {
+        let u = tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: empty_message(),
+            pts: 1,
+            pts_count: 1,
+        });
+        assert!(is_empty_update(&u));
+    }
+
+    #[test]
+    fn is_empty_update_rejects_real_updates() {
+        let new_msg = tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: tl_message(channel_peer()),
+            pts: 1,
+            pts_count: 1,
+        });
+        let edit_channel =
+            tl::enums::Update::EditChannelMessage(tl::types::UpdateEditChannelMessage {
+                message: tl_message(channel_peer()),
+                pts: 1,
+                pts_count: 1,
+            });
+        assert!(!is_empty_update(&new_msg));
+        assert!(!is_empty_update(&edit_channel));
+        assert!(!is_empty_update(&tl::enums::Update::PtsChanged));
+        assert!(!is_empty_update(&tl::enums::Update::DeleteChannelMessages(
+            tl::types::UpdateDeleteChannelMessages {
+                channel_id: 1,
+                messages: vec![1],
+                pts: 2,
+                pts_count: 1,
+            },
+        )));
     }
 
     #[test]
