@@ -220,13 +220,20 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
 }
 
 fn validate_markdown(text: &str) -> TeleResult<()> {
-    let bytes = text.as_bytes();
     let mut search_from = 0;
     while let Some(pos) = text[search_from..].find("tg://user?id=") {
         let abs = search_from + pos;
+        let prev = text[..abs].chars().last();
+        let genuine = match prev {
+            None => true,
+            Some(c) => c == '(' || c == '<' || c.is_whitespace(),
+        };
+        if !genuine {
+            search_from = abs + "tg://user?id=".len();
+            continue;
+        }
         let after = &text[abs + "tg://user?id=".len()..];
-        let raw_form = abs > 0 && bytes[abs - 1] == b'<';
-        let id = mention_id(after, raw_form);
+        let id = mention_id(after, prev == Some('<'));
         if !is_valid_mention_id(id) {
             return Err(TeleError::Usage(format!(
                 "invalid tg://user?id= mention in --text: id must be a positive number (got {id:?})"
@@ -1402,6 +1409,38 @@ mod tests {
         ] {
             args.text = Some(good.to_string());
             assert!(validate_send(&args).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn markdown_accepts_url_containing_tg_user_substring() {
+        assert!(validate_markdown("[x](https://example.com/tg://user?id=abc)").is_ok());
+    }
+
+    #[test]
+    fn markdown_accepts_https_tg_substring() {
+        assert!(validate_markdown("https://tg://user?id=abc").is_ok());
+    }
+
+    #[test]
+    fn markdown_rejects_genuine_invalid_mention() {
+        for bad in [
+            "[x](tg://user?id=abc)",
+            "<tg://user?id=abc>",
+            "plain text with tg://user?id=abc",
+            "[x](tg://user?id=12abc)",
+        ] {
+            assert!(
+                matches!(validate_markdown(bad), Err(TeleError::Usage(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_accepts_genuine_valid_mention() {
+        for good in ["[x](tg://user?id=12345678)", "<tg://user?id=999>"] {
+            assert!(validate_markdown(good).is_ok(), "{good}");
         }
     }
 
