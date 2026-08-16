@@ -195,6 +195,11 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
         }
         _ => {}
     }
+    if let Some(text) = &args.text {
+        if text.trim().is_empty() {
+            return Err(TeleError::Usage("--text must not be empty".to_string()));
+        }
+    }
     if args.caption.is_some() && args.file.is_none() {
         return Err(TeleError::Usage("--caption requires --file".to_string()));
     }
@@ -428,7 +433,15 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_edit(args: &EditArgs) -> TeleResult<()> {
+    if args.text.trim().is_empty() {
+        return Err(TeleError::Usage("--text must not be empty".to_string()));
+    }
+    Ok(())
+}
+
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_edit(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
@@ -1284,6 +1297,57 @@ mod tests {
         ));
         assert!(validate_send(&send_args("plain")).is_ok());
         assert!(validate_send(&send_args("markdown")).is_ok());
+    }
+
+    #[test]
+    fn send_rejects_empty_text() {
+        let mut args = send_args("plain");
+        args.text = Some("".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn send_rejects_whitespace_text() {
+        let mut args = send_args("plain");
+        args.text = Some("   \t ".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn send_allows_whitespace_inside_text() {
+        let mut args = send_args("plain");
+        args.text = Some("  hello world  ".to_string());
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
+    fn edit_rejects_empty_text() {
+        let args = EditArgs {
+            chat: "me".to_string(),
+            id: 5,
+            text: "".to_string(),
+        };
+        assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn edit_rejects_whitespace_text() {
+        let args = EditArgs {
+            chat: "me".to_string(),
+            id: 5,
+            text: "   \t ".to_string(),
+        };
+        assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn edit_allows_normal_text() {
+        let args = EditArgs {
+            chat: "me".to_string(),
+            id: 5,
+            text: "hello".to_string(),
+        };
+        assert!(validate_edit(&args).is_ok());
     }
 
     #[test]
