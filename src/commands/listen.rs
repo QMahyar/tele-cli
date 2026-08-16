@@ -297,6 +297,8 @@ fn aggregate_exit(ok_count: usize, failed: &[i32]) -> i32 {
         crate::error::EXIT_OK
     } else if ok_count > 0 {
         crate::error::EXIT_PARTIAL
+    } else if failed.iter().all(|c| *c == crate::error::EXIT_USAGE) {
+        crate::error::EXIT_USAGE
     } else if failed.iter().all(|c| *c == crate::error::EXIT_AUTH) {
         crate::error::EXIT_AUTH
     } else {
@@ -1071,8 +1073,48 @@ mod tests {
             crate::error::EXIT_ALL_FAILED
         );
         assert_eq!(
-            aggregate_exit(0, &[crate::error::EXIT_USAGE]),
+            aggregate_exit(
+                0,
+                &[crate::error::EXIT_USAGE, crate::error::EXIT_ALL_FAILED]
+            ),
             crate::error::EXIT_ALL_FAILED
+        );
+    }
+
+    #[test]
+    fn aggregate_exit_returns_usage_when_all_failures_usage() {
+        assert_eq!(
+            aggregate_exit(0, &[crate::error::EXIT_USAGE, crate::error::EXIT_USAGE]),
+            crate::error::EXIT_USAGE
+        );
+    }
+
+    #[test]
+    fn aggregate_exit_returns_auth_when_all_failures_auth() {
+        assert_eq!(
+            aggregate_exit(0, &[crate::error::EXIT_AUTH]),
+            crate::error::EXIT_AUTH
+        );
+    }
+
+    #[test]
+    fn aggregate_exit_returns_all_failed_for_mixed() {
+        assert_eq!(
+            aggregate_exit(0, &[crate::error::EXIT_USAGE, crate::error::EXIT_AUTH]),
+            crate::error::EXIT_ALL_FAILED
+        );
+    }
+
+    #[test]
+    fn aggregate_exit_returns_ok_when_no_failures() {
+        assert_eq!(aggregate_exit(1, &[]), crate::error::EXIT_OK);
+    }
+
+    #[test]
+    fn aggregate_exit_returns_partial_when_some_ok() {
+        assert_eq!(
+            aggregate_exit(1, &[crate::error::EXIT_USAGE]),
+            crate::error::EXIT_PARTIAL
         );
     }
 }
