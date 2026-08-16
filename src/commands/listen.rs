@@ -176,7 +176,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             continue;
                         }
                     };
-                    failures = 0;
+                    failures = on_reconnect_success(failures);
                     loop {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
@@ -209,7 +209,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             }
                             Err(_) => continue,
                         };
-                        failures = 0;
+                        failures = on_reconnect_success(failures);
                         match &update {
                             Update::NewMessage(m) => {
                                 if !events.iter().any(|e| e == "NewMessage") {
@@ -331,8 +331,8 @@ async fn handle_stream_failure(
     if is_auth_error(&err) {
         return Err(err);
     }
-    *failures += 1;
-    if !reconnect_allowed(*failures) {
+    *failures = on_failure(*failures);
+    if give_up(*failures) {
         return Err(TeleError::Other(format!(
             "{account}: updates stream failed {failures} consecutive times, giving up: {}",
             err.message()
@@ -428,6 +428,19 @@ fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
 
 fn reconnect_allowed(consecutive_failures: u32) -> bool {
     consecutive_failures <= MAX_RECONNECT_ATTEMPTS
+}
+
+fn on_failure(failures: u32) -> u32 {
+    failures + 1
+}
+
+fn on_reconnect_success(failures: u32) -> u32 {
+    let _ = failures;
+    0
+}
+
+fn give_up(failures: u32) -> bool {
+    !reconnect_allowed(failures)
 }
 
 fn reconnect_message(account: &str, failures: u32, backoff: u32, cause: &str) -> String {
@@ -1171,5 +1184,43 @@ mod tests {
             aggregate_exit(1, &[crate::error::EXIT_USAGE]),
             crate::error::EXIT_PARTIAL
         );
+    }
+
+    #[test]
+    fn on_failure_increments_consecutive_counter() {
+        assert_eq!(on_failure(0), 1);
+        assert_eq!(on_failure(1), 2);
+        assert_eq!(
+            on_failure(MAX_RECONNECT_ATTEMPTS),
+            MAX_RECONNECT_ATTEMPTS + 1
+        );
+    }
+
+    #[test]
+    fn on_reconnect_success_resets_counter_to_zero() {
+        assert_eq!(on_reconnect_success(0), 0);
+        assert_eq!(on_reconnect_success(3), 0);
+        assert_eq!(on_reconnect_success(MAX_RECONNECT_ATTEMPTS + 1), 0);
+    }
+
+    #[test]
+    fn failure_then_reconnect_success_cycle_never_gives_up() {
+        let mut failures = 0;
+        for _ in 0..10 {
+            failures = on_failure(failures);
+            assert!(reconnect_allowed(failures));
+            failures = on_reconnect_success(failures);
+            assert_eq!(failures, 0);
+        }
+    }
+
+    #[test]
+    fn consecutive_failures_give_up_after_max_attempts() {
+        let mut failures = 0;
+        while !give_up(failures) {
+            failures = on_failure(failures);
+        }
+        assert_eq!(failures, MAX_RECONNECT_ATTEMPTS + 1);
+        assert!(give_up(failures));
     }
 }
