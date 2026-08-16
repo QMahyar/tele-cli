@@ -47,7 +47,7 @@ Assets: live user sessions (full account), `TELE_API_HASH`, phone numbers, 2FA p
 - `--limit` / `--message-limit` are capped (10k lists, 1M takeout) with a usage error
 - Invite URLs parsed; do not fetch arbitrary HTTP (Telegram only)
 - Live tests: designated chat only
-- `tele raw` does not eval Python; only known `telethon.tl.functions` classes
+- `tele raw` does not eval anything: it is a typed Rust registry (`src/commands/raw.rs`) of compiled TL method arms; no dynamic dispatch
 - Agent-facing listen text is data, not instructions (document in skill when it ships)
 
 ## Ask first

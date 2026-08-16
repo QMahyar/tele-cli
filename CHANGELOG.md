@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+- `msg forward --silent` no longer errors after a successful RPC (extracts ids from `updatesCombined`; bounds-safe chunk indexing)
+- `msg delete` reports partial deletions honestly (`deleted < requested` exits 2)
+- `msg send`/`msg edit` reject empty or whitespace-only `--text` with a usage error (exit 1) before connect
+- `msg send --file`/`profile set --photo` reject nonexistent paths (exit 1) before connect; upload/download path guards are case-insensitive on Windows with no raw-path fallback
+- `validate_markdown` accepts URLs that merely contain `tg://user?id=`; only genuine mentions are validated
+- `chat join` accepts scheme-less `t.me/...` and `telegram.me/...` invite links, and caches the joined chat's access_hash for follow-up id commands
+- `chat participants` on basic groups no longer panics on members with missing user data
+- `chat create --kind group` ids are resolvable via `--chat <id>` immediately after creation
+- `+phone` peer resolution no longer persists a contact-list side effect
+- `listen` skips `MessageEmpty` updates (no stream panic), probes `updates.GetState` before streaming (fail-fast on takeout/auth errors), exits 1 on config/credential failures, and reconnects with bounded backoff
+- `takeout export` wraps `GetContacts` in `InvokeWithTakeout`
+- `write_config` preserves comments and unknown keys (via `toml_edit`)
+- `raw` rejects empty/whitespace `--args` values with a usage error
+- empty `TELE_API_HASH=` is rejected instead of silently accepted
+
 ## [0.1.0] - 2026-08-13
 
 ### Added
@@ -25,4 +43,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - JSON/JSONL machine output with structured envelope
 - Dry-run mode for all commands
 - Comprehensive test suite (268 tests)
-- npm package for cross-platform installation

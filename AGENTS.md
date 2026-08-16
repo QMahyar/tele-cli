@@ -1,6 +1,6 @@
 # Tele-Cli — Agent Context
 
-> Load this file every session. For a slice, also load only the matching `docs/capabilities.md` rows plus `docs/spec.md` sections you will touch.
+> Load this file every session. For a slice, also load only the matching `docs/capabilities.md` rows plus `docs/ideas/tele-cli.md` sections you will touch.
 
 ## Tech Stack
 
@@ -17,7 +17,7 @@
 ```bash
 cargo build                              # debug build
 cargo build --release                    # optimized build
-cargo test                               # 353 tests, no network
+cargo test                               # 528 tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
@@ -119,7 +119,7 @@ src/
 ## Pointers
 
 - Intent: `docs/ideas/tele-cli.md`
-- Spec: `docs/spec.md`
+- Spec: `docs/ideas/tele-cli.md`
 - Matrix: `docs/capabilities.md`
 - CLI contract: `docs/cli-contract.md`
 - Security: `docs/security.md`

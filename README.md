@@ -182,7 +182,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-353 tests across unit, contract, and selection suites. All run offline by default.
+528 tests across unit, contract, and selection suites. All run offline by default.
 
 ---
 

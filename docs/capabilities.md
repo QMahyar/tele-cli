@@ -52,7 +52,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.join | Join public / invite | `channels.joinChannel`, `messages.importChatInvite` | `join_chat`, `accept_invite_link` | `tele chat join` | done |
 | chat.leave | Leave / delete dialog | `channels.leaveChannel`, `messages.deleteChatUser` | `delete_dialog` | `tele chat leave` | done |
 | chat.invite | Export / edit invites | `/api/invites` | raw | `tele chat invite` | done |
-| chat.participants | List members | `channels.getParticipants` | `iter_participants` | `tele chat participants` | done |
+| chat.participants | List members | `channels.getParticipants` | `iter_participants` (channels/supergroups); basic groups via raw `messages.GetFullChat` — members whose user data is missing are skipped, never a panic | `tele chat participants` | done |
 | chat.kick | Kick / ban | `channels.editBanned` | `kick_participant`, `set_banned_rights` | `tele chat kick` | done |
 | chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` | `tele chat admin` | done |
 | chat.adminlog | Admin log | `channels.getAdminLog` | raw | `tele chat admin-log` | done |
@@ -61,7 +61,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.folders | Folders / archive | `/api/folders` | raw | `tele dialog archive` | done |
 | chat.create | Create channel / group | `channels.createChannel` | raw | `tele chat create` | done |
 
-Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (M7/UX-01 in docs/review-2026-08.md).
+Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (open item M7, tracked in `tasks/todo.md`).
 
 ## Dialogs & users
 
@@ -115,4 +115,4 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | kernel.proxy | Global + per-account SOCKS5 (grammers 0.10 proxy feature is socks5-only) | `src/client.rs` | done |
 | kernel.json | Serialize results | `src/serialize.rs` | done |
 | kernel.raw | Typed TL registry | `tele raw` (`src/commands/raw.rs`) — human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `messages.ExportChatInvite`) require an explicit `--account` and honor `--dry-run` | done |
-| kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after; `-100…` bot-API dialog ids via `PeerId::from_bot_api_dialog_id`), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path; resolution warns that the number is added as a contact and that privacy settings may hide the account — an unregistered or privacy-hidden number fails with an explanatory message) | `src/entities.rs` | done |
+| kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after; `-100…` bot-API dialog ids via `PeerId::from_bot_api_dialog_id`), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path; the temporary import is deleted immediately after resolution — no contact side effect, and privacy settings may hide the account) | `src/entities.rs` | done |

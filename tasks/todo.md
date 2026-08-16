@@ -90,7 +90,7 @@ New capability (user-approved): `kernel.peers` — `--chat +phone` targets via r
 - [x] `cargo test` (no network) — 14 contract tests
 - [x] `docs/capabilities.md` updated if a capability shipped
 
-## Deep-review follow-up (2026-08-15, docs/review-2026-08.md)
+## Deep-review follow-up (2026-08-15)
 
 Shipped (all clippy-clean, 353 tests green, one logical commit each):
 
@@ -107,7 +107,7 @@ Shipped (all clippy-clean, 353 tests green, one logical commit each):
 
 Still open (not in scope): M7 `topic create --emoji` (wrong ID type — needs `messages.searchCustomEmoji` or re-document), listen auto_reconnect config flag, SEC-01/02/03/05/06/09, OBS-01/02 docs drift, INT-07/08/09/10/12, REL-06/13, README/RAW-01 doc examples, MCP (Phase 6, ask first).
 
-## Bug-hunt 2026-08 triage (2026-08-16, docs/bug-hunt-2026-08.md)
+## Bug-hunt 2026-08 triage (2026-08-16)
 
 Report written against pre-merge code; HEAD `a702832` already merged 21 fix plans. Every CRITICAL/HIGH + dedup-theme finding re-verified at HEAD by independent read-only agents (verdicts below; "stale" = fixed by a702832 or earlier).
 
@@ -127,7 +127,30 @@ Report written against pre-merge code; HEAD `a702832` already merged 21 fix plan
 - 15.H2 privacy human table (fixed); 14.1 `--folder 0` / 14.2 dialogFolder rows (fixed `unwrap_or(0)` + skip)
 - 2.2 listen forever-stall — mostly fixed (`catch_up: true`, timeout, backoff); narrow edge (GetState fail + no saved state) still possible, T14
 
-### LIVE backlog (verified at HEAD) — priority order
+### RESOLVED 2026-08-16 (all T1–T18 shipped on `main`, 528 tests green, clippy+fmt clean)
+
+Final review of merged `main` (code-reviewer, `ce5c282..HEAD`, +1353/−77): no CRITICAL findings. Latent notes (no current impact): W1 `write_config` preserves root-level fields from the existing file (accounts-only contract — fine today), W2 markdown boundary heuristic could skip a bare mention after `)`, N1 `MAX_RECONNECT_ATTEMPTS=5` allows 6 failures before give-up (behavior tested/locked), N2 `\\?\UNC\` extended-length UNC not stripped (unreachable today), N4 basic-group participants "unavailable" uses exit 3 rather than 1, N5 give-up message prints post-increment count. All documented in the review report; revisit if those areas change.
+
+- [x] T1 HIGH 8.H1 `msg delete` no-op/partial (`deleted:0` exit 0) — fixed earlier (a702832-era)
+- [x] T2 HIGH 8.H2 `msg forward --silent` retry-dup + `chunk[i]` panic — `6103db3`
+- [x] T3 HIGH 12.1 takeout GetContacts not wrapped in InvokeWithTakeout — `c6d0161`
+- [x] T4 HIGH 10.2 cached_ref never probes `PeerId::chat` — `4833298`
+- [x] T5 MED 4.F3/8.H4 `+phone` contact side effect — `599e50d` (DeleteContacts after ImportContacts)
+- [x] T6 MED 10.4 chat join discards returned peer — `5f0e8baa`
+- [x] T7 MED 3.5 empty `TELE_API_HASH=` accepted — `48221116`
+- [x] T8 MED 3.7 write_config destroys comments/unknown keys — `20fee4c` (toml_edit direct dep)
+- [x] T9 MED 9.2 Windows path guards case-sensitive + raw-path fallback — `931cf0e` (`path_under_guard`/`resolve_for_guard`; upload existence check)
+- [x] T10 MED 12.3 MessageEmpty in EditChannelMessage panics stream — `1461e01` (guards in listen NewMessage/MessageEdited)
+- [x] T11 MED 8.M1 empty/whitespace `--text` passes validation — `f5b2e13` (validate_send + validate_edit)
+- [x] T12 MED 10.3 bare `t.me/+hash` invite forms rejected — `5c0c2b9` (normalize_invite_link)
+- [x] T13 MED listen config failure exits 3 not 1 — `2367cbc` (aggregate_exit EXIT_USAGE)
+- [x] T14 LOW 2.2 GetState fail stall + 10.9 `take_user().unwrap()` panic — `8e985d1` (GetState probe) + `8864b25` (GetFullChat path for basic groups)
+- [x] T15 LOW 13.4 `raw --args '{"chat":""}'` fabricated INVALID_PEER_ID — `1710a56` (req_str rejects empty/whitespace)
+- [x] T16 LOW 8.L1 `tg://user?id=` substring false rejection — `cf71559` (mention boundary rule)
+- [x] T17 LOW 8.L4 `--file <nonexistent>` exit 3, guard bypassed — `931cf0e` (upload existence check, exit 1)
+- [x] T18 LOW 12.7/12.8 listen `failures` never reset; connect errors outside retry loop — `fb1d52e` (counters + reset verified; machinery largely pre-existing from M1–M4)
+
+### LIVE backlog (verified at HEAD) — priority order [RESOLVED: see above]
 - **T1 HIGH** 8.H1: `msg delete` reports `{"deleted":0}` exit 0 on no-op/partial deletion; grammers `revoke:true` hardcoded, no self-only option. msg.rs:475-478; grammers messages.rs:884-890
 - **T2 HIGH** 8.H2: `msg forward --silent` errors "forward succeeded but no new message ids" after a successful RPC → retry duplicates; non-Updates variants dropped; adjacent `chunk[i]` index panic at msg.rs:622. msg.rs:691-705, 741
 - **T3 HIGH** 12.1: takeout `GetContacts` not wrapped in `InvokeWithTakeout` (only GetDialogs/GetHistory are; takeout_id IS persisted). takeout.rs:222-226
@@ -148,4 +171,4 @@ Report written against pre-merge code; HEAD `a702832` already merged 21 fix plan
 - **T18 LOW** 12.7/12.8: listen `failures` never reset on successful reconnect; connect errors outside retry loop. listen.rs:140-171
 
 ### Unverified remainder (medium/low, not re-checked at HEAD; verify via RED test when scheduled)
-Slices 4-15 mediums/lows not listed above, incl. 3.9/3.10/3.12/3.13, 4.F5/F7/F8, 5.5/5.6, 6.F4/F5/F7/F8, 7.5-7.9/7.11, 8.L2/L3/L5/L6/L7, 9.3-9.8, 10.5-10.12, 11.F1-F8, 12.4-12.6/12.9/12.10/12.12/12.13, 13.3/13.5/13.6/13.7, 14.3-14.9, 15.M1/M3, 15.L1-L6 — each gets a RED test before code in its ticket.
+Slices 4-15 mediums/lows not listed above, incl. 3.9/3.10/3.12/3.13, 4.F5/F7/F8, 5.5/5.6, 6.F4/F5/F7/F8, 7.5-7.9/7.11, 8.L2/L3/L5/L6/L7, 9.3-9.8, 10.5-10.12, 11.F1-F8, 12.4-12.6/12.9/12.10/12.12/12.13, 13.3/13.5/13.6/13.7, 14.3-14.9, 15.M1/M3, 15.L1-L6 — each gets a RED test before code when scheduled.
