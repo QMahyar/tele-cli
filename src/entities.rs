@@ -16,7 +16,7 @@ pub async fn resolve_peer(
             }
             crate::output::log_line(
                 "warn",
-                "phone resolution imports the number as a contact; privacy settings may hide the account",
+                "looking up phone number; privacy settings may hide the account",
             );
             let res = client
                 .invoke(&tl::functions::contacts::ImportContacts {
@@ -34,6 +34,13 @@ pub async fn resolve_peer(
             let users = match res {
                 tl::enums::contacts::ImportedContacts::Contacts(res) => res.users,
             };
+            if let Some(user) = users.first() {
+                let _ = client
+                    .invoke(&tl::functions::contacts::DeleteContacts {
+                        id: vec![imported_user_to_input_user(user)],
+                    })
+                    .await;
+            }
             match users.into_iter().next() {
                 Some(user) => Ok(grammers_client::peer::Peer::User(
                     grammers_client::peer::User::from_raw(client, user),
@@ -226,6 +233,19 @@ fn rpc_error(code: i32, name: &str) -> InvocationError {
 
 fn phone_not_found_message() -> String {
     "phone number not found: it may be unregistered, or its owner hides it from phone-number search (ask the person to message you first)".to_string()
+}
+
+fn imported_user_to_input_user(user: &tl::enums::User) -> tl::enums::InputUser {
+    match user {
+        tl::enums::User::Empty(u) => tl::enums::InputUser::User(tl::types::InputUser {
+            user_id: u.id,
+            access_hash: 0,
+        }),
+        tl::enums::User::User(u) => tl::enums::InputUser::User(tl::types::InputUser {
+            user_id: u.id,
+            access_hash: u.access_hash.unwrap_or(0),
+        }),
+    }
 }
 
 pub fn is_channel(peer: &grammers_client::peer::Peer) -> bool {
@@ -728,6 +748,143 @@ mod tests {
         let msg = phone_not_found_message();
         assert!(msg.contains("hides it from phone-number search"));
         assert!(msg.contains("message you first"));
+    }
+
+    #[test]
+    fn imported_user_to_input_user_keeps_id_and_hash() {
+        let user = tl::enums::User::User(tl::types::User {
+            is_self: false,
+            contact: false,
+            mutual_contact: false,
+            deleted: false,
+            bot: false,
+            bot_chat_history: false,
+            bot_nochats: false,
+            verified: false,
+            restricted: false,
+            min: false,
+            bot_inline_geo: false,
+            support: false,
+            scam: false,
+            apply_min_photo: false,
+            fake: false,
+            bot_attach_menu: false,
+            premium: false,
+            attach_menu_enabled: false,
+            bot_can_edit: false,
+            close_friend: false,
+            stories_hidden: false,
+            stories_unavailable: false,
+            contact_require_premium: false,
+            bot_business: false,
+            bot_has_main_app: false,
+            bot_forum_view: false,
+            bot_forum_can_manage_topics: false,
+            bot_can_manage_bots: false,
+            bot_guestchat: false,
+            bot_guard: false,
+            id: 4242,
+            access_hash: Some(777),
+            first_name: None,
+            last_name: None,
+            username: None,
+            phone: None,
+            photo: None,
+            status: None,
+            bot_info_version: None,
+            restriction_reason: None,
+            bot_inline_placeholder: None,
+            lang_code: None,
+            emoji_status: None,
+            usernames: None,
+            stories_max_id: None,
+            color: None,
+            profile_color: None,
+            bot_active_users: None,
+            bot_verification_icon: None,
+            send_paid_messages_stars: None,
+        });
+        assert_eq!(
+            imported_user_to_input_user(&user),
+            tl::enums::InputUser::User(tl::types::InputUser {
+                user_id: 4242,
+                access_hash: 777,
+            })
+        );
+    }
+
+    #[test]
+    fn imported_user_to_input_user_maps_missing_hash_to_zero() {
+        let user = tl::enums::User::User(tl::types::User {
+            is_self: false,
+            contact: false,
+            mutual_contact: false,
+            deleted: false,
+            bot: false,
+            bot_chat_history: false,
+            bot_nochats: false,
+            verified: false,
+            restricted: false,
+            min: false,
+            bot_inline_geo: false,
+            support: false,
+            scam: false,
+            apply_min_photo: false,
+            fake: false,
+            bot_attach_menu: false,
+            premium: false,
+            attach_menu_enabled: false,
+            bot_can_edit: false,
+            close_friend: false,
+            stories_hidden: false,
+            stories_unavailable: false,
+            contact_require_premium: false,
+            bot_business: false,
+            bot_has_main_app: false,
+            bot_forum_view: false,
+            bot_forum_can_manage_topics: false,
+            bot_can_manage_bots: false,
+            bot_guestchat: false,
+            bot_guard: false,
+            id: 4242,
+            access_hash: None,
+            first_name: None,
+            last_name: None,
+            username: None,
+            phone: None,
+            photo: None,
+            status: None,
+            bot_info_version: None,
+            restriction_reason: None,
+            bot_inline_placeholder: None,
+            lang_code: None,
+            emoji_status: None,
+            usernames: None,
+            stories_max_id: None,
+            color: None,
+            profile_color: None,
+            bot_active_users: None,
+            bot_verification_icon: None,
+            send_paid_messages_stars: None,
+        });
+        assert_eq!(
+            imported_user_to_input_user(&user),
+            tl::enums::InputUser::User(tl::types::InputUser {
+                user_id: 4242,
+                access_hash: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn imported_user_to_input_user_maps_empty_user_to_zero_hash() {
+        assert_eq!(
+            imported_user_to_input_user(&tl::enums::User::Empty(tl::types::UserEmpty { id: 5 })),
+            tl::enums::InputUser::User(tl::types::InputUser {
+                user_id: 5,
+                access_hash: 0,
+            })
+        );
     }
 
     #[test]
