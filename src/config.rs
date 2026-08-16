@@ -287,7 +287,26 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = toml::to_string_pretty(cfg)?;
+    let text = if path.exists() {
+        let existing = std::fs::read_to_string(path)?;
+        let mut doc: toml_edit::DocumentMut = existing
+            .parse()
+            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?;
+        let mut fresh: toml_edit::DocumentMut = toml_edit::ser::to_string_pretty(cfg)?
+            .parse()
+            .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;
+        match fresh.as_table_mut().remove("accounts") {
+            Some(accounts) => {
+                doc["accounts"] = accounts;
+            }
+            None => {
+                doc.as_table_mut().remove("accounts");
+            }
+        }
+        doc.to_string()
+    } else {
+        toml_edit::ser::to_string_pretty(cfg)?
+    };
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
@@ -831,6 +850,55 @@ mod tests {
             tmp_leftovers(&dir).is_empty(),
             "temp file not cleaned up on failure"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_config_preserves_comments_and_unknown_keys_roundtrip() {
+        let dir = atomic_dir("preserve");
+        let path = dir.join("config.toml");
+        let original = "# my comment\nflood_sleep_threshold = 60\nparallel_max = 2\n\n[custom]\nanswer = 42\n\n[accounts.foo]\ntags = []\n";
+        std::fs::write(&path, original).unwrap();
+        let cfg = AppConfig {
+            flood_sleep_threshold: 60,
+            parallel_max: 2,
+            accounts: [
+                (
+                    "foo".to_string(),
+                    AccountConfig {
+                        tags: vec![],
+                        proxy: None,
+                    },
+                ),
+                (
+                    "bar".to_string(),
+                    AccountConfig {
+                        tags: vec!["new".to_string()],
+                        proxy: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            proxy: None,
+        };
+        write_config(&path, &cfg).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my comment"), "comment lost:\n{text}");
+        assert!(text.contains("[custom]"), "unknown table lost:\n{text}");
+        assert!(text.contains("answer = 42"), "unknown key lost:\n{text}");
+        assert!(
+            text.contains("flood_sleep_threshold = 60"),
+            "existing key lost:\n{text}"
+        );
+        assert!(
+            text.contains("[accounts.bar]"),
+            "new account missing:\n{text}"
+        );
+        let back = read_config(&path).unwrap();
+        assert_eq!(back.accounts.len(), 2);
+        assert_eq!(back.accounts["bar"].tags, vec!["new".to_string()]);
+        assert_eq!(back.parallel_max, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
