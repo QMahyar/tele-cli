@@ -106,3 +106,46 @@ Shipped (all clippy-clean, 353 tests green, one logical commit each):
 - [x] ARCH-07 per-account `UsageError` now exits 1 (cli-contract.md:28), keyed on JSON `type` so `ConfigError` keeps exit 3
 
 Still open (not in scope): M7 `topic create --emoji` (wrong ID type — needs `messages.searchCustomEmoji` or re-document), listen auto_reconnect config flag, SEC-01/02/03/05/06/09, OBS-01/02 docs drift, INT-07/08/09/10/12, REL-06/13, README/RAW-01 doc examples, MCP (Phase 6, ask first).
+
+## Bug-hunt 2026-08 triage (2026-08-16, docs/bug-hunt-2026-08.md)
+
+Report written against pre-merge code; HEAD `a702832` already merged 21 fix plans. Every CRITICAL/HIGH + dedup-theme finding re-verified at HEAD by independent read-only agents (verdicts below; "stale" = fixed by a702832 or earlier).
+
+### Verified FIXED at HEAD (no action; report lines stale)
+- 10.1 CRITICAL chat join (fixed `b7fe038`; residual bare-`t.me/+hash` forms = ticket T12 below)
+- 4.F1/8.H3/M3 numeric peer-kind + `-100…` range gap (fixed `0baad73`)
+- 2.1 Windows trailing-dot/space upload bypass (fixed `5cde619` via `validate_filename`)
+- 1.7/5.7/6.F6 `print_json` EPIPE panic (fixed; locked by `print_json_to_closed_pipe_returns_err`)
+- 3.1 empty env var → CWD (fixed `44c5902`); 3.2 `.env` BOM (fixed `d225a9b`); 3.3/7.10 non-atomic `write_config` (fixed `0afb190` tmp+rename)
+- 1.3/3.4/5.4/6.F2 config-failure exit-code taxonomy (fixed `8e151c1`: `ConfigError` → exit 1, contract test flipped) — residual: `listen` still collapses config failures to 3 (T13)
+- 1.4/3.6/7.1 `account add` name validation + `all` reserved (fixed `2a61e5b`); 12.11 `..` export_dir escape (fixed)
+- 2.3/7.4 session-file exclusive lock (fixed `8cfb717` try_lock + lockfile)
+- 1.5/6.F3 `-q`/`-v` vs `TELE_LOG` (fixed `dbe35ef`)
+- 5.1/9.1 download overwrite/corruption (fixed `e8596ce` temp+rename + `refuse_existing_download_target`; cross-account collision now fails loudly instead of corrupting)
+- 13.1 raw human-mode silence (fixed); 13.2 raw mutating account gate (fixed)
+- 15.H1 privacy base-rule destruction — claim WRONG at HEAD (`merge_privacy_rules` fetches+merges base rules, tested)
+- 15.H2 privacy human table (fixed); 14.1 `--folder 0` / 14.2 dialogFolder rows (fixed `unwrap_or(0)` + skip)
+- 2.2 listen forever-stall — mostly fixed (`catch_up: true`, timeout, backoff); narrow edge (GetState fail + no saved state) still possible, T14
+
+### LIVE backlog (verified at HEAD) — priority order
+- **T1 HIGH** 8.H1: `msg delete` reports `{"deleted":0}` exit 0 on no-op/partial deletion; grammers `revoke:true` hardcoded, no self-only option. msg.rs:475-478; grammers messages.rs:884-890
+- **T2 HIGH** 8.H2: `msg forward --silent` errors "forward succeeded but no new message ids" after a successful RPC → retry duplicates; non-Updates variants dropped; adjacent `chunk[i]` index panic at msg.rs:622. msg.rs:691-705, 741
+- **T3 HIGH** 12.1: takeout `GetContacts` not wrapped in `InvokeWithTakeout` (only GetDialogs/GetHistory are; takeout_id IS persisted). takeout.rs:222-226
+- **T4 HIGH** 10.2: `chat create --kind group` prints positive chat_id that `--chat <id>` cannot resolve (cached_ref probes user+channel only, never `PeerId::chat`). entities.rs:147-151, chat.rs:781-785
+- **T5 MED** 4.F3/8.H4/15.M2: `+phone` targets permanently import number into contacts as side effect of any command. entities.rs:21-33
+- **T6 MED** 10.4: `chat join` discards returned peer; access_hash never cached → follow-up id commands fail. chat.rs:168-182
+- **T7 MED** 3.5: empty `TELE_API_HASH=` accepted (only presence checked). config.rs:199-201
+- **T8 MED** 3.7: `write_config` re-serializes → comments/unknown keys destroyed on every account add/remove. config.rs:288
+- **T9 MED** 9.2: Windows path guards case-sensitive + raw-path fallback on canonicalize failure (upload + download). msg.rs:296/314/323, config.rs:5-7
+- **T10 MED** 12.3: `MessageEmpty` in EditChannelMessage panics via `serialize.rs:30` → grammers message.rs:247 `expect` → kills account stream. listen.rs:206/223
+- **T11 MED** 8.M1: empty/whitespace `--text` passes validation → server MESSAGE_EMPTY exit 3 instead of Usage exit 1. msg.rs:180-192
+- **T12 MED** 10.3: bare `t.me/+hash` invite forms rejected (no https:// normalization); only full URLs + bare `+hash` work. chat.rs:167-172
+- **T13 MED** listen residual: config failure exits 3 via `aggregate_exit` instead of 1. listen.rs:289-298
+- **T14 LOW** 2.2 edge: GetState fail + pristine message box → silent stall; + 10.9 grammers `take_user().unwrap()` panic on basic-group participants (participant.rs:217/224/231)
+- **T15 LOW** 13.4: `raw --args '{"chat":""}'` → fabricated INVALID_PEER_ID exit 3 instead of Usage exit 1. raw.rs:146-153, entities.rs:70
+- **T16 LOW** 8.L1: `validate_markdown` rejects any text containing `tg://user?id=` substring even inside a normal URL. msg.rs:215
+- **T17 LOW** 8.L4: `--file <nonexistent>` → exit 3, guard bypassed for non-existent files. msg.rs:323
+- **T18 LOW** 12.7/12.8: listen `failures` never reset on successful reconnect; connect errors outside retry loop. listen.rs:140-171
+
+### Unverified remainder (medium/low, not re-checked at HEAD; verify via RED test when scheduled)
+Slices 4-15 mediums/lows not listed above, incl. 3.9/3.10/3.12/3.13, 4.F5/F7/F8, 5.5/5.6, 6.F4/F5/F7/F8, 7.5-7.9/7.11, 8.L2/L3/L5/L6/L7, 9.3-9.8, 10.5-10.12, 11.F1-F8, 12.4-12.6/12.9/12.10/12.12/12.13, 13.3/13.5/13.6/13.7, 14.3-14.9, 15.M1/M3, 15.L1-L6 — each gets a RED test before code in its ticket.
