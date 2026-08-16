@@ -1,5 +1,7 @@
 use clap::{Args, Subcommand};
 use grammers_client::tl;
+use grammers_session::types::PeerInfo;
+use grammers_session::Session;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
@@ -165,21 +167,27 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             if validate_invite_link(&target).is_ok() {
-                guard
+                let joined = guard
                     .client
                     .accept_invite_link(&target)
                     .await
                     .map_err(tele_invocation)?;
+                if let Some(peer) = joined {
+                    cache_joined_chat(guard.session.as_ref(), &peer).await;
+                }
             } else {
                 let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                     .await
                     .map_err(tele_invocation)?;
                 let chat_ref = entities::peer_ref(&peer).await.map_err(tele_invocation)?;
-                guard
+                let joined = guard
                     .client
                     .join_chat(chat_ref)
                     .await
                     .map_err(tele_invocation)?;
+                if let Some(peer) = joined {
+                    cache_joined_chat(guard.session.as_ref(), &peer).await;
+                }
             }
             Ok(serde_json::json!({"chat": target, "joined": true}))
         })
@@ -857,6 +865,18 @@ async fn cache_created_chat(guard: &client::ClientGuard, chat: Option<&tl::enums
     }
 }
 
+async fn cache_joined_chat<S: Session>(session: &S, peer: &grammers_client::peer::Peer)
+where
+    S::Error: std::fmt::Display,
+{
+    if let Err(e) = session.cache_peer(&PeerInfo::from(peer)).await {
+        log::warn!(
+            "failed to cache access_hash for joined chat {}: {e}",
+            peer.id()
+        );
+    }
+}
+
 fn participant_user_id(p: &tl::enums::ChannelParticipant, own_id: i64) -> i64 {
     match p {
         tl::enums::ChannelParticipant::Participant(p) => p.user_id,
@@ -992,6 +1012,65 @@ fn admin_action_display(action: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grammers_client::{Client, SenderPool};
+    use grammers_session::storages::MemorySession;
+    use grammers_session::types::PeerId;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn cache_joined_chat_stores_channel_access_hash() {
+        let session = Arc::new(MemorySession::default());
+        let pool = SenderPool::new(Arc::clone(&session), 0);
+        let client = Client::new(pool.handle);
+        let chat = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 123456,
+            access_hash: 987654321,
+            title: "t".to_string(),
+            until_date: None,
+        });
+        let peer = grammers_client::peer::Peer::from_raw(&client, chat);
+        cache_joined_chat(session.as_ref(), &peer).await;
+        let pref = session
+            .peer_ref(PeerId::channel_unchecked(123456))
+            .await
+            .unwrap()
+            .expect("joined chat must be cached");
+        assert_eq!(pref.auth.hash(), 987654321);
+    }
+
+    #[tokio::test]
+    async fn cache_joined_chat_stores_basic_group() {
+        let session = Arc::new(MemorySession::default());
+        let pool = SenderPool::new(Arc::clone(&session), 0);
+        let client = Client::new(pool.handle);
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        let peer = grammers_client::peer::Peer::from_raw(&client, chat);
+        cache_joined_chat(session.as_ref(), &peer).await;
+        assert!(session
+            .peer_ref(PeerId::chat_unchecked(123))
+            .await
+            .unwrap()
+            .is_some());
+    }
 
     #[test]
     fn validate_invite_link_accepts_full_invite_urls() {
