@@ -80,7 +80,6 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     None
                 };
                 let mut resolved: Option<PeerId> = None;
-                let mut backoff: u32 = 1;
                 let mut failures: u32 = 0;
                 loop {
                     if let Some(d) = deadline {
@@ -89,18 +88,48 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         }
                     }
                     let mut guard =
-                        ClientGuard::connect(&name, creds.api_id, config_path.as_deref()).await?;
-                    client::authorize(&guard.client).await?;
+                        match ClientGuard::connect(&name, creds.api_id, config_path.as_deref())
+                            .await
+                        {
+                            Ok(guard) => guard,
+                            Err(e) => {
+                                handle_stream_failure(
+                                    &name,
+                                    TeleError::from(e),
+                                    &mut failures,
+                                    deadline,
+                                )
+                                .await?;
+                                continue;
+                            }
+                        };
+                    if let Err(e) = client::authorize(&guard.client).await {
+                        handle_stream_failure(&name, e, &mut failures, deadline).await?;
+                        continue;
+                    }
                     if resolved.is_none() {
                         resolved = match &chat_filter {
-                            Some(target) => Some(
-                                crate::entities::resolve_peer(&guard.client, &guard.session, target)
-                                    .await
-                                    .map_err(|e| {
-                                        TeleError::Other(format!("cannot resolve chat {target:?}: {e}"))
-                                    })?
-                                    .id(),
-                            ),
+                            Some(target) => match crate::entities::resolve_peer(
+                                &guard.client,
+                                &guard.session,
+                                target,
+                            )
+                            .await
+                            {
+                                Ok(peer) => Some(peer.id()),
+                                Err(e) => {
+                                    handle_stream_failure(
+                                        &name,
+                                        TeleError::Other(format!(
+                                            "cannot resolve chat {target:?}: {e}"
+                                        )),
+                                        &mut failures,
+                                        deadline,
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                            },
                             None => None,
                         };
                     }
@@ -108,14 +137,30 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         &mut guard.updates,
                         tokio::sync::mpsc::unbounded_channel().1,
                     );
-                    let mut stream = guard
+                    let mut stream = match guard
                         .client
                         .stream_updates(
                             receiver,
-                            grammers_client::client::UpdatesConfiguration::default(),
+                            grammers_client::client::UpdatesConfiguration {
+                                catch_up: true,
+                                update_queue_limit: Some(1000),
+                            },
                         )
                         .await
-                        .map_err(|e| TeleError::Other(e.to_string()))?;
+                    {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            handle_stream_failure(
+                                &name,
+                                TeleError::Other(e.to_string()),
+                                &mut failures,
+                                deadline,
+                            )
+                            .await?;
+                            continue;
+                        }
+                    };
+                    failures = 0;
                     loop {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
@@ -137,104 +182,85 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     );
                                     return Err(crate::error::invocation_error(e));
                                 }
-                                failures += 1;
-                                if !reconnect_allowed(failures) {
-                                    let mut err = crate::error::invocation_error(e);
-                                    if let TeleError::Invocation(message, _) = &mut err {
-                                        *message = format!(
-                                            "{name}: updates stream failed {failures} consecutive times, giving up: {message}"
-                                        );
-                                    }
-                                    return Err(err);
-                                }
-                                let sleep_for = match deadline {
-                                    Some(d) => std::time::Duration::from_secs(backoff.into())
-                                        .min(d.saturating_duration_since(std::time::Instant::now())),
-                                    None => std::time::Duration::from_secs(backoff.into()),
-                                };
-                                output::log_line(
-                                    "error",
-                                    &reconnect_message(
-                                        &name,
-                                        failures,
-                                        backoff,
-                                        &crate::error::invocation_message(&e),
-                                    ),
-                                );
-                                tokio::time::sleep(sleep_for).await;
-                                backoff = next_backoff(backoff);
+                                handle_stream_failure(
+                                    &name,
+                                    crate::error::invocation_error(e),
+                                    &mut failures,
+                                    deadline,
+                                )
+                                .await?;
                                 break;
                             }
                             Err(_) => continue,
                         };
                         failures = 0;
-                        backoff = 1;
                         match &update {
-                        Update::NewMessage(m) => {
-                            if !events.iter().any(|e| e == "NewMessage") {
-                                continue;
-                            }
-                            if let Some(target) = &resolved {
-                                if !message_matches(m.peer_id(), *target) {
+                            Update::NewMessage(m) => {
+                                if !events.iter().any(|e| e == "NewMessage") {
                                     continue;
                                 }
-                            }
-                            let row = crate::serialize::message_to_json(m)?;
-                            output::print_json_result(&event_row(
-                                "NewMessage",
-                                &name,
-                                m.peer_id().bare_id(),
-                                None,
-                                Some(row),
-                            ))?;
-                        }
-                        Update::MessageEdited(m) => {
-                            if !events.iter().any(|e| e == "MessageEdited") {
-                                continue;
-                            }
-                            if let Some(target) = &resolved {
-                                if !message_matches(m.peer_id(), *target) {
+                                let peer = update_peer(&m.raw);
+                                if !raw_should_stream(peer, resolved) {
                                     continue;
                                 }
+                                let row = crate::serialize::message_to_json(m)?;
+                                output::print_json_result(&event_row(
+                                    "NewMessage",
+                                    &name,
+                                    peer.and_then(|p| p.bare_id()),
+                                    None,
+                                    Some(row),
+                                ))?;
                             }
-                            let row = crate::serialize::message_to_json(m)?;
-                            output::print_json_result(&event_row(
-                                "MessageEdited",
-                                &name,
-                                m.peer_id().bare_id(),
-                                None,
-                                Some(row),
-                            ))?;
-                        }
-                        Update::MessageDeleted(d) => {
-                            if !events.iter().any(|e| e == "MessageDeleted") {
-                                continue;
-                            }
-                            if let Some(target) = &resolved {
-                                if !deleted_matches(d.channel_id(), *target) {
+                            Update::MessageEdited(m) => {
+                                if !events.iter().any(|e| e == "MessageEdited") {
                                     continue;
                                 }
+                                let peer = update_peer(&m.raw);
+                                if !raw_should_stream(peer, resolved) {
+                                    continue;
+                                }
+                                let row = crate::serialize::message_to_json(m)?;
+                                output::print_json_result(&event_row(
+                                    "MessageEdited",
+                                    &name,
+                                    peer.and_then(|p| p.bare_id()),
+                                    None,
+                                    Some(row),
+                                ))?;
                             }
-                            output::print_json_result(&event_row(
-                                "MessageDeleted",
-                                &name,
-                                d.channel_id(),
-                                Some(d.messages()),
-                                None,
-                            ))?;
-                        }
-                        _ => {
-                            if !events.iter().any(|e| e == "Raw") {
-                                continue;
+                            Update::MessageDeleted(d) => {
+                                if !events.iter().any(|e| e == "MessageDeleted") {
+                                    continue;
+                                }
+                                if let Some(target) = &resolved {
+                                    if !deleted_matches(d.channel_id(), *target) {
+                                        continue;
+                                    }
+                                }
+                                output::print_json_result(&event_row(
+                                    "MessageDeleted",
+                                    &name,
+                                    d.channel_id(),
+                                    Some(d.messages()),
+                                    None,
+                                ))?;
                             }
-                            output::print_json_result(&raw_row(
-                                &name,
-                                update.raw(),
-                                update.state(),
-                            ))?;
+                            _ => {
+                                if !events.iter().any(|e| e == "Raw") {
+                                    continue;
+                                }
+                                if !raw_should_stream(update_peer(update.raw()), resolved) {
+                                    continue;
+                                }
+                                output::print_json_result(&raw_row(
+                                    &name,
+                                    update.raw(),
+                                    update.state(),
+                                ))?;
+                            }
                         }
                     }
-                }
                 }
                 Ok(())
             }
@@ -272,8 +298,72 @@ fn aggregate_exit(ok_count: usize, failed: &[i32]) -> i32 {
     }
 }
 
-fn message_matches(peer: PeerId, resolved: PeerId) -> bool {
-    peer == resolved
+async fn handle_stream_failure(
+    account: &str,
+    err: TeleError,
+    failures: &mut u32,
+    deadline: Option<std::time::Instant>,
+) -> TeleResult<()> {
+    if is_auth_error(&err) {
+        return Err(err);
+    }
+    *failures += 1;
+    if !reconnect_allowed(*failures) {
+        return Err(TeleError::Other(format!(
+            "{account}: updates stream failed {failures} consecutive times, giving up: {}",
+            err.message()
+        )));
+    }
+    let delay = next_delay(*failures);
+    let sleep_for = match deadline {
+        Some(d) => delay.min(d.saturating_duration_since(std::time::Instant::now())),
+        None => delay,
+    };
+    output::log_line(
+        "error",
+        &reconnect_message(account, *failures, delay.as_secs() as u32, err.message()),
+    );
+    tokio::time::sleep(sleep_for).await;
+    Ok(())
+}
+
+fn is_auth_error(e: &TeleError) -> bool {
+    matches!(e, TeleError::Auth(_))
+}
+
+fn next_delay(attempt: u32) -> std::time::Duration {
+    let secs = if attempt == 0 {
+        0
+    } else {
+        (1u32 << (attempt - 1).min(5)).min(MAX_RECONNECT_BACKOFF)
+    };
+    std::time::Duration::from_secs(secs.into())
+}
+
+fn update_peer(u: &tl::enums::Update) -> Option<PeerId> {
+    match u {
+        tl::enums::Update::NewMessage(x) => message_peer(&x.message),
+        tl::enums::Update::NewChannelMessage(x) => message_peer(&x.message),
+        tl::enums::Update::EditMessage(x) => message_peer(&x.message),
+        tl::enums::Update::EditChannelMessage(x) => message_peer(&x.message),
+        tl::enums::Update::DeleteChannelMessages(x) => PeerId::channel(x.channel_id),
+        _ => None,
+    }
+}
+
+fn message_peer(msg: &tl::enums::Message) -> Option<PeerId> {
+    match msg {
+        tl::enums::Message::Message(m) => Some(PeerId::from(&m.peer_id)),
+        tl::enums::Message::Service(m) => Some(PeerId::from(&m.peer_id)),
+        tl::enums::Message::Empty(_) => None,
+    }
+}
+
+fn raw_should_stream(peer: Option<PeerId>, chat: Option<PeerId>) -> bool {
+    match chat {
+        None => true,
+        Some(target) => peer == Some(target),
+    }
 }
 
 fn deleted_matches(bare_id: Option<i64>, resolved: PeerId) -> bool {
@@ -298,10 +388,6 @@ fn reconnect_message(account: &str, failures: u32, backoff: u32, cause: &str) ->
     format!(
         "{account}: updates stream error ({cause}), reconnecting (attempt {failures}/{MAX_RECONNECT_ATTEMPTS}) in {backoff}s"
     )
-}
-
-fn next_backoff(secs: u32) -> u32 {
-    (secs * 2).min(MAX_RECONNECT_BACKOFF)
 }
 
 fn poll_timeout(
@@ -585,33 +671,6 @@ mod tests {
     }
 
     #[test]
-    fn message_matches_same_peer() {
-        let chat = PeerId::channel_unchecked(1234567890);
-        assert!(message_matches(chat, chat));
-    }
-
-    #[test]
-    fn message_matches_rejects_other_peer() {
-        let a = PeerId::channel_unchecked(1234567890);
-        let b = PeerId::channel_unchecked(42);
-        assert!(!message_matches(a, b));
-    }
-
-    #[test]
-    fn message_matches_distinguishes_user_from_chat_with_same_bare_id() {
-        let user = PeerId::user_unchecked(123);
-        let chat = PeerId::chat_unchecked(123);
-        assert!(!message_matches(user, chat));
-    }
-
-    #[test]
-    fn message_matches_distinguishes_chat_from_channel_with_same_bare_id() {
-        let chat = PeerId::chat_unchecked(123);
-        let channel = PeerId::channel_unchecked(123);
-        assert!(!message_matches(chat, channel));
-    }
-
-    #[test]
     fn deleted_matches_bare_channel_id() {
         let resolved = PeerId::channel_unchecked(1234567890);
         assert!(deleted_matches(Some(1234567890), resolved));
@@ -631,6 +690,148 @@ mod tests {
     fn deleted_matches_never_matches_a_user() {
         let resolved = PeerId::user_unchecked(7);
         assert!(!deleted_matches(Some(7), resolved));
+    }
+
+    fn tl_message(peer: tl::enums::Peer) -> tl::enums::Message {
+        tl::enums::Message::Message(tl::types::Message {
+            out: false,
+            mentioned: false,
+            media_unread: false,
+            silent: false,
+            post: false,
+            from_scheduled: false,
+            legacy: false,
+            edit_hide: false,
+            pinned: false,
+            noforwards: false,
+            invert_media: false,
+            offline: false,
+            video_processing_pending: false,
+            paid_suggested_post_stars: false,
+            paid_suggested_post_ton: false,
+            id: 1,
+            from_id: None,
+            from_boosts_applied: None,
+            from_rank: None,
+            peer_id: peer,
+            saved_peer_id: None,
+            fwd_from: None,
+            via_bot_id: None,
+            via_business_bot_id: None,
+            guestchat_via_from: None,
+            reply_to: None,
+            date: 0,
+            message: String::new(),
+            media: None,
+            reply_markup: None,
+            entities: None,
+            views: None,
+            forwards: None,
+            replies: None,
+            edit_date: None,
+            post_author: None,
+            grouped_id: None,
+            reactions: None,
+            restriction_reason: None,
+            ttl_period: None,
+            quick_reply_shortcut_id: None,
+            effect: None,
+            factcheck: None,
+            report_delivery_until_date: None,
+            paid_message_stars: None,
+            suggested_post: None,
+            schedule_repeat_period: None,
+            summary_from_language: None,
+            rich_message: None,
+        })
+    }
+
+    fn channel_peer() -> tl::enums::Peer {
+        tl::enums::Peer::Channel(tl::types::PeerChannel {
+            channel_id: 1234567890,
+        })
+    }
+
+    #[test]
+    fn update_peer_extracts_channel_from_new_message() {
+        let u = tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: tl_message(channel_peer()),
+            pts: 1,
+            pts_count: 1,
+        });
+        assert_eq!(update_peer(&u), Some(PeerId::channel_unchecked(1234567890)));
+    }
+
+    #[test]
+    fn update_peer_extracts_channel_from_edit_channel_message() {
+        let u = tl::enums::Update::EditChannelMessage(tl::types::UpdateEditChannelMessage {
+            message: tl_message(channel_peer()),
+            pts: 1,
+            pts_count: 1,
+        });
+        assert_eq!(update_peer(&u), Some(PeerId::channel_unchecked(1234567890)));
+    }
+
+    #[test]
+    fn update_peer_empty_message_is_none_not_panic() {
+        let u = tl::enums::Update::EditChannelMessage(tl::types::UpdateEditChannelMessage {
+            message: tl::enums::Message::Empty(tl::types::MessageEmpty {
+                id: 7,
+                peer_id: None,
+            }),
+            pts: 1,
+            pts_count: 1,
+        });
+        assert_eq!(update_peer(&u), None);
+    }
+
+    #[test]
+    fn update_peer_delete_channel_messages_uses_channel_id() {
+        let u = tl::enums::Update::DeleteChannelMessages(tl::types::UpdateDeleteChannelMessages {
+            channel_id: 1234567890,
+            messages: vec![1, 2],
+            pts: 3,
+            pts_count: 1,
+        });
+        assert_eq!(update_peer(&u), Some(PeerId::channel_unchecked(1234567890)));
+    }
+
+    #[test]
+    fn update_peer_delete_messages_and_unrelated_are_none() {
+        let del = tl::enums::Update::DeleteMessages(tl::types::UpdateDeleteMessages {
+            messages: vec![1],
+            pts: 2,
+            pts_count: 1,
+        });
+        assert_eq!(update_peer(&del), None);
+        assert_eq!(update_peer(&tl::enums::Update::PtsChanged), None);
+    }
+
+    #[test]
+    fn update_peer_preserves_peer_kind() {
+        let u = tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: tl_message(tl::enums::Peer::Chat(tl::types::PeerChat { chat_id: 42 })),
+            pts: 1,
+            pts_count: 1,
+        });
+        assert_eq!(update_peer(&u), Some(PeerId::chat_unchecked(42)));
+    }
+
+    #[test]
+    fn raw_should_stream_streams_everything_without_filter() {
+        assert!(raw_should_stream(Some(PeerId::channel_unchecked(1)), None));
+        assert!(raw_should_stream(None, None));
+    }
+
+    #[test]
+    fn raw_should_stream_requires_matching_peer_with_filter() {
+        let chat = PeerId::channel_unchecked(1234567890);
+        assert!(raw_should_stream(Some(chat), Some(chat)));
+        assert!(!raw_should_stream(
+            Some(PeerId::channel_unchecked(42)),
+            Some(chat)
+        ));
+        assert!(!raw_should_stream(None, Some(chat)));
     }
 
     #[test]
@@ -710,17 +911,33 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_backoff_doubles_up_to_cap() {
-        assert_eq!(next_backoff(1), 2);
-        assert_eq!(next_backoff(2), 4);
-        assert_eq!(next_backoff(8), 16);
-        assert_eq!(next_backoff(16), 30);
-        assert_eq!(next_backoff(30), 30);
+    fn next_delay_doubles_up_to_cap() {
+        assert_eq!(next_delay(1), std::time::Duration::from_secs(1));
+        assert_eq!(next_delay(2), std::time::Duration::from_secs(2));
+        assert_eq!(next_delay(3), std::time::Duration::from_secs(4));
+        assert_eq!(next_delay(4), std::time::Duration::from_secs(8));
+        assert_eq!(next_delay(5), std::time::Duration::from_secs(16));
+        assert_eq!(next_delay(6), std::time::Duration::from_secs(30));
+        assert_eq!(next_delay(30), std::time::Duration::from_secs(30));
     }
 
     #[test]
-    fn reconnect_backoff_zero_stays_zero() {
-        assert_eq!(next_backoff(0), 0);
+    fn next_delay_zero_attempt_is_zero() {
+        assert_eq!(next_delay(0), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn is_auth_error_accepts_only_auth_kind() {
+        assert!(is_auth_error(&TeleError::Auth(
+            "session invalid".to_string()
+        )));
+        assert!(!is_auth_error(&TeleError::Usage("x".to_string())));
+        assert!(!is_auth_error(&TeleError::Config("x".to_string())));
+        assert!(!is_auth_error(&TeleError::Invocation(
+            "rpc error 400: CHAT_INVALID".to_string(),
+            None
+        )));
+        assert!(!is_auth_error(&TeleError::Other("x".to_string())));
     }
 
     #[test]

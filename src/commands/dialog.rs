@@ -5,7 +5,7 @@ use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
 use crate::commands::credentials::creds_api_id;
 use crate::entities;
-use crate::error::TeleResult;
+use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;
 
@@ -55,13 +55,14 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
-    let folder = args.folder;
+    let folder_arg = args.folder;
+    let folder = folder_arg.unwrap_or(0);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
 
         Box::pin(async move {
             if dry_run {
-                return Ok(list_dry_run_data(limit, folder));
+                return Ok(list_dry_run_data(limit, folder_arg));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -72,7 +73,10 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             while count < limit {
                 match iter.next().await.map_err(tele_invocation)? {
                     Some(dialog) => {
-                        let (unread, draft, dialog_folder) = match &dialog.raw {
+                        if !is_dialog_row(&dialog.raw) {
+                            continue;
+                        }
+                        let (unread, draft) = match &dialog.raw {
                             tl::enums::Dialog::Dialog(d) => (
                                 d.unread_count,
                                 match &d.draft {
@@ -81,14 +85,11 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     }
                                     _ => String::new(),
                                 },
-                                d.folder_id,
                             ),
-                            tl::enums::Dialog::Folder(_) => (0, String::new(), None),
+                            tl::enums::Dialog::Folder(_) => continue,
                         };
-                        if let Some(f) = folder {
-                            if dialog_folder != Some(f) {
-                                continue;
-                            }
+                        if !matches_folder(&dialog.raw, folder) {
+                            continue;
                         }
                         let last = dialog
                             .last_message
@@ -132,6 +133,11 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if args.folder.is_some() {
+        return Err(TeleError::Usage(
+            "--folder is not supported for dialog drafts".to_string(),
+        ));
+    }
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -196,11 +202,31 @@ async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn list_dry_run_data(limit: u32, folder: Option<i32>) -> serde_json::Value {
-    serde_json::json!({"dry_run": true, "limit": limit, "folder": folder})
+    serde_json::json!({
+        "dry_run": true,
+        "limit": limit,
+        "folder": folder,
+        "would": "list dialogs"
+    })
+}
+
+fn is_dialog_row(raw: &tl::enums::Dialog) -> bool {
+    matches!(raw, tl::enums::Dialog::Dialog(_))
+}
+
+fn matches_folder(raw: &tl::enums::Dialog, folder: i32) -> bool {
+    match raw {
+        tl::enums::Dialog::Dialog(d) => d.folder_id.unwrap_or(0) == folder,
+        tl::enums::Dialog::Folder(_) => false,
+    }
 }
 
 fn drafts_dry_run_data(limit: usize) -> serde_json::Value {
-    serde_json::json!({"dry_run": true, "limit": limit})
+    serde_json::json!({
+        "dry_run": true,
+        "limit": limit,
+        "would": "list drafts"
+    })
 }
 
 fn collect_updates(updates: &tl::enums::Updates) -> Vec<&tl::enums::Update> {
@@ -228,6 +254,7 @@ async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "dry_run": true,
                     "chat": target,
                     "archive": !unarchive,
+                    "would": format!("{} chat {target}", if unarchive { "unarchive" } else { "archive" }),
                 }));
             }
             let guard =
@@ -265,7 +292,11 @@ async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("delete dialog with chat {target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -416,6 +447,112 @@ mod tests {
         let v = drafts_dry_run_data(100);
         assert_eq!(v["dry_run"], serde_json::json!(true));
         assert_eq!(v["limit"], serde_json::json!(100));
+    }
+
+    fn notify_settings() -> tl::enums::PeerNotifySettings {
+        tl::enums::PeerNotifySettings::Settings(tl::types::PeerNotifySettings {
+            show_previews: None,
+            silent: None,
+            mute_until: None,
+            ios_sound: None,
+            android_sound: None,
+            other_sound: None,
+            stories_muted: None,
+            stories_hide_sender: None,
+            stories_ios_sound: None,
+            stories_android_sound: None,
+            stories_other_sound: None,
+        })
+    }
+
+    fn raw_dialog(folder_id: Option<i32>) -> tl::enums::Dialog {
+        tl::enums::Dialog::Dialog(tl::types::Dialog {
+            pinned: false,
+            unread_mark: false,
+            view_forum_as_messages: false,
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 1 }),
+            top_message: 0,
+            read_inbox_max_id: 0,
+            read_outbox_max_id: 0,
+            unread_count: 0,
+            unread_mentions_count: 0,
+            unread_reactions_count: 0,
+            unread_poll_votes_count: 0,
+            notify_settings: notify_settings(),
+            pts: None,
+            draft: None,
+            folder_id,
+            ttl_period: None,
+        })
+    }
+
+    fn phantom_dialog() -> tl::enums::Dialog {
+        tl::enums::Dialog::Folder(tl::types::DialogFolder {
+            pinned: false,
+            folder: tl::enums::Folder::Folder(tl::types::Folder {
+                autofill_new_broadcasts: false,
+                autofill_public_groups: false,
+                autofill_new_correspondents: false,
+                id: 1,
+                title: "archive".to_string(),
+                photo: None,
+            }),
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 99 }),
+            top_message: 0,
+            unread_muted_peers_count: 0,
+            unread_unmuted_peers_count: 0,
+            unread_muted_messages_count: 0,
+            unread_unmuted_messages_count: 0,
+        })
+    }
+
+    #[test]
+    fn phantom_folder_rows_are_not_dialogs() {
+        assert!(is_dialog_row(&raw_dialog(Some(0))));
+        assert!(is_dialog_row(&raw_dialog(None)));
+        assert!(!is_dialog_row(&phantom_dialog()));
+    }
+
+    #[test]
+    fn folder_zero_matches_main_rows_only() {
+        assert!(matches_folder(&raw_dialog(Some(0)), 0));
+        assert!(matches_folder(&raw_dialog(None), 0));
+        assert!(!matches_folder(&raw_dialog(Some(1)), 0));
+        assert!(!matches_folder(&phantom_dialog(), 0));
+    }
+
+    #[test]
+    fn folder_one_matches_only_archive_rows() {
+        assert!(matches_folder(&raw_dialog(Some(1)), 1));
+        assert!(!matches_folder(&raw_dialog(Some(0)), 1));
+        assert!(!matches_folder(&raw_dialog(None), 1));
+        assert!(!matches_folder(&phantom_dialog(), 1));
+    }
+
+    #[tokio::test]
+    async fn drafts_rejects_folder_flag() {
+        let flags = GlobalFlags {
+            account: vec!["work".to_string()],
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: None,
+            command: "dialog drafts".to_string(),
+        };
+        let err = drafts(
+            ListArgs {
+                limit: 20,
+                folder: Some(1),
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("--folder"));
     }
 
     fn dialog_flags(command: &str, config: &std::path::Path) -> GlobalFlags {

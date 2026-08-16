@@ -1,4 +1,5 @@
 use crate::client::{self, ClientGuard};
+use crate::commands::credentials::creds;
 use crate::config;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -68,7 +69,7 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
         }));
     }
     if output::machine_mode(flags.json, flags.jsonl) {
-        output::print_json(&list_envelope(&rows, flags)?);
+        output::print_json(&list_envelope(&rows, flags)?)?;
         return Ok(crate::error::EXIT_OK);
     }
     let table_rows: Vec<Vec<String>> = rows
@@ -90,12 +91,13 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
 }
 async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
-    let creds = config::credentials()?;
+    let credentials = creds()?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let creds = creds.clone();
+        let credentials = credentials.clone();
         Box::pin(async move {
-            let guard = ClientGuard::connect(&name, creds.api_id, config_path.as_deref()).await?;
+            let guard =
+                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
             let authorized = guard.client.is_authorized().await.map_err(|e| {
                 if crate::error::invocation_is_unauthorized(&e) {
                     TeleError::Auth("not logged in".to_string())
@@ -119,6 +121,7 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    session::validate_name(&args.name).map_err(TeleError::Usage)?;
     let path = flags
         .config_path
         .clone()
@@ -196,9 +199,9 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             &dry_run_envelope(&args.name, &would, &flags.command),
         );
     }
-    let creds = config::credentials()?;
+    let credentials = creds()?;
     let mut guard =
-        ClientGuard::connect(&args.name, creds.api_id, flags.config_path.as_deref()).await?;
+        ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref()).await?;
     if guard
         .client
         .is_authorized()
@@ -217,7 +220,7 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     match args.method.as_str() {
         "qr" => {
-            client::qr_login(&guard.client, &mut guard.updates, &creds, |uri| {
+            client::qr_login(&guard.client, &mut guard.updates, &credentials, |uri| {
                 render_qr(uri);
             })
             .await?;
@@ -229,7 +232,7 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .ok_or_else(|| TeleError::Usage("--phone required for code login".to_string()))?;
             let token = guard
                 .client
-                .request_login_code(&phone, &creds.api_hash)
+                .request_login_code(&phone, &credentials.api_hash)
                 .await
                 .map_err(tele_invocation)?;
             let mut stdin = std::io::stdin().lock();
@@ -305,9 +308,9 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             &dry_run_envelope(&args.name, &would, &flags.command),
         );
     }
-    let creds = config::credentials()?;
+    let credentials = creds()?;
     let guard =
-        ClientGuard::connect(&args.name, creds.api_id, flags.config_path.as_deref()).await?;
+        ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref()).await?;
     if let Err(e) = guard.client.sign_out().await {
         if crate::error::invocation_is_unauthorized(&e) {
             log_line("info", "account was not authorized; removing session");
@@ -317,6 +320,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     drop(guard);
     remove_session_file_retry(&session::session_path(&args.name)).await?;
+    remove_session_file_retry(&session::lock_path(&args.name)).await?;
     log_line("info", &format!("account {} logged out", args.name));
     let data = serde_json::json!({"signed_out": true});
     crate::executor::finish(
@@ -696,6 +700,31 @@ mod tests {
         let flags = test_flags("account login", false, true, &dir.join("config.toml"));
         let code = login(&login_args("qr", None), &flags).await.unwrap();
         assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn add_rejects_invalid_names_before_any_write() {
+        let dir = std::env::temp_dir().join(format!("telecli-add-badname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account add", false, true, &dir.join("config.toml"));
+        for bad in ["all", ".", "..", "a/b", ""] {
+            let err = add(
+                &AddArgs {
+                    name: bad.to_string(),
+                    tags: None,
+                },
+                &flags,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+        }
+        assert!(
+            !dir.join("config.toml").exists(),
+            "invalid names must not write config"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

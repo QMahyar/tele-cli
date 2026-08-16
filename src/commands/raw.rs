@@ -6,6 +6,7 @@ use crate::commands::account::tele_invocation;
 use crate::commands::credentials::creds_api_id;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
+use crate::output;
 
 #[derive(Args)]
 pub struct RawArgs {
@@ -35,6 +36,11 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         )));
     }
     validate_params(&name, &params)?;
+    if !flags.dry_run && requires_explicit_account(&name) && flags.account.is_empty() {
+        return Err(TeleError::Usage(format!(
+            "raw method {name} mutates account data — pass --account explicitly"
+        )));
+    }
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |account| {
         let config_path = config_path.clone();
@@ -45,6 +51,7 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "method": name,
+                    "would": format!("invoke raw method {name}"),
                 }));
             }
             let guard =
@@ -56,7 +63,83 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         })
     })
     .await?;
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        let value = serde_json::to_value(&envelope)?;
+        match human_display(&value) {
+            HumanView::Lines(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+            }
+            HumanView::Table(headers, rows) => {
+                let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+                crate::output::print_table(&header_refs, &rows);
+            }
+        }
+    }
     crate::executor::finish(flags, &envelope)
+}
+
+fn requires_explicit_account(method: &str) -> bool {
+    matches!(
+        method,
+        "account.UpdateProfile" | "messages.ExportChatInvite"
+    )
+}
+
+enum HumanView {
+    Lines(Vec<String>),
+    Table(Vec<String>, Vec<Vec<String>>),
+}
+
+fn human_display(value: &serde_json::Value) -> HumanView {
+    if let serde_json::Value::Array(items) = value {
+        if !items.is_empty() && items.iter().all(|i| i.is_object()) {
+            return table_view(items);
+        }
+    }
+    HumanView::Lines(match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", render_value(v)))
+            .collect(),
+        other => vec![render_value(other)],
+    })
+}
+
+fn table_view(items: &[serde_json::Value]) -> HumanView {
+    let mut headers: Vec<String> = Vec::new();
+    for item in items {
+        for key in item.as_object().expect("object").keys() {
+            if !headers.iter().any(|h| h == key) {
+                headers.push(key.clone());
+            }
+        }
+    }
+    let rows: Vec<Vec<String>> = items
+        .iter()
+        .map(|item| {
+            headers
+                .iter()
+                .map(|h| {
+                    item.as_object()
+                        .expect("object")
+                        .get(h)
+                        .map(render_value)
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .collect();
+    HumanView::Table(headers, rows)
+}
+
+fn render_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => "null".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
@@ -541,5 +624,64 @@ mod tests {
             &serde_json::json!({"first_name": "a", "last_name": "b", "about": "c"})
         )
         .is_ok());
+    }
+
+    #[test]
+    fn human_display_object_renders_key_value_lines() {
+        let value = serde_json::json!({"name": "alice", "id": 7, "tags": ["a", "b"]});
+        match human_display(&value) {
+            HumanView::Lines(lines) => {
+                assert_eq!(lines.len(), 3);
+                assert!(lines.iter().any(|l| l == "name: alice"));
+                assert!(lines.iter().any(|l| l == "id: 7"));
+                assert!(lines.iter().any(|l| l == "tags: [\"a\",\"b\"]"));
+            }
+            _ => panic!("object should render as lines"),
+        }
+    }
+
+    #[test]
+    fn human_display_array_of_objects_renders_table() {
+        let value = serde_json::json!([
+            {"name": "alice", "id": 7},
+            {"name": "bob", "extra": true}
+        ]);
+        match human_display(&value) {
+            HumanView::Table(headers, rows) => {
+                assert_eq!(headers, vec!["id", "name", "extra"]);
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0], vec!["7", "alice", ""]);
+                assert_eq!(rows[1], vec!["", "bob", "true"]);
+            }
+            _ => panic!("array of objects should render as a table"),
+        }
+    }
+
+    #[test]
+    fn human_display_empty_value_renders_lines() {
+        match human_display(&serde_json::Value::Null) {
+            HumanView::Lines(lines) => assert_eq!(lines, vec!["null"]),
+            _ => panic!("null should render as a line"),
+        }
+        match human_display(&serde_json::json!([])) {
+            HumanView::Lines(lines) => assert_eq!(lines, vec!["[]"]),
+            _ => panic!("empty array should render as a line"),
+        }
+    }
+
+    #[test]
+    fn mutating_methods_require_explicit_account() {
+        assert!(requires_explicit_account("account.UpdateProfile"));
+        assert!(requires_explicit_account("messages.ExportChatInvite"));
+        assert!(!requires_explicit_account("messages.GetAllDrafts"));
+        assert!(!requires_explicit_account("contacts.Search"));
+    }
+
+    #[test]
+    fn registered_mutators_are_gated() {
+        for name in REGISTERED {
+            let mutating = matches!(*name, "account.UpdateProfile" | "messages.ExportChatInvite");
+            assert_eq!(requires_explicit_account(name), mutating, "{name}");
+        }
     }
 }

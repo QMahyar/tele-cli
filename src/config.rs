@@ -13,28 +13,35 @@ pub fn ensure_app_data_dir() -> std::io::Result<()> {
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+fn env_nonempty(
+    get: &mut impl FnMut(&str) -> Result<String, std::env::VarError>,
+    key: &str,
+) -> Option<String> {
+    get(key).ok().filter(|v| !v.trim().is_empty())
+}
+
 fn app_data_dir_from_env(
     mut get: impl FnMut(&str) -> Result<String, std::env::VarError>,
 ) -> PathBuf {
-    if let Ok(dir) = get("TELE_APP_DIR") {
+    if let Some(dir) = env_nonempty(&mut get, "TELE_APP_DIR") {
         return PathBuf::from(dir);
     }
     if cfg!(windows) {
-        if let Ok(appdata) = get("APPDATA") {
+        if let Some(appdata) = env_nonempty(&mut get, "APPDATA") {
             return PathBuf::from(appdata).join(APP_DIR_NAME);
         }
-        if let Ok(local) = get("LOCALAPPDATA") {
+        if let Some(local) = env_nonempty(&mut get, "LOCALAPPDATA") {
             return PathBuf::from(local).join(APP_DIR_NAME);
         }
-        if let Ok(profile) = get("USERPROFILE") {
+        if let Some(profile) = env_nonempty(&mut get, "USERPROFILE") {
             return PathBuf::from(profile).join(".config").join(APP_DIR_NAME);
         }
-    } else if let Ok(xdg) = get("XDG_CONFIG_HOME") {
+    } else if let Some(xdg) = env_nonempty(&mut get, "XDG_CONFIG_HOME") {
         return PathBuf::from(xdg).join(APP_DIR_NAME);
     }
-    match get("HOME") {
-        Ok(home) => PathBuf::from(home).join(".config").join(APP_DIR_NAME),
-        Err(_) => std::env::temp_dir().join(APP_DIR_NAME),
+    match env_nonempty(&mut get, "HOME") {
+        Some(home) => PathBuf::from(home).join(".config").join(APP_DIR_NAME),
+        None => std::env::temp_dir().join(APP_DIR_NAME),
     }
 }
 
@@ -87,6 +94,7 @@ pub fn load_env(path: &std::path::Path) -> std::collections::HashMap<String, Str
     let Ok(text) = std::fs::read_to_string(path) else {
         return out;
     };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     for line in text.lines() {
         let mut line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -183,7 +191,9 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     }
     let mut env = load_env(&path);
     for (k, v) in std::env::vars() {
-        env.insert(k, v);
+        if !v.trim().is_empty() {
+            env.insert(k, v);
+        }
     }
     let api_id = parse_api_id(&env)?;
     let api_hash = env
@@ -276,8 +286,17 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
         std::fs::create_dir_all(parent)?;
     }
     let text = toml::to_string_pretty(cfg)?;
-    std::fs::write(path, text)?;
-    crate::fs_util::restrict_file_private(path)?;
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp_path = std::path::PathBuf::from(tmp_name);
+    let result = std::fs::write(&tmp_path, text).and_then(|()| {
+        crate::fs_util::restrict_file_private(&tmp_path)?;
+        std::fs::rename(&tmp_path, path)
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result?;
     Ok(())
 }
 
@@ -471,6 +490,65 @@ mod tests {
         assert_ne!(dir, std::env::current_dir().unwrap().join(APP_DIR_NAME));
     }
 
+    #[test]
+    fn app_data_dir_ignores_empty_override() {
+        let get = |k: &str| match k {
+            "TELE_APP_DIR" => Ok(String::new()),
+            "HOME" => Ok("/home/tester".to_string()),
+            _ => Err(std::env::VarError::NotPresent),
+        };
+        assert_eq!(
+            app_data_dir_from_env(get),
+            PathBuf::from("/home/tester")
+                .join(".config")
+                .join(APP_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn app_data_dir_ignores_whitespace_override() {
+        let get = |k: &str| match k {
+            "TELE_APP_DIR" => Ok("   ".to_string()),
+            "HOME" => Ok("/home/tester".to_string()),
+            _ => Err(std::env::VarError::NotPresent),
+        };
+        assert_eq!(
+            app_data_dir_from_env(get),
+            PathBuf::from("/home/tester")
+                .join(".config")
+                .join(APP_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn app_data_dir_ignores_empty_home() {
+        let get = |k: &str| match k {
+            "HOME" => Ok(String::new()),
+            _ => Err(std::env::VarError::NotPresent),
+        };
+        assert_eq!(
+            app_data_dir_from_env(get),
+            std::env::temp_dir().join(APP_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn env_nonempty_falls_through_for_empty_and_whitespace() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        std::env::set_var("TELE_TEST_ENV_NONEMPTY", "");
+        let mut get = |k: &str| std::env::var(k);
+        assert!(env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").is_none());
+        std::env::set_var("TELE_TEST_ENV_NONEMPTY", " \t ");
+        assert!(env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").is_none());
+        std::env::set_var("TELE_TEST_ENV_NONEMPTY", "/tmp/x");
+        assert_eq!(
+            env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").as_deref(),
+            Some("/tmp/x")
+        );
+        std::env::remove_var("TELE_TEST_ENV_NONEMPTY");
+        assert!(env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").is_none());
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn app_data_dir_prefers_xdg_config_home() {
@@ -575,6 +653,19 @@ mod tests {
     }
 
     #[test]
+    fn env_parser_strips_utf8_bom() {
+        let dir = std::env::temp_dir().join(format!("telecli-env-bom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, b"\xef\xbb\xbfTELE_API_ID=123\nTELE_API_HASH=abc\n").unwrap();
+        let env = load_env(&path);
+        assert_eq!(env_get(&env, "TELE_API_ID"), Some("123"));
+        assert_eq!(env_get(&env, "TELE_API_HASH"), Some("abc"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn api_id_must_be_a_positive_integer() {
         let missing = parse_api_id(&std::collections::HashMap::new());
         assert!(missing.unwrap_err().to_string().contains("TELE_API_ID"));
@@ -646,6 +737,63 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn atomic_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-config-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn tmp_leftovers(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect()
+    }
+
+    #[test]
+    fn write_config_round_trips_and_leaves_no_temp() {
+        let dir = atomic_dir("atomic");
+        let path = dir.join("config.toml");
+        let cfg = AppConfig {
+            flood_sleep_threshold: 42,
+            parallel_max: 2,
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec!["team".to_string()],
+                    proxy: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            proxy: Some(socks5("127.0.0.1", 9050)),
+        };
+        write_config(&path, &cfg).unwrap();
+        let back = read_config(&path).unwrap();
+        assert_eq!(back.flood_sleep_threshold, 42);
+        assert_eq!(back.parallel_max, 2);
+        assert_eq!(back.accounts["work"].tags, vec!["team".to_string()]);
+        assert_eq!(back.proxy.unwrap().host, "127.0.0.1");
+        assert!(tmp_leftovers(&dir).is_empty(), "temp files left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_config_failure_cleans_up_temp_file() {
+        let dir = atomic_dir("atomic-fail");
+        let path = dir.join("config.toml");
+        std::fs::create_dir(&path).unwrap();
+        assert!(write_config(&path, &AppConfig::default()).is_err());
+        assert!(
+            tmp_leftovers(&dir).is_empty(),
+            "temp file not cleaned up on failure"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

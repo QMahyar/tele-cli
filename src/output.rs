@@ -45,18 +45,22 @@ pub fn log_line(level: &str, message: &str) {
     eprintln!("[{level}] {message}");
 }
 
-pub fn print_json(value: &serde_json::Value) {
-    println!("{}", serde_json::to_string(value).expect("serialize"));
+pub fn print_json(value: &serde_json::Value) -> crate::error::TeleResult<()> {
+    print_json_to(&mut std::io::stdout(), value)
+}
+
+pub fn print_json_to(
+    w: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> crate::error::TeleResult<()> {
+    let line = serde_json::to_string(value)?;
+    writeln!(w, "{line}")?;
+    w.flush()?;
+    Ok(())
 }
 
 pub fn print_json_result(value: &serde_json::Value) -> crate::error::TeleResult<()> {
-    use std::io::Write;
-    let line = serde_json::to_string(value)?;
-    let stdout = std::io::stdout();
-    let mut lock = stdout.lock();
-    writeln!(lock, "{line}")?;
-    lock.flush()?;
-    Ok(())
+    print_json_to(&mut std::io::stdout(), value)
 }
 
 pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
@@ -197,5 +201,20 @@ mod tests {
         log_line("error", "test error");
         log_line("warn", "test warn");
         log_line("debug", "test debug");
+    }
+
+    #[test]
+    fn print_json_to_closed_pipe_returns_err() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let res = print_json_to(&mut writer, &serde_json::json!({"a": 1}));
+        assert!(res.is_err(), "expected Err from closed pipe");
+    }
+
+    #[test]
+    fn print_json_to_open_writer_succeeds() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_json_to(&mut buf, &serde_json::json!({"a": 1})).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "{\"a\":1}\n");
     }
 }

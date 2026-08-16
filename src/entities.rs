@@ -14,6 +14,10 @@ pub async fn resolve_peer(
             if digits.is_empty() {
                 return Err(rpc_error(400, "INVALID_PHONE"));
             }
+            crate::output::log_line(
+                "warn",
+                "phone resolution imports the number as a contact; privacy settings may hide the account",
+            );
             let res = client
                 .invoke(&tl::functions::contacts::ImportContacts {
                     contacts: vec![tl::enums::InputContact::InputPhoneContact(
@@ -34,7 +38,7 @@ pub async fn resolve_peer(
                 Some(user) => Ok(grammers_client::peer::Peer::User(
                     grammers_client::peer::User::from_raw(client, user),
                 )),
-                None => Err(rpc_error(400, "USER_NOT_FOUND")),
+                None => Err(rpc_error(400, &phone_not_found_message())),
             }
         }
         Target::Numeric(id) => {
@@ -44,7 +48,7 @@ pub async fn resolve_peer(
             if let Some(pref) = cached_dialog_ref(session, id).await {
                 return client.resolve_peer(pref).await;
             }
-            let raw = id.unsigned_abs() as i64;
+            let raw = if id < 0 { negative_id_raw(id) } else { id };
             if let Some(pref) = cached_ref(session, id, raw).await {
                 return client.resolve_peer(pref).await;
             }
@@ -116,14 +120,42 @@ async fn cached_dialog_ref<S: Session>(session: &S, id: i64) -> Option<PeerRef> 
     session.peer_ref(pid).await.ok().flatten()
 }
 
+const CHANNEL_STYLE_BOUNDARY: i64 = -1000000000000;
+
+fn negative_id_raw(id: i64) -> i64 {
+    if id < CHANNEL_STYLE_BOUNDARY {
+        (id.unsigned_abs() - 1000000000000) as i64
+    } else {
+        id.unsigned_abs() as i64
+    }
+}
+
+fn is_channel_class(id: i64) -> bool {
+    id < CHANNEL_STYLE_BOUNDARY
+}
+
+const MAX_PEER_RAW: i64 = 3000000000000;
+
+fn in_peer_raw_range(raw: i64) -> bool {
+    (1..=MAX_PEER_RAW).contains(&raw)
+}
+
 async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRef> {
+    if id < 0 && !in_peer_raw_range(raw) {
+        return None;
+    }
     let ids: Vec<PeerId> = if id > 0 {
         [PeerId::user(raw), PeerId::channel(raw)]
             .into_iter()
             .flatten()
             .collect()
-    } else {
+    } else if is_channel_class(id) {
         [PeerId::channel(raw), PeerId::chat(raw)]
+            .into_iter()
+            .flatten()
+            .collect()
+    } else {
+        [PeerId::chat(raw), PeerId::channel(raw)]
             .into_iter()
             .flatten()
             .collect()
@@ -137,16 +169,20 @@ async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRe
 }
 
 fn checked_fallback_ref(id: i64) -> Option<PeerRef> {
-    let raw = id.unsigned_abs() as i64;
     if id > 0 {
-        PeerId::user(raw).map(|_| {
+        return PeerId::user(id).map(|_| {
             tl::types::InputPeerUser {
-                user_id: raw,
+                user_id: id,
                 access_hash: 0,
             }
             .into()
-        })
-    } else {
+        });
+    }
+    let raw = negative_id_raw(id);
+    if !in_peer_raw_range(raw) {
+        return None;
+    }
+    if is_channel_class(id) {
         PeerId::channel(raw).map(|_| {
             tl::types::InputPeerChannel {
                 channel_id: raw,
@@ -154,6 +190,8 @@ fn checked_fallback_ref(id: i64) -> Option<PeerRef> {
             }
             .into()
         })
+    } else {
+        PeerId::chat(raw).map(|_| tl::types::InputPeerChat { chat_id: raw }.into())
     }
 }
 
@@ -184,6 +222,10 @@ fn rpc_error(code: i32, name: &str) -> InvocationError {
         value: None,
         caused_by: None,
     })
+}
+
+fn phone_not_found_message() -> String {
+    "phone number not found: it may be unregistered, or its owner hides it from phone-number search (ask the person to message you first)".to_string()
 }
 
 pub fn is_channel(peer: &grammers_client::peer::Peer) -> bool {
@@ -317,14 +359,40 @@ mod tests {
     }
 
     #[test]
-    fn checked_fallback_ref_accepts_valid_channel_id() {
-        let pref = checked_fallback_ref(-3975233726).expect("valid channel id must resolve");
+    fn checked_fallback_ref_accepts_plain_negative_id_as_basic_group() {
+        let pref = checked_fallback_ref(-3975233726).expect("plain negative id must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Chat);
         assert_eq!(pref.id.bare_id_unchecked(), 3975233726);
+    }
+
+    #[test]
+    fn checked_fallback_ref_accepts_bot_api_channel_id() {
+        let pref = checked_fallback_ref(-1001234567890).expect("bot-api channel id must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Channel);
+        assert_eq!(pref.id.bare_id_unchecked(), 1234567890);
+    }
+
+    #[test]
+    fn negative_id_raw_channel_style_subtracts_base() {
+        assert_eq!(negative_id_raw(-1001234567890), 1234567890);
+        assert_eq!(negative_id_raw(-1000000000001), 1);
+    }
+
+    #[test]
+    fn negative_id_raw_chat_style_is_abs() {
+        assert_eq!(negative_id_raw(-1234567890), 1234567890);
+        assert_eq!(negative_id_raw(-2), 2);
+        assert_eq!(negative_id_raw(-1), 1);
+    }
+
+    #[test]
+    fn negative_id_raw_empty_chat_sentinel_is_out_of_range() {
+        assert_eq!(negative_id_raw(-1000000000000), 1000000000000);
+        assert!(checked_fallback_ref(-1000000000000).is_none());
     }
 
     #[tokio::test]
     async fn cached_dialog_ref_resolves_cached_bot_api_channel() {
-        assert!(checked_fallback_ref(-1001234567890).is_none());
         let session = MemorySession::default();
         let chat = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
             broadcast: true,
@@ -351,14 +419,14 @@ mod tests {
 
     #[test]
     fn checked_fallback_ref_accepts_channel_range_top() {
-        let pref = checked_fallback_ref(-997852516352).expect("channel range top must resolve");
+        let pref = checked_fallback_ref(-1997852516352).expect("channel range top must resolve");
         assert_eq!(pref.id.kind(), PeerKind::Channel);
         assert_eq!(pref.id.bare_id_unchecked(), 997852516352);
     }
 
     #[test]
     fn checked_fallback_ref_accepts_monoforum_low_end() {
-        let pref = checked_fallback_ref(-1002147483649).expect("monoforum low end must resolve");
+        let pref = checked_fallback_ref(-2002147483649).expect("monoforum low end must resolve");
         assert_eq!(pref.id.kind(), PeerKind::Channel);
         assert_eq!(pref.id.bare_id_unchecked(), 1002147483649);
     }
@@ -376,8 +444,10 @@ mod tests {
     }
 
     #[test]
-    fn checked_fallback_ref_rejects_chat_range_top() {
-        assert!(checked_fallback_ref(-999999999999).is_none());
+    fn checked_fallback_ref_accepts_chat_range_top() {
+        let pref = checked_fallback_ref(-999999999999).expect("chat range top must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Chat);
+        assert_eq!(pref.id.bare_id_unchecked(), 999999999999);
     }
 
     #[test]
@@ -438,7 +508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_ref_prefers_channel_over_chat_for_negative_id() {
+    async fn cached_ref_prefers_chat_over_channel_for_bare_negative_id() {
         let session = MemorySession::default();
         let channel = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
             broadcast: true,
@@ -471,6 +541,44 @@ mod tests {
         let pref = cached_ref(&session, -123456, 123456)
             .await
             .expect("cached peer must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Chat);
+        assert_eq!(pref.id.bare_id_unchecked(), 123456);
+    }
+
+    #[tokio::test]
+    async fn cached_ref_prefers_channel_over_chat_for_channel_style_id() {
+        let session = MemorySession::default();
+        let channel = tl::enums::Chat::ChannelForbidden(tl::types::ChannelForbidden {
+            broadcast: true,
+            megagroup: false,
+            monoforum: false,
+            id: 123456,
+            access_hash: 111,
+            title: "c".to_string(),
+            until_date: None,
+        });
+        cache_chat(&session, &channel).await.unwrap();
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123456,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let pref = cached_ref(&session, -1000000000123456, 123456)
+            .await
+            .expect("cached channel-style id must resolve");
         assert_eq!(pref.id.kind(), PeerKind::Channel);
         assert_eq!(pref.auth.hash(), 111);
     }
@@ -585,6 +693,13 @@ mod tests {
             .await
             .expect("cached channel must still resolve via bare probe");
         assert_eq!(pref.auth.hash(), 111);
+    }
+
+    #[test]
+    fn phone_not_found_message_explains_privacy() {
+        let msg = phone_not_found_message();
+        assert!(msg.contains("hides it from phone-number search"));
+        assert!(msg.contains("message you first"));
     }
 
     #[test]

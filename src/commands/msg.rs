@@ -255,7 +255,42 @@ fn is_valid_mention_id(id: &str) -> bool {
         && matches!(id.parse::<i64>(), Ok(v) if v > 0)
 }
 
+fn is_reserved_device_name(stem: &str) -> bool {
+    let lower = stem.to_ascii_lowercase();
+    if matches!(lower.as_str(), "con" | "prn" | "aux" | "nul") {
+        return true;
+    }
+    lower.len() == 4
+        && (lower.starts_with("com") || lower.starts_with("lpt"))
+        && lower
+            .as_bytes()
+            .get(3)
+            .is_some_and(|b| (b'1'..=b'9').contains(b))
+}
+
+fn validate_filename(name: &str) -> TeleResult<()> {
+    if name.ends_with([' ', '.']) {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload file {name:?}: name ends with a character Windows would strip"
+        )));
+    }
+    if name.contains(':') {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload file {name:?}: ':' is not allowed in a Windows file name"
+        )));
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    if is_reserved_device_name(stem) {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload file {name:?}: reserved Windows device name"
+        )));
+    }
+    Ok(())
+}
+
 pub fn validate_upload_path(path: &str) -> TeleResult<()> {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    validate_filename(base)?;
     let app_dir = crate::config::app_data_dir();
     let canonical = canonical_guard_path(path);
     if canonical.starts_with(&app_dir) {
@@ -263,7 +298,6 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
             "refusing to upload a file from the telecli app data directory".to_string(),
         ));
     }
-    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let lower = base.to_ascii_lowercase();
     if lower == ".env" || lower.ends_with(".session") || lower.ends_with(".session-journal") {
         return Err(TeleError::Usage(format!(
@@ -336,7 +370,11 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let silent = args.silent;
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "chat": chat_target}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": chat_target,
+                    "would": format!("send message to chat {chat_target}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -395,7 +433,11 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let text = args.text.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "id": id,
+                    "would": format!("edit message {id}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -417,12 +459,22 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
+    if args.all && !args.ids.is_empty() {
+        return Err(TeleError::Usage(
+            "--all and --ids are mutually exclusive".to_string(),
+        ));
+    }
     if !args.all && args.ids.is_empty() {
         return Err(TeleError::Usage(
             "--ids required unless --all is used".to_string(),
         ));
     }
     Ok(())
+}
+
+fn delete_report(requested: usize, deleted: usize) -> (serde_json::Value, bool) {
+    let value = serde_json::json!({"requested": requested, "deleted": deleted});
+    (value, requested > 0 && deleted == 0)
 }
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -436,7 +488,15 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let ids = args.ids.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "ids": ids}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "ids": ids,
+                    "would": if all {
+                        format!("delete all messages in chat {chat_target}")
+                    } else {
+                        format!("delete {} message(s) by id", ids.len())
+                    },
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -448,8 +508,10 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if all {
                 let mut iter = guard.client.iter_messages(chat_ref);
                 let mut count = 0usize;
+                let mut requested = 0usize;
                 let mut batch: Vec<i32> = Vec::with_capacity(100);
                 while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                    requested += 1;
                     batch.push(msg.id());
                     if batch.len() >= 100 {
                         count += guard
@@ -467,10 +529,14 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .await
                         .map_err(tele_invocation)?;
                 }
-                return Ok(serde_json::json!({"deleted": count}));
-            }
-            if ids.is_empty() {
-                return Ok(serde_json::json!({"deleted": 0}));
+                let (report, should_warn) = delete_report(requested, count);
+                if should_warn {
+                    crate::output::log_line(
+                        "warn",
+                        &format!("delete reported 0 deleted for {requested} requested message(s)"),
+                    );
+                }
+                return Ok(report);
             }
             let mut count = 0usize;
             for chunk in batches(&ids) {
@@ -480,7 +546,17 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     .await
                     .map_err(tele_invocation)?;
             }
-            Ok(serde_json::json!({"deleted": count}))
+            let (report, should_warn) = delete_report(ids.len(), count);
+            if should_warn {
+                crate::output::log_line(
+                    "warn",
+                    &format!(
+                        "delete reported 0 deleted for {} requested id(s)",
+                        ids.len()
+                    ),
+                );
+            }
+            Ok(report)
         })
     })
     .await?;
@@ -506,7 +582,11 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let ids = args.ids.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "ids": ids}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "ids": ids,
+                    "would": format!("forward {} message(s) to chat {to_target}", ids.len())
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -519,27 +599,47 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .map_err(tele_invocation)?;
             let from_ref = entities::peer_ref(&from).await.map_err(tele_invocation)?;
             let to_ref = entities::peer_ref(&to).await.map_err(tele_invocation)?;
-            let mut msgs: Vec<serde_json::Value> = Vec::new();
+            let mut forwarded: Vec<serde_json::Value> = Vec::new();
+            let mut dropped: Vec<i32> = Vec::new();
+            let mut failed: Vec<i32> = Vec::new();
             for chunk in batches(&ids) {
                 let sent = if silent {
                     let from_peer = entities::input_peer(&from).await.map_err(tele_invocation)?;
                     let to_peer = entities::input_peer(&to).await.map_err(tele_invocation)?;
-                    forward_silent(&guard.client, to_ref, from_peer, to_peer, chunk).await?
+                    forward_silent(&guard.client, to_ref, from_peer, to_peer, chunk).await
                 } else {
                     guard
                         .client
                         .forward_messages(to_ref, chunk, from_ref)
                         .await
-                        .map_err(tele_invocation)?
+                        .map_err(tele_invocation)
                 };
-                msgs.extend(
-                    sent.iter()
-                        .filter_map(|m| m.as_ref())
-                        .map(crate::serialize::message_to_json)
-                        .collect::<TeleResult<Vec<_>>>()?,
+                match sent {
+                    Ok(results) => {
+                        for (i, m) in results.into_iter().enumerate() {
+                            match m {
+                                Some(m) => forwarded.push(crate::serialize::message_to_json(&m)?),
+                                None => dropped.push(chunk[i]),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::output::log_line(
+                            "warn",
+                            &format!("forward failed for {} id(s): {e}", chunk.len()),
+                        );
+                        failed.extend_from_slice(chunk);
+                    }
+                }
+            }
+            let (report, should_warn) = forward_report(ids.len(), &forwarded, &dropped, &failed);
+            if should_warn {
+                crate::output::log_line(
+                    "warn",
+                    &format!("forward confirmed 0 of {} requested id(s)", ids.len()),
                 );
             }
-            Ok(serde_json::json!({"forwarded": msgs}))
+            Ok(report)
         })
     })
     .await?;
@@ -548,6 +648,23 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 fn batches(ids: &[i32]) -> Vec<&[i32]> {
     ids.chunks(100).collect()
+}
+
+fn forward_report(
+    requested: usize,
+    forwarded: &[serde_json::Value],
+    dropped: &[i32],
+    failed: &[i32],
+) -> (serde_json::Value, bool) {
+    let mut value = serde_json::json!({"requested": requested, "forwarded": forwarded});
+    if !dropped.is_empty() {
+        value["dropped"] = serde_json::json!({"count": dropped.len(), "ids": dropped});
+    }
+    if !failed.is_empty() {
+        value["failed"] = serde_json::json!({"count": failed.len(), "ids": failed});
+    }
+    let should_warn = requested > 0 && forwarded.is_empty();
+    (value, should_warn)
 }
 
 static RANDOM_ID: AtomicI64 = AtomicI64::new(0);
@@ -638,7 +755,12 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id, "unpin": unpin}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "id": id,
+                    "unpin": unpin,
+                    "would": format!("{} message {id}", if unpin { "unpin" } else { "pin" })
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -680,6 +802,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "limit": limit,
                     "offset_id": offset_id,
                     "last": last,
+                    "would": format!("get messages from chat {chat_target}"),
                 }));
             }
             let guard =
@@ -742,7 +865,14 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "unread": mark_unread}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "unread": mark_unread,
+                    "would": format!(
+                        "mark chat {chat_target} as {}",
+                        if mark_unread { "unread" } else { "read" }
+                    ),
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -802,7 +932,14 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let reaction = args.reaction.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id}));
+                let would = if remove {
+                    format!("remove reaction from message {id}")
+                } else if let Some(r) = &reaction {
+                    format!("react {r} to message {id}")
+                } else {
+                    format!("react to message {id}")
+                };
+                return Ok(serde_json::json!({"dry_run": true, "id": id, "would": would}));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -851,6 +988,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "chat": chat_target,
                     "query": query,
                     "limit": limit,
+                    "would": format!("search messages in chat {chat_target}"),
                 }));
             }
             let guard =
@@ -901,7 +1039,11 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let out_dir = args.dir.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({"dry_run": true, "id": id}));
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "id": id,
+                    "would": format!("download message {id}")
+                }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -928,10 +1070,23 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             .await
             .map_err(|e| TeleError::Other(e.to_string()))??;
             let path = std::path::Path::new(&out_dir).join(name);
-            let ok = msg.download_media(&path).await.map_err(tele_invocation)?;
+            refuse_existing_download_target(&path)?;
+            let temp = download_temp_path(&path);
+            tokio::task::spawn_blocking({
+                let temp = temp.clone();
+                move || create_download_temp(&temp)
+            })
+            .await
+            .map_err(|e| TeleError::Other(e.to_string()))??;
+            let ok = msg.download_media(&temp).await.map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                tele_invocation(e)
+            })?;
             if !ok {
+                let _ = std::fs::remove_file(&temp);
                 return Err(TeleError::Usage("message has no media".to_string()));
             }
+            commit_download(&temp, &path)?;
             let bytes = tokio::task::spawn_blocking({
                 let path = path.clone();
                 move || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
@@ -969,8 +1124,50 @@ fn sanitize_download_name(name: &str) -> String {
     let trimmed = out.trim_end_matches([' ', '.']);
     if trimmed.is_empty() {
         "document.bin".to_string()
+    } else if is_reserved_device_name(trimmed.split('.').next().unwrap_or(trimmed)) {
+        format!("_{trimmed}")
     } else {
         trimmed.to_string()
+    }
+}
+
+fn download_temp_path(final_path: &std::path::Path) -> std::path::PathBuf {
+    let name = final_path.file_name().unwrap_or_default().to_string_lossy();
+    final_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!(".{name}.part-{}", std::process::id()))
+}
+
+fn refuse_existing_download_target(path: &std::path::Path) -> TeleResult<()> {
+    if path.exists() {
+        return Err(TeleError::Usage(format!(
+            "download target exists: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn create_download_temp(temp: &std::path::Path) -> TeleResult<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)
+        .map(|_| ())
+        .map_err(|e| TeleError::Other(format!("cannot create temp file {}: {e}", temp.display())))
+}
+
+fn commit_download(temp: &std::path::Path, final_path: &std::path::Path) -> TeleResult<()> {
+    match std::fs::rename(temp, final_path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(temp);
+            Err(TeleError::Other(format!(
+                "cannot move download into place at {}: {e}",
+                final_path.display()
+            )))
+        }
     }
 }
 
@@ -1260,6 +1457,58 @@ mod tests {
     }
 
     #[test]
+    fn delete_rejects_all_with_ids() {
+        let args = DeleteArgs {
+            chat: "me".to_string(),
+            ids: vec![1, 2],
+            all: true,
+        };
+        assert!(matches!(validate_delete(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn delete_report_counts_and_warns_on_zero() {
+        let (report, warn) = delete_report(3, 3);
+        assert_eq!(report["requested"], serde_json::json!(3));
+        assert_eq!(report["deleted"], serde_json::json!(3));
+        assert!(!warn);
+        let (report, warn) = delete_report(3, 1);
+        assert_eq!(report["requested"], serde_json::json!(3));
+        assert_eq!(report["deleted"], serde_json::json!(1));
+        assert!(!warn);
+        let (report, warn) = delete_report(3, 0);
+        assert_eq!(report["deleted"], serde_json::json!(0));
+        assert!(warn);
+        let (_, warn) = delete_report(0, 0);
+        assert!(!warn);
+    }
+
+    #[test]
+    fn forward_report_tracks_dropped_and_failed() {
+        let forwarded = vec![serde_json::json!({"id": 1})];
+        let (report, warn) = forward_report(4, &forwarded, &[2], &[3, 4]);
+        assert_eq!(report["requested"], serde_json::json!(4));
+        assert_eq!(report["forwarded"], serde_json::json!([{"id": 1}]));
+        assert_eq!(report["dropped"]["count"], serde_json::json!(1));
+        assert_eq!(report["dropped"]["ids"], serde_json::json!([2]));
+        assert_eq!(report["failed"]["count"], serde_json::json!(2));
+        assert_eq!(report["failed"]["ids"], serde_json::json!([3, 4]));
+        assert!(!warn);
+    }
+
+    #[test]
+    fn forward_report_warns_when_nothing_confirmed() {
+        let (report, warn) = forward_report(2, &[], &[1, 2], &[]);
+        assert!(warn);
+        assert!(report.get("dropped").is_some());
+        assert!(report.get("failed").is_none());
+        let (report, warn) = forward_report(1, &[serde_json::json!({"id": 9})], &[], &[]);
+        assert!(!warn);
+        assert!(report.get("dropped").is_none());
+        assert!(report.get("failed").is_none());
+    }
+
+    #[test]
     fn forward_requires_ids() {
         let args = ForwardArgs {
             from: "a".to_string(),
@@ -1429,6 +1678,94 @@ mod tests {
     }
 
     #[test]
+    fn upload_rejects_windows_alias_names() {
+        for bad in [
+            "file.txt.",
+            "file.txt ",
+            "file.txt:stream",
+            "CON",
+            "con.txt",
+            "LPT1",
+            "COM9",
+            "NUL",
+            "AUX",
+            "PRN",
+            "COM1",
+            "LPT9",
+        ] {
+            assert!(
+                matches!(
+                    validate_upload_path(&format!("C:/tmp/{bad}")),
+                    Err(TeleError::Usage(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn upload_allows_windows_lookalike_names() {
+        for good in ["file.txt", "CONs", "COM10", "report.txt", "com0", "lpt10"] {
+            assert!(
+                validate_upload_path(&format!("C:/tmp/{good}")).is_ok(),
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filename_rejects_windows_aliases() {
+        for bad in [
+            "file.txt.",
+            "file.txt ",
+            "file.txt:stream",
+            "CON",
+            "con.txt",
+            "LPT1",
+            "COM9",
+            "NUL",
+            "aux",
+            "prn",
+            "com1",
+            "lpt9",
+        ] {
+            assert!(
+                matches!(validate_filename(bad), Err(TeleError::Usage(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_filename_accepts_safe_names() {
+        for good in [
+            "file.txt",
+            "CONs",
+            "COM10",
+            "report.txt",
+            "com0",
+            "lpt10",
+            "a.b.c",
+        ] {
+            assert!(validate_filename(good).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn reserved_device_names_match_exact_base_names() {
+        for stem in [
+            "con", "CON", "prn", "aux", "nul", "com1", "COM9", "lpt1", "LPT9",
+        ] {
+            assert!(is_reserved_device_name(stem), "{stem}");
+        }
+        for stem in [
+            "cons", "console", "com0", "com10", "lpt0", "lpt10", "aux2", "",
+        ] {
+            assert!(!is_reserved_device_name(stem), "{stem}");
+        }
+    }
+
+    #[test]
     fn sanitize_download_name_strips_parent_traversal() {
         assert_eq!(sanitize_download_name("../x"), "x");
         assert_eq!(sanitize_download_name("a/../b"), "b");
@@ -1455,6 +1792,103 @@ mod tests {
     #[test]
     fn sanitize_download_name_falls_back_on_empty() {
         assert_eq!(sanitize_download_name(""), "document.bin");
+    }
+
+    #[test]
+    fn sanitize_download_name_maps_reserved_device_names() {
+        for (input, expected) in [
+            ("CON", "_CON"),
+            ("con.txt", "_con.txt"),
+            ("NUL", "_NUL"),
+            ("nul.log", "_nul.log"),
+            ("PRN", "_PRN"),
+            ("AUX", "_AUX"),
+            ("COM1", "_COM1"),
+            ("com3.bin", "_com3.bin"),
+            ("LPT9", "_LPT9"),
+            ("lpt5.txt", "_lpt5.txt"),
+            ("CON.", "_CON"),
+            ("COM10", "COM10"),
+            ("LPT10", "LPT10"),
+            ("conference.pdf", "conference.pdf"),
+            ("company.1", "company.1"),
+        ] {
+            assert_eq!(sanitize_download_name(input), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn download_temp_path_is_dot_prefixed_in_same_dir() {
+        let dir = std::env::temp_dir().join(format!("telecli-dl-tmp-{}", std::process::id()));
+        let final_path = dir.join("report.pdf");
+        let temp = download_temp_path(&final_path);
+        assert_eq!(temp.parent().unwrap(), dir);
+        let fname = temp.file_name().unwrap().to_string_lossy().to_string();
+        assert!(fname.starts_with(".report.pdf.part-"), "{fname}");
+        assert!(fname
+            .strip_prefix(".report.pdf.part-")
+            .unwrap()
+            .parse::<u32>()
+            .is_ok());
+    }
+
+    #[test]
+    fn refuse_existing_download_target_rejects_existing_file() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-exists-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let existing = base.join("x.bin");
+        std::fs::write(&existing, b"old").unwrap();
+        assert!(matches!(
+            refuse_existing_download_target(&existing),
+            Err(TeleError::Usage(_))
+        ));
+        let fresh = base.join("y.bin");
+        assert!(refuse_existing_download_target(&fresh).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn create_download_temp_refuses_existing_temp() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-ct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let temp = base.join(".a.part-1");
+        assert!(create_download_temp(&temp).is_ok());
+        assert!(matches!(
+            create_download_temp(&temp),
+            Err(TeleError::Other(_))
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn commit_download_moves_temp_into_place() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-commit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let temp = base.join(".x.bin.part-1");
+        let final_path = base.join("x.bin");
+        std::fs::write(&temp, b"payload").unwrap();
+        commit_download(&temp, &final_path).unwrap();
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"payload");
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn commit_download_cleans_temp_on_failure() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-cfail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let temp = base.join(".x.bin.part-1");
+        let occupied = base.join("occupied");
+        std::fs::create_dir(&occupied).unwrap();
+        std::fs::write(&temp, b"payload").unwrap();
+        assert!(commit_download(&temp, &occupied).is_err());
+        assert!(!temp.exists());
+        assert!(occupied.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
