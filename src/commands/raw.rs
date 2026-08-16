@@ -144,12 +144,12 @@ fn render_value(v: &serde_json::Value) -> String {
 
 fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
     fn req_str(p: &serde_json::Value, key: &str) -> TeleResult<()> {
-        if p.get(key).and_then(|v| v.as_str()).is_none() {
-            return Err(TeleError::Usage(format!(
-                "--args field {key} is required (string)"
-            )));
+        match p.get(key).and_then(|v| v.as_str()) {
+            Some(s) if !s.trim().is_empty() => Ok(()),
+            _ => Err(TeleError::Usage(format!(
+                "--args field {key} is required (non-empty string)"
+            ))),
         }
-        Ok(())
     }
     fn opt_str(p: &serde_json::Value, key: &str) -> TeleResult<()> {
         if let Some(v) = p.get(key) {
@@ -523,6 +523,45 @@ mod tests {
         ));
         assert!(matches!(
             validate_params("stats.GetBroadcastStats", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn validate_params_rejects_empty_required_chat() {
+        assert!(matches!(
+            validate_params(
+                "messages.ExportChatInvite",
+                &serde_json::json!({"chat": ""})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn validate_params_rejects_whitespace_channel() {
+        assert!(matches!(
+            validate_params(
+                "stats.GetBroadcastStats",
+                &serde_json::json!({"channel": "   "})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn validate_params_accepts_valid_chat() {
+        assert!(validate_params(
+            "messages.ExportChatInvite",
+            &serde_json::json!({"chat": "me"})
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_params_missing_key_still_usage() {
+        assert!(matches!(
+            validate_params("messages.ExportChatInvite", &serde_json::json!({})),
             Err(TeleError::Usage(_))
         ));
     }
