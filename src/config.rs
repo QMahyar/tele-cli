@@ -198,10 +198,12 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     let api_id = parse_api_id(&env)?;
     let api_hash = env
         .get("TELE_API_HASH")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("TELE_API_HASH must be set (see .env.example)"))?;
     let creds = Credentials {
         api_id,
-        api_hash: api_hash.clone(),
+        api_hash: api_hash.to_string(),
     };
     CREDS_CACHE
         .lock()
@@ -653,6 +655,13 @@ mod tests {
     }
 
     #[test]
+    fn env_parser_empty_value_parses_to_empty_string() {
+        let env = write_env("empty-value", "TELE_API_HASH=\nTELE_API_ID=123\n");
+        assert_eq!(env_get(&env, "TELE_API_HASH"), Some(""));
+        assert_eq!(env_get(&env, "TELE_API_ID"), Some("123"));
+    }
+
+    #[test]
     fn env_parser_strips_utf8_bom() {
         let dir = std::env::temp_dir().join(format!("telecli-env-bom-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -736,6 +745,34 @@ mod tests {
         credentials().unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn credentials_rejects_empty_api_hash() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir = creds_env_dir("creds-empty-hash");
+        std::fs::write(dir.join(".env"), "TELE_API_ID=1234567\nTELE_API_HASH=\n").unwrap();
+        let err = credentials()
+            .err()
+            .expect("empty TELE_API_HASH must be rejected")
+            .to_string();
+        assert!(err.contains("TELE_API_HASH must be set"), "err: {err}");
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn credentials_rejects_whitespace_only_api_hash() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir = creds_env_dir("creds-ws-hash");
+        std::fs::write(dir.join(".env"), "TELE_API_ID=1234567\nTELE_API_HASH=   \n").unwrap();
+        let err = credentials()
+            .err()
+            .expect("whitespace-only TELE_API_HASH must be rejected")
+            .to_string();
+        assert!(err.contains("TELE_API_HASH must be set"), "err: {err}");
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
