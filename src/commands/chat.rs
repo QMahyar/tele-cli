@@ -166,10 +166,11 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            if validate_invite_link(&target).is_ok() {
+            let normalized = normalize_invite_link(&target);
+            if validate_invite_link(&normalized).is_ok() {
                 let joined = guard
                     .client
-                    .accept_invite_link(&target)
+                    .accept_invite_link(&normalized)
                     .await
                     .map_err(tele_invocation)?;
                 if let Some(peer) = joined {
@@ -203,6 +204,15 @@ fn validate_invite_link(input: &str) -> TeleResult<()> {
     Err(TeleError::Usage(format!(
         "not a valid invite link or chat target: \"{input}\""
     )))
+}
+
+fn normalize_invite_link(input: &str) -> String {
+    let t = input.trim();
+    if t.starts_with("t.me/") || t.starts_with("telegram.me/") {
+        format!("https://{t}")
+    } else {
+        t.to_string()
+    }
 }
 
 fn is_bare_invite_hash(input: &str) -> bool {
@@ -1107,6 +1117,42 @@ mod tests {
             let err = validate_invite_link(input).unwrap_err();
             assert!(matches!(err, TeleError::Usage(_)), "for {input}");
         }
+    }
+
+    #[test]
+    fn normalize_invite_link_prepends_scheme() {
+        assert_eq!(
+            normalize_invite_link("t.me/+abc123"),
+            "https://t.me/+abc123"
+        );
+        assert_eq!(
+            normalize_invite_link("t.me/joinchat/hash"),
+            "https://t.me/joinchat/hash"
+        );
+        assert_eq!(
+            normalize_invite_link("telegram.me/+abc"),
+            "https://telegram.me/+abc"
+        );
+        assert_eq!(
+            normalize_invite_link("https://t.me/+abc123"),
+            "https://t.me/+abc123"
+        );
+        assert_eq!(normalize_invite_link("+abc123"), "+abc123");
+        assert_eq!(
+            normalize_invite_link("  t.me/+abc123  "),
+            "https://t.me/+abc123"
+        );
+    }
+
+    #[test]
+    fn validate_invite_link_accepts_normalized_t_me_forms() {
+        assert!(validate_invite_link("https://t.me/+abc123").is_ok());
+    }
+
+    #[test]
+    fn is_bare_invite_hash_rejects_slashed_forms() {
+        assert!(!is_bare_invite_hash("t.me/+x"));
+        assert!(!is_bare_invite_hash("t.me/joinchat/hash"));
     }
 
     fn fake_event(id: i64) -> tl::enums::ChannelAdminLogEvent {
