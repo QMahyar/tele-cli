@@ -2,6 +2,7 @@ use clap::{Args, Subcommand};
 use grammers_client::tl;
 use grammers_session::types::PeerInfo;
 use grammers_session::Session;
+use std::collections::HashMap;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::account::tele_invocation;
@@ -399,20 +400,59 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
                 .map_err(tele_invocation)?;
             ensure_chat_peer(&chat, "participants")?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let mut iter = guard.client.iter_participants(chat_ref);
             let mut rows = Vec::new();
-            let mut count = 0u32;
-            while count < limit {
-                match iter.next().await.map_err(tele_invocation)? {
-                    Some(p) => {
-                        rows.push(serde_json::json!({
-                            "id": p.user.id().bare_id().unwrap_or_default(),
-                            "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
-                            "role": role_name(&p.role),
-                        }));
-                        count += 1;
+            if matches!(&chat, grammers_client::peer::Peer::Group(_))
+                && !entities::is_channel(&chat)
+            {
+                let full = guard
+                    .client
+                    .invoke(&tl::functions::messages::GetFullChat {
+                        chat_id: chat.id().bare_id().unwrap_or_default(),
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                let tl::enums::messages::ChatFull::Full(full) = full;
+                let users: HashMap<i64, tl::enums::User> =
+                    full.users.into_iter().map(|u| (u.id(), u)).collect();
+                let participants = match full.full_chat {
+                    tl::enums::ChatFull::Full(f) => match f.participants {
+                        tl::enums::ChatParticipants::Participants(p) => p.participants,
+                        tl::enums::ChatParticipants::Forbidden(_) => {
+                            return Err(TeleError::Other(
+                                "participants unavailable for this chat".to_string(),
+                            ));
+                        }
+                    },
+                    tl::enums::ChatFull::ChannelFull(_) => {
+                        return Err(TeleError::Other(
+                            "participants unavailable for this chat".to_string(),
+                        ));
                     }
-                    None => break,
+                };
+                let (mut basic_rows, missing) = participant_rows(&guard.client, &users, &participants);
+                basic_rows.truncate(limit as usize);
+                if missing > 0 {
+                    output::log_line(
+                        "warn",
+                        &format!("{missing} participant(s) missing user data were skipped"),
+                    );
+                }
+                rows = basic_rows;
+            } else {
+                let mut count = 0u32;
+                let mut iter = guard.client.iter_participants(chat_ref);
+                while count < limit {
+                    match iter.next().await.map_err(tele_invocation)? {
+                        Some(p) => {
+                            rows.push(serde_json::json!({
+                                "id": p.user.id().bare_id().unwrap_or_default(),
+                                "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
+                                "role": role_name(&p.role),
+                            }));
+                            count += 1;
+                        }
+                        None => break,
+                    }
                 }
             }
             if !output::machine_mode(json, jsonl) {
@@ -907,6 +947,33 @@ fn role_name(role: &grammers_client::peer::Role) -> &'static str {
         grammers_client::peer::Role::Left(_) => "left",
         _ => "unknown",
     }
+}
+
+fn participant_rows(
+    client: &grammers_client::Client,
+    users: &HashMap<i64, tl::enums::User>,
+    participants: &[tl::enums::ChatParticipant],
+) -> (Vec<serde_json::Value>, usize) {
+    let mut rows = Vec::new();
+    let mut missing = 0usize;
+    for participant in participants {
+        let role = match participant {
+            tl::enums::ChatParticipant::Creator(_) => "creator",
+            tl::enums::ChatParticipant::Admin(_) => "admin",
+            tl::enums::ChatParticipant::Participant(_) => "member",
+        };
+        match users.get(&participant.user_id()) {
+            Some(user) => rows.push(serde_json::json!({
+                "id": user.id(),
+                "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(
+                    grammers_client::peer::User::from_raw(client, user.clone()),
+                )),
+                "role": role,
+            })),
+            None => missing += 1,
+        }
+    }
+    (rows, missing)
 }
 
 fn ensure_chat_peer(peer: &grammers_client::peer::Peer, action: &str) -> TeleResult<()> {
@@ -1525,5 +1592,124 @@ mod tests {
         assert_eq!(out.chars().count(), 60);
         assert!(out.starts_with(&format!("change_title: {}", "a".repeat(42))));
         assert!(out.contains('😀'));
+    }
+
+    #[test]
+    fn participant_rows_skips_entries_missing_user_data() {
+        let mut users = HashMap::new();
+        users.insert(11, test_user(11, "alice"));
+        users.insert(22, test_user(22, "bob"));
+        let participants = vec![
+            tl::enums::ChatParticipant::Participant(tl::types::ChatParticipant {
+                user_id: 11,
+                inviter_id: 0,
+                date: 0,
+                rank: None,
+            }),
+            tl::enums::ChatParticipant::Admin(tl::types::ChatParticipantAdmin {
+                user_id: 22,
+                inviter_id: 0,
+                date: 0,
+                rank: None,
+            }),
+            tl::enums::ChatParticipant::Creator(tl::types::ChatParticipantCreator {
+                user_id: 99,
+                rank: None,
+            }),
+        ];
+        let (rows, missing) = participant_rows(&offline_client(), &users, &participants);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(missing, 1);
+        assert_eq!(rows[0]["id"], 11);
+        assert_eq!(rows[0]["name"], "alice");
+        assert_eq!(rows[0]["role"], "member");
+        assert_eq!(rows[1]["id"], 22);
+        assert_eq!(rows[1]["name"], "bob");
+        assert_eq!(rows[1]["role"], "admin");
+    }
+
+    #[test]
+    fn participant_rows_maps_roles_for_found_users() {
+        let mut users = HashMap::new();
+        users.insert(7, test_user(7, "creator"));
+        let participants = vec![
+            tl::enums::ChatParticipant::Creator(tl::types::ChatParticipantCreator {
+                user_id: 7,
+                rank: None,
+            }),
+            tl::enums::ChatParticipant::Admin(tl::types::ChatParticipantAdmin {
+                user_id: 7,
+                inviter_id: 0,
+                date: 0,
+                rank: None,
+            }),
+            tl::enums::ChatParticipant::Participant(tl::types::ChatParticipant {
+                user_id: 7,
+                inviter_id: 0,
+                date: 0,
+                rank: None,
+            }),
+        ];
+        let (rows, missing) = participant_rows(&offline_client(), &users, &participants);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(missing, 0);
+        assert_eq!(rows[0]["role"], "creator");
+        assert_eq!(rows[1]["role"], "admin");
+        assert_eq!(rows[2]["role"], "member");
+    }
+
+    fn test_user(id: i64, name: &str) -> tl::enums::User {
+        tl::enums::User::User(tl::types::User {
+            is_self: false,
+            contact: false,
+            mutual_contact: false,
+            deleted: false,
+            bot: false,
+            bot_chat_history: false,
+            bot_nochats: false,
+            verified: false,
+            restricted: false,
+            min: false,
+            bot_inline_geo: false,
+            support: false,
+            scam: false,
+            apply_min_photo: false,
+            fake: false,
+            bot_attach_menu: false,
+            premium: false,
+            attach_menu_enabled: false,
+            bot_can_edit: false,
+            close_friend: false,
+            stories_hidden: false,
+            stories_unavailable: false,
+            contact_require_premium: false,
+            bot_business: false,
+            bot_has_main_app: false,
+            bot_forum_view: false,
+            bot_forum_can_manage_topics: false,
+            bot_can_manage_bots: false,
+            bot_guestchat: false,
+            bot_guard: false,
+            id,
+            access_hash: None,
+            first_name: Some(name.to_string()),
+            last_name: None,
+            username: None,
+            phone: None,
+            photo: None,
+            status: None,
+            bot_info_version: None,
+            restriction_reason: None,
+            bot_inline_placeholder: None,
+            lang_code: None,
+            emoji_status: None,
+            usernames: None,
+            stories_max_id: None,
+            color: None,
+            profile_color: None,
+            bot_active_users: None,
+            bot_verification_icon: None,
+            send_paid_messages_stars: None,
+        })
     }
 }
