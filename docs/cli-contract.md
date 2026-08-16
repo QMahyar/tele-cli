@@ -26,7 +26,7 @@ Empty selection is an error except `tele account list|add`.
 |---|---|
 | 0 | All selected accounts succeeded (or dry-run) |
 | 1 | Usage / validation (bad flags, unknown account, bad JSON args) |
-| 2 | Partial: some accounts succeeded, some failed |
+| 2 | Partial: some accounts succeeded, some failed — or an account operation partially completed (e.g. `msg delete` removed fewer than requested) |
 | 3 | All selected accounts failed (Telegram / IO) |
 | 4 | Auth required (not logged in, 2FA needed and not supplied) |
 | 130 | Interrupted (SIGINT) |
@@ -79,6 +79,15 @@ Rules:
   `tele listen` follow the same `would` convention where applicable.
 
 Human mode (no `--json`): Rich tables on stdout. Same exit codes.
+
+## `msg delete`
+
+`results[].data` carries `requested` (number asked to delete) and `deleted`
+(number actually removed server-side). When `deleted < requested` (already-deleted
+ids, others' messages, no permission) the row also carries `"partial": true` and
+the process exits 2. `--self-only` deletes only for yourself (private chats and
+basic groups; rejected for channels) via `messages.deleteMessages { revoke: false }`.
+Mutually exclusive with `--all`.
 
 ## Listen / stream
 

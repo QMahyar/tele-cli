@@ -179,7 +179,12 @@ pub fn finish(flags: &GlobalFlags, envelope: &crate::output::Envelope) -> TeleRe
 pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
     use crate::error::*;
     if envelope.ok {
-        return EXIT_OK;
+        let partial = envelope.accounts.iter().any(|a| {
+            a.data
+                .as_ref()
+                .is_some_and(|d| d.get("partial").and_then(|p| p.as_bool()) == Some(true))
+        });
+        return if partial { EXIT_PARTIAL } else { EXIT_OK };
     }
     let ok_count = envelope.accounts.iter().filter(|a| a.ok).count();
     if ok_count > 0 {
@@ -392,6 +397,25 @@ mod tests {
     #[test]
     fn all_success_exits_ok() {
         let env = envelope(vec![outcome("a", true, None), outcome("b", true, None)]);
+        assert_eq!(envelope_exit_code(&env), EXIT_OK);
+    }
+
+    #[test]
+    fn all_ok_with_partial_data_exits_partial() {
+        let partial = AccountOutcome {
+            account: "a".to_string(),
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({"deleted": 1, "partial": true})),
+            exit_code: None,
+        };
+        let env = envelope(vec![partial, outcome("b", true, None)]);
+        assert_eq!(envelope_exit_code(&env), EXIT_PARTIAL);
+    }
+
+    #[test]
+    fn all_ok_without_partial_data_exits_ok() {
+        let env = envelope(vec![outcome("a", true, None)]);
         assert_eq!(envelope_exit_code(&env), EXIT_OK);
     }
 

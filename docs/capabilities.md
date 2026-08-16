@@ -28,7 +28,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | msg.schedule | Scheduled send | `schedule_date` | raw (no friendly param) | `tele msg send --schedule` | done |
 | msg.schedule-repeat | Repeating scheduled | layer 215+ | raw if present | `tele raw` registry | later |
 | msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` | done |
-| msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` | done |
+| msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` (partial reporting + `--self-only`) | done |
 | msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` | done |
 | msg.history | Get / iter history | `messages.getHistory` | `get_messages_by_id`, `iter_messages` | `tele msg get` | done |
 | msg.pin | Pin / unpin | `messages.updatePinnedMessage` | `pin_message`, `unpin_message` | `tele msg pin` | done |

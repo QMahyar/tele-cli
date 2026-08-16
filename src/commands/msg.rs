@@ -73,6 +73,11 @@ pub struct DeleteArgs {
     ids: Vec<i32>,
     #[arg(long, help = "delete all messages in chat")]
     all: bool,
+    #[arg(
+        long,
+        help = "delete only for yourself (no revoke; private chats and basic groups only, not channels)"
+    )]
+    self_only: bool,
 }
 
 #[derive(Args)]
@@ -469,12 +474,25 @@ fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
             "--ids required unless --all is used".to_string(),
         ));
     }
+    if args.all && args.self_only {
+        return Err(TeleError::Usage(
+            "--all and --self-only are mutually exclusive".to_string(),
+        ));
+    }
     Ok(())
 }
 
+fn self_only_supported(kind: grammers_session::types::PeerKind) -> bool {
+    !matches!(kind, grammers_session::types::PeerKind::Channel)
+}
+
 fn delete_report(requested: usize, deleted: usize) -> (serde_json::Value, bool) {
-    let value = serde_json::json!({"requested": requested, "deleted": deleted});
-    (value, requested > 0 && deleted == 0)
+    let partial = requested > 0 && deleted < requested;
+    let mut value = serde_json::json!({"requested": requested, "deleted": deleted});
+    if partial {
+        value["partial"] = serde_json::json!(true);
+    }
+    (value, partial)
 }
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -486,11 +504,13 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
         let ids = args.ids.clone();
+        let self_only = args.self_only;
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "ids": ids,
+                    "self_only": self_only,
                     "would": if all {
                         format!("delete all messages in chat {chat_target}")
                     } else {
@@ -529,29 +549,53 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .await
                         .map_err(tele_invocation)?;
                 }
-                let (report, should_warn) = delete_report(requested, count);
-                if should_warn {
+                let (report, partial) = delete_report(requested, count);
+                if partial {
                     crate::output::log_line(
                         "warn",
-                        &format!("delete reported 0 deleted for {requested} requested message(s)"),
+                        &format!("delete removed {count} of {requested} requested message(s)"),
                     );
                 }
                 return Ok(report);
             }
             let mut count = 0usize;
-            for chunk in batches(&ids) {
-                count += guard
-                    .client
-                    .delete_messages(chat_ref, chunk)
-                    .await
-                    .map_err(tele_invocation)?;
+            if self_only {
+                if !self_only_supported(chat.id().kind()) {
+                    return Err(TeleError::Usage(
+                        "--self-only is not supported in channels".to_string(),
+                    ));
+                }
+                for chunk in batches(&ids) {
+                    let affected = guard
+                        .client
+                        .invoke(&grammers_client::tl::functions::messages::DeleteMessages {
+                            revoke: false,
+                            id: chunk.to_vec(),
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                    let pts_count = match affected {
+                        grammers_client::tl::enums::messages::AffectedMessages::Messages(x) => {
+                            x.pts_count
+                        }
+                    };
+                    count += pts_count as usize;
+                }
+            } else {
+                for chunk in batches(&ids) {
+                    count += guard
+                        .client
+                        .delete_messages(chat_ref, chunk)
+                        .await
+                        .map_err(tele_invocation)?;
+                }
             }
-            let (report, should_warn) = delete_report(ids.len(), count);
-            if should_warn {
+            let (report, partial) = delete_report(ids.len(), count);
+            if partial {
                 crate::output::log_line(
                     "warn",
                     &format!(
-                        "delete reported 0 deleted for {} requested id(s)",
+                        "delete removed {count} of {} requested id(s)",
                         ids.len()
                     ),
                 );
@@ -1182,6 +1226,7 @@ fn looks_like_image(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grammers_session::types::PeerKind;
 
     fn send_args(format: &str) -> SendArgs {
         SendArgs {
@@ -1443,6 +1488,7 @@ mod tests {
             chat: "me".to_string(),
             ids: Vec::new(),
             all: false,
+            self_only: false,
         };
         assert!(matches!(validate_delete(&args), Err(TeleError::Usage(_))));
         let mut with_all = args;
@@ -1452,6 +1498,7 @@ mod tests {
             chat: "me".to_string(),
             ids: vec![1, 2],
             all: false,
+            self_only: false,
         };
         assert!(validate_delete(&with_ids).is_ok());
     }
@@ -1462,25 +1509,54 @@ mod tests {
             chat: "me".to_string(),
             ids: vec![1, 2],
             all: true,
+            self_only: false,
         };
         assert!(matches!(validate_delete(&args), Err(TeleError::Usage(_))));
     }
 
     #[test]
-    fn delete_report_counts_and_warns_on_zero() {
-        let (report, warn) = delete_report(3, 3);
+    fn delete_report_flags_partial_deletions() {
+        let (report, partial) = delete_report(3, 3);
         assert_eq!(report["requested"], serde_json::json!(3));
         assert_eq!(report["deleted"], serde_json::json!(3));
-        assert!(!warn);
-        let (report, warn) = delete_report(3, 1);
+        assert!(!partial);
+        assert!(report.get("partial").is_none());
+        let (report, partial) = delete_report(3, 1);
         assert_eq!(report["requested"], serde_json::json!(3));
         assert_eq!(report["deleted"], serde_json::json!(1));
-        assert!(!warn);
-        let (report, warn) = delete_report(3, 0);
+        assert!(partial);
+        assert_eq!(report["partial"], serde_json::json!(true));
+        let (report, partial) = delete_report(3, 0);
         assert_eq!(report["deleted"], serde_json::json!(0));
-        assert!(warn);
-        let (_, warn) = delete_report(0, 0);
-        assert!(!warn);
+        assert!(partial);
+        assert_eq!(report["partial"], serde_json::json!(true));
+        let (_, partial) = delete_report(0, 0);
+        assert!(!partial);
+    }
+
+    #[test]
+    fn validate_delete_rejects_self_only_with_all() {
+        let args = DeleteArgs {
+            chat: "me".to_string(),
+            ids: Vec::new(),
+            all: true,
+            self_only: true,
+        };
+        assert!(matches!(validate_delete(&args), Err(TeleError::Usage(_))));
+        let with_ids = DeleteArgs {
+            chat: "me".to_string(),
+            ids: vec![1],
+            all: false,
+            self_only: true,
+        };
+        assert!(validate_delete(&with_ids).is_ok());
+    }
+
+    #[test]
+    fn self_only_supported_kinds() {
+        assert!(self_only_supported(PeerKind::User));
+        assert!(self_only_supported(PeerKind::Chat));
+        assert!(!self_only_supported(PeerKind::Channel));
     }
 
     #[test]
