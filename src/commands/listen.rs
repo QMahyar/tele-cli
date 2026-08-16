@@ -133,6 +133,22 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             None => None,
                         };
                     }
+                    if let Err(e) = guard
+                        .client
+                        .invoke(&tl::functions::updates::GetState {})
+                        .await
+                    {
+                        let err = getstate_probe_error(e);
+                        if is_auth_error(&err) {
+                            output::log_line(
+                                "error",
+                                &format!("{name}: not authorized, stopping stream"),
+                            );
+                            return Err(err);
+                        }
+                        handle_stream_failure(&name, err, &mut failures, deadline).await?;
+                        continue;
+                    }
                     let receiver = std::mem::replace(
                         &mut guard.updates,
                         tokio::sync::mpsc::unbounded_channel().1,
@@ -337,6 +353,14 @@ async fn handle_stream_failure(
 
 fn is_auth_error(e: &TeleError) -> bool {
     matches!(e, TeleError::Auth(_))
+}
+
+fn getstate_probe_error(e: grammers_client::InvocationError) -> TeleError {
+    if crate::error::invocation_is_unauthorized(&e) {
+        crate::error::invocation_error(e)
+    } else {
+        TeleError::Other(format!("initial GetState failed: {e}"))
+    }
 }
 
 fn next_delay(attempt: u32) -> std::time::Duration {
@@ -1029,6 +1053,37 @@ mod tests {
     #[test]
     fn next_delay_zero_attempt_is_zero() {
         assert_eq!(next_delay(0), std::time::Duration::ZERO);
+    }
+
+    use grammers_client::sender::RpcError;
+
+    fn rpc_error(code: i32, name: &str) -> grammers_client::InvocationError {
+        grammers_client::InvocationError::Rpc(RpcError {
+            code,
+            name: name.to_string(),
+            value: None,
+            caused_by: None,
+        })
+    }
+
+    #[test]
+    fn getstate_probe_error_is_reconnectable_for_rpc_failure() {
+        let err = getstate_probe_error(rpc_error(500, "INTERNAL"));
+        assert!(matches!(err, TeleError::Other(_)));
+        assert!(
+            err.message().starts_with("initial GetState failed:"),
+            "err: {err}"
+        );
+        assert!(err.message().contains("INTERNAL"), "err: {err}");
+        assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
+        assert!(!is_auth_error(&err));
+    }
+
+    #[test]
+    fn getstate_probe_error_fails_fast_on_unauthorized() {
+        let err = getstate_probe_error(rpc_error(401, "AUTH_KEY_UNREGISTERED"));
+        assert!(matches!(err, TeleError::Auth(_)));
+        assert_eq!(err.exit_code(), crate::error::EXIT_AUTH);
     }
 
     #[test]
