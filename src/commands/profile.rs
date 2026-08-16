@@ -357,6 +357,13 @@ mod tests {
 
     #[test]
     fn set_accepts_regular_photo_paths() {
-        assert!(validate_set(&set_args(Some("C:/tmp/photo.jpg"))).is_ok());
+        let dir =
+            std::env::temp_dir().join(format!("telecli-profile-photo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("photo.jpg");
+        std::fs::write(&photo, b"x").unwrap();
+        assert!(validate_set(&set_args(Some(&photo.to_string_lossy()))).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
