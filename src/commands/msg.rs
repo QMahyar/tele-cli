@@ -594,10 +594,7 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if partial {
                 crate::output::log_line(
                     "warn",
-                    &format!(
-                        "delete removed {count} of {} requested id(s)",
-                        ids.len()
-                    ),
+                    &format!("delete removed {count} of {} requested id(s)", ids.len()),
                 );
             }
             Ok(report)
@@ -660,12 +657,7 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 };
                 match sent {
                     Ok(results) => {
-                        for (i, m) in results.into_iter().enumerate() {
-                            match m {
-                                Some(m) => forwarded.push(crate::serialize::message_to_json(&m)?),
-                                None => dropped.push(chunk[i]),
-                            }
-                        }
+                        push_forward_results(&mut forwarded, &mut dropped, chunk, results)?
                     }
                     Err(e) => {
                         crate::output::log_line(
@@ -692,6 +684,25 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 fn batches(ids: &[i32]) -> Vec<&[i32]> {
     ids.chunks(100).collect()
+}
+
+fn push_forward_results(
+    forwarded: &mut Vec<serde_json::Value>,
+    dropped: &mut Vec<i32>,
+    chunk: &[i32],
+    results: Vec<Option<grammers_client::message::Message>>,
+) -> TeleResult<()> {
+    for (i, m) in results.into_iter().enumerate() {
+        match m {
+            Some(m) => forwarded.push(crate::serialize::message_to_json(&m)?),
+            None => {
+                if let Some(id) = chunk.get(i) {
+                    dropped.push(*id);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn forward_report(
@@ -742,11 +753,6 @@ fn forwarded_ids(
             }
         }
     }
-    if new_ids.is_empty() {
-        return Err(TeleError::Other(
-            "forward succeeded but no new message ids were reported".to_string(),
-        ));
-    }
     Ok(new_ids)
 }
 
@@ -783,6 +789,13 @@ async fn forward_silent(
     };
     let updates = client.invoke(&request).await.map_err(tele_invocation)?;
     let new_ids = forwarded_ids(&updates, &random_ids)?;
+    if new_ids.is_empty() {
+        crate::output::log_line(
+            "warn",
+            "forward succeeded but no new message ids were reported",
+        );
+        return Ok(Vec::new());
+    }
     client
         .get_messages_by_id(to_ref, &new_ids)
         .await
@@ -1472,14 +1485,22 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_ids_error_when_no_matching_ids_extracted() {
+    fn forwarded_ids_no_matching_updates_returns_empty_ok() {
         let updates = plain_updates(vec![message_id_update(999, 9)]);
-        assert!(matches!(
-            forwarded_ids(&updates, &[101]),
-            Err(TeleError::Other(_))
-        ));
+        assert_eq!(forwarded_ids(&updates, &[101]).unwrap(), Vec::<i32>::new());
         let empty = combined_updates(Vec::new());
-        assert!(forwarded_ids(&empty, &[101]).is_err());
+        assert_eq!(forwarded_ids(&empty, &[101]).unwrap(), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn forward_batch_indexing_does_not_panic_on_short_chunk() {
+        let chunk: [i32; 3] = [1, 2, 3];
+        let mut forwarded: Vec<serde_json::Value> = Vec::new();
+        let mut dropped: Vec<i32> = Vec::new();
+        let results = vec![None; 5];
+        push_forward_results(&mut forwarded, &mut dropped, &chunk, results).unwrap();
+        assert_eq!(dropped, vec![1, 2, 3]);
+        assert!(forwarded.is_empty());
     }
 
     #[test]
