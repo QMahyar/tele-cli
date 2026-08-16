@@ -145,7 +145,7 @@ async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRe
         return None;
     }
     let ids: Vec<PeerId> = if id > 0 {
-        [PeerId::user(raw), PeerId::channel(raw)]
+        [PeerId::user(raw), PeerId::chat(raw), PeerId::channel(raw)]
             .into_iter()
             .flatten()
             .collect()
@@ -498,6 +498,34 @@ mod tests {
         let pref = cached_ref(&session, -123, 123)
             .await
             .expect("cached basic group must resolve");
+        assert_eq!(pref.id.bare_id_unchecked(), 123);
+    }
+
+    #[tokio::test]
+    async fn cached_ref_resolves_positive_basic_group_chat_kind() {
+        let session = MemorySession::default();
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let pref = cached_ref(&session, 123, 123)
+            .await
+            .expect("cached positive-id basic group must resolve");
+        assert_eq!(pref.id.kind(), PeerKind::Chat);
         assert_eq!(pref.id.bare_id_unchecked(), 123);
     }
 
