@@ -10,6 +10,7 @@ use crate::commands::credentials::creds_api_id;
 use crate::entities;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
+use crate::fs_util::{path_under_guard, resolve_for_guard};
 use crate::output;
 
 #[derive(Subcommand)]
@@ -310,7 +311,7 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
     validate_filename(base)?;
     let app_dir = crate::config::app_data_dir();
     let canonical = canonical_guard_path(path);
-    if canonical.starts_with(&app_dir) {
+    if path_under_guard(&canonical, &app_dir) {
         return Err(TeleError::Usage(
             "refusing to upload a file from the telecli app data directory".to_string(),
         ));
@@ -321,6 +322,9 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
             "refusing to upload sensitive file {base}"
         )));
     }
+    if !std::path::Path::new(path).is_file() {
+        return Err(TeleError::Usage(format!("upload file not found: {path}")));
+    }
     Ok(())
 }
 
@@ -328,7 +332,7 @@ fn validate_download_dir(dir: &str) -> TeleResult<()> {
     let app_dir = crate::config::app_data_dir();
     let sessions_dir = crate::session::session_dir();
     let canonical = canonical_guard_path(dir);
-    if canonical.starts_with(&app_dir) || canonical.starts_with(&sessions_dir) {
+    if path_under_guard(&canonical, &app_dir) || path_under_guard(&canonical, &sessions_dir) {
         return Err(TeleError::Usage(
             "refusing to download into the telecli app data directory".to_string(),
         ));
@@ -337,18 +341,7 @@ fn validate_download_dir(dir: &str) -> TeleResult<()> {
 }
 
 fn canonical_guard_path(path: &str) -> std::path::PathBuf {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
-    #[cfg(windows)]
-    let canonical = strip_verbatim_prefix(canonical);
-    canonical
-}
-
-#[cfg(windows)]
-fn strip_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
-    match path.to_string_lossy().strip_prefix(r"\\?\") {
-        Some(rest) => std::path::PathBuf::from(rest),
-        None => path,
-    }
+    resolve_for_guard(std::path::Path::new(path))
 }
 
 fn parse_schedule(value: Option<&str>) -> TeleResult<Option<i32>> {
@@ -1275,6 +1268,17 @@ mod tests {
         }
     }
 
+    fn upload_fixture(tag: &str, names: &[&str]) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-msg-upload-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        dir
+    }
+
     #[test]
     fn upload_rejects_sensitive_basenames() {
         assert!(matches!(
@@ -1293,7 +1297,10 @@ mod tests {
 
     #[test]
     fn upload_allows_regular_files() {
-        assert!(validate_upload_path("C:/tmp/report.pdf").is_ok());
+        let dir = upload_fixture("regular", &["report.pdf"]);
+        let file = dir.join("report.pdf");
+        assert!(validate_upload_path(&file.to_string_lossy()).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1373,11 +1380,13 @@ mod tests {
 
     #[test]
     fn send_accepts_file_with_caption() {
+        let dir = upload_fixture("caption", &["a.pdf"]);
         let mut args = send_args("plain");
         args.text = None;
-        args.file = Some("C:/tmp/a.pdf".to_string());
+        args.file = Some(dir.join("a.pdf").to_string_lossy().into_owned());
         args.caption = Some("cap".to_string());
         assert!(validate_send(&args).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1872,9 +1881,14 @@ mod tests {
                 "{bad}"
             );
         }
-        for good in ["C:/tmp/session", "C:/tmp/env", "C:/tmp/x.env"] {
-            assert!(validate_upload_path(good).is_ok(), "{good}");
+        let dir = upload_fixture("lookalike", &["session", "env", "x.env"]);
+        for good in ["session", "env", "x.env"] {
+            assert!(
+                validate_upload_path(&dir.join(good).to_string_lossy()).is_ok(),
+                "{good}"
+            );
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1905,12 +1919,17 @@ mod tests {
 
     #[test]
     fn upload_allows_windows_lookalike_names() {
+        let dir = upload_fixture(
+            "wlookalike",
+            &["file.txt", "CONs", "COM10", "report.txt", "com0", "lpt10"],
+        );
         for good in ["file.txt", "CONs", "COM10", "report.txt", "com0", "lpt10"] {
             assert!(
-                validate_upload_path(&format!("C:/tmp/{good}")).is_ok(),
+                validate_upload_path(&dir.join(good).to_string_lossy()).is_ok(),
                 "{good}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2136,6 +2155,90 @@ mod tests {
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&sibling);
+    }
+
+    #[test]
+    fn download_dir_resolves_nonexisting_tail_outside_app_data() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let base =
+            std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::env::set_var("TELE_APP_DIR", &base);
+        let sibling = std::env::temp_dir().join(format!(
+            "telecli-msg-dl-guard-{}-outside",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&sibling);
+        std::fs::create_dir_all(&sibling).unwrap();
+        let outside = sibling.join("deep").join("not-yet-created");
+        assert!(validate_download_dir(&outside.to_string_lossy()).is_ok());
+        let inside = base.join("not-yet-created").join("nested");
+        assert!(
+            matches!(
+                validate_download_dir(&inside.to_string_lossy()),
+                Err(TeleError::Usage(_))
+            ),
+            "{inside:?}"
+        );
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&sibling);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn download_dir_rejects_case_variant_of_app_data() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let base =
+            std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let lower = base.to_string_lossy().to_lowercase();
+        std::env::set_var("TELE_APP_DIR", &lower);
+        let candidate = base.join("sessions").join("new");
+        assert!(
+            matches!(
+                validate_download_dir(&candidate.to_string_lossy()),
+                Err(TeleError::Usage(_))
+            ),
+            "{candidate:?}"
+        );
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn upload_rejects_case_variant_app_data_path() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let base =
+            std::env::temp_dir().join(format!("telecli-msg-upload-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let lower = base.to_string_lossy().to_lowercase();
+        std::env::set_var("TELE_APP_DIR", &lower);
+        let candidate = base.join("secret.txt");
+        assert!(
+            matches!(
+                validate_upload_path(&candidate.to_string_lossy()),
+                Err(TeleError::Usage(_))
+            ),
+            "{candidate:?}"
+        );
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn upload_rejects_nonexistent_file() {
+        let dir = upload_fixture("missing", &[]);
+        let missing = dir.join("definitely-missing.txt");
+        assert!(matches!(
+            validate_upload_path(&missing.to_string_lossy()),
+            Err(TeleError::Usage(msg)) if msg.contains("not found")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
