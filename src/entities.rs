@@ -8,11 +8,13 @@ pub async fn resolve_peer(
     client: &Client,
     session: &SqliteSession,
     target: &str,
-) -> Result<grammers_client::peer::Peer, InvocationError> {
+) -> crate::error::TeleResult<grammers_client::peer::Peer> {
     match classify_target(target) {
         Target::Phone(digits) => {
             if digits.is_empty() {
-                return Err(rpc_error(400, "INVALID_PHONE"));
+                return Err(crate::error::TeleError::Usage(
+                    "invalid phone target: use +<digits>".to_string(),
+                ));
             }
             crate::output::log_line(
                 "warn",
@@ -30,7 +32,8 @@ pub async fn resolve_peer(
                         },
                     )],
                 })
-                .await?;
+                .await
+                .map_err(crate::error::invocation_error)?;
             let users = match res {
                 tl::enums::contacts::ImportedContacts::Contacts(res) => res.users,
             };
@@ -45,19 +48,31 @@ pub async fn resolve_peer(
                 Some(user) => Ok(grammers_client::peer::Peer::User(
                     grammers_client::peer::User::from_raw(client, user),
                 )),
-                None => Err(rpc_error(400, &phone_not_found_message())),
+                None => Err(crate::error::invocation_error(rpc_error(
+                    400,
+                    &phone_not_found_message(),
+                ))),
             }
         }
         Target::Numeric(id) => {
             if id == 0 {
-                return Err(rpc_error(400, "INVALID_PEER_ID"));
+                return Err(crate::error::invocation_error(rpc_error(
+                    400,
+                    "INVALID_PEER_ID",
+                )));
             }
             if let Some(pref) = cached_dialog_ref(session, id).await {
-                return client.resolve_peer(pref).await;
+                return client
+                    .resolve_peer(pref)
+                    .await
+                    .map_err(crate::error::invocation_error);
             }
             let raw = if id < 0 { negative_id_raw(id) } else { id };
             if let Some(pref) = cached_ref(session, id, raw).await {
-                return client.resolve_peer(pref).await;
+                return client
+                    .resolve_peer(pref)
+                    .await
+                    .map_err(crate::error::invocation_error);
             }
             if let Some(pref) = checked_fallback_ref(id) {
                 if id > 0 {
@@ -70,23 +85,43 @@ pub async fn resolve_peer(
                             client.resolve_peer(chat_pref).await
                         }
                         Err(e) => Err(e),
-                    };
+                    }
+                    .map_err(crate::error::invocation_error);
                 }
-                return client.resolve_peer(pref).await;
+                return client
+                    .resolve_peer(pref)
+                    .await
+                    .map_err(crate::error::invocation_error);
             }
-            Err(rpc_error(400, "INVALID_PEER_ID"))
+            Err(crate::error::invocation_error(rpc_error(
+                400,
+                "INVALID_PEER_ID",
+            )))
         }
         Target::Me => {
-            let user = client.get_me().await?;
+            let user = client
+                .get_me()
+                .await
+                .map_err(crate::error::invocation_error)?;
             Ok(grammers_client::peer::Peer::User(user))
         }
         Target::Link(username) | Target::Username(username) => {
-            match client.resolve_username(&username).await? {
+            match client
+                .resolve_username(&username)
+                .await
+                .map_err(crate::error::invocation_error)?
+            {
                 Some(peer) => Ok(peer),
-                None => Err(rpc_error(400, "USERNAME_NOT_FOUND")),
+                None => Err(crate::error::invocation_error(rpc_error(
+                    400,
+                    "USERNAME_NOT_FOUND",
+                ))),
             }
         }
-        Target::Invalid => Err(rpc_error(400, "INVALID_PEER_ID")),
+        Target::Invalid => Err(crate::error::invocation_error(rpc_error(
+            400,
+            "INVALID_PEER_ID",
+        ))),
     }
 }
 
@@ -918,6 +953,12 @@ mod tests {
     #[test]
     fn classify_bare_plus_is_phone_with_no_digits() {
         assert_eq!(classify_target("+"), Target::Phone(String::new()));
+    }
+
+    #[test]
+    fn plus_only_and_non_digit_phones_classify_as_phone_with_no_digits() {
+        assert_eq!(classify_target("+"), Target::Phone(String::new()));
+        assert_eq!(classify_target("+abc"), Target::Phone(String::new()));
     }
 
     #[test]

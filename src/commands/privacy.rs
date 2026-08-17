@@ -221,16 +221,14 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             client::authorize(&guard.client).await?;
             let mut allow_users = Vec::new();
             for target in &allow {
-                let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
-                    .await
-                    .map_err(tele_invocation)?;
+                let peer =
+                    entities::resolve_peer(&guard.client, guard.session.as_ref(), target).await?;
                 allow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
             }
             let mut disallow_users = Vec::new();
             for target in &deny {
-                let peer = entities::resolve_peer(&guard.client, guard.session.as_ref(), target)
-                    .await
-                    .map_err(tele_invocation)?;
+                let peer =
+                    entities::resolve_peer(&guard.client, guard.session.as_ref(), target).await?;
                 disallow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
             }
             let base = fetch_privacy_rules(&guard.client, &tl_key).await?;

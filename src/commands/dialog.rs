@@ -261,8 +261,7 @@ async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
-                .await
-                .map_err(tele_invocation)?;
+                .await?;
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
             let folder_id = if unarchive { 0 } else { 1 };
             let _: tl::enums::Updates = guard
@@ -301,9 +300,8 @@ async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
-                .await
-                .map_err(tele_invocation)?;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
             guard
                 .client

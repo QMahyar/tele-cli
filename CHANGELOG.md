@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
 - Fixed: raw messages.GetAllDrafts never dumps Debug strings into JSON output.
 - Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
+- Fixed: malformed phone chat targets are usage errors (exit 1); upload flood waits carry seconds in the JSON error.
 
 ## [0.1.1] - 2026-08-17
 

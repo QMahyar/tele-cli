@@ -57,9 +57,7 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&account, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            dispatch(&guard.client, guard.session.as_ref(), &name, &params)
-                .await
-                .map_err(tele_invocation)
+            dispatch(&guard.client, guard.session.as_ref(), &name, &params).await
         })
     })
     .await?;
@@ -254,12 +252,14 @@ async fn dispatch(
     session: &grammers_session::storages::SqliteSession,
     name: &str,
     p: &serde_json::Value,
-) -> Result<serde_json::Value, grammers_client::InvocationError> {
+) -> TeleResult<serde_json::Value> {
     match name {
         "messages.ExportChatInvite" => {
             let chat =
                 crate::entities::resolve_peer(client, session, &str_field(p, "chat")?).await?;
-            let peer = crate::entities::input_peer(&chat).await?;
+            let peer = crate::entities::input_peer(&chat)
+                .await
+                .map_err(tele_invocation)?;
             let r: tl::enums::ExportedChatInvite = client
                 .invoke(&tl::functions::messages::ExportChatInvite {
                     legacy_revoke_permanent: false,
@@ -270,7 +270,8 @@ async fn dispatch(
                     title: opt_str_field(p, "title")?,
                     subscription_pricing: None,
                 })
-                .await?;
+                .await
+                .map_err(tele_invocation)?;
             match r {
                 tl::enums::ExportedChatInvite::ChatInviteExported(invite) => {
                     Ok(serde_json::json!({
@@ -290,7 +291,8 @@ async fn dispatch(
                     q: str_field(p, "q")?,
                     limit: int_field(p, "limit")?,
                 })
-                .await?;
+                .await
+                .map_err(tele_invocation)?;
             let tl::enums::contacts::Found::Found(found) = r;
             let my_results = found.my_results.iter().map(peer_id).collect::<Vec<_>>();
             let results = found.results.iter().map(peer_id).collect::<Vec<_>>();
@@ -316,19 +318,23 @@ async fn dispatch(
         "messages.GetAllDrafts" => {
             let r: tl::enums::Updates = client
                 .invoke(&tl::functions::messages::GetAllDrafts {})
-                .await?;
+                .await
+                .map_err(tele_invocation)?;
             Ok(all_drafts_summary(&r))
         }
         "stats.GetBroadcastStats" => {
             let chat =
                 crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
-            let channel = crate::entities::input_channel(&chat).await?;
+            let channel = crate::entities::input_channel(&chat)
+                .await
+                .map_err(tele_invocation)?;
             let r: tl::enums::stats::BroadcastStats = client
                 .invoke(&tl::functions::stats::GetBroadcastStats {
                     channel,
                     dark: bool_field(p, "dark")?,
                 })
-                .await?;
+                .await
+                .map_err(tele_invocation)?;
             let tl::enums::stats::BroadcastStats::Stats(r) = r;
             Ok(serde_json::json!({
                 "period": stats_period(&r.period),
@@ -343,13 +349,16 @@ async fn dispatch(
         "stats.GetMegagroupStats" => {
             let chat =
                 crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
-            let channel = crate::entities::input_channel(&chat).await?;
+            let channel = crate::entities::input_channel(&chat)
+                .await
+                .map_err(tele_invocation)?;
             let r: tl::enums::stats::MegagroupStats = client
                 .invoke(&tl::functions::stats::GetMegagroupStats {
                     channel,
                     dark: bool_field(p, "dark")?,
                 })
-                .await?;
+                .await
+                .map_err(tele_invocation)?;
             let tl::enums::stats::MegagroupStats::Stats(r) = r;
             Ok(serde_json::json!({
                 "period": stats_period(&r.period),
@@ -369,7 +378,8 @@ async fn dispatch(
                     last_name: opt_str_field(p, "last_name")?,
                     about: opt_str_field(p, "about")?,
                 })
-                .await?;
+                .await
+                .map_err(tele_invocation)?;
             let (id, first_name, last_name, username) = match r {
                 tl::enums::User::User(u) => (u.id, u.first_name, u.last_name, u.username),
                 _ => (0, None, None, None),
@@ -381,18 +391,18 @@ async fn dispatch(
                 "username": username,
             }))
         }
-        _ => Err(grammers_client::InvocationError::Rpc(
-            grammers_client::sender::RpcError {
+        _ => Err(crate::error::invocation_error(
+            grammers_client::InvocationError::Rpc(grammers_client::sender::RpcError {
                 code: 400,
                 name: "RAW_NOT_REGISTERED".to_string(),
                 value: None,
                 caused_by: None,
-            },
+            }),
         )),
     }
 }
 
-fn str_field(p: &serde_json::Value, key: &str) -> Result<String, grammers_client::InvocationError> {
+fn str_field(p: &serde_json::Value, key: &str) -> TeleResult<String> {
     Ok(p.get(key)
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -485,28 +495,22 @@ fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Value {
     }
 }
 
-fn opt_str_field(
-    p: &serde_json::Value,
-    key: &str,
-) -> Result<Option<String>, grammers_client::InvocationError> {
+fn opt_str_field(p: &serde_json::Value, key: &str) -> TeleResult<Option<String>> {
     Ok(p.get(key).and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
-fn int_field(p: &serde_json::Value, key: &str) -> Result<i32, grammers_client::InvocationError> {
+fn int_field(p: &serde_json::Value, key: &str) -> TeleResult<i32> {
     Ok(p.get(key)
         .and_then(|v| v.as_i64())
         .map(|v| v as i32)
         .unwrap_or(10))
 }
 
-fn opt_int_field(
-    p: &serde_json::Value,
-    key: &str,
-) -> Result<Option<i32>, grammers_client::InvocationError> {
+fn opt_int_field(p: &serde_json::Value, key: &str) -> TeleResult<Option<i32>> {
     Ok(p.get(key).and_then(|v| v.as_i64()).map(|v| v as i32))
 }
 
-fn bool_field(p: &serde_json::Value, key: &str) -> Result<bool, grammers_client::InvocationError> {
+fn bool_field(p: &serde_json::Value, key: &str) -> TeleResult<bool> {
     Ok(p.get(key).and_then(|v| v.as_bool()).unwrap_or(false))
 }
 

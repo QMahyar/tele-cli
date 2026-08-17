@@ -125,15 +125,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             {
                                 Ok(peer) => Some(peer.id()),
                                 Err(e) => {
-                                    handle_stream_failure(
-                                        &name,
-                                        TeleError::Other(format!(
-                                            "cannot resolve chat {target:?}: {e}"
-                                        )),
-                                        &mut failures,
-                                        deadline,
-                                    )
-                                    .await?;
+                                    handle_stream_failure(&name, e, &mut failures, deadline)
+                                        .await?;
                                     continue;
                                 }
                             },
