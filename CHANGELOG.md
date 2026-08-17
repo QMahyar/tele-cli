@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - usage errors now emit the JSON error envelope on stdout in machine mode (was: empty stdout, exit 1)
 - `msg forward` now exits 2 (partial) when some or all chunks fail; was exit 0.
 - Fixed: account remove refuses to delete a session file in use by another process.
+- remove no longer errors when the session file was never created.
 
 ## [0.1.1] - 2026-08-17
 

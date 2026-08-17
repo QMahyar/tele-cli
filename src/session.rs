@@ -48,6 +48,9 @@ pub fn list_session_names() -> Vec<String> {
 
 pub fn remove_session(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
+    if !session_path(name).try_exists()? {
+        return Ok(());
+    }
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -199,6 +202,18 @@ mod tests {
         remove_session("work").unwrap();
         assert!(!session_path("work").exists());
         assert!(!lock_path("work").exists());
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_session_tolerates_never_created_session_file() {
+        let _guard = lock_env().await;
+        let dir = test_dir("session-lock-remove-never-created");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        remove_session("work").unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
