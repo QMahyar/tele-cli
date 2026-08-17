@@ -29,9 +29,9 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | msg.schedule-repeat | Repeating scheduled | layer 215+ | raw if present | `tele raw` registry | later |
 | msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` | done |
 | msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` (partial reporting + `--self-only`) | done |
-| msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` | done |
+| msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` (always silent via grammers; no `--silent` flag) | done |
 | msg.history | Get / iter history | `messages.getHistory` | `get_messages_by_id`, `iter_messages` | `tele msg get` | done |
-| msg.pin | Pin / unpin | `messages.updatePinnedMessage` | `pin_message`, `unpin_message` | `tele msg pin` | done |
+| msg.pin | Pin / unpin | `messages.updatePinnedMessage` | `pin_message`, `unpin_message` | `tele msg pin` (always silent via grammers; no `--silent` flag) | done |
 | msg.read | Mark read | `messages.readHistory` | `mark_as_read` | `tele msg read` | done |
 | msg.file | Send file | `messages.sendMedia` | `upload_file` + `send_message` | `tele msg send --file` | done |
 | msg.download | Download media | upload/download API | `download_media`, `iter_download` | `tele msg download` | done |
@@ -51,7 +51,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 |---|---|---|---|---|---|
 | chat.join | Join public / invite | `channels.joinChannel`, `messages.importChatInvite` | `join_chat`, `accept_invite_link` | `tele chat join` | done |
 | chat.leave | Leave / delete dialog | `channels.leaveChannel`, `messages.deleteChatUser` | `delete_dialog` | `tele chat leave` | done |
-| chat.invite | Export / edit invites | `/api/invites` | raw | `tele chat invite` | done |
+| chat.invite | Export / edit invites | `/api/invites` | raw | `tele chat invite` adds users (channels.InviteToChannel); export a link via `tele raw messages.ExportChatInvite` | done |
 | chat.participants | List members | `channels.getParticipants` | `iter_participants` (channels/supergroups); basic groups via raw `messages.GetFullChat` — members whose user data is missing are skipped, never a panic | `tele chat participants` | done |
 | chat.kick | Kick / ban | `channels.editBanned` | `kick_participant`, `set_banned_rights` | `tele chat kick` | done |
 | chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` | `tele chat admin` | done |
