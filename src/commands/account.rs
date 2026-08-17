@@ -143,7 +143,12 @@ async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         );
         return crate::executor::finish(
             flags,
-            &dry_run_envelope(&args.name, &would, &flags.command),
+            &action_envelope(
+                &args.name,
+                add_dry_run_data(&args.name, &args.tags, &would),
+                true,
+                &flags.command,
+            ),
         );
     }
     let mut cfg = config::load_config(flags.config_path.as_deref())?;
@@ -400,6 +405,15 @@ fn action_envelope(
     Envelope::new(vec![single_outcome(account, data)], dry_run, command)
 }
 
+fn add_dry_run_data(name: &str, tags: &Option<Vec<String>>, would: &str) -> serde_json::Value {
+    serde_json::json!({
+        "would": would,
+        "dry_run": true,
+        "name": name,
+        "tags": tags,
+    })
+}
+
 fn dry_run_envelope(account: &str, would: &str, command: &str) -> Envelope {
     action_envelope(
         account,
@@ -639,6 +653,24 @@ mod tests {
             v["results"][0]["data"]["would"],
             serde_json::json!("register account work in config.toml")
         );
+    }
+
+    #[test]
+    fn add_dry_run_data_carries_argument_keys() {
+        let value = add_dry_run_data(
+            "work",
+            &Some(vec!["a".to_string(), "b".to_string()]),
+            "register account work in config.toml",
+        );
+        assert_eq!(value["dry_run"], serde_json::json!(true));
+        assert_eq!(value["name"], serde_json::json!("work"));
+        assert_eq!(value["tags"], serde_json::json!(["a", "b"]));
+        assert_eq!(
+            value["would"],
+            serde_json::json!("register account work in config.toml")
+        );
+        let no_tags = add_dry_run_data("home", &None, "register account home in config.toml");
+        assert_eq!(no_tags["tags"], serde_json::Value::Null);
     }
 
     #[test]

@@ -27,7 +27,7 @@ pub enum MsgCmd {
     Download(DownloadArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct SendArgs {
     #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
     chat: String,
@@ -379,6 +379,23 @@ fn parse_schedule(value: Option<&str>) -> TeleResult<Option<i32>> {
     })
 }
 
+fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::Value {
+    let would = format!("send message to chat {}", args.chat);
+    serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "text": args.text,
+        "file": args.file,
+        "caption": args.caption,
+        "format": args.format,
+        "schedule": schedule,
+        "reply": args.reply,
+        "preview": args.preview,
+        "silent": args.silent,
+        "would": would,
+    })
+}
+
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_send(&args)?;
     let config_path = flags.config_path.clone();
@@ -386,6 +403,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let schedule = parse_schedule(args.schedule.as_deref())?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
+        let args = args.clone();
         let chat_target = args.chat.clone();
         let text = args.text.clone();
         let caption = args.caption.clone();
@@ -397,11 +415,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let silent = args.silent;
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": chat_target,
-                    "would": format!("send message to chat {chat_target}")
-                }));
+                return Ok(send_dry_run_payload(&args, schedule));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -461,6 +475,16 @@ fn validate_edit(args: &EditArgs) -> TeleResult<()> {
     Ok(())
 }
 
+fn edit_dry_run_payload(chat: &str, text: &str, id: i32) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "id": id,
+        "chat": chat,
+        "text": text,
+        "would": format!("edit message {id}"),
+    })
+}
+
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_edit(&args)?;
     let config_path = flags.config_path.clone();
@@ -472,11 +496,7 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let text = args.text.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "id": id,
-                    "would": format!("edit message {id}")
-                }));
+                return Ok(edit_dry_run_payload(&chat_target, &text, id));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -2440,5 +2460,38 @@ mod tests {
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn send_dry_run_carries_argument_keys() {
+        let mut args = send_args("plain");
+        args.chat = "@x".to_string();
+        let value = send_dry_run_payload(&args, None);
+        assert_eq!(value["dry_run"], serde_json::json!(true));
+        assert_eq!(value["chat"], serde_json::json!("@x"));
+        assert_eq!(value["text"], serde_json::json!("hi"));
+        assert_eq!(value["file"], serde_json::Value::Null);
+        assert_eq!(value["caption"], serde_json::Value::Null);
+        assert_eq!(value["format"], serde_json::json!("plain"));
+        assert_eq!(value["schedule"], serde_json::Value::Null);
+        assert_eq!(value["reply"], serde_json::Value::Null);
+        assert_eq!(value["preview"], serde_json::json!(true));
+        assert_eq!(value["silent"], serde_json::json!(false));
+        assert_eq!(value["would"], serde_json::json!("send message to chat @x"));
+    }
+
+    #[test]
+    fn edit_dry_run_carries_argument_keys() {
+        let args = EditArgs {
+            chat: "@x".to_string(),
+            id: 5,
+            text: "new text".to_string(),
+        };
+        let value = edit_dry_run_payload(&args.chat, &args.text, args.id);
+        assert_eq!(value["dry_run"], serde_json::json!(true));
+        assert_eq!(value["id"], serde_json::json!(5));
+        assert_eq!(value["chat"], serde_json::json!("@x"));
+        assert_eq!(value["text"], serde_json::json!("new text"));
+        assert_eq!(value["would"], serde_json::json!("edit message 5"));
     }
 }

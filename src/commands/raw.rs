@@ -48,11 +48,7 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let params = params.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "method": name,
-                    "would": format!("invoke raw method {name}"),
-                }));
+                return Ok(raw_dry_run_payload(&name, &params));
             }
             let guard =
                 ClientGuard::connect(&account, creds_api_id()?, config_path.as_deref()).await?;
@@ -76,6 +72,15 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         }
     }
     crate::executor::finish(flags, &envelope)
+}
+
+fn raw_dry_run_payload(name: &str, params: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "method": name,
+        "args": params,
+        "would": format!("invoke raw method {name}"),
+    })
 }
 
 fn requires_explicit_account(method: &str) -> bool {
@@ -729,6 +734,19 @@ mod tests {
             let mutating = matches!(*name, "account.UpdateProfile" | "messages.ExportChatInvite");
             assert_eq!(requires_explicit_account(name), mutating, "{name}");
         }
+    }
+
+    #[test]
+    fn raw_dry_run_carries_argument_keys() {
+        let params = serde_json::json!({"q": "alice", "limit": 5});
+        let value = raw_dry_run_payload("contacts.Search", &params);
+        assert_eq!(value["dry_run"], serde_json::json!(true));
+        assert_eq!(value["method"], serde_json::json!("contacts.Search"));
+        assert_eq!(value["args"], params);
+        assert_eq!(
+            value["would"],
+            serde_json::json!("invoke raw method contacts.Search")
+        );
     }
 
     #[test]
