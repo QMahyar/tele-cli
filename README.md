@@ -90,7 +90,7 @@ Run `tele --help` for the full reference, or `tele <command> --help` for a speci
 | `--json` | Machine-readable JSON output |
 | `--jsonl` | JSON Lines output (one object per line) |
 | `--dry-run` | Validate and print what would happen — no network calls |
-| `--parallel <1-3>` | Fan out across accounts in parallel |
+| `--parallel <1-32>` | Fan out across accounts in parallel |
 | `--config <path>` | Override config file location |
 | `-v` / `-vv` | Verbose logging (info / debug) on stderr |
 | `-q` | Quiet — errors only |
@@ -127,7 +127,19 @@ tags = ["iran", "work"]
 type = "socks5"
 host = "127.0.0.1"
 port = 1080
+
+[accounts.spam]
+tags = ["bulk"]
+rpc_per_minute = 20.0
+flood_sleep_threshold = 30
 ```
+
+Per-account keys (optional, override globals):
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `flood_sleep_threshold` | `u64` | global (60) | AutoSleep threshold in seconds |
+| `rpc_per_minute` | `f64` | unlimited | Token-bucket RPC rate budget (tokens refill per minute) |
 
 ---
 

@@ -118,7 +118,7 @@ async fn collect_outcomes(
 }
 
 fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
-    flag.unwrap_or(cfg_max).clamp(1, 3)
+    flag.unwrap_or(cfg_max).clamp(1, 32)
 }
 
 pub fn select_accounts(flags: &GlobalFlags) -> TeleResult<Vec<String>> {
@@ -256,6 +256,7 @@ mod tests {
                     crate::config::AccountConfig {
                         tags: tags.iter().map(|t| t.to_string()).collect(),
                         proxy: None,
+                        ..Default::default()
                     },
                 )
             })
@@ -343,28 +344,28 @@ mod tests {
     fn flag_overrides_config() {
         assert_eq!(effective_parallel(Some(1), 3), 1);
         assert_eq!(effective_parallel(Some(2), 1), 2);
-        assert_eq!(effective_parallel(Some(3), 1), 3);
+        assert_eq!(effective_parallel(Some(32), 1), 32);
     }
 
     #[test]
     fn config_is_fallback_default() {
         assert_eq!(effective_parallel(None, 1), 1);
         assert_eq!(effective_parallel(None, 2), 2);
-        assert_eq!(effective_parallel(None, 3), 3);
+        assert_eq!(effective_parallel(None, 32), 32);
     }
 
     #[test]
-    fn both_sides_clamped_to_one_to_three() {
+    fn both_sides_clamped_to_one_to_thirty_two() {
         assert_eq!(effective_parallel(Some(0), 3), 1);
-        assert_eq!(effective_parallel(Some(9), 1), 3);
+        assert_eq!(effective_parallel(Some(99), 1), 32);
         assert_eq!(effective_parallel(None, 0), 1);
-        assert_eq!(effective_parallel(None, 99), 3);
+        assert_eq!(effective_parallel(None, 999), 32);
     }
 
     #[test]
-    fn flag_above_three_clamps_to_three() {
-        assert_eq!(effective_parallel(Some(4), 1), 3);
-        assert_eq!(effective_parallel(Some(99), 3), 3);
+    fn flag_above_thirty_two_clamps_to_thirty_two() {
+        assert_eq!(effective_parallel(Some(33), 1), 32);
+        assert_eq!(effective_parallel(Some(99), 3), 32);
     }
 
     #[test]
@@ -642,5 +643,39 @@ mod tests {
         assert!(!outcomes[0].ok);
         assert_eq!(outcomes[1].account, "b");
         assert!(outcomes[1].ok);
+    }
+
+    #[tokio::test]
+    async fn default_parallel_1_runs_tasks_sequentially() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let running = Arc::new(AtomicUsize::new(0));
+        let cfg = crate::config::AppConfig {
+            parallel_max: 1,
+            ..Default::default()
+        };
+        let parallel = effective_parallel(None, cfg.parallel_max) as usize;
+        assert_eq!(parallel, 1);
+        let semaphore = Arc::new(Semaphore::new(parallel));
+        let mut handles = Vec::new();
+        for i in 0..3 {
+            let sem = Arc::clone(&semaphore);
+            let running = Arc::clone(&running);
+            let max_concurrent = Arc::clone(&max_concurrent);
+            handles.push(tokio::task::spawn(async move {
+                let _permit = sem.acquire_owned().await.unwrap();
+                let prev = running.fetch_add(1, Ordering::SeqCst);
+                let cur = prev + 1;
+                max_concurrent.fetch_max(cur, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                running.fetch_sub(1, Ordering::SeqCst);
+                Ok::<_, TeleError>(serde_json::json!({"i": i}))
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().unwrap();
+        }
+        assert_eq!(max_concurrent.load(Ordering::SeqCst), 1);
     }
 }

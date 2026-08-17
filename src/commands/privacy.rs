@@ -116,6 +116,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let mut rows = Vec::new();
             let mut table_rows = Vec::new();
             for key in keys() {
@@ -219,6 +220,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let mut allow_users = Vec::new();
             for target in &allow {
                 let peer =

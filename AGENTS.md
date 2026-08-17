@@ -63,7 +63,7 @@ src/
 - `src/client.rs` owns grammers. Commands resolve accounts and print; they never build a `Client` themselves.
 - One `FileSession` per named account under the app data dir. Never CWD. Never two clients on one file.
 - Friendly grammers methods first. Raw `tl::functions.*` only via `tele raw` or when no friendly path exists.
-- Sequential default. `--parallel N` clamped to 1–3. Honor FloodWait / SlowModeWait.
+- Sequential default. `--parallel N` (1–32) caps concurrent accounts; per-account token buckets gate RPC rate (ADR-008). Honor FloodWait / SlowModeWait.
 - `--json` / JSONL is the public machine API. Change it only additively. See `docs/cli-contract.md`.
 - Structured logs on **stderr only**. Secrets, session strings, phone numbers, 2FA, api_hash never logged.
 - `--chat` targets: numeric id, `@username`, `t.me/...` link, `me`, `+phone`. Phone branch BEFORE numeric parse.
@@ -123,5 +123,5 @@ src/
 - Security: `docs/security.md`
 - Observability: `docs/observability.md`
 - Release: `docs/release.md`
-- ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 007 = product scope v1; 005 = release gate)
+- ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights; 005 = release gate)
 - Tasks: `tasks/todo.md` (live tracker)

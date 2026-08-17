@@ -63,6 +63,10 @@ pub struct AccountConfig {
     pub tags: Vec<String>,
     #[serde(default)]
     pub proxy: Option<ProxyConfig>,
+    #[serde(default)]
+    pub flood_sleep_threshold: Option<u64>,
+    #[serde(default)]
+    pub rpc_per_minute: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -253,7 +257,7 @@ fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     let text = std::fs::read_to_string(cfg_path)?;
     let mut cfg: AppConfig = toml::from_str(&text)
         .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", cfg_path.display()))?;
-    cfg.parallel_max = cfg.parallel_max.clamp(1, 3);
+    cfg.parallel_max = cfg.parallel_max.clamp(1, 32);
     Ok(cfg)
 }
 
@@ -380,6 +384,7 @@ mod tests {
                 AccountConfig {
                     tags: vec![],
                     proxy: Some(socks5("local", 1080)),
+                    ..Default::default()
                 },
             )]
             .into_iter()
@@ -501,14 +506,16 @@ mod tests {
     }
 
     #[test]
-    fn parallel_max_clamped_to_one_to_three_on_load() {
+    fn parallel_max_clamped_to_one_to_thirty_two_on_load() {
         let dir = std::env::temp_dir().join(format!("telecli-config-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        std::fs::write(&path, "parallel_max = 9\n").unwrap();
-        assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 3);
+        std::fs::write(&path, "parallel_max = 99\n").unwrap();
+        assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 32);
         std::fs::write(&path, "parallel_max = 0 # clamp to minimum\n").unwrap();
         assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 1);
+        std::fs::write(&path, "parallel_max = 32\n").unwrap();
+        assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 32);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -517,6 +524,99 @@ mod tests {
         let cfg: AppConfig = toml::from_str("").unwrap();
         assert_eq!(cfg.flood_sleep_threshold, 60);
         assert_eq!(cfg.parallel_max, 1);
+        assert!(cfg.accounts.is_empty());
+    }
+
+    #[test]
+    fn per_account_flood_sleep_threshold_none_when_absent() {
+        let cfg: AppConfig = toml::from_str("").unwrap();
+        assert!(cfg.accounts.is_empty());
+    }
+
+    #[test]
+    fn per_account_fields_round_trip() {
+        let toml_str = "parallel_max = 2\n\n[accounts.work]\ntags = [\"team\"]\nflood_sleep_threshold = 30\nrpc_per_minute = 120.0\n";
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        let acct = &cfg.accounts["work"];
+        assert_eq!(acct.flood_sleep_threshold, Some(30));
+        assert_eq!(acct.rpc_per_minute, Some(120.0));
+        assert_eq!(cfg.parallel_max, 2);
+    }
+
+    #[test]
+    fn per_account_optional_fields_default_to_none() {
+        let toml_str = "[accounts.work]\ntags = [\"a\"]\n";
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        let acct = &cfg.accounts["work"];
+        assert_eq!(acct.flood_sleep_threshold, None);
+        assert_eq!(acct.rpc_per_minute, None);
+    }
+
+    #[test]
+    fn per_account_rpc_per_minute_round_trip_serialization() {
+        let cfg = AppConfig {
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec![],
+                    proxy: None,
+                    flood_sleep_threshold: Some(30),
+                    rpc_per_minute: Some(120.0),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let dir = atomic_dir("per-acct-roundtrip");
+        let path = dir.join("config.toml");
+        write_config(&path, &cfg).unwrap();
+        let back = read_config(&path).unwrap();
+        let acct = &back.accounts["work"];
+        assert_eq!(acct.flood_sleep_threshold, Some(30));
+        assert_eq!(acct.rpc_per_minute, Some(120.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn per_account_flood_threshold_none_uses_global() {
+        let cfg = AppConfig {
+            flood_sleep_threshold: 120,
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec![],
+                    proxy: None,
+                    flood_sleep_threshold: None,
+                    rpc_per_minute: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let acct = &cfg.accounts["work"];
+        assert_eq!(acct.flood_sleep_threshold, None);
+        assert_eq!(cfg.flood_sleep_threshold, 120);
+    }
+
+    #[test]
+    fn per_account_rpc_per_minute_none_means_unlimited() {
+        let cfg = AppConfig {
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec![],
+                    proxy: None,
+                    flood_sleep_threshold: None,
+                    rpc_per_minute: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.accounts["work"].rpc_per_minute, None);
     }
 
     #[test]
@@ -867,6 +967,7 @@ mod tests {
                 AccountConfig {
                     tags: vec!["team".to_string()],
                     proxy: None,
+                    ..Default::default()
                 },
             )]
             .into_iter()
@@ -911,6 +1012,7 @@ mod tests {
                     AccountConfig {
                         tags: vec![],
                         proxy: None,
+                        ..Default::default()
                     },
                 ),
                 (
@@ -918,6 +1020,7 @@ mod tests {
                     AccountConfig {
                         tags: vec!["new".to_string()],
                         proxy: None,
+                        ..Default::default()
                     },
                 ),
             ]

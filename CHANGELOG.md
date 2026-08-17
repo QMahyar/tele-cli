@@ -12,6 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Docs: replaced hardcoded test count in README with version-agnostic wording.
 - CI: automated release workflow builds cross-platform binaries (win-x64, linux-x64, mac-arm64, mac-x64), generates SHA-256 checksums, and creates GitHub Releases on `v*` tag push. npm publish is gated on the `NPM_TOKEN` secret.
 - Refactor: `tele raw` registry, validation, and arg metadata are now generated at build time from the vendored TL schema (`tl/api.tl`) via `grammers-tl-parser`. Adding a new raw method requires only a TL entry in the schema + a hand-written dispatch arm; the registry, validation, and help text are derived automatically. No new runtime dependencies.
+- Per-account flood weights: each account now gets its own token-bucket rate limiter
+  (`rpc_per_minute`) and flood cooldown (`flood_sleep_threshold`), layered under the
+  account-concurrency cap (`--parallel`, default 1). A flooded account no longer
+  blocks siblings.
+- `--parallel` clamp raised to 1..=32 (was 1..=3); default remains 1.
+- New config keys under `[accounts.<name>]`: `rpc_per_minute: f64` (token-bucket
+  budget; `None` = unlimited) and `flood_sleep_threshold: u64` (per-account
+  AutoSleep threshold; `None` = global default).
+- ADR-008 supersedes ADR-004 for flood/parallel design.
 
 ## [0.1.2] - 2026-08-17
 
@@ -81,3 +90,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - JSON/JSONL machine output with structured envelope
 - Dry-run mode for all commands
 - Comprehensive test suite (268 tests)
+- Per-account flood weights: each account now gets its own token-bucket rate limiter
+  (`rpc_per_minute`) and flood cooldown (`flood_sleep_threshold`), replacing the
+  single global semaphore. A flooded account no longer blocks siblings.
+- `--parallel` clamp raised to 1..=32 (was 1..=3); default remains 1.
+- New config keys under `[accounts.<name>]`: `rpc_per_minute: f64` (token-bucket
+  budget; `None` = unlimited) and `flood_sleep_threshold: u64` (per-account
+  AutoSleep threshold; `None` = global default).
+- ADR-007 supersedes ADR-004 for flood/parallel design.

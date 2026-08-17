@@ -67,6 +67,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let mut iter = guard.client.iter_dialogs();
             let mut rows = Vec::new();
             let mut count = 0u32;
@@ -153,6 +154,7 @@ async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let updates: tl::enums::Updates = guard
                 .client
                 .invoke(&tl::functions::messages::GetAllDrafts {})
@@ -260,6 +262,7 @@ async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await?;
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
@@ -300,6 +303,7 @@ async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;

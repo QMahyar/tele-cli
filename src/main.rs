@@ -7,6 +7,7 @@ mod executor;
 mod fs_util;
 mod logging;
 mod output;
+mod rate_limiter;
 mod serialize;
 mod session;
 

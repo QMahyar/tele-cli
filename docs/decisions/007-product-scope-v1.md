@@ -40,7 +40,7 @@ preserves them for the Rust era.
 | Area | Rule |
 |------|------|
 | Persistence | One SQLite `.session` per named account, stored outside CWD, never shared across processes |
-| Rate limits | Sequential default; `--parallel 1–3`; honour `FloodWaitError` / `SlowModeWaitError` |
+| Rate limits | Sequential default; `--parallel` 1–32 with per-account token buckets (see ADR-008); honour `FloodWaitError` / `SlowModeWaitError` |
 | Secrets | `TELE_API_ID` / `TELE_API_HASH` in `.env` (app-level, outside repo); never logged |
 | Security | 2FA, QR login supported; `sign_out` deletes session |
 | Proxy | Global + per-account SOCKS5 override (grammers 0.10 socks5-only) |

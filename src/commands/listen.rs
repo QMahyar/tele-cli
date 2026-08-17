@@ -65,19 +65,13 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let timeout_secs = args.timeout_secs;
     let chat_filter = args.chat.clone();
     let cfg = crate::config::load_config(flags.config_path.as_deref())?;
-    let parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel));
+    let _parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
     let mut tasks = tokio::task::JoinSet::new();
     for name in names {
         let config_path = config_path.clone();
         let chat_filter = chat_filter.clone();
         let events = events.clone();
-        let semaphore = std::sync::Arc::clone(&semaphore);
         tasks.spawn(async move {
-            let _permit = semaphore
-                .acquire_owned()
-                .await
-                .map_err(|e| TeleError::Other(e.to_string()))?;
             let result: TeleResult<()> = async {
                 let creds =
                     crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
@@ -434,7 +428,7 @@ fn deleted_matches(bare_id: Option<i64>, resolved: PeerId) -> bool {
 }
 
 fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
-    flag.unwrap_or(cfg_max).clamp(1, 3)
+    flag.unwrap_or(cfg_max).clamp(1, 32)
 }
 
 fn reconnect_allowed(consecutive_failures: u32) -> bool {
@@ -1070,22 +1064,22 @@ mod tests {
     fn effective_parallel_flag_overrides_config() {
         assert_eq!(effective_parallel(Some(1), 3), 1);
         assert_eq!(effective_parallel(Some(2), 1), 2);
-        assert_eq!(effective_parallel(Some(3), 1), 3);
+        assert_eq!(effective_parallel(Some(32), 1), 32);
     }
 
     #[test]
     fn effective_parallel_config_is_fallback_default() {
         assert_eq!(effective_parallel(None, 1), 1);
         assert_eq!(effective_parallel(None, 2), 2);
-        assert_eq!(effective_parallel(None, 3), 3);
+        assert_eq!(effective_parallel(None, 32), 32);
     }
 
     #[test]
-    fn effective_parallel_clamped_one_to_three() {
+    fn effective_parallel_clamped_one_to_thirty_two() {
         assert_eq!(effective_parallel(Some(0), 3), 1);
-        assert_eq!(effective_parallel(Some(9), 1), 3);
+        assert_eq!(effective_parallel(Some(99), 1), 32);
         assert_eq!(effective_parallel(None, 0), 1);
-        assert_eq!(effective_parallel(None, 99), 3);
+        assert_eq!(effective_parallel(None, 999), 32);
     }
 
     #[test]

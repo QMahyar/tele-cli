@@ -81,6 +81,7 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let info: tl::enums::account::Takeout = guard
                 .client
                 .invoke(&tl::functions::account::InitTakeoutSession {
@@ -207,6 +208,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             run_export(&guard, &dir, limit, takeout_id)
                 .await
                 .map_err(|e| TeleError::Other(export_error_message(&dir, &e.to_string())))
@@ -560,6 +562,7 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let result = guard
                 .client
                 .invoke(&tl::functions::InvokeWithTakeout {

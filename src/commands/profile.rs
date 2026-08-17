@@ -57,6 +57,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let row = match &target {
                 Some(t) => {
                     let peer =
@@ -186,6 +187,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             if new_name.is_some() || new_bio.is_some() {
                 let (first, last) = match &new_name {
                     Some(n) => {
