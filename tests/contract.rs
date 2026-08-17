@@ -1073,3 +1073,88 @@ fn matrix_rows_parse() {
         rows.len()
     );
 }
+
+fn find_upstream_api_tl(registry_src: &Path, version: &str) -> Option<PathBuf> {
+    let prefix = format!("grammers-tl-types-{version}");
+    for entry in std::fs::read_dir(registry_src).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_str().unwrap_or("");
+        if !name.starts_with("index.crates.io-") {
+            continue;
+        }
+        let candidate = path.join(&prefix).join("tl").join("api.tl");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[test]
+fn vendored_tl_api_matches_grammers_tl_types() {
+    let lock_path = PathBuf::from(MANIFEST_DIR).join("Cargo.lock");
+    let lock = match std::fs::read_to_string(&lock_path) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!(
+                "SKIP: cannot read Cargo.lock at {} — re-vendor tl/api.tl after a grammers bump",
+                lock_path.display()
+            );
+            return;
+        }
+    };
+    let version = lock.lines().collect::<Vec<_>>().windows(2).find_map(|w| {
+        if w[0].trim() == "name = \"grammers-tl-types\"" {
+            w[1].strip_prefix("version = \"")
+                .and_then(|s| s.strip_suffix('"'))
+                .map(str::to_string)
+        } else {
+            None
+        }
+    });
+    let version = match version {
+        Some(v) => v,
+        None => {
+            eprintln!(
+                "SKIP: grammers-tl-types not found in Cargo.lock — re-vendor tl/api.tl after a grammers bump"
+            );
+            return;
+        }
+    };
+    let cargo_home = std::env::var("CARGO_HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(|h| PathBuf::from(h).join(".cargo"));
+    let cargo_home = match cargo_home {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("SKIP: CARGO_HOME not set — re-vendor tl/api.tl after a grammers bump");
+            return;
+        }
+    };
+    let registry_src = cargo_home.join("registry").join("src");
+    let upstream = match find_upstream_api_tl(&registry_src, &version) {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "SKIP: cannot locate upstream api.tl for grammers-tl-types {version} — re-vendor tl/api.tl after a grammers bump"
+            );
+            return;
+        }
+    };
+    let vendored = PathBuf::from(MANIFEST_DIR).join("tl/api.tl");
+    let upstream_bytes = std::fs::read(&upstream).unwrap();
+    let vendored_bytes = std::fs::read(&vendored).unwrap();
+    if upstream_bytes != vendored_bytes {
+        panic!(
+            "vendored tl/api.tl is stale (differs from grammers-tl-types {version} at {}); \
+             re-vendor: cp {} tl/api.tl",
+            upstream.display(),
+            upstream.display()
+        );
+    }
+}
