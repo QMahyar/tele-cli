@@ -317,26 +317,7 @@ async fn dispatch(
             let r: tl::enums::Updates = client
                 .invoke(&tl::functions::messages::GetAllDrafts {})
                 .await?;
-            let (updates, users, chats) = match r {
-                tl::enums::Updates::Updates(u) => (u.updates, u.users.len(), u.chats.len()),
-                other => {
-                    return Ok(serde_json::json!({
-                        "updates": [],
-                        "users": 0,
-                        "chats": 0,
-                        "kind": format!("{other:?}"),
-                    }));
-                }
-            };
-            let rows = updates
-                .iter()
-                .map(update_summary)
-                .collect::<Vec<serde_json::Value>>();
-            Ok(serde_json::json!({
-                "updates": rows,
-                "users": users,
-                "chats": chats,
-            }))
+            Ok(all_drafts_summary(&r))
         }
         "stats.GetBroadcastStats" => {
             let chat =
@@ -423,6 +404,28 @@ fn peer_id(peer: &tl::enums::Peer) -> i64 {
         tl::enums::Peer::User(p) => p.user_id,
         tl::enums::Peer::Chat(p) => p.chat_id,
         tl::enums::Peer::Channel(p) => p.channel_id,
+    }
+}
+
+fn all_drafts_summary(r: &tl::enums::Updates) -> serde_json::Value {
+    match r {
+        tl::enums::Updates::Updates(u) => serde_json::json!({
+            "updates": u.updates.iter().map(update_summary).collect::<Vec<_>>(),
+            "users": u.users.len(),
+            "chats": u.chats.len(),
+        }),
+        tl::enums::Updates::Combined(c) => serde_json::json!({
+            "updates": c.updates.iter().map(update_summary).collect::<Vec<_>>(),
+            "users": c.users.len(),
+            "chats": c.chats.len(),
+            "kind": "Combined",
+        }),
+        _ => serde_json::json!({
+            "updates": [],
+            "users": 0,
+            "chats": 0,
+            "kind": "other",
+        }),
     }
 }
 
@@ -722,5 +725,25 @@ mod tests {
             let mutating = matches!(*name, "account.UpdateProfile" | "messages.ExportChatInvite");
             assert_eq!(requires_explicit_account(name), mutating, "{name}");
         }
+    }
+
+    #[test]
+    fn all_drafts_summary_never_emits_debug_strings() {
+        let too_long = tl::enums::Updates::TooLong;
+        let v = all_drafts_summary(&too_long);
+        assert_eq!(v["kind"], serde_json::json!("other"));
+        assert!(!v.to_string().contains("UpdatesTooLong"));
+
+        let combined = tl::enums::Updates::Combined(tl::types::UpdatesCombined {
+            updates: Vec::new(),
+            users: Vec::new(),
+            chats: Vec::new(),
+            date: 0,
+            seq_start: 0,
+            seq: 0,
+        });
+        let v = all_drafts_summary(&combined);
+        assert_eq!(v["kind"], serde_json::json!("Combined"));
+        assert!(!v.to_string().contains("UpdatesCombined"));
     }
 }
