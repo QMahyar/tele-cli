@@ -139,7 +139,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN && 'true' || 'false' }}
-    if: env.HAS_NPM_TOKEN == 'true'
     permissions:
       contents: read
     steps:
@@ -168,6 +167,7 @@ jobs:
         run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
 
       - name: Publish to npm
+        if: env.HAS_NPM_TOKEN == 'true'
         working-directory: npm
         run: |
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
