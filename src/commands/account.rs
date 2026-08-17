@@ -489,6 +489,18 @@ fn strip_line_ending(line: &str) -> &str {
 
 pub use crate::error::invocation_error as tele_invocation;
 
+const QR_TOKEN_NON_TTY_WARNING: &str =
+    "printing one-time login token to a non-terminal stderr; treat the output as a secret";
+
+fn qr_token_lines(uri: &str, stderr_is_terminal: bool) -> (Option<&'static str>, String) {
+    let warning = if stderr_is_terminal {
+        None
+    } else {
+        Some(QR_TOKEN_NON_TTY_WARNING)
+    };
+    (warning, format!("URI: {uri}"))
+}
+
 fn render_qr(uri: &str) {
     eprintln!("Scan this QR code with Telegram (Settings > Devices > Link Desktop Device):");
     match qrcode::QrCode::new(uri.as_bytes()) {
@@ -501,13 +513,11 @@ fn render_qr(uri: &str) {
             eprintln!("{rendered}");
         }
         Err(_) => {
-            if !std::io::stderr().is_terminal() {
-                output::log_line(
-                    "warn",
-                    "printing one-time login token to a non-terminal stderr; treat the output as a secret",
-                );
+            let (warning, line) = qr_token_lines(uri, std::io::stderr().is_terminal());
+            if let Some(warning) = warning {
+                output::log_line("warn", warning);
             }
-            eprintln!("URI: {uri}");
+            eprintln!("{line}");
         }
     }
 }
@@ -583,6 +593,20 @@ mod tests {
         assert!(argv_phone_warning(Some("+15551234567"), true).is_none());
         assert!(argv_phone_warning(None, false).is_none());
         assert!(argv_phone_warning(None, true).is_none());
+    }
+
+    #[test]
+    fn qr_token_lines_non_terminal_stderr_warns_and_keeps_token() {
+        let (warning, line) = qr_token_lines("tg://login?token=abc123", false);
+        assert_eq!(warning, Some(QR_TOKEN_NON_TTY_WARNING));
+        assert_eq!(line, "URI: tg://login?token=abc123");
+    }
+
+    #[test]
+    fn qr_token_lines_terminal_stderr_emits_token_without_warning() {
+        let (warning, line) = qr_token_lines("tg://login?token=abc123", true);
+        assert_eq!(warning, None);
+        assert_eq!(line, "URI: tg://login?token=abc123");
     }
 
     #[test]
