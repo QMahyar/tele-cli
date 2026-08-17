@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Docs: Windows permission model documented (relies on user-profile ACLs).
 - Test: completions output, chat stats JSON shape, QR base64 encoding (net +9 tests).
 
 ### Fixed
@@ -18,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - remove no longer errors when the session file was never created.
 - Fixed: npm wrapper error message and README reference the correct scoped package.
 - Fixed: takeout export writes one batch per page; listen stdout writes are backpressured.
+- Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
 - Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
 
 ## [0.1.1] - 2026-08-17
