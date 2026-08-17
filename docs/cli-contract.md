@@ -69,6 +69,9 @@ Pre-flight failures (usage validation, config load/parse, account selection)
 happen before any account runs. In `--json`/`--jsonl` mode they still emit one
 envelope on stdout: `ok: false`, empty `results`, and a top-level `error`
 object with the same fields as `results[].error`:
+Clap parse errors (unknown subcommand, missing required flag) and the
+`--json`/`--jsonl` conflict also emit this envelope on stdout when `--json` or
+`--jsonl` is present.
 
 ```json
 {

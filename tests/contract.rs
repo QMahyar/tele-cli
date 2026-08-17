@@ -417,6 +417,47 @@ fn json_and_jsonl_are_rejected() {
 }
 
 #[test]
+fn clap_parse_error_emits_json_envelope() {
+    let (code, out, err) = run_isolated("badsub", &["--json", "foobar"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["command"], serde_json::json!("foobar"));
+    assert_eq!(v["results"], serde_json::json!([]));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("foobar"),
+        "stdout: {out}"
+    );
+}
+
+#[test]
+fn missing_required_arg_emits_json_envelope() {
+    let (code, out, err) = run_isolated("badarg", &["--json", "msg", "send"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["command"], serde_json::json!("msg send"));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+}
+
+#[test]
+fn json_jsonl_conflict_emits_envelope() {
+    let (code, out, err) = run_isolated("both2", &["account", "list", "--json", "--jsonl"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("mutually exclusive"));
+}
+
+#[test]
 fn error_envelope_on_stdout_for_usage_error() {
     let (code, out, err) = run_isolated(
         "errusage",

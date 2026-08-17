@@ -115,6 +115,15 @@ fn main() -> std::process::ExitCode {
                 error::EXIT_OK
             };
             let _ = e.print();
+            if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
+                let hint = argv_command_hint().unwrap_or_default();
+                let error_json =
+                    serde_json::json!({"type": "UsageError", "message": e.to_string()});
+                let envelope = output::Envelope::failed(false, &hint, error_json);
+                if let Ok(v) = serde_json::to_value(&envelope) {
+                    let _ = output::print_json(&v);
+                }
+            }
             std::process::exit(code);
         }
     };
@@ -132,10 +141,13 @@ fn main() -> std::process::ExitCode {
     };
     logging::set_flags(cli.verbose, flags.quiet);
     if flags.json && flags.jsonl {
-        output::log_line(
-            "error",
-            "--json and --jsonl are mutually exclusive; pick one",
-        );
+        let message = "--json and --jsonl are mutually exclusive; pick one";
+        output::log_line("error", message);
+        let error_json = serde_json::json!({"type": "UsageError", "message": message});
+        let envelope = output::Envelope::failed(false, &flags.command, error_json);
+        if let Ok(v) = serde_json::to_value(&envelope) {
+            let _ = output::print_json(&v);
+        }
         std::process::exit(error::EXIT_USAGE);
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -163,6 +175,44 @@ fn invoked_path(matches: &clap::ArgMatches) -> String {
         m = sub;
     }
     parts.join(" ")
+}
+
+fn argv_command_hint() -> Option<String> {
+    let mut parts = Vec::new();
+    let mut skip_value = false;
+    for arg in std::env::args_os().skip(1) {
+        let s = arg.to_string_lossy().into_owned();
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if matches!(
+            s.as_str(),
+            "--account" | "--tag" | "--parallel" | "--config"
+        ) {
+            skip_value = true;
+            continue;
+        }
+        if s.starts_with("--account=")
+            || s.starts_with("--tag=")
+            || s.starts_with("--parallel=")
+            || s.starts_with("--config=")
+        {
+            continue;
+        }
+        if s.starts_with('-') {
+            continue;
+        }
+        parts.push(s);
+        if parts.len() == 2 {
+            break;
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
 }
 
 async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
