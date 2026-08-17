@@ -731,6 +731,10 @@ fn forward_report(
     if !failed.is_empty() {
         value["failed"] = serde_json::json!({"count": failed.len(), "ids": failed});
     }
+    let partial = requested > 0 && forwarded.len() < requested;
+    if partial {
+        value["partial"] = serde_json::json!(true);
+    }
     let should_warn = requested > 0 && forwarded.is_empty();
     (value, should_warn)
 }
@@ -1711,10 +1715,32 @@ mod tests {
         assert!(warn);
         assert!(report.get("dropped").is_some());
         assert!(report.get("failed").is_none());
+        assert_eq!(report["partial"], serde_json::json!(true));
         let (report, warn) = forward_report(1, &[serde_json::json!({"id": 9})], &[], &[]);
         assert!(!warn);
         assert!(report.get("dropped").is_none());
         assert!(report.get("failed").is_none());
+        assert!(report.get("partial").is_none());
+    }
+
+    #[test]
+    fn forward_report_marks_partial_when_all_chunks_fail() {
+        let (value, should_warn) = forward_report(3, &[], &[], &[1, 2, 3]);
+        assert_eq!(value["partial"], serde_json::json!(true));
+        assert_eq!(value["failed"]["count"], serde_json::json!(3));
+        assert!(should_warn);
+    }
+
+    #[test]
+    fn forward_report_marks_partial_when_some_dropped() {
+        let (value, _) = forward_report(2, &[serde_json::json!({"id": 1})], &[2], &[]);
+        assert_eq!(value["partial"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn forward_report_omits_partial_when_all_forwarded() {
+        let (value, _) = forward_report(1, &[serde_json::json!({"id": 1})], &[], &[]);
+        assert!(value.get("partial").is_none(), "value: {value}");
     }
 
     #[test]
