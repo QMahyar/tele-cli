@@ -36,6 +36,20 @@ Assets: live user sessions (full account), `TELE_API_HASH`, phone numbers, 2FA p
   listings and shell history on non-TTY flows. Prefer the stdin prompt or the
   `TELE_PHONE` env for automation.
 
+## Windows permission model
+
+- `create_dir_private` / `restrict_file_private` are Unix-only: they chmod the
+  app data dir to 0700 and session files to 0600 (`fs_util.rs`) and are no-ops
+  on Windows.
+- On Windows the app data dir and session files rely on the default inherited
+  ACLs of the user profile.
+- This is safe when the app dir is the default `%APPDATA%` (per-user profile,
+  user-owned).
+- It becomes sensitive only if `TELE_APP_DIR` is redirected to a shared
+  directory (e.g. `C:\telecli` or a network share) where other users can read
+  it; keep sessions on a per-user path.
+- No remediation in v0.1.x.
+
 ## Always
 
 - `.gitignore`: `.env`, `*.session`, `*.session-journal`, app-dir copies
