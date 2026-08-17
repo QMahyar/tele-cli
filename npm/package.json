@@ -3,14 +3,6 @@
   "version": "0.1.2",
   "description": "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming. No bot tokens.",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/QMahyar/tele-cli.git"
-  },
-  "bugs": {
-    "url": "https://github.com/QMahyar/tele-cli/issues"
-  },
-  "homepage": "https://github.com/QMahyar/tele-cli#readme",
   "keywords": [
     "telegram",
     "cli",

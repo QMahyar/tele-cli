@@ -36,9 +36,7 @@ telecli --help
 
 ## Documentation
 
-- [capabilities matrix](https://github.com/QMahyar/tele-cli/blob/main/docs/capabilities.md)
-- [CLI contract](https://github.com/QMahyar/tele-cli/blob/main/docs/cli-contract.md)
-- [security](https://github.com/QMahyar/tele-cli/blob/main/docs/security.md)
+- capabilities matrix, CLI contract, and security notes ship with the repository; `telecli --help` lists every command.
 
 ## License
 

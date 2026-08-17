@@ -4,12 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.2] - 2026-08-17
 
 ### Added
 - Docs: matrix, contract, and README synced with implementation (test counts, completions, listen JSONL).
 - Docs: Windows permission model documented (relies on user-profile ACLs).
-- Test: completions output, chat stats JSON shape, QR base64 encoding (net +9 tests).
+- Test: completions output, chat stats JSON shape, QR base64 encoding (net +9 tests; suite now 578: 514 unit + 44 contract + 20 selection).
 
 ### Fixed
 - Fixed: --dry-run payloads now include the command's own argument keys (additive JSON).
@@ -25,7 +25,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Fixed: takeout export writes one batch per page; listen stdout writes are backpressured.
 - Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
 - Fixed: raw messages.GetAllDrafts never dumps Debug strings into JSON output.
-- Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
 - Fixed: malformed phone chat targets are usage errors (exit 1); upload flood waits carry seconds in the JSON error.
 
 ## [0.1.1] - 2026-08-17
