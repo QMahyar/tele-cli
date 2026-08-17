@@ -167,6 +167,7 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let normalized = normalize_invite_link(&target);
             if validate_invite_link(&normalized).is_ok() {
                 let joined = guard
@@ -246,6 +247,7 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let peer =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             match &peer {
@@ -313,6 +315,7 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             let user_peer =
@@ -391,6 +394,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
             }
             let guard = ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
                 .await?;
             ensure_chat_peer(&chat, "participants")?;
@@ -487,6 +491,7 @@ async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             ensure_chat_peer(&chat, "kick")?;
@@ -547,6 +552,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             let user_peer =
@@ -605,6 +611,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let own_id = guard
                 .client
                 .get_me()
@@ -737,6 +744,7 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             let channel = entities::input_channel(&chat)
@@ -819,6 +827,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
             let result = match kind.as_str() {
                 "group" => {
                     let r: tl::enums::messages::InvitedUsers = guard

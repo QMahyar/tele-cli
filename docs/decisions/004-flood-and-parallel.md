@@ -1,7 +1,7 @@
 # ADR-004: Sequential default, parallel max 3, flood_sleep 60
 
 ## Status
-Accepted
+Superseded by ADR-007
 
 ## Date
 2026-08-13

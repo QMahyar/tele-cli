@@ -98,6 +98,7 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
         Box::pin(async move {
             let guard =
                 ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
+            guard.rate_limiter.acquire().await;
             let authorized = guard.client.is_authorized().await.map_err(|e| {
                 if crate::error::invocation_is_unauthorized(&e) {
                     TeleError::Auth("not logged in".to_string())
@@ -206,6 +207,7 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         );
     }
     let credentials = creds()?;
+    ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let mut guard =
         ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref()).await?;
     if guard
@@ -485,6 +487,29 @@ fn prompt_line(
 
 fn strip_line_ending(line: &str) -> &str {
     line.trim_end_matches(['\r', '\n'])
+}
+
+fn ensure_account_config_entry(
+    name: &str,
+    config_path: Option<&std::path::Path>,
+) -> TeleResult<()> {
+    let mut cfg = config::load_config(config_path)?;
+    if cfg.accounts.contains_key(name) {
+        return Ok(());
+    }
+    cfg.accounts
+        .entry(name.to_string())
+        .or_insert_with(config::AccountConfig::default);
+    let path = config_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config::app_data_dir().join("config.toml"));
+    config::write_config(&path, &cfg)
+        .map_err(|e| TeleError::Config(format!("failed to write config: {e:#}")))?;
+    log_line(
+        "info",
+        &format!("account {} registered in {}", name, path.display()),
+    );
+    Ok(())
 }
 
 pub use crate::error::invocation_error as tele_invocation;
@@ -936,6 +961,33 @@ mod tests {
         assert_eq!(err.raw_os_error(), Some(32), "sharing violation: {err:?}");
         drop(session);
         std::fs::remove_file(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_account_config_entry_creates_missing_account() {
+        let dir = std::env::temp_dir().join(format!("telecli-login-ensure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "parallel_max = 2\n").unwrap();
+        ensure_account_config_entry("newuser", Some(&path)).unwrap();
+        let cfg = config::load_config(Some(&path)).unwrap();
+        assert!(cfg.accounts.contains_key("newuser"));
+        assert_eq!(cfg.parallel_max, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_account_config_entry_noop_when_already_present() {
+        let dir = std::env::temp_dir().join(format!("telecli-login-exists-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "\n[accounts.work]\ntags = [\"a\"]\n").unwrap();
+        ensure_account_config_entry("work", Some(&path)).unwrap();
+        let cfg = config::load_config(Some(&path)).unwrap();
+        assert_eq!(cfg.accounts["work"].tags, vec!["a".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

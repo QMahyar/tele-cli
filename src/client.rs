@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::{TeleError, TeleResult};
+use crate::rate_limiter::RateLimiter;
 use grammers_client::client::{AutoSleep, ClientConfiguration, UpdatesConfiguration};
 use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::updates::UpdatesLike;
@@ -12,6 +13,7 @@ pub struct ClientGuard {
     pub client: Client,
     pub session: Arc<SqliteSession>,
     pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
+    pub rate_limiter: Arc<RateLimiter>,
     _session_lock: std::fs::File,
 }
 
@@ -22,6 +24,11 @@ impl ClientGuard {
         config_path: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
         let cfg = crate::config::load_config(config_path)?;
+        let acct = cfg.accounts.get(name);
+        let flood_threshold = acct
+            .and_then(|a| a.flood_sleep_threshold)
+            .unwrap_or(cfg.flood_sleep_threshold);
+        let rate_limiter = RateLimiter::new(acct.and_then(|a| a.rpc_per_minute));
         let proxy = crate::config::proxy_url_for(&cfg, name)?;
         let locked = crate::session::open_session(name).await?;
         let session = Arc::new(locked.session);
@@ -41,7 +48,7 @@ impl ClientGuard {
         tokio::spawn(runner.run());
         let conf = ClientConfiguration {
             retry_policy: Box::new(AutoSleep {
-                threshold: Duration::from_secs(cfg.flood_sleep_threshold),
+                threshold: Duration::from_secs(flood_threshold),
                 io_errors_as_flood_of: Some(Duration::from_secs(1)),
             }),
             ..Default::default()
@@ -51,6 +58,7 @@ impl ClientGuard {
             client,
             session,
             updates,
+            rate_limiter,
             _session_lock: locked.lock,
         })
     }

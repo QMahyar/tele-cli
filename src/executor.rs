@@ -1,7 +1,4 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
-
-use tokio::sync::Semaphore;
 
 use crate::error::{TeleError, TeleResult};
 use crate::output::{log_line, AccountOutcome};
@@ -34,18 +31,14 @@ pub async fn run_fanout(
             "no accounts selected: use --account <name> or --tag <tag>".to_string(),
         ));
     }
-    let parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
-    let semaphore = Arc::new(Semaphore::new(parallel));
+    let _parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
     let mut handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)> =
         Vec::new();
     for name in names {
-        let semaphore = Arc::clone(&semaphore);
         let future = handler(name.clone());
         handles.push((
             name.clone(),
-            tokio::task::spawn(async move {
-                run_one(name, semaphore.acquire_owned().await, future).await
-            }),
+            tokio::task::spawn(async move { run_one(name, future).await }),
         ));
     }
     let outcomes = collect_outcomes(handles).await;
@@ -79,10 +72,8 @@ fn failed_outcome(account: String, e: TeleError) -> AccountOutcome {
 
 async fn run_one(
     name: String,
-    permit: Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>,
     future: impl std::future::Future<Output = TeleResult<serde_json::Value>>,
 ) -> TeleResult<AccountOutcome> {
-    let _permit = permit.map_err(|e| TeleError::Other(e.to_string()))?;
     match future.await {
         Ok(data) => Ok(AccountOutcome {
             account: name,
@@ -118,7 +109,7 @@ async fn collect_outcomes(
 }
 
 fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
-    flag.unwrap_or(cfg_max).clamp(1, 3)
+    flag.unwrap_or(cfg_max).clamp(1, 32)
 }
 
 pub fn select_accounts(flags: &GlobalFlags) -> TeleResult<Vec<String>> {
@@ -256,6 +247,7 @@ mod tests {
                     crate::config::AccountConfig {
                         tags: tags.iter().map(|t| t.to_string()).collect(),
                         proxy: None,
+                        ..Default::default()
                     },
                 )
             })
@@ -343,28 +335,28 @@ mod tests {
     fn flag_overrides_config() {
         assert_eq!(effective_parallel(Some(1), 3), 1);
         assert_eq!(effective_parallel(Some(2), 1), 2);
-        assert_eq!(effective_parallel(Some(3), 1), 3);
+        assert_eq!(effective_parallel(Some(32), 1), 32);
     }
 
     #[test]
     fn config_is_fallback_default() {
         assert_eq!(effective_parallel(None, 1), 1);
         assert_eq!(effective_parallel(None, 2), 2);
-        assert_eq!(effective_parallel(None, 3), 3);
+        assert_eq!(effective_parallel(None, 32), 32);
     }
 
     #[test]
-    fn both_sides_clamped_to_one_to_three() {
+    fn both_sides_clamped_to_one_to_thirty_two() {
         assert_eq!(effective_parallel(Some(0), 3), 1);
-        assert_eq!(effective_parallel(Some(9), 1), 3);
+        assert_eq!(effective_parallel(Some(99), 1), 32);
         assert_eq!(effective_parallel(None, 0), 1);
-        assert_eq!(effective_parallel(None, 99), 3);
+        assert_eq!(effective_parallel(None, 999), 32);
     }
 
     #[test]
-    fn flag_above_three_clamps_to_three() {
-        assert_eq!(effective_parallel(Some(4), 1), 3);
-        assert_eq!(effective_parallel(Some(99), 3), 3);
+    fn flag_above_thirty_two_clamps_to_thirty_two() {
+        assert_eq!(effective_parallel(Some(33), 1), 32);
+        assert_eq!(effective_parallel(Some(99), 3), 32);
     }
 
     #[test]
@@ -544,22 +536,13 @@ mod tests {
         assert_eq!(outcome_error_line(&o), Some("a: ".to_string()));
     }
 
-    async fn permit() -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {
-        Ok(Arc::new(tokio::sync::Semaphore::new(1))
-            .acquire_owned()
-            .await
-            .unwrap())
-    }
-
     fn ok_data() -> TeleResult<serde_json::Value> {
         Ok(serde_json::json!({"sent": true}))
     }
 
     #[tokio::test]
     async fn successful_task_yields_ok_outcome() {
-        let outcome = run_one("a".to_string(), permit().await, async { ok_data() })
-            .await
-            .unwrap();
+        let outcome = run_one("a".to_string(), async { ok_data() }).await.unwrap();
         assert!(outcome.ok);
         assert_eq!(outcome.account, "a");
         assert_eq!(outcome.data, Some(serde_json::json!({"sent": true})));
@@ -570,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn erroring_task_yields_failed_outcome() {
         let handle = tokio::task::spawn(async {
-            run_one("a".to_string(), permit().await, async {
+            run_one("a".to_string(), async {
                 Err(TeleError::Auth("session invalid".to_string()))
             })
             .await
@@ -583,9 +566,8 @@ mod tests {
 
     #[tokio::test]
     async fn panicking_task_yields_failed_outcome_not_abort() {
-        let handle = tokio::task::spawn(async {
-            run_one("a".to_string(), permit().await, async { panic!("boom") }).await
-        });
+        let handle =
+            tokio::task::spawn(async { run_one("a".to_string(), async { panic!("boom") }).await });
         let outcome = collect_one("a".to_string(), handle).await;
         assert!(!outcome.ok);
         assert_eq!(outcome.exit_code, Some(EXIT_ALL_FAILED));
@@ -595,27 +577,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_semaphore_yields_error_outcome() {
-        let sem = Arc::new(tokio::sync::Semaphore::new(1));
-        sem.close();
-        let outcome = run_one("a".to_string(), sem.acquire_owned().await, async {
-            ok_data()
-        })
-        .await
-        .unwrap_err();
-        assert!(matches!(outcome, TeleError::Other(_)));
-    }
-
-    #[tokio::test]
     async fn outcomes_collected_in_account_order_regardless_of_completion() {
         let (release, wait) = tokio::sync::oneshot::channel::<()>();
         let slow = tokio::task::spawn(async move {
             let _ = wait.await;
-            run_one("b".to_string(), permit().await, async { ok_data() }).await
+            run_one("b".to_string(), async { ok_data() }).await
         });
-        let fast = tokio::task::spawn(async {
-            run_one("a".to_string(), permit().await, async { ok_data() }).await
-        });
+        let fast =
+            tokio::task::spawn(async { run_one("a".to_string(), async { ok_data() }).await });
         let _ = release.send(());
         let outcomes =
             collect_outcomes(vec![("b".to_string(), slow), ("a".to_string(), fast)]).await;
@@ -626,12 +595,10 @@ mod tests {
 
     #[tokio::test]
     async fn panicking_task_does_not_abort_other_accounts() {
-        let panicking = tokio::task::spawn(async {
-            run_one("a".to_string(), permit().await, async { panic!("boom") }).await
-        });
-        let healthy = tokio::task::spawn(async {
-            run_one("b".to_string(), permit().await, async { ok_data() }).await
-        });
+        let panicking =
+            tokio::task::spawn(async { run_one("a".to_string(), async { panic!("boom") }).await });
+        let healthy =
+            tokio::task::spawn(async { run_one("b".to_string(), async { ok_data() }).await });
         let outcomes = collect_outcomes(vec![
             ("a".to_string(), panicking),
             ("b".to_string(), healthy),
