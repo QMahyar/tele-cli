@@ -714,6 +714,15 @@ where
     Ok(events)
 }
 
+fn stats_dry_run_payload(chat: &str, broadcast: bool) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "broadcast": broadcast,
+        "would": format!("show stats of chat {chat}"),
+    })
+}
+
 async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -723,11 +732,7 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": target,
-                    "would": format!("show stats of chat {target}")
-                }));
+                return Ok(stats_dry_run_payload(&target, broadcast));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -1082,6 +1087,19 @@ mod tests {
     use grammers_session::storages::MemorySession;
     use grammers_session::types::PeerId;
     use std::sync::Arc;
+
+    #[test]
+    fn stats_dry_run_carries_argument_keys() {
+        let value = stats_dry_run_payload("@x", true);
+        assert_eq!(value["dry_run"], serde_json::json!(true));
+        assert_eq!(value["chat"], serde_json::json!("@x"));
+        assert_eq!(value["broadcast"], serde_json::json!(true));
+        assert_eq!(value["would"], serde_json::json!("show stats of chat @x"));
+        assert_eq!(
+            stats_dry_run_payload("@x", false)["broadcast"],
+            serde_json::json!(false)
+        );
+    }
 
     #[tokio::test]
     async fn cache_joined_chat_stores_channel_access_hash() {

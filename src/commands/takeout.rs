@@ -52,6 +52,19 @@ pub async fn run(cmd: TakeoutCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     }
 }
 
+fn start_dry_run_payload(contacts: bool, messages: bool, photos: bool) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "takeout": true,
+        "contacts": contacts,
+        "messages": messages,
+        "photos": photos,
+        "would": format!(
+            "start takeout session (contacts: {contacts}, messages: {messages}, photos: {photos})"
+        ),
+    })
+}
+
 async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -63,14 +76,7 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "takeout": true,
-                    "would": format!(
-                        "start takeout session (contacts: {}, messages: {}, photos: {})",
-                        contacts, messages, photos
-                    )
-                }));
+                return Ok(start_dry_run_payload(contacts, messages, photos));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -590,6 +596,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn start_dry_run_carries_argument_keys() {
+        let value = start_dry_run_payload(true, false, true);
+        assert_eq!(value["dry_run"], serde_json::json!(true));
+        assert_eq!(value["takeout"], serde_json::json!(true));
+        assert_eq!(value["contacts"], serde_json::json!(true));
+        assert_eq!(value["messages"], serde_json::json!(false));
+        assert_eq!(value["photos"], serde_json::json!(true));
+        assert_eq!(
+            value["would"],
+            serde_json::json!(
+                "start takeout session (contacts: true, messages: false, photos: true)"
+            )
+        );
     }
 
     #[test]
