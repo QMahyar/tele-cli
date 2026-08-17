@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::error::{TeleError, TeleResult};
+
 pub const APP_DIR_NAME: &str = "telecli";
 
 pub fn app_data_dir() -> PathBuf {
@@ -227,7 +229,7 @@ fn parse_api_id(env: &std::collections::HashMap<String, String>) -> anyhow::Resu
     Ok(api_id)
 }
 
-pub fn load_config(path: Option<&std::path::Path>) -> anyhow::Result<AppConfig> {
+pub fn load_config(path: Option<&std::path::Path>) -> TeleResult<AppConfig> {
     let cfg_path = match path {
         Some(p) => p.to_path_buf(),
         None => app_data_dir().join("config.toml"),
@@ -236,7 +238,7 @@ pub fn load_config(path: Option<&std::path::Path>) -> anyhow::Result<AppConfig> 
     if let Some(cfg) = CONFIG_CACHE.lock().unwrap().get(&(cfg_path.clone(), stamp)) {
         return Ok(cfg.clone());
     }
-    let cfg = read_config(&cfg_path)?;
+    let cfg = read_config(&cfg_path).map_err(|e| TeleError::Config(format!("{e:#}")))?;
     CONFIG_CACHE
         .lock()
         .unwrap()
@@ -454,6 +456,47 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(&path, "[proxy]\nhost = \"127.0.0.1\"\nport = \"abc\"\n").unwrap();
         assert!(load_config(Some(&path)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_config_is_config_kind_exiting_usage() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-config-badkind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        for bad in ["not [valid toml", "parallel_max = \"abc\"\n"] {
+            std::fs::write(&path, bad).unwrap();
+            let err = load_config(Some(&path)).unwrap_err();
+            assert!(matches!(err, TeleError::Config(_)), "{bad:?}: {err}");
+            assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+            assert_eq!(err.as_json()["type"], "ConfigError");
+        }
+        std::fs::write(&path, b"\x00\x01\x02garbage\xff\xfe").unwrap();
+        let err = load_config(Some(&path)).unwrap_err();
+        assert!(matches!(err, TeleError::Config(_)), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn directory_as_config_path_is_config_kind() {
+        let dir = std::env::temp_dir().join(format!("telecli-config-isdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = load_config(Some(&dir)).unwrap_err();
+        assert!(matches!(err, TeleError::Config(_)), "{err}");
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_config_file_is_defaults_not_error() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-config-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(load_config(Some(&dir.join("config.toml"))).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

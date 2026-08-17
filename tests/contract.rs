@@ -417,6 +417,206 @@ fn json_and_jsonl_are_rejected() {
 }
 
 #[test]
+fn error_envelope_on_stdout_for_usage_error() {
+    let (code, out, err) = run_isolated(
+        "errusage",
+        &["msg", "send", "--chat", "me", "--text", "hi", "--json"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["command"], serde_json::json!("msg send"));
+    assert_eq!(v["dry_run"], serde_json::json!(false));
+    assert_eq!(v["results"], serde_json::json!([]));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no accounts selected"),
+        "stdout: {out}"
+    );
+}
+
+#[test]
+fn error_envelope_on_stdout_for_config_error() {
+    let dir = isolated_appdir("errconfig");
+    write_config(&dir, "not [valid toml");
+    let (code, out, err) = run_in(&dir, &["account", "list", "--json"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["command"], serde_json::json!("account list"));
+    assert_eq!(v["results"], serde_json::json!([]));
+    assert_eq!(v["error"]["type"], serde_json::json!("ConfigError"));
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("failed to parse"),
+        "stdout: {out}"
+    );
+}
+
+#[test]
+fn malformed_config_flag_exits_usage_for_all_shapes() {
+    let dir = isolated_appdir("cfgshapes");
+    let cases: Vec<(&str, Vec<u8>, bool)> = vec![
+        ("toml", b"not [valid toml".to_vec(), false),
+        ("type", b"parallel_max = \"abc\"\n".to_vec(), false),
+        ("binary", b"\x00\x01\x02garbage\xff\xfe".to_vec(), false),
+        ("dir", Vec::new(), true),
+    ];
+    for (tag, content, is_dir) in cases {
+        let path = dir.join(format!("{tag}.toml"));
+        if is_dir {
+            std::fs::create_dir_all(&path).unwrap();
+        } else {
+            std::fs::write(&path, content).unwrap();
+        }
+        let (code, out, err) = run_in(
+            &dir,
+            &[
+                "--config",
+                path.to_str().unwrap(),
+                "account",
+                "list",
+                "--json",
+            ],
+        );
+        assert_eq!(code, 1, "case {tag}: stderr: {err}");
+        let v = parse_json(&out);
+        assert_eq!(v["ok"], serde_json::json!(false), "case {tag}: {out}");
+        assert_eq!(
+            v["error"]["type"],
+            serde_json::json!("ConfigError"),
+            "case {tag}: {out}"
+        );
+    }
+}
+
+#[test]
+fn error_envelope_respects_jsonl_mode() {
+    let (code, out, _err) = run_isolated(
+        "errjsonl",
+        &["msg", "send", "--chat", "me", "--text", "hi", "--jsonl"],
+    );
+    assert_eq!(code, 1);
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+}
+
+#[test]
+fn account_remove_reserved_name_json_emits_usage_envelope() {
+    let dir = isolated_appdir("rmalljson");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(&dir, &["account", "remove", "--name", "all", "--json"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["command"], serde_json::json!("account remove"));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("reserved"),
+        "stdout: {out}"
+    );
+    assert_eq!(v["results"], serde_json::json!([]));
+}
+
+#[test]
+fn listen_dry_run_jsonl_emits_row_per_account() {
+    let dir = isolated_appdir("lsdryjsonl");
+    write_session(&dir, "home");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "listen",
+            "--account",
+            "home",
+            "--account",
+            "work",
+            "--dry-run",
+            "--jsonl",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "stdout: {out}");
+    for (line, account) in lines.iter().zip(["home", "work"]) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line must be JSON: {e}: {line}"));
+        assert_eq!(v["event"], serde_json::json!("NewMessage"));
+        assert_eq!(v["account"], serde_json::json!(account));
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert!(
+            v["would"].as_str().unwrap_or_default().contains("stream"),
+            "line: {line}"
+        );
+        assert!(
+            v["would"].as_str().unwrap_or_default().contains(account),
+            "line: {line}"
+        );
+    }
+}
+
+#[test]
+fn listen_dry_run_json_emits_row() {
+    let dir = isolated_appdir("lsdryjson");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &["listen", "--account", "work", "--dry-run", "--json"],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("stdout must be one row");
+    assert_eq!(v["event"], serde_json::json!("NewMessage"));
+    assert_eq!(v["account"], serde_json::json!("work"));
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+}
+
+#[test]
+fn listen_dry_run_jsonl_no_accounts_emits_error_envelope() {
+    let (code, out, _err) = run_isolated("lsdrynoacct", &["listen", "--dry-run", "--jsonl"]);
+    assert_eq!(code, 1);
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+}
+
+#[test]
+fn listen_dry_run_respects_configured_events() {
+    let dir = isolated_appdir("lsdryev");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "listen",
+            "--account",
+            "work",
+            "--events",
+            "MessageDeleted",
+            "--dry-run",
+            "--jsonl",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("stdout must be one row");
+    assert_eq!(v["event"], serde_json::json!("MessageDeleted"));
+    assert!(
+        v["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("MessageDeleted"),
+        "stdout: {out}"
+    );
+}
+
+#[test]
 fn msg_delete_requires_ids_unless_all() {
     let (code, _out, err) = run_isolated("delnone", &["msg", "delete", "--chat", "me"]);
     assert_eq!(code, 1);

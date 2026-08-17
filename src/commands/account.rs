@@ -166,6 +166,7 @@ async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     )
 }
 fn validate_login(args: &LoginArgs) -> TeleResult<()> {
+    session::validate_name(&args.name).map_err(TeleError::Usage)?;
     match args.method.as_str() {
         "qr" => {}
         "code" => {
@@ -329,6 +330,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     )
 }
 async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    session::validate_name(&args.name).map_err(TeleError::Usage)?;
     if flags.dry_run {
         log_line("info", "[dry-run] would remove account");
         let would = format!("remove account {} and its session", args.name);
@@ -769,6 +771,51 @@ mod tests {
         assert_eq!(code, 0);
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(text.contains("work"), "config: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_rejects_invalid_names_before_any_write() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-remove-badname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account remove", false, false, &dir.join("config.toml"));
+        for bad in ["all", ".", "..", "a/b", ""] {
+            let err = remove(
+                &RemoveArgs {
+                    name: bad.to_string(),
+                },
+                &flags,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+            assert_eq!(err.exit_code(), crate::error::EXIT_USAGE, "{bad:?}");
+        }
+        assert!(
+            !dir.join("config.toml").exists(),
+            "invalid names must not write config"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_dry_run_rejects_reserved_name() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-remove-drybad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account remove", false, true, &dir.join("config.toml"));
+        let err = remove(
+            &RemoveArgs {
+                name: "all".to_string(),
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -50,6 +50,11 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     if flags.dry_run {
         output::log_line("info", "[dry-run] would stream updates");
+        if flags.json || flags.jsonl {
+            for name in &names {
+                output::print_json_result(&dry_run_row(&events, name))?;
+            }
+        }
         return Ok(crate::error::EXIT_OK);
     }
     if !flags.json && !flags.jsonl {
@@ -459,6 +464,21 @@ fn poll_timeout(
     }
 }
 
+fn dry_run_row(events: &[String], account: &str) -> serde_json::Value {
+    let label = events.join(",");
+    let would = format!("stream {label} updates from account {account}");
+    event_row(
+        &label,
+        account,
+        None,
+        None,
+        Some(serde_json::json!({
+            "dry_run": true,
+            "would": would,
+        })),
+    )
+}
+
 fn event_row(
     event: &str,
     account: &str,
@@ -530,6 +550,34 @@ mod tests {
             "date": "2026-08-13T12:00:00+00:00",
             "text": "hello",
         })
+    }
+
+    #[test]
+    fn dry_run_row_mirrors_event_row_with_would() {
+        let row = dry_run_row(&["NewMessage".to_string()], "work");
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "NewMessage");
+        assert_eq!(obj["account"], "work");
+        assert_eq!(obj["dry_run"], serde_json::json!(true));
+        let would = obj["would"].as_str().unwrap();
+        assert!(would.contains("stream"), "would: {would}");
+        assert!(would.contains("NewMessage"), "would: {would}");
+        assert!(would.contains("work"), "would: {would}");
+    }
+
+    #[test]
+    fn dry_run_row_lists_all_configured_events() {
+        let row = dry_run_row(
+            &["NewMessage".to_string(), "MessageDeleted".to_string()],
+            "home",
+        );
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "NewMessage,MessageDeleted");
+        assert!(obj["would"]
+            .as_str()
+            .unwrap()
+            .contains("NewMessage,MessageDeleted"));
+        assert_eq!(obj["account"], "home");
     }
 
     #[test]

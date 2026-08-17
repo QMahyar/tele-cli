@@ -545,13 +545,16 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
                 }));
             }
             let dir = export_dir(&name);
-            read_takeout_state(&dir)?;
+            let takeout_id = read_takeout_state(&dir)?;
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             let result = guard
                 .client
-                .invoke(&tl::functions::account::FinishTakeoutSession { success: true })
+                .invoke(&tl::functions::InvokeWithTakeout {
+                    takeout_id,
+                    query: tl::functions::account::FinishTakeoutSession { success: true },
+                })
                 .await;
             match result {
                 Ok(success) => {

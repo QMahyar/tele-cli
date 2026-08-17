@@ -184,6 +184,11 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Ok(code) => code,
         Err(e) => {
             output::log_line("error", e.message());
+            if output::machine_mode(flags.json, flags.jsonl) {
+                let envelope = output::Envelope::failed(flags.dry_run, &flags.command, e.as_json());
+                let value = serde_json::to_value(&envelope).expect("envelope serializes");
+                let _ = output::print_json(&value);
+            }
             e.exit_code()
         }
     }

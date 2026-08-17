@@ -340,7 +340,7 @@ fn login_rejects_unsafe_name_without_writing_files() {
         .unwrap();
     let code = out.status.code().unwrap_or(-1);
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(code, 3);
+    assert_eq!(code, 1);
     assert!(err.contains("invalid account name"), "stderr: {err}");
     assert!(!dir.join("evil.session").exists());
     assert!(!dir.join("..").join("evil.session").exists());
@@ -351,8 +351,19 @@ fn remove_rejects_unsafe_name() {
     let dir = appdir("removebad");
     write_session(&dir, "work");
     let (code, _out, err) = run_in(&dir, &["account", "remove", "--name", "..\\evil"]);
-    assert_eq!(code, 3);
+    assert_eq!(code, 1);
     assert!(err.contains("invalid account name"), "stderr: {err}");
+    assert_eq!(list_sessions(&dir), vec!["work.session"]);
+}
+
+#[test]
+fn remove_rejects_reserved_name_all() {
+    let dir = appdir("removeall");
+    write_session(&dir, "work");
+    let (code, _out, err) = run_in(&dir, &["account", "remove", "--name", "all"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("invalid account name"), "stderr: {err}");
+    assert!(err.contains("reserved"), "stderr: {err}");
     assert_eq!(list_sessions(&dir), vec!["work.session"]);
 }
 
@@ -436,7 +447,7 @@ fn malformed_config_is_surfaced() {
             "--dry-run",
         ],
     );
-    assert_eq!(code, 3);
+    assert_eq!(code, 1);
     assert!(err.contains("failed to parse"), "stderr: {err}");
 }
 

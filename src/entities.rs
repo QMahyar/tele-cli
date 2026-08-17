@@ -60,6 +60,18 @@ pub async fn resolve_peer(
                 return client.resolve_peer(pref).await;
             }
             if let Some(pref) = checked_fallback_ref(id) {
+                if id > 0 {
+                    return match client.resolve_peer(pref).await {
+                        Ok(peer) => Ok(peer),
+                        Err(grammers_client::InvocationError::Dropped) => {
+                            let chat_pref = tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
+                                chat_id: raw,
+                            });
+                            client.resolve_peer(chat_pref).await
+                        }
+                        Err(e) => Err(e),
+                    };
+                }
                 return client.resolve_peer(pref).await;
             }
             Err(rpc_error(400, "INVALID_PEER_ID"))

@@ -4,9 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.1] - 2026-08-17
 
 ### Fixed
+- `--json` command failures are wrapped in the standard envelope (`ok: false` + additive `error` field) instead of a bare stderr line
+- config-load failures exit 1 on every command, not only `listen`
+- `account remove --name all` and `account login --name all` are rejected with a usage error (exit 1)
+- `listen --dry-run` emits one JSONL row per selected account
+- numeric chat ids of uncached basic groups resolve via a chat-kind retry (fixes `request error: dropped (cancelled)` on group commands from accounts without the group cached)
+- `takeout finish` wraps `FinishTakeoutSession` in `InvokeWithTakeout` (fixes `TAKEOUT_REQUIRED` and orphaned takeout sessions)
 - `msg forward --silent` no longer errors after a successful RPC (extracts ids from `updatesCombined`; bounds-safe chunk indexing)
 - `msg delete` reports partial deletions honestly (`deleted < requested` exits 2)
 - `msg send`/`msg edit` reject empty or whitespace-only `--text` with a usage error (exit 1) before connect

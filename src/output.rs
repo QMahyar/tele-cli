@@ -6,6 +6,8 @@ pub struct Envelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     pub dry_run: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<serde_json::Value>,
     #[serde(rename = "results")]
     pub accounts: Vec<AccountOutcome>,
 }
@@ -26,7 +28,18 @@ impl Envelope {
             ok: accounts.iter().all(|a| a.ok),
             command: Some(command.to_string()),
             dry_run,
+            error: None,
             accounts,
+        }
+    }
+
+    pub fn failed(dry_run: bool, command: &str, error: serde_json::Value) -> Self {
+        Envelope {
+            ok: false,
+            command: Some(command.to_string()),
+            dry_run,
+            error: Some(error),
+            accounts: Vec::new(),
         }
     }
 }
@@ -149,6 +162,29 @@ mod tests {
     fn envelope_command_field() {
         let env = Envelope::new(vec![], false, "msg send");
         assert_eq!(env.command.as_deref(), Some("msg send"));
+    }
+
+    #[test]
+    fn failed_envelope_shape() {
+        let env = Envelope::failed(
+            true,
+            "account list",
+            serde_json::json!({"type": "ConfigError", "message": "boom"}),
+        );
+        let json = serde_json::to_value(&env).unwrap();
+        assert_eq!(json["ok"], serde_json::json!(false));
+        assert_eq!(json["command"], serde_json::json!("account list"));
+        assert_eq!(json["dry_run"], serde_json::json!(true));
+        assert_eq!(json["results"], serde_json::json!([]));
+        assert_eq!(json["error"]["type"], serde_json::json!("ConfigError"));
+        assert_eq!(json["error"]["message"], serde_json::json!("boom"));
+    }
+
+    #[test]
+    fn success_envelope_omits_error_key() {
+        let env = Envelope::new(vec![success_outcome("a")], false, "test");
+        let json = serde_json::to_value(&env).unwrap();
+        assert!(json.get("error").is_none(), "stdout: {json}");
     }
 
     #[test]

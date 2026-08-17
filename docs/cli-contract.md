@@ -65,6 +65,24 @@ Stdout is **one JSON object** (pretty=false, UTF-8). No logs on stdout.
 
 `seconds` is present only for flood-wait errors (FLOOD_WAIT / SLOWMODE_WAIT, RPC 420) and carries the wait duration in seconds.
 
+Pre-flight failures (usage validation, config load/parse, account selection)
+happen before any account runs. In `--json`/`--jsonl` mode they still emit one
+envelope on stdout: `ok: false`, empty `results`, and a top-level `error`
+object with the same fields as `results[].error`:
+
+```json
+{
+  "ok": false,
+  "command": "account list",
+  "dry_run": false,
+  "results": [],
+  "error": {
+    "type": "ConfigError",
+    "message": "failed to parse C:\\path\\config.toml: ..."
+  }
+}
+```
+
 Rules:
 
 - `data` is additive per command. Document new keys in this file when added.
@@ -108,6 +126,14 @@ the message-box variant, `pts` (common/channel box), `qts` (secondary box), or
 
 Default event type: `NewMessage` only. `--events` is an allowlist that gates all
 rows, including `Raw`. Unknown event names → exit 1 before connect.
+
+`tele listen --dry-run --json`/`--jsonl` emits one JSONL row per selected
+account describing the intended stream, following the `would` convention
+(`event` holds the configured event allowlist, comma-joined):
+
+```json
+{"event":"NewMessage","account":"work","dry_run":true,"would":"stream NewMessage updates from account work"}
+```
 
 ## `tele raw`
 
