@@ -67,6 +67,13 @@ clear), on `ubuntu-latest` and `windows-latest`. In a fresh checkout:
    `telecli-x.y.z-<os>-<arch>`), the checksum, and the `CHANGELOG.md` section.
 6. **crates.io only on explicit order** — this is a personal tool; publishing the
    crate is not part of the default path.
+7. **npm (on explicit order)** — publish the wrapper in `npm/` (package `@qmahyar/telecli`,
+   win32-x64 binary bundled in the tarball; do NOT download from GitHub releases in
+   install scripts — the repo is private and release assets 404 anonymously).
+   Bump the wrapper version when the bundled binary changes; publish from `npm/` with
+   `npm publish --access=public` (name `telecli` is blocked by registry similarity
+   rules; the scoped name is the only option). Verify with `npm install -g` +
+   `telecli --version`.
 
 Rollback: no production servers to revert — point users at the previous tag;
 `git tag` + GitHub Release can be deleted and re-cut if a release is broken.
