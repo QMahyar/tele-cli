@@ -487,6 +487,12 @@ fn render_qr(uri: &str) {
             eprintln!("{rendered}");
         }
         Err(_) => {
+            if !std::io::stderr().is_terminal() {
+                output::log_line(
+                    "warn",
+                    "printing one-time login token to a non-terminal stderr; treat the output as a secret",
+                );
+            }
             eprintln!("URI: {uri}");
         }
     }

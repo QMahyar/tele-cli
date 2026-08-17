@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Test: completions output, chat stats JSON shape, QR base64 encoding (net +9 tests).
 
 ### Fixed
+- Fixed: QR login fallback warns when the one-time token is printed to a non-terminal.
 - Fixed: `set_flags` logging tests serialize on the shared test lock (they mutate the process-global log level); the config clamp test writes distinct file contents so the config cache cannot serve a stale hit.
 - Fixed: help text says admin-log; out-of-range --parallel now warns.
 - usage errors now emit the JSON error envelope on stdout in machine mode (was: empty stdout, exit 1)
