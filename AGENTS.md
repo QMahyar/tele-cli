@@ -1,6 +1,6 @@
 # Tele-Cli — Agent Context
 
-> Load this file every session. For a slice, also load only the matching `docs/capabilities.md` rows plus `docs/ideas/tele-cli.md` sections you will touch.
+> Load this file every session. For a slice, also load only the matching `docs/capabilities.md` rows you will touch.
 
 ## Tech Stack
 
@@ -118,12 +118,10 @@ src/
 
 ## Pointers
 
-- Intent: `docs/ideas/tele-cli.md`
-- Spec: `docs/ideas/tele-cli.md`
 - Matrix: `docs/capabilities.md`
 - CLI contract: `docs/cli-contract.md`
 - Security: `docs/security.md`
 - Observability: `docs/observability.md`
 - Release: `docs/release.md`
-- ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 005 = release gate)
+- ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 007 = product scope v1; 005 = release gate)
 - Tasks: `tasks/todo.md` (live tracker)

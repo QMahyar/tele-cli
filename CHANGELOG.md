@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+- Docs: removed superseded Python/Telethon spec (`docs/ideas/tele-cli.md`); folded v1 scope and non-functional requirements into ADR-007.
+- Docs: fixed dangling references to deleted spec in AGENTS.md.
+- Docs: replaced hardcoded test count in README with version-agnostic wording.
+
 ## [0.1.2] - 2026-08-17
 
 ### Added
