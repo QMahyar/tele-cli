@@ -320,7 +320,7 @@ fn check_upload_size(bytes: u64) -> TeleResult<()> {
 pub fn validate_upload_path(path: &str) -> TeleResult<()> {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     validate_filename(base)?;
-    let app_dir = crate::config::app_data_dir();
+    let app_dir = canonical_guard_path(&crate::config::app_data_dir().to_string_lossy());
     let canonical = canonical_guard_path(path);
     if path_under_guard(&canonical, &app_dir) {
         return Err(TeleError::Usage(
@@ -346,8 +346,8 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
 }
 
 fn validate_download_dir(dir: &str) -> TeleResult<()> {
-    let app_dir = crate::config::app_data_dir();
-    let sessions_dir = crate::session::session_dir();
+    let app_dir = canonical_guard_path(&crate::config::app_data_dir().to_string_lossy());
+    let sessions_dir = canonical_guard_path(&crate::session::session_dir().to_string_lossy());
     let canonical = canonical_guard_path(dir);
     if path_under_guard(&canonical, &app_dir) || path_under_guard(&canonical, &sessions_dir) {
         return Err(TeleError::Usage(

@@ -156,7 +156,13 @@ mod tests {
         let deep = base.join("a").join("b").join("c.txt");
         let resolved = resolve_for_guard(&deep);
         let resolved_lower = resolved.to_string_lossy().to_lowercase();
-        let base_lower = base.to_string_lossy().to_lowercase();
+        // The existing prefix is canonicalized (may use 8.3 short names on
+        // Windows), so the expectation is the canonical base, not the raw one.
+        let canon_base = std::fs::canonicalize(&base).unwrap();
+        let canon_base = canon_base.to_string_lossy().to_string();
+        #[cfg(windows)]
+        let canon_base = canon_base.trim_start_matches(r"\\?\");
+        let base_lower = canon_base.to_lowercase();
         assert!(resolved_lower.starts_with(&base_lower), "{resolved:?}");
         assert!(
             resolved_lower.ends_with(r"a\b\c.txt") || resolved_lower.ends_with("a/b/c.txt"),
