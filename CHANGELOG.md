@@ -7,11 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Fixed
+- Fixed: `set_flags` logging tests serialize on the shared test lock (they mutate the process-global log level); the config clamp test writes distinct file contents so the config cache cannot serve a stale hit.
+- Fixed: help text says admin-log; out-of-range --parallel now warns.
 - usage errors now emit the JSON error envelope on stdout in machine mode (was: empty stdout, exit 1)
 - `msg forward` now exits 2 (partial) when some or all chunks fail; was exit 0.
 - Fixed: account remove refuses to delete a session file in use by another process.
 - remove no longer errors when the session file was never created.
 - Fixed: npm wrapper error message and README reference the correct scoped package.
+- Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
 
 ## [0.1.1] - 2026-08-17
 

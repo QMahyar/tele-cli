@@ -80,6 +80,7 @@ mod tests {
 
     #[test]
     fn min_line_level_default_is_info() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
         let level = min_line_level();
         assert_eq!(
             level, LEVEL_INFO,
@@ -89,6 +90,7 @@ mod tests {
 
     #[test]
     fn set_flags_quiet_sets_error_level() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
         // Save original
         let original = MIN_LINE.load(Ordering::Relaxed);
         let original_max = log::max_level();
@@ -104,6 +106,7 @@ mod tests {
 
     #[test]
     fn set_flags_verbose_1_sets_info_level() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
         let original = MIN_LINE.load(Ordering::Relaxed);
         let original_max = log::max_level();
 
@@ -117,6 +120,7 @@ mod tests {
 
     #[test]
     fn set_flags_verbose_2_sets_debug_level() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
         let original = MIN_LINE.load(Ordering::Relaxed);
         let original_max = log::max_level();
 
@@ -130,6 +134,7 @@ mod tests {
 
     #[test]
     fn set_flags_verbose_0_no_quiet_does_not_change_level() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
         let original = MIN_LINE.load(Ordering::Relaxed);
         let original_max = log::max_level();
 
@@ -144,6 +149,7 @@ mod tests {
 
     #[test]
     fn set_flags_quiet_overrides_verbose() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
         let original = MIN_LINE.load(Ordering::Relaxed);
         let original_max = log::max_level();
 

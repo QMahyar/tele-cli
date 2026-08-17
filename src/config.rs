@@ -507,7 +507,7 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(&path, "parallel_max = 9\n").unwrap();
         assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 3);
-        std::fs::write(&path, "parallel_max = 0\n").unwrap();
+        std::fs::write(&path, "parallel_max = 0 # clamp to minimum\n").unwrap();
         assert_eq!(load_config(Some(&path)).unwrap().parallel_max, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
