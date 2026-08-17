@@ -18,8 +18,7 @@
 
 ## Install
 
-Unpublished for now — no npm package, no GitHub Releases, no crates.io upload
-until the release gate is met ([ADR-005](docs/decisions/005-unpublished-until-want-done.md)).
+Install: `cargo build --release` (binary `target/release/telecli.exe`); an npm wrapper `@qmahyar/telecli` (win32-x64) is published per `docs/release.md` when you say so. Release gate (ADR-005) is met.
 Build from source (requires [Rust stable](https://www.rust-lang.org/)):
 
 ```bash
@@ -182,7 +181,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-528 tests across unit, contract, and selection suites. All run offline by default.
+578 tests across unit, contract, and selection suites. All run offline by default.
 
 ---
 

@@ -13,7 +13,7 @@ Open release-readiness work:
 
 ## Versioning
 
-SemVer. Version is **derived from git tags**, not hand-edited in files.
+SemVer. Version is derived from git tags; `Cargo.toml` `version` is bumped in the release commit to match the tag (`0.1.2` for `v0.1.2`).
 
 - `MAJOR` — exit-code meaning changes, `--json` keys removed/renamed, removed
   commands

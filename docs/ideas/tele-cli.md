@@ -1,7 +1,7 @@
 # Tele-Cli Specification
 
 **Version:** 1.0  
-**Status:** Spec (locked)  
+**Status:** superseded — see `docs/capabilities.md` (matrix) and ADR-006 (Rust/grammers pivot)  
 **Date:** 2026-08-13
 
 ## 1. Overview
@@ -34,6 +34,8 @@ The hard product is a **session kernel** (named accounts, persistent `.session` 
 ## 3. Key Features (Capability Matrix)
 
 The matrix is the single source of truth. Every slice must update or mark rows.
+
+> Note: rows below are pre-pivot; the live matrix is docs/capabilities.md.
 
 ### Auth & Login
 | Capability | Telethon Path | CLI Command | Status |
@@ -90,7 +92,9 @@ The matrix is the single source of truth. Every slice must update or mark rows.
 - **Secrets:** `TELE_API_ID` / `TELE_API_HASH` in `.env` (app-level).
 - **Security:** 2FA, QR login supported. `log_out()` deletes session.
 - **Concurrency:** Sequential default; `--parallel N` (N≤3).
-- **Proxy:** None by default; global + per-account override (SOCKS and MTProto).
+> Note: rows below are pre-pivot; the live matrix is docs/capabilities.md.
+
+- **Proxy:** None by default; global + per-account override (socks5-only).
 - **Output:** Human tables on stdout; JSONL on stdout for agents; logs on stderr; `-q` / `-v`.
 - **Testing:** `--dry-run` on all commands; unit tests for kernel.
 - **Upstream:** Telethon pinned (`>=1.44`) with manual `uv lock --upgrade`.

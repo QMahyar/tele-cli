@@ -29,7 +29,7 @@ No Prometheus in v1. Two freeform stderr channels are enough for a local CLI.
   `TELE_LOG` and of the `-v` flags.
 - Shape: freeform `[level] message`. There are **no structured events and no
   `run_id`**; correlate by reading the whole stderr stream.
-- Never: api_hash, session, phone, password, full `--args` for raw at INFO.
+- Never: api_hash, session, phone, password, QR one-time login token, full `--args` for raw at INFO.
 
 ## What actually gets logged
 

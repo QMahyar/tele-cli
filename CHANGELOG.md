@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Docs: matrix, contract, and README synced with implementation (test counts, completions, listen JSONL).
 - Docs: Windows permission model documented (relies on user-profile ACLs).
 - Test: completions output, chat stats JSON shape, QR base64 encoding (net +9 tests).
 

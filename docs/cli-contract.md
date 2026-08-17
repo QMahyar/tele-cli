@@ -112,7 +112,9 @@ Mutually exclusive with `--all`.
 
 ## Listen / stream
 
-`tele listen --json` writes **JSON Lines** on stdout, one event per line:
+`tele listen` always streams **JSON Lines** on stdout, one event per line; `--json`
+is accepted as a no-op for symmetry. Stdout writes are backpressured — `listen`
+pauses on a slow reader instead of dropping events:
 
 ```json
 {"event":"NewMessage","account":"work","id":123,"chat_id":456,"text":"...","date":"2026-08-13T12:00:00+00:00"}
@@ -154,6 +156,15 @@ the message `raw method not in registry; add an arm in src/commands/raw.rs`.
 `--args` is a JSON object of constructor kwargs. Result goes in `results[].data`.
 Destructive raw calls still require `--account` and honor `--dry-run` (dry-run does
 not invoke).
+
+## `tele completions`
+
+```
+tele completions bash|zsh|fish|powershell
+```
+
+Prints shell completion script for the `tele` binary to **stdout**, exits 0.
+No account selection or network involved.
 
 ## Stability
 

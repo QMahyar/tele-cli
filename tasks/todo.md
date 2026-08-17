@@ -103,7 +103,7 @@ Shipped (all clippy-clean, 353 tests green, one logical commit each):
 - [x] REL-05 `classify_target` extraction + exhaustive tests (phone/me/link/numeric/username/invalid)
 - [x] REL-07 machine-API JSON shape locked by tests; `media_name` panic-proof on empty documents
 - [x] REL-08 `run_fanout` panic containment + ordering tests via `run_one`/`collect_one` seam
-- [x] ARCH-07 per-account `UsageError` now exits 1 (cli-contract.md:28), keyed on JSON `type` so `ConfigError` keeps exit 3
+- [x] ARCH-07 per-account `UsageError` now exits 1 (cli-contract.md:28), keyed on JSON `type` so `ConfigError` exits 1 (EXIT_USAGE)
 
 Still open (not in scope): M7 `topic create --emoji` (wrong ID type — needs `messages.searchCustomEmoji` or re-document), listen auto_reconnect config flag, SEC-01/02/03/05/06/09, OBS-01/02 docs drift, INT-07/08/09/10/12, REL-06/13, README/RAW-01 doc examples, MCP (Phase 6, ask first).
 
@@ -127,7 +127,7 @@ Report written against pre-merge code; HEAD `a702832` already merged 21 fix plan
 - 15.H2 privacy human table (fixed); 14.1 `--folder 0` / 14.2 dialogFolder rows (fixed `unwrap_or(0)` + skip)
 - 2.2 listen forever-stall — mostly fixed (`catch_up: true`, timeout, backoff); narrow edge (GetState fail + no saved state) still possible, T14
 
-### RESOLVED 2026-08-16 (all T1–T18 shipped on `main`, 528 tests green, clippy+fmt clean)
+### RESOLVED 2026-08-16 (all T1–T18 shipped on `main`, 578 tests green, clippy+fmt clean)
 
 Final review of merged `main` (code-reviewer, `ce5c282..HEAD`, +1353/−77): no CRITICAL findings. Latent notes (no current impact): W1 `write_config` preserves root-level fields from the existing file (accounts-only contract — fine today), W2 markdown boundary heuristic could skip a bare mention after `)`, N1 `MAX_RECONNECT_ATTEMPTS=5` allows 6 failures before give-up (behavior tested/locked), N2 `\\?\UNC\` extended-length UNC not stripped (unreachable today), N4 basic-group participants "unavailable" uses exit 3 rather than 1, N5 give-up message prints post-increment count. All documented in the review report; revisit if those areas change.
 
