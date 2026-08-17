@@ -214,6 +214,9 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
         if let Some(text) = &args.text {
             validate_markdown(text)?;
         }
+        if let Some(caption) = &args.caption {
+            validate_markdown(caption)?;
+        }
     }
     Ok(())
 }
@@ -433,7 +436,10 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         _ => TeleError::Other(e.to_string()),
                     }
                 })?;
-                let base = InputMessage::new().text(caption.unwrap_or_default());
+                let base = match format.as_str() {
+                    "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
+                    _ => InputMessage::new().text(caption.unwrap_or_default()),
+                };
                 if looks_like_image(path) {
                     base.photo(uploaded)
                 } else {
