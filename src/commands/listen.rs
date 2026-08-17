@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use crate::client::{self, ClientGuard};
 use crate::error::{TeleError, TeleResult};
 use crate::executor::GlobalFlags;
@@ -228,13 +230,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     continue;
                                 }
                                 let row = crate::serialize::message_to_json(m)?;
-                                output::print_json_result(&event_row(
+                                emit_row(event_row(
                                     "NewMessage",
                                     &name,
                                     peer.and_then(|p| p.bare_id()),
                                     None,
                                     Some(row),
-                                ))?;
+                                ))
+                                .await?;
                             }
                             Update::MessageEdited(m) => {
                                 if !events.iter().any(|e| e == "MessageEdited") {
@@ -248,13 +251,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     continue;
                                 }
                                 let row = crate::serialize::message_to_json(m)?;
-                                output::print_json_result(&event_row(
+                                emit_row(event_row(
                                     "MessageEdited",
                                     &name,
                                     peer.and_then(|p| p.bare_id()),
                                     None,
                                     Some(row),
-                                ))?;
+                                ))
+                                .await?;
                             }
                             Update::MessageDeleted(d) => {
                                 if !events.iter().any(|e| e == "MessageDeleted") {
@@ -265,13 +269,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         continue;
                                     }
                                 }
-                                output::print_json_result(&event_row(
+                                emit_row(event_row(
                                     "MessageDeleted",
                                     &name,
                                     d.channel_id(),
                                     Some(d.messages()),
                                     None,
-                                ))?;
+                                ))
+                                .await?;
                             }
                             _ => {
                                 if !events.iter().any(|e| e == "Raw") {
@@ -280,11 +285,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !raw_should_stream(update_peer(update.raw()), resolved) {
                                     continue;
                                 }
-                                output::print_json_result(&raw_row(
-                                    &name,
-                                    update.raw(),
-                                    update.state(),
-                                ))?;
+                                emit_row(raw_row(&name, update.raw(), update.state())).await?;
                             }
                         }
                     }
@@ -311,6 +312,18 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         output::log_line("info", "listen timeout reached");
     }
     Ok(aggregate_exit(ok_count, &failed))
+}
+
+async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
+    let line = serde_json::to_string(&value)?;
+    tokio::task::spawn_blocking(move || {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{line}")?;
+        out.flush()
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))??;
+    Ok(())
 }
 
 fn aggregate_exit(ok_count: usize, failed: &[i32]) -> i32 {

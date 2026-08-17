@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Fixed: account remove refuses to delete a session file in use by another process.
 - remove no longer errors when the session file was never created.
 - Fixed: npm wrapper error message and README reference the correct scoped package.
+- Fixed: takeout export writes one batch per page; listen stdout writes are backpressured.
 - Fixed: uploads of config.toml are refused; uploads over 2 GiB are refused; download dirs re-checked after creation (junction TOCTOU).
 
 ## [0.1.1] - 2026-08-17

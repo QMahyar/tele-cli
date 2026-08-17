@@ -363,20 +363,25 @@ async fn run_export(
                     break;
                 }
                 let m_peers = build_peers(&guard.client, m_users, m_chats);
+                let mut lines = Vec::new();
                 for raw in &msgs {
                     if count >= limit {
                         break;
                     }
                     let row = raw_message_to_json(raw, &m_peers, Some(chat_id))?;
-                    let line = serde_json::to_string(&row)?;
+                    lines.push(serde_json::to_string(&row)?);
+                    count += 1;
+                }
+                if !lines.is_empty() {
                     messages_file = tokio::task::spawn_blocking(move || {
                         let mut file = messages_file;
-                        writeln!(file, "{line}")?;
+                        for line in &lines {
+                            writeln!(file, "{line}")?;
+                        }
                         Ok::<_, std::io::Error>(file)
                     })
                     .await
                     .map_err(|e| TeleError::Other(e.to_string()))??;
-                    count += 1;
                 }
                 if m_last_chunk {
                     break;
