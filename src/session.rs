@@ -48,6 +48,21 @@ pub fn list_session_names() -> Vec<String> {
 
 pub fn remove_session(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path(name))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(anyhow::anyhow!(
+                "session {name} is in use by another process"
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    }
+    drop(lock);
     for path in [session_path(name), lock_path(name)] {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
@@ -162,6 +177,24 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("TELE_APP_DIR", &dir);
         let held = open_session("work").await.unwrap();
+        drop(held);
+        remove_session("work").unwrap();
+        assert!(!session_path("work").exists());
+        assert!(!lock_path("work").exists());
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_session_rejects_in_use_session() {
+        let _guard = lock_env().await;
+        let dir = test_dir("session-lock-remove-held");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let held = open_session("work").await.unwrap();
+        let err = remove_session("work").unwrap_err();
+        assert!(err.to_string().contains("is in use by another process"));
         drop(held);
         remove_session("work").unwrap();
         assert!(!session_path("work").exists());
