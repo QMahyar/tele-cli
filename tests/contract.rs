@@ -1147,14 +1147,21 @@ fn vendored_tl_api_matches_grammers_tl_types() {
         }
     };
     let vendored = PathBuf::from(MANIFEST_DIR).join("tl/api.tl");
+    let upstream_path = upstream.clone();
     let upstream_bytes = std::fs::read(&upstream).unwrap();
     let vendored_bytes = std::fs::read(&vendored).unwrap();
-    if upstream_bytes != vendored_bytes {
+    // Compare schema bytes, not line endings: Windows autocrlf may materialize
+    // CRLF in the working tree even though the blob is LF (see .gitattributes).
+    let normalize = |b: Vec<u8>| -> Vec<u8> {
+        let s = String::from_utf8_lossy(&b);
+        s.replace("\r\n", "\n").into_bytes()
+    };
+    if normalize(upstream_bytes) != normalize(vendored_bytes) {
         panic!(
             "vendored tl/api.tl is stale (differs from grammers-tl-types {version} at {}); \
              re-vendor: cp {} tl/api.tl",
-            upstream.display(),
-            upstream.display()
+            upstream_path.display(),
+            upstream_path.display()
         );
     }
 }

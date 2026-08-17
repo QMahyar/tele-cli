@@ -1,0 +1,4 @@
+# The vendored TL schema must stay byte-stable across platforms: the drift
+# guard (tests/contract.rs) compares it against grammers-tl-types' api.tl,
+# which is LF. Force LF so autocrlf never rewrites the comparison target.
+tl/api.tl text eol=lf
