@@ -9,7 +9,7 @@ Open release-readiness work:
 
 - CI exists (`ci` workflow in `.github/workflows/ci.yml`); plan below is the contract it implements.
 - Trunk is `main` (renamed from `master`); the `ci` workflow triggers on both until stale refs clear.
-- `v0.1.0` tag exists; `CHANGELOG.md` has the dated `[0.1.0] - 2026-08-13` section.
+- `v0.1.1` tag exists; `CHANGELOG.md` has the dated `[0.1.1] - 2026-08-17` section (and the `[0.1.0] - 2026-08-13` initial section).
 
 ## Versioning
 
