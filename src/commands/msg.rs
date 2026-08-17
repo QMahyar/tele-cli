@@ -901,7 +901,17 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_get(args: &GetArgs) -> TeleResult<()> {
+    if args.last && args.offset_id.is_some() {
+        return Err(TeleError::Usage(
+            "--last and --offset-id are mutually exclusive".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_get(&args)?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
@@ -1834,6 +1844,31 @@ mod tests {
         let mut with_ids = args;
         with_ids.ids = vec![3];
         assert!(validate_forward(&with_ids).is_ok());
+    }
+
+    #[test]
+    fn get_rejects_last_with_offset_id() {
+        let args = GetArgs {
+            chat: "me".to_string(),
+            limit: 10,
+            offset_id: Some(5),
+            last: true,
+        };
+        assert!(matches!(validate_get(&args), Err(TeleError::Usage(_))));
+        let no_offset = GetArgs {
+            chat: "me".to_string(),
+            limit: 10,
+            offset_id: None,
+            last: true,
+        };
+        assert!(validate_get(&no_offset).is_ok());
+        let no_last = GetArgs {
+            chat: "me".to_string(),
+            limit: 10,
+            offset_id: Some(5),
+            last: false,
+        };
+        assert!(validate_get(&no_last).is_ok());
     }
 
     #[test]
