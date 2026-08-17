@@ -55,25 +55,62 @@ clear), on `ubuntu-latest` and `windows-latest`. In a fresh checkout:
 4. No Telegram secrets in CI: never load `%APPDATA%/telecli/.env`, never create
    sessions. Live checks stay manual on a developer machine with real sessions.
 
-## Publish (when you explicitly say so)
+## Release workflow (automated)
+
+The `release` workflow (`.github/workflows/release.yml`) triggers on `v*` tag
+pushes and automates building, GitHub Release creation, and (optionally) npm
+publish.
+
+### What CI does on tag push
+
+1. **Build job** — matrix of 4 targets (windows x64, linux x64, macOS arm64,
+   macOS x64 cross-compiled). Produces:
+   - `telecli-<ver>-<os>-<arch>[.exe]` binary per target
+   - Matching `.sha256` checksum file per binary
+2. **Release job** — downloads all build artifacts, extracts the matching section
+   from `CHANGELOG.md` as the release body, and creates/updates the GitHub Release
+   via `softprops/action-gh-release@v2`.
+3. **npm job** (conditional) — guarded by the `NPM_TOKEN` secret. Downloads the
+   win-x64 binary, copies it into `npm/bin/telecli.exe`, bumps `npm/package.json`
+   version to match the tag, and runs `npm publish --access=public` from the `npm/`
+   directory. The npm tarball bundles the binary directly; it does **not** download
+   release assets at install time (the repo is private and release assets 404
+   anonymously).
+
+### What stays manual
+
+Before pushing the tag, **you** must:
+
+1. **Version bump commit** — update `Cargo.toml` `version` to match the intended
+   tag, add the `CHANGELOG.md` entry for the new version, and commit
+   (`chore:` or `feat:`/`fix:` prefix as appropriate).
+2. **Annotated tag push** — `git tag -a -m "vX.Y.Z" vX.Y.Z && git push origin
+   vX.Y.Z`. This triggers the release workflow.
+3. **NPM_TOKEN secret** — must be configured in the repository's Settings → Secrets
+   and variables → Actions. Without it the npm job is skipped silently; GitHub
+   Releases and binaries are still published.
+4. **Verify** — check the GitHub Release page and (if npm was published) install
+   with `npm install -g @qmahyar/telecli` and run `telecli --version`.
+
+### crates.io — explicit order only
+
+Publishing the crate to crates.io is **not** part of the automated pipeline and
+must only happen on explicit instruction. This is a personal tool; crate
+publication is a separate decision.
+
+## Publish checklist (manual summary)
 
 1. Matrix gate: no remaining `want` rows (currently met) — or you explicitly waive
    named ids.
 2. `CHANGELOG.md` has a version section for the tag; `Cargo.toml` version matches.
 3. Tag `vX.Y.Z` **annotated** (`git tag -a -m "vX.Y.Z"`) and push tags.
-4. Build: `cargo build --release` (LTO enabled in `Cargo.toml`); smoke-test the
-   binary's `--help` and a `--dry-run`.
-5. **GitHub Release** from the tag; attach the release binary (e.g.
-   `telecli-x.y.z-<os>-<arch>`), the checksum, and the `CHANGELOG.md` section.
-6. **crates.io only on explicit order** — this is a personal tool; publishing the
-   crate is not part of the default path.
-7. **npm (on explicit order)** — publish the wrapper in `npm/` (package `@qmahyar/telecli`,
-   win32-x64 binary bundled in the tarball; do NOT download from GitHub releases in
-   install scripts — the repo is private and release assets 404 anonymously).
-   Bump the wrapper version when the bundled binary changes; publish from `npm/` with
-   `npm publish --access=public` (name `telecli` is blocked by registry similarity
-   rules; the scoped name is the only option). Verify with `npm install -g` +
-   `telecli --version`.
+4. CI builds, creates GitHub Release, and (if NPM_TOKEN is set) publishes npm.
+5. Smoke-test: verify binary `--help` and `--dry-run` from the release assets or
+   from a local build.
+6. **crates.io only on explicit order** (see above).
+7. **npm** — publish is automated by CI when NPM_TOKEN is set. If you need to
+   publish manually: `cd npm && npm version <ver> --no-git-tag-version && npm
+   publish --access=public`.
 
 Rollback: no production servers to revert — point users at the previous tag;
 `git tag` + GitHub Release can be deleted and re-cut if a release is broken.
