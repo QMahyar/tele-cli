@@ -1,4 +1,7 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use tokio::sync::Semaphore;
 
 use crate::error::{TeleError, TeleResult};
 use crate::output::{log_line, AccountOutcome};
@@ -31,14 +34,18 @@ pub async fn run_fanout(
             "no accounts selected: use --account <name> or --tag <tag>".to_string(),
         ));
     }
-    let _parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
+    let parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
+    let semaphore = Arc::new(Semaphore::new(parallel));
     let mut handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)> =
         Vec::new();
     for name in names {
+        let semaphore = Arc::clone(&semaphore);
         let future = handler(name.clone());
         handles.push((
             name.clone(),
-            tokio::task::spawn(async move { run_one(name, future).await }),
+            tokio::task::spawn(async move {
+                run_one(name, semaphore.acquire_owned().await, future).await
+            }),
         ));
     }
     let outcomes = collect_outcomes(handles).await;
@@ -72,8 +79,10 @@ fn failed_outcome(account: String, e: TeleError) -> AccountOutcome {
 
 async fn run_one(
     name: String,
+    permit: Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>,
     future: impl std::future::Future<Output = TeleResult<serde_json::Value>>,
 ) -> TeleResult<AccountOutcome> {
+    let _permit = permit.map_err(|e| TeleError::Other(e.to_string()))?;
     match future.await {
         Ok(data) => Ok(AccountOutcome {
             account: name,
@@ -536,13 +545,22 @@ mod tests {
         assert_eq!(outcome_error_line(&o), Some("a: ".to_string()));
     }
 
+    async fn permit() -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        Ok(Arc::new(tokio::sync::Semaphore::new(1))
+            .acquire_owned()
+            .await
+            .unwrap())
+    }
+
     fn ok_data() -> TeleResult<serde_json::Value> {
         Ok(serde_json::json!({"sent": true}))
     }
 
     #[tokio::test]
     async fn successful_task_yields_ok_outcome() {
-        let outcome = run_one("a".to_string(), async { ok_data() }).await.unwrap();
+        let outcome = run_one("a".to_string(), permit().await, async { ok_data() })
+            .await
+            .unwrap();
         assert!(outcome.ok);
         assert_eq!(outcome.account, "a");
         assert_eq!(outcome.data, Some(serde_json::json!({"sent": true})));
@@ -553,7 +571,7 @@ mod tests {
     #[tokio::test]
     async fn erroring_task_yields_failed_outcome() {
         let handle = tokio::task::spawn(async {
-            run_one("a".to_string(), async {
+            run_one("a".to_string(), permit().await, async {
                 Err(TeleError::Auth("session invalid".to_string()))
             })
             .await
@@ -566,8 +584,9 @@ mod tests {
 
     #[tokio::test]
     async fn panicking_task_yields_failed_outcome_not_abort() {
-        let handle =
-            tokio::task::spawn(async { run_one("a".to_string(), async { panic!("boom") }).await });
+        let handle = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async { panic!("boom") }).await
+        });
         let outcome = collect_one("a".to_string(), handle).await;
         assert!(!outcome.ok);
         assert_eq!(outcome.exit_code, Some(EXIT_ALL_FAILED));
@@ -577,14 +596,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn closed_semaphore_yields_error_outcome() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        sem.close();
+        let outcome = run_one("a".to_string(), sem.acquire_owned().await, async {
+            ok_data()
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(outcome, TeleError::Other(_)));
+    }
+
+    #[tokio::test]
     async fn outcomes_collected_in_account_order_regardless_of_completion() {
         let (release, wait) = tokio::sync::oneshot::channel::<()>();
         let slow = tokio::task::spawn(async move {
             let _ = wait.await;
-            run_one("b".to_string(), async { ok_data() }).await
+            run_one("b".to_string(), permit().await, async { ok_data() }).await
         });
-        let fast =
-            tokio::task::spawn(async { run_one("a".to_string(), async { ok_data() }).await });
+        let fast = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async { ok_data() }).await
+        });
         let _ = release.send(());
         let outcomes =
             collect_outcomes(vec![("b".to_string(), slow), ("a".to_string(), fast)]).await;
@@ -595,10 +627,12 @@ mod tests {
 
     #[tokio::test]
     async fn panicking_task_does_not_abort_other_accounts() {
-        let panicking =
-            tokio::task::spawn(async { run_one("a".to_string(), async { panic!("boom") }).await });
-        let healthy =
-            tokio::task::spawn(async { run_one("b".to_string(), async { ok_data() }).await });
+        let panicking = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async { panic!("boom") }).await
+        });
+        let healthy = tokio::task::spawn(async {
+            run_one("b".to_string(), permit().await, async { ok_data() }).await
+        });
         let outcomes = collect_outcomes(vec![
             ("a".to_string(), panicking),
             ("b".to_string(), healthy),
@@ -609,5 +643,39 @@ mod tests {
         assert!(!outcomes[0].ok);
         assert_eq!(outcomes[1].account, "b");
         assert!(outcomes[1].ok);
+    }
+
+    #[tokio::test]
+    async fn default_parallel_1_runs_tasks_sequentially() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let running = Arc::new(AtomicUsize::new(0));
+        let cfg = crate::config::AppConfig {
+            parallel_max: 1,
+            ..Default::default()
+        };
+        let parallel = effective_parallel(None, cfg.parallel_max) as usize;
+        assert_eq!(parallel, 1);
+        let semaphore = Arc::new(Semaphore::new(parallel));
+        let mut handles = Vec::new();
+        for i in 0..3 {
+            let sem = Arc::clone(&semaphore);
+            let running = Arc::clone(&running);
+            let max_concurrent = Arc::clone(&max_concurrent);
+            handles.push(tokio::task::spawn(async move {
+                let _permit = sem.acquire_owned().await.unwrap();
+                let prev = running.fetch_add(1, Ordering::SeqCst);
+                let cur = prev + 1;
+                max_concurrent.fetch_max(cur, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                running.fetch_sub(1, Ordering::SeqCst);
+                Ok::<_, TeleError>(serde_json::json!({"i": i}))
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().unwrap();
+        }
+        assert_eq!(max_concurrent.load(Ordering::SeqCst), 1);
     }
 }

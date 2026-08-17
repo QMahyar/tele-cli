@@ -63,7 +63,9 @@ impl RateLimiter {
                 continue;
             }
             self.needs_wait.store(true, Ordering::Release);
-            self.notify.notified().await;
+            let mut notified = Box::pin(self.notify.notified());
+            notified.as_mut().enable();
+            let _ = tokio::time::timeout(Duration::from_millis(100), notified).await;
         }
     }
 
@@ -95,18 +97,20 @@ impl RateLimiter {
         let refill_tokens = (elapsed * self.refill_rate) as u64;
         if refill_tokens > 0 {
             let new_tokens = tokens.saturating_add(refill_tokens).min(self.capacity);
-            let _ = self.tokens.compare_exchange(
-                tokens,
-                new_tokens,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+            if self
+                .tokens
+                .compare_exchange(tokens, new_tokens, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                *last = Instant::now();
+                self.notify.notify_waiters();
+            }
         }
-        *last = Instant::now();
     }
 
     #[allow(dead_code)]
     pub fn available_tokens(&self) -> u64 {
+        self.maybe_refill();
         self.tokens.load(Ordering::Acquire)
     }
 
@@ -249,5 +253,35 @@ mod tests {
             h.await.unwrap();
         }
         assert_eq!(rl.available_tokens(), 0);
+    }
+
+    #[tokio::test]
+    async fn refill_wakes_parked_waiter() {
+        let rl = RateLimiter::new(Some(120.0));
+        for _ in 0..120 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        let rl2 = Arc::clone(&rl);
+        let handle = tokio::spawn(async move {
+            rl2.acquire().await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!handle.is_finished());
+        let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(result.is_ok(), "waiter must wake within 5s");
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn fractional_credit_accumulates() {
+        let rl = RateLimiter::new(Some(30.0));
+        for _ in 0..30 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        tokio::time::sleep(Duration::from_millis(3200)).await;
+        assert!(rl.available_tokens() >= 1);
+        rl.acquire().await;
     }
 }

@@ -111,7 +111,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | kernel.config | TOML + .env | `src/config.rs` | done |
 | kernel.accounts | Names, tags, all | `src/executor.rs` | done |
 | kernel.session | Per-account session path | `src/session.rs` | done |
-| kernel.executor | Sequential / parallel / per-account flood weights (token bucket + cooldown) | `src/executor.rs`, `src/rate_limiter.rs` | done |
+| kernel.executor | Sequential by default (parallel_max 1), cap 1..=32; per-account token-bucket rate limiter + flood cooldown layered on global semaphore | `src/executor.rs`, `src/rate_limiter.rs` | done |
 | kernel.proxy | Global + per-account SOCKS5 (grammers 0.10 proxy feature is socks5-only) | `src/client.rs` | done |
 | kernel.json | Serialize results | `src/serialize.rs` | done |
 | kernel.raw | Typed TL registry | `tele raw` (`src/commands/raw.rs`) — human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `messages.ExportChatInvite`) require an explicit `--account` and honor `--dry-run` | done |
