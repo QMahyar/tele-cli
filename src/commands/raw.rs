@@ -8,6 +8,12 @@ use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;
 
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/generated_raw.rs"));
+}
+
+pub use generated::registry;
+
 #[derive(Args)]
 pub struct RawArgs {
     #[arg(help = "TL method name (e.g. contacts.Search, messages.GetAllDrafts)")]
@@ -30,13 +36,13 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let params: serde_json::Value = serde_json::from_str(&args.args)
         .map_err(|e| TeleError::Usage(format!("invalid --args JSON: {e}")))?;
     let name = args.name.clone();
-    if !REGISTERED.contains(&name.as_str()) {
+    if !registry::lookup(&name).is_some() {
         return Err(TeleError::Usage(format!(
             "raw method not in registry; add an arm in src/commands/raw.rs (registered: {REGISTERED:?})"
         )));
     }
-    validate_params(&name, &params)?;
-    if !flags.dry_run && requires_explicit_account(&name) && flags.account.is_empty() {
+    generated::validate_params(&name, &params)?;
+    if !flags.dry_run && generated::requires_explicit_account(&name) && flags.account.is_empty() {
         return Err(TeleError::Usage(format!(
             "raw method {name} mutates account data — pass --account explicitly"
         )));
@@ -83,11 +89,9 @@ fn raw_dry_run_payload(name: &str, params: &serde_json::Value) -> serde_json::Va
     })
 }
 
+#[cfg(test)]
 fn requires_explicit_account(method: &str) -> bool {
-    matches!(
-        method,
-        "account.UpdateProfile" | "messages.ExportChatInvite"
-    )
+    generated::requires_explicit_account(method)
 }
 
 enum HumanView {
@@ -145,111 +149,9 @@ fn render_value(v: &serde_json::Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
-    fn req_str(p: &serde_json::Value, key: &str) -> TeleResult<()> {
-        match p.get(key).and_then(|v| v.as_str()) {
-            Some(s) if !s.trim().is_empty() => Ok(()),
-            _ => Err(TeleError::Usage(format!(
-                "--args field {key} is required (non-empty string)"
-            ))),
-        }
-    }
-    fn opt_str(p: &serde_json::Value, key: &str) -> TeleResult<()> {
-        if let Some(v) = p.get(key) {
-            if !v.is_string() {
-                return Err(TeleError::Usage(format!(
-                    "--args field {key} must be a string"
-                )));
-            }
-        }
-        Ok(())
-    }
-    fn opt_i32(p: &serde_json::Value, key: &str) -> TeleResult<()> {
-        if let Some(v) = p.get(key) {
-            let n = v.as_i64().ok_or_else(|| {
-                TeleError::Usage(format!("--args field {key} must be an integer"))
-            })?;
-            i32::try_from(n)
-                .map_err(|_| TeleError::Usage(format!("--args field {key} is out of range")))?;
-        }
-        Ok(())
-    }
-    fn opt_bool(p: &serde_json::Value, key: &str) -> TeleResult<()> {
-        if let Some(v) = p.get(key) {
-            if !v.is_boolean() {
-                return Err(TeleError::Usage(format!(
-                    "--args field {key} must be a boolean"
-                )));
-            }
-        }
-        Ok(())
-    }
-    if !p.is_object() {
-        return Err(TeleError::Usage(
-            "--args must be a JSON object of constructor kwargs".to_string(),
-        ));
-    }
-    match name {
-        "contacts.Search" => {
-            let valid = ["q", "limit", "broadcasts", "bots"];
-            reject_unknown_keys(name, p, &valid)?;
-            req_str(p, "q")?;
-            opt_i32(p, "limit")?;
-            opt_bool(p, "broadcasts")?;
-            opt_bool(p, "bots")?;
-        }
-        "messages.ExportChatInvite" => {
-            let valid = [
-                "chat",
-                "request_needed",
-                "expire_date",
-                "usage_limit",
-                "title",
-            ];
-            reject_unknown_keys(name, p, &valid)?;
-            req_str(p, "chat")?;
-            opt_bool(p, "request_needed")?;
-            opt_i32(p, "expire_date")?;
-            opt_i32(p, "usage_limit")?;
-            opt_str(p, "title")?;
-        }
-        "stats.GetBroadcastStats" | "stats.GetMegagroupStats" => {
-            let valid = ["channel", "dark"];
-            reject_unknown_keys(name, p, &valid)?;
-            req_str(p, "channel")?;
-            opt_bool(p, "dark")?;
-        }
-        "account.UpdateProfile" => {
-            let valid = ["first_name", "last_name", "about"];
-            reject_unknown_keys(name, p, &valid)?;
-            opt_str(p, "first_name")?;
-            opt_str(p, "last_name")?;
-            opt_str(p, "about")?;
-        }
-        "messages.GetAllDrafts" => {
-            reject_unknown_keys(name, p, &[])?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn reject_unknown_keys(name: &str, p: &serde_json::Value, valid: &[&str]) -> TeleResult<()> {
-    let Some(obj) = p.as_object() else {
-        return Ok(());
-    };
-    let mut unknown: Vec<&str> = obj
-        .keys()
-        .map(String::as_str)
-        .filter(|k| !valid.contains(k))
-        .collect();
-    unknown.sort_unstable();
-    if unknown.is_empty() {
-        return Ok(());
-    }
-    Err(TeleError::Usage(format!(
-        "unknown --args key(s) {unknown:?} for {name} (valid keys: {valid:?})"
-    )))
+    generated::validate_params(name, p)
 }
 
 async fn dispatch(

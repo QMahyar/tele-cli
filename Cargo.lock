@@ -2143,6 +2143,7 @@ dependencies = [
  "comfy-table",
  "grammers-client",
  "grammers-session",
+ "grammers-tl-parser",
  "log",
  "qrcode",
  "serde",
