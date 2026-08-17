@@ -87,10 +87,47 @@ Before pushing the tag, **you** must:
 2. **Annotated tag push** — `git tag -a -m "vX.Y.Z" vX.Y.Z && git push origin
    vX.Y.Z`. This triggers the release workflow.
 3. **NPM_TOKEN secret** — must be configured in the repository's Settings → Secrets
-   and variables → Actions. Without it the npm job is skipped silently; GitHub
-   Releases and binaries are still published.
+   and variables → Actions (see [NPM_TOKEN secret](#npm_token-secret) below).
+   Without it the npm job is skipped silently; GitHub Releases and binaries are
+   still published.
 4. **Verify** — check the GitHub Release page and (if npm was published) install
    with `npm install -g @qmahyar/telecli` and run `telecli --version`.
+
+### NPM_TOKEN secret
+
+The `NPM_TOKEN` action secret is **permanent**: set once, it persists across all
+future releases. GitHub does not consume or clear secrets when a workflow uses
+them; it stays until someone removes it or the underlying npm token expires or
+is revoked.
+
+**Creating the npm token** (one-time):
+
+1. Sign in to [npmjs.com](https://www.npmjs.com/login) with the account that owns
+   the `@qmahyar` scope (verified with `npm view @qmahyar/telecli maintainers`).
+2. **Access tokens** → *Generate New Token*:
+   - Granular token: name it (e.g. `github-actions-telecli`), scope it to
+     **only** `@qmahyar/telecli`, permissions **Read and write**; set an expiry
+     you can live with (a 1-year rotation ceremony is healthy).
+   - Or a classic **Automation** token — never expires, but has the account's
+     full publish rights; use it only if you accept that trade-off.
+3. Copy the token (`npm_...`); it is shown only once.
+
+**Installing it as the secret** — either:
+
+- Web: repo → Settings → Secrets and variables → Actions → *New repository
+  secret* → name `NPM_TOKEN`, paste the token.
+- Or CLI: `echo -n '<token>' | gh secret set NPM_TOKEN --repo QMahyar/tele-cli`
+  (stdin so it does not land in shell history or CI logs).
+
+**Rotation / renewal**: create a new npm token, then *update* the existing
+`NPM_TOKEN` secret with the new value (Settings → update, or the same `gh secret
+set` command). The workflow reads the secret by name, so no workflow or commit
+change is needed.
+
+**Failure mode**: an expired or revoked token silently skips the npm publish step
+(the release itself still ships). Check `npm view @qmahyar/telecli version` after
+a release — if it did not bump, re-set the secret and re-run the npm job:
+`gh run rerun <run-id> --job <npm-job-id>`.
 
 ### crates.io — explicit order only
 
