@@ -105,8 +105,6 @@ pub struct PinArgs {
     id: i32,
     #[arg(long, help = "remove pin instead of adding")]
     unpin: bool,
-    #[arg(long, help = "pin without notification sound")]
-    silent: bool,
 }
 
 #[derive(Args)]
