@@ -1,0 +1,176 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            osname: win
+            arch: x64
+            ext: ".exe"
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            osname: linux
+            arch: x64
+            ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            osname: mac
+            arch: arm64
+            ext: ""
+          # macOS x64 cross-compiled on arm64 runner (Apple clang supports both archs).
+          # If ring/cc cross-build fails on first real run, remove this entry.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            osname: mac
+            arch: x64
+            ext: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Set version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Name artifacts
+        id: name
+        shell: bash
+        run: |
+          BINARY="telecli-${{ steps.version.outputs.version }}-${{ matrix.osname }}-${{ matrix.arch }}"
+          echo "binary=${BINARY}" >> "$GITHUB_OUTPUT"
+          echo "binary_ext=${BINARY}${{ matrix.ext }}" >> "$GITHUB_OUTPUT"
+
+      - name: Package binary
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/telecli${{ matrix.ext }}" \
+             "${{ steps.name.outputs.binary_ext }}"
+
+      - name: Checksum
+        shell: bash
+        run: |
+          if command -v sha256sum &>/dev/null; then
+            sha256sum "${{ steps.name.outputs.binary_ext }}" \
+              > "${{ steps.name.outputs.binary_ext }}.sha256"
+          else
+            shasum -a 256 "${{ steps.name.outputs.binary_ext }}" \
+              > "${{ steps.name.outputs.binary_ext }}.sha256"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.binary }}
+          path: |
+            ${{ steps.name.outputs.binary_ext }}
+            ${{ steps.name.outputs.binary_ext }}.sha256
+          retention-days: 5
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract changelog section
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              gsub(/[][]/, "", $0)
+              if ($2 == ver) found = 1
+            }
+            found { print }
+          ' CHANGELOG.md > release_body.md
+          if [ ! -s release_body.md ]; then
+            echo "Release v${VERSION}" > release_body.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ steps.version.outputs.version }}"
+          body_path: release_body.md
+          draft: false
+          prerelease: false
+          files: artifacts/*
+
+  npm:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN && 'true' || 'false' }}
+    if: env.HAS_NPM_TOKEN == 'true'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download win-x64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: telecli-${{ steps.version.outputs.version }}-win-x64
+          path: _dl
+
+      - name: Install binary into npm package
+        shell: bash
+        run: |
+          cp "_dl/telecli-${{ steps.version.outputs.version }}-win-x64.exe" \
+             npm/bin/telecli.exe
+          rm -rf _dl
+
+      - name: Bump package version
+        working-directory: npm
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+
+      - name: Publish to npm
+        working-directory: npm
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+          npm publish --access=public
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
