@@ -144,3 +144,14 @@ fn base64_url_encode(bytes: &[u8]) -> String {
     use base64::Engine;
     URL_SAFE_NO_PAD.encode(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_url_encode_is_padless_url_safe() {
+        assert_eq!(base64_url_encode(b"\xfb\xff"), "-_8");
+        assert_eq!(base64_url_encode(b"f"), "Zg");
+    }
+}

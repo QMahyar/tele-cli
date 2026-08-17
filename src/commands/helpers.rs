@@ -31,3 +31,44 @@ pub(crate) fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Val
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stats_period_json_shape() {
+        let v = tl::enums::StatsDateRangeDays::Days(tl::types::StatsDateRangeDays {
+            min_date: 100,
+            max_date: 200,
+        });
+        assert_eq!(
+            stats_period(&v),
+            serde_json::json!({"min_date": 100, "max_date": 200})
+        );
+    }
+
+    #[test]
+    fn stats_abs_json_shape() {
+        let v = tl::enums::StatsAbsValueAndPrev::Prev(tl::types::StatsAbsValueAndPrev {
+            current: 12.5,
+            previous: 10.0,
+        });
+        assert_eq!(
+            stats_abs(&v),
+            serde_json::json!({"current": 12.5, "previous": 10.0})
+        );
+    }
+
+    #[test]
+    fn stats_percent_json_shape() {
+        let v = tl::enums::StatsPercentValue::Value(tl::types::StatsPercentValue {
+            part: 50.0,
+            total: 100.0,
+        });
+        assert_eq!(
+            stats_percent(&v),
+            serde_json::json!({"part": 50.0, "total": 100.0})
+        );
+    }
+}
