@@ -9,7 +9,7 @@ const child = spawn(exe, process.argv.slice(2), { stdio: "inherit" });
 
 child.on("error", (err) => {
   console.error(`[telecli] failed to start ${exe}: ${err.message}`);
-  console.error("[telecli] reinstall with: npm install -g telecli");
+  console.error("[telecli] reinstall with: npm install -g @qmahyar/telecli");
   process.exit(1);
 });
 

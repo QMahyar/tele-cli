@@ -11,8 +11,7 @@ npm install -g @qmahyar/telecli
 Windows x64 only (the Rust binary is published for win32-x64). The npm package
 bundles the binary; integrity is enforced by npm's tarball checksum.
 
-Other platforms / manual install: see the [GitHub Releases](https://github.com/QMahyar/tele-cli/releases)
-or `cargo install --locked telecli`.
+Other platforms / manual install: `cargo install --locked telecli` (requires Rust stable).
 
 ## Setup
 
