@@ -164,7 +164,7 @@ jobs:
 
       - name: Bump package version
         working-directory: npm
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - name: Publish to npm
         if: env.HAS_NPM_TOKEN == 'true'
