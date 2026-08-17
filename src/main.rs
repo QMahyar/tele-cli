@@ -74,7 +74,7 @@ enum Command {
     /// Messages: send, edit, delete, forward, pin, get, read, react, search, download
     #[command(subcommand)]
     Msg(msg::MsgCmd),
-    /// Chats: join, leave, invite, participants, kick, admin, adminlog, stats, create
+    /// Chats: join, leave, invite, participants, kick, admin, admin-log, stats, create
     #[command(subcommand)]
     Chat(chat::ChatCmd),
     /// Dialogs: list, drafts, archive, delete
@@ -140,6 +140,11 @@ fn main() -> std::process::ExitCode {
         command: invoked_path(&matches),
     };
     logging::set_flags(cli.verbose, flags.quiet);
+    if let Some(p) = flags.parallel {
+        if !(1..=3).contains(&p) {
+            output::log_line("warn", &format!("--parallel {p} is outside 1-3; clamped"));
+        }
+    }
     if flags.json && flags.jsonl {
         let message = "--json and --jsonl are mutually exclusive; pick one";
         output::log_line("error", message);

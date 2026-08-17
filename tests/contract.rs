@@ -264,6 +264,20 @@ fn parallel_out_of_range_is_clamped_not_usage_error() {
 }
 
 #[test]
+fn parallel_out_of_range_warns_on_stderr() {
+    let (code, _out, err) = run_isolated("parwarn", &["--parallel", "99", "account", "list"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(err.contains("clamped"), "stderr: {err}");
+}
+
+#[test]
+fn chat_help_mentions_admin_log_not_adminlog() {
+    let (code, _out, err) = run_isolated("adminloghelp", &["chat", "adminlog", "--json"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("admin-log"), "stderr: {err}");
+}
+
+#[test]
 fn account_list_json_is_one_object() {
     let (code, out, _err) = run_isolated("acclist", &["account", "list", "--json"]);
     assert_eq!(code, 0);
