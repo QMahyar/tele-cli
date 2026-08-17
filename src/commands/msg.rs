@@ -593,20 +593,22 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     requested += 1;
                     batch.push(msg.id());
                     if batch.len() >= 100 {
-                        count += guard
+                        guard
                             .client
                             .delete_messages(chat_ref, &batch)
                             .await
                             .map_err(tele_invocation)?;
+                        count += batch.len();
                         batch.clear();
                     }
                 }
                 if !batch.is_empty() {
-                    count += guard
+                    guard
                         .client
                         .delete_messages(chat_ref, &batch)
                         .await
                         .map_err(tele_invocation)?;
+                    count += batch.len();
                 }
                 let (report, partial) = delete_report(requested, count);
                 if partial {
@@ -625,7 +627,7 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     ));
                 }
                 for chunk in batches(&ids) {
-                    let affected = guard
+                    guard
                         .client
                         .invoke(&grammers_client::tl::functions::messages::DeleteMessages {
                             revoke: false,
@@ -633,20 +635,16 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    let pts_count = match affected {
-                        grammers_client::tl::enums::messages::AffectedMessages::Messages(x) => {
-                            x.pts_count
-                        }
-                    };
-                    count += pts_count as usize;
+                    count += chunk.len();
                 }
             } else {
                 for chunk in batches(&ids) {
-                    count += guard
+                    guard
                         .client
                         .delete_messages(chat_ref, chunk)
                         .await
                         .map_err(tele_invocation)?;
+                    count += chunk.len();
                 }
             }
             let (report, partial) = delete_report(ids.len(), count);
