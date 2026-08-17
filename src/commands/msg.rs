@@ -306,6 +306,17 @@ fn validate_filename(name: &str) -> TeleResult<()> {
     Ok(())
 }
 
+const MAX_UPLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+fn check_upload_size(bytes: u64) -> TeleResult<()> {
+    if bytes > MAX_UPLOAD_BYTES {
+        return Err(TeleError::Usage(format!(
+            "refusing to upload file larger than 2 GiB (got {bytes} bytes)"
+        )));
+    }
+    Ok(())
+}
+
 pub fn validate_upload_path(path: &str) -> TeleResult<()> {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     validate_filename(base)?;
@@ -317,15 +328,21 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
         ));
     }
     let lower = base.to_ascii_lowercase();
-    if lower == ".env" || lower.ends_with(".session") || lower.ends_with(".session-journal") {
+    if lower == ".env"
+        || lower.ends_with(".session")
+        || lower.ends_with(".session-journal")
+        || lower == "config.toml"
+        || lower.starts_with("config.toml.")
+    {
         return Err(TeleError::Usage(format!(
             "refusing to upload sensitive file {base}"
         )));
     }
-    if !std::path::Path::new(path).is_file() {
-        return Err(TeleError::Usage(format!("upload file not found: {path}")));
+    let path = std::path::Path::new(path);
+    if !path.is_file() {
+        return Err(TeleError::Usage(format!("upload file not found: {path:?}")));
     }
-    Ok(())
+    check_upload_size(std::fs::metadata(path)?.len())
 }
 
 fn validate_download_dir(dir: &str) -> TeleResult<()> {
@@ -1143,6 +1160,7 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             })
             .await
             .map_err(|e| TeleError::Other(e.to_string()))??;
+            validate_download_dir(&out_dir)?;
             let path = std::path::Path::new(&out_dir).join(name);
             refuse_existing_download_target(&path)?;
             let temp = download_temp_path(&path);
@@ -1283,6 +1301,10 @@ mod tests {
         dir
     }
 
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("telecli-msg-{tag}-{}", std::process::id()))
+    }
+
     #[test]
     fn upload_rejects_sensitive_basenames() {
         assert!(matches!(
@@ -1297,6 +1319,35 @@ mod tests {
             validate_upload_path("2.session-journal"),
             Err(TeleError::Usage(_))
         ));
+    }
+
+    #[test]
+    fn check_upload_size_accepts_boundary() {
+        assert!(check_upload_size(MAX_UPLOAD_BYTES).is_ok());
+    }
+
+    #[test]
+    fn check_upload_size_rejects_over_cap() {
+        let err = check_upload_size(MAX_UPLOAD_BYTES + 1).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("2 GiB"));
+    }
+
+    #[test]
+    fn validate_upload_path_rejects_config_toml_basename() {
+        let dir = temp_path("uploadcfg");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["config.toml", "config.toml.tmp-123", "CONFIG.TOML"] {
+            let path = dir.join(name);
+            std::fs::write(&path, b"x").unwrap();
+            let err = validate_upload_path(path.to_str().unwrap()).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{name}: {err:?}");
+            assert!(err.message().contains("sensitive"), "{name}");
+        }
+        let ok_path = dir.join("notes.txt");
+        std::fs::write(&ok_path, b"x").unwrap();
+        validate_upload_path(ok_path.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
