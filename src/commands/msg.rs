@@ -2,10 +2,9 @@ use clap::{Args, Subcommand};
 use grammers_client::message::InputMessage;
 
 use crate::client::{self, ClientGuard};
-use crate::commands::account::tele_invocation;
 use crate::commands::credentials::creds_api_id;
 use crate::entities;
-use crate::error::{TeleError, TeleResult};
+use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::fs_util::{path_under_guard, resolve_for_guard};
 use crate::output;

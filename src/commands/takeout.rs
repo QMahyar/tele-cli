@@ -9,9 +9,8 @@ use grammers_client::tl;
 use grammers_session::types::{PeerId, PeerKind};
 
 use crate::client::{self, ClientGuard};
-use crate::commands::account::tele_invocation;
 use crate::commands::credentials::creds_api_id;
-use crate::error::{TeleError, TeleResult};
+use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 
 #[derive(Subcommand)]
