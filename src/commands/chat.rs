@@ -391,6 +391,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
@@ -473,7 +474,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
                         r["role"].as_str().unwrap_or_default().to_string(),
                     ])
                     .collect();
-                output::print_table(&["id", "name", "role"], &table_rows);
+                output::print_account_table(&name, multi, &["id", "name", "role"], &table_rows);
             }
             Ok(serde_json::json!({"participants": rows}))
         })
@@ -750,6 +751,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
@@ -834,7 +836,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         ]
                     })
                     .collect();
-                output::print_table(&["id", "date", "action"], &table_rows);
+                output::print_account_table(&name, multi, &["id", "date", "action"], &table_rows);
             }
             Ok(serde_json::json!({"events": rows}))
         })

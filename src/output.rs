@@ -77,12 +77,40 @@ pub fn print_json_result(value: &serde_json::Value) -> crate::error::TeleResult<
 }
 
 pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    print_table_to(&mut std::io::stdout(), headers, rows).expect("write table to stdout");
+}
+
+fn print_table_to(
+    w: &mut impl std::io::Write,
+    headers: &[&str],
+    rows: &[Vec<String>],
+) -> std::io::Result<()> {
     let mut table = Table::new();
     table.set_header(headers.iter().map(|h| Cell::new(*h)));
     for row in rows {
         table.add_row(row.iter().map(Cell::new));
     }
-    println!("{table}");
+    writeln!(w, "{table}")?;
+    w.flush()?;
+    Ok(())
+}
+
+pub fn print_account_table(account: &str, multi: bool, headers: &[&str], rows: &[Vec<String>]) {
+    print_account_table_to(&mut std::io::stdout(), account, multi, headers, rows)
+        .expect("write account table to stdout");
+}
+
+fn print_account_table_to(
+    w: &mut impl std::io::Write,
+    account: &str,
+    multi: bool,
+    headers: &[&str],
+    rows: &[Vec<String>],
+) -> std::io::Result<()> {
+    if multi {
+        writeln!(w, "== {account} ==")?;
+    }
+    print_table_to(w, headers, rows)
 }
 
 pub fn machine_mode(json: bool, jsonl: bool) -> bool {
@@ -252,5 +280,45 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         print_json_to(&mut buf, &serde_json::json!({"a": 1})).unwrap();
         assert_eq!(String::from_utf8(buf).unwrap(), "{\"a\":1}\n");
+    }
+
+    fn sample_rows() -> Vec<Vec<String>> {
+        vec![vec!["x".to_string(), "y".to_string()]]
+    }
+
+    #[test]
+    fn account_table_multi_prints_header_before_table() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_account_table_to(&mut buf, "work", true, &["a", "b"], &sample_rows()).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("== work =="), "stdout: {out}");
+        let header_pos = out.find("== work ==").unwrap();
+        let table_pos = out.find('a').unwrap();
+        assert!(header_pos < table_pos, "header must precede table: {out}");
+    }
+
+    #[test]
+    fn account_table_single_prints_no_header() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_account_table_to(&mut buf, "work", false, &["a", "b"], &sample_rows()).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(!out.contains("== work =="), "stdout: {out}");
+    }
+
+    #[test]
+    fn account_table_single_matches_plain_table_bytes() {
+        let mut with: Vec<u8> = Vec::new();
+        let mut plain: Vec<u8> = Vec::new();
+        print_account_table_to(&mut with, "work", false, &["a", "b"], &sample_rows()).unwrap();
+        print_table_to(&mut plain, &["a", "b"], &sample_rows()).unwrap();
+        assert_eq!(with, plain);
+    }
+
+    #[test]
+    fn account_table_multi_still_prints_rows() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_account_table_to(&mut buf, "work", true, &["a", "b"], &sample_rows()).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains('x') && out.contains('y'), "stdout: {out}");
     }
 }
