@@ -11,7 +11,7 @@ use grammers_session::types::{PeerId, PeerKind};
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::error::{tele_invocation, TeleError, TeleResult};
-use crate::executor::{run_fanout, GlobalFlags};
+use crate::executor::{require_explicit_selection, run_fanout, GlobalFlags};
 
 #[derive(Subcommand)]
 pub enum TakeoutCmd {
@@ -65,6 +65,7 @@ fn start_dry_run_payload(contacts: bool, messages: bool, photos: bool) -> serde_
 }
 
 async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_explicit_selection("takeout start", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let contacts = args.contacts;
@@ -186,6 +187,7 @@ fn export_error_message(dir: &std::path::Path, cause: &str) -> String {
 }
 
 async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_explicit_selection("takeout export", flags)?;
     validate_export(&args)?;
     crate::commands::validate_limit(args.message_limit, 1_000_000, "message-limit")?;
     let config_path = flags.config_path.clone();
@@ -544,6 +546,7 @@ fn raw_message_to_json(
 }
 
 async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
+    require_explicit_selection("takeout finish", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {

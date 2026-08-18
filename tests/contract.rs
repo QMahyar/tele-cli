@@ -219,7 +219,7 @@ fn listen_valid_events_reach_selection() {
     let (code, _out, err) =
         run_isolated("lsok", &["listen", "--events", "NewMessage,MessageDeleted"]);
     assert_eq!(code, 1);
-    assert!(err.contains("no accounts selected"), "stderr: {err}");
+    assert!(err.contains("listen requires --account"), "stderr: {err}");
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crate::client::{self, ClientGuard};
 use crate::error::{TeleError, TeleResult};
-use crate::executor::{effective_parallel, GlobalFlags};
+use crate::executor::{effective_parallel, require_explicit_selection, GlobalFlags};
 use crate::output;
 use clap::Args;
 use grammers_client::tl::{self, Serializable};
@@ -44,6 +44,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if args.raw && !events.iter().any(|e| e == "Raw") {
         events.push("Raw".to_string());
     }
+    require_explicit_selection("listen", flags)?;
     let names = crate::executor::select_accounts(flags)?;
     if names.is_empty() {
         return Err(TeleError::Usage(

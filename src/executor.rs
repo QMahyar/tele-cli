@@ -129,6 +129,15 @@ pub fn select_accounts(flags: &GlobalFlags) -> TeleResult<Vec<String>> {
     select_accounts_from_cfg(&cfg, flags)
 }
 
+pub fn require_explicit_selection(command: &str, flags: &GlobalFlags) -> TeleResult<()> {
+    if flags.account.is_empty() && flags.tag.is_empty() {
+        return Err(TeleError::Usage(format!(
+            "{command} requires --account <name> or --tag <tag>"
+        )));
+    }
+    Ok(())
+}
+
 fn select_accounts_from_cfg(
     cfg: &crate::config::AppConfig,
     flags: &GlobalFlags,
@@ -284,6 +293,61 @@ mod tests {
         tags: &[&str],
     ) -> TeleResult<Vec<String>> {
         select_from(cfg, &sessions(s), &names(accounts), &names(tags))
+    }
+
+    fn global_flags(accounts: &[&str], tags: &[&str]) -> GlobalFlags {
+        GlobalFlags {
+            account: names(accounts),
+            tag: names(tags),
+            parallel: None,
+            json: false,
+            jsonl: false,
+            dry_run: false,
+            quiet: false,
+            config_path: None,
+            command: "listen".to_string(),
+        }
+    }
+
+    #[test]
+    fn explicit_selection_guard_rejects_empty_flags() {
+        let err = require_explicit_selection("listen", &global_flags(&[], &[])).unwrap_err();
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(
+            err.message().contains("listen requires --account"),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_selection_guard_error_names_command() {
+        let err =
+            require_explicit_selection("takeout finish", &global_flags(&[], &[])).unwrap_err();
+        assert!(err.message().contains("takeout finish"), "err: {err}");
+    }
+
+    #[test]
+    fn explicit_selection_guard_accepts_account_name() {
+        let flags = global_flags(&["work"], &[]);
+        assert!(require_explicit_selection("listen", &flags).is_ok());
+    }
+
+    #[test]
+    fn explicit_selection_guard_accepts_account_all() {
+        let flags = global_flags(&["all"], &[]);
+        assert!(require_explicit_selection("listen", &flags).is_ok());
+    }
+
+    #[test]
+    fn explicit_selection_guard_accepts_tag() {
+        let flags = global_flags(&[], &["iran"]);
+        assert!(require_explicit_selection("takeout start", &flags).is_ok());
+    }
+
+    #[test]
+    fn explicit_selection_guard_accepts_account_and_tag_together() {
+        let flags = global_flags(&["home"], &["iran"]);
+        assert!(require_explicit_selection("takeout export", &flags).is_ok());
     }
 
     #[test]
