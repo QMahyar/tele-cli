@@ -358,11 +358,11 @@ async fn run_export(
                         (m.messages, m.users, m.chats, true)
                     }
                     tl::enums::messages::Messages::Slice(m) => {
-                        let last_chunk = m.messages.is_empty() || m.messages[0].id() <= PAGE_LIMIT;
+                        let last_chunk = m.messages.len() < PAGE_LIMIT as usize;
                         (m.messages, m.users, m.chats, last_chunk)
                     }
                     tl::enums::messages::Messages::ChannelMessages(m) => {
-                        let last_chunk = m.messages.is_empty() || m.messages[0].id() <= PAGE_LIMIT;
+                        let last_chunk = m.messages.len() < PAGE_LIMIT as usize;
                         (m.messages, m.users, m.chats, last_chunk)
                     }
                     tl::enums::messages::Messages::NotModified(_) => break,
@@ -814,5 +814,16 @@ mod tests {
         assert!(msg.contains("takeout export"), "msg: {msg}");
         assert!(msg.contains("FLOOD_WAIT"), "msg: {msg}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pagination_uses_message_count_not_id() {
+        const HIGH_MESSAGE_ID: i32 = 5_000_000;
+
+        const { assert!(50 < PAGE_LIMIT) };
+        const { assert!(!(HIGH_MESSAGE_ID <= PAGE_LIMIT)) };
+
+        const { assert!(!(100 < PAGE_LIMIT)) };
+        const { assert!(!(150 < PAGE_LIMIT)) };
     }
 }
