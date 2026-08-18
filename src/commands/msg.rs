@@ -152,6 +152,8 @@ pub struct DownloadArgs {
     id: i32,
     #[arg(long, help = "output directory for downloaded media")]
     dir: String,
+    #[arg(long, help = "overwrite existing files")]
+    force: bool,
 }
 
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1105,7 +1107,9 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             .map_err(|e| TeleError::Other(e.to_string()))??;
             validate_download_dir(&out_dir)?;
             let path = std::path::Path::new(&out_dir).join(name);
-            refuse_existing_download_target(&path)?;
+            if !args.force {
+                refuse_existing_download_target(&path)?;
+            }
             let temp = download_temp_path(&path);
             tokio::task::spawn_blocking({
                 let temp = temp.clone();
@@ -2333,6 +2337,7 @@ mod tests {
                 chat: "me".to_string(),
                 id: 1,
                 dir: out.to_string_lossy().to_string(),
+                force: false,
             },
             &dryrun_flags("msg download", true),
         )
