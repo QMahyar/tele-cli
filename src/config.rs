@@ -262,6 +262,12 @@ fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     if !cfg_path.exists() {
         return Ok(AppConfig::default());
     }
+    if cfg_path.is_dir() {
+        return Err(anyhow::anyhow!(
+            "failed to read config: {} is a directory",
+            cfg_path.display()
+        ));
+    }
     let text = std::fs::read_to_string(cfg_path)?;
     let mut cfg: AppConfig = toml::from_str(&text)
         .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", cfg_path.display()))?;
@@ -504,6 +510,44 @@ mod tests {
         let err = load_config(Some(&dir)).unwrap_err();
         assert!(matches!(err, TeleError::Config(_)), "{err}");
         assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_config_rejects_directory_with_clear_message() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir =
+            std::env::temp_dir().join(format!("telecli-config-rd-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = read_config(&dir).unwrap_err().to_string();
+        assert!(err.contains("directory"), "err: {err}");
+        assert!(err.contains(&dir.display().to_string()), "err: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_config_missing_path_is_defaults() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir =
+            std::env::temp_dir().join(format!("telecli-config-rd-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_config(&dir.join("config.toml")).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_config_malformed_toml_is_parse_error() {
+        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let dir =
+            std::env::temp_dir().join(format!("telecli-config-rd-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "not [valid toml").unwrap();
+        let err = read_config(&path).unwrap_err().to_string();
+        assert!(err.contains("failed to parse"), "err: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
