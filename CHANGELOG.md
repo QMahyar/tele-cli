@@ -6,11 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-18
+
+### Added
+- Admin rights granularity: `chat admin` now supports `--preset moderator|editor|admin` and `--rights "pin,invite,ban"` for fine-grained permission control
+- Download force flag: `msg download` now supports `--force` to overwrite existing files
+- Emoji validation: proper support for multi-codepoint emojis (family emojis, skin tone modifiers) using grapheme cluster detection
+
 ### Changed
 - `msg forward` no longer accepts `--silent` (forward path unified on grammers `forward_messages`; per-message id mapping is request-ordered and confirms can no longer be silently lost).
 - `msg pin` no longer accepts `--silent` (grammers pins are always silent).
+- Moved `tele_invocation` re-export from account.rs to error.rs
+- Refactored `TeleError::Other` into specific variants for better error handling
+- Dependencies: Added `windows` crate for Windows ACL support (Windows-only)
+- Dependencies: Added `unicode-segmentation` for proper emoji validation
+- Dependencies: Added `indicatif` for progress indicators (prepared for future use)
 
 ### Fixed
+- **Critical:** Fixed takeout pagination infinite loop bug (was checking message ID instead of message count)
+- Security: Windows file permissions now properly restricted (owner-only ACLs for .session and .env files)
+- Security: Mutex poisoning recovery (no longer crashes on poisoned mutex)
+- Security: Windows atomic rename now handles existing target files
+- Security: Phone numbers redacted in login confirmations (format: +1***456)
+- Performance: Config file now loaded once per fanout (was loading twice)
+- Performance: Eliminated duplicate `effective_parallel` function
+- Code quality: Extracted `is_sensitive_file` helper function
+- Code quality: Better error taxonomy (FileSystem, TaskPanic variants)
+- Code quality: Fixed exit code truncation (now properly clamped 0-255)
+- Code quality: Safe date parsing (no panic on invalid timestamps)
+- Documentation: Added comprehensive docs for phone resolution side-effects
 - Fixed: download/upload path guards now canonicalize the app-data guard dir too — on volumes with 8.3 short names (e.g. GitHub Actions runners, `RUNNER~1`), a download/upload path written with the short alias could bypass the guard. `resolve_for_guard` tests canonicalize their expectation.
 - Fixed: `msg delete` reports the number of messages actually sent for deletion (batch sizes), not the server's PTS delta — multi-id deletes no longer report `partial` and exit 2 on the happy path.
 - Fixed: `msg --file` captions now honor `--format markdown`.
