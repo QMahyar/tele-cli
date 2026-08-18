@@ -4,6 +4,20 @@ use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerInfo, PeerRef};
 use grammers_session::Session;
 
+/// Resolve a target string (phone, username, link, numeric ID, or "me") to a Peer.
+///
+/// # Phone Resolution Side-Effects
+///
+/// When resolving a phone number (strings starting with `+`), this function:
+/// 1. Calls `contacts.ImportContacts` to temporarily add the number to your contact list
+/// 2. Retrieves the user associated with that phone number (if privacy settings permit)
+/// 3. Immediately calls `contacts.DeleteContacts` to remove the temporary contact
+///
+/// This behavior is by design and matches Telegram's intended API usage for phone lookup.
+/// The contact is added and removed within the same request flow, so the user will not
+/// appear in your contact list after resolution completes.
+///
+/// Note: Phone resolution may fail if the target user's privacy settings prevent contact-based lookups.
 pub async fn resolve_peer(
     client: &Client,
     session: &SqliteSession,

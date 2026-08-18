@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crate::client::{self, ClientGuard};
 use crate::error::{TeleError, TeleResult};
-use crate::executor::GlobalFlags;
+use crate::executor::{effective_parallel, GlobalFlags};
 use crate::output;
 use clap::Args;
 use grammers_client::tl::{self, Serializable};
@@ -309,7 +309,7 @@ async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
         out.flush()
     })
     .await
-    .map_err(|e| TeleError::Other(e.to_string()))??;
+    .map_err(|e| TeleError::TaskPanic(e.to_string()))??;
     Ok(())
 }
 
@@ -425,10 +425,6 @@ fn deleted_matches(bare_id: Option<i64>, resolved: PeerId) -> bool {
         (Some(a), Some(b)) => a == b,
         _ => false,
     }
-}
-
-fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
-    flag.unwrap_or(cfg_max).clamp(1, 32)
 }
 
 fn reconnect_allowed(consecutive_failures: u32) -> bool {

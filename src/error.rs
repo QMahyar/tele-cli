@@ -11,6 +11,8 @@ pub enum TeleError {
     Auth(String),
     Config(String),
     Invocation(String, Option<u32>),
+    FileSystem(String),
+    TaskPanic(String),
     Other(String),
 }
 
@@ -30,6 +32,8 @@ impl TeleError {
             | TeleError::Auth(m)
             | TeleError::Config(m)
             | TeleError::Invocation(m, _)
+            | TeleError::FileSystem(m)
+            | TeleError::TaskPanic(m)
             | TeleError::Other(m) => m,
         }
     }
@@ -40,6 +44,8 @@ impl TeleError {
             TeleError::Auth(_) => "AuthError",
             TeleError::Config(_) => "ConfigError",
             TeleError::Invocation(..) => "InvocationError",
+            TeleError::FileSystem(_) => "FileSystemError",
+            TeleError::TaskPanic(_) => "TaskPanicError",
             TeleError::Other(_) => "Error",
         };
         let mut value = serde_json::json!({ "type": kind, "message": self.message() });
@@ -105,6 +111,8 @@ pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
         TeleError::Invocation(invocation_message(&e), invocation_wait_seconds(&e))
     }
 }
+
+pub use invocation_error as tele_invocation;
 
 #[cfg(test)]
 mod tests {
@@ -207,6 +215,14 @@ mod tests {
     fn invocation_and_other_exit_all_failed() {
         assert_eq!(
             TeleError::Invocation("x".to_string(), None).exit_code(),
+            EXIT_ALL_FAILED
+        );
+        assert_eq!(
+            TeleError::FileSystem("x".to_string()).exit_code(),
+            EXIT_ALL_FAILED
+        );
+        assert_eq!(
+            TeleError::TaskPanic("x".to_string()).exit_code(),
             EXIT_ALL_FAILED
         );
         assert_eq!(

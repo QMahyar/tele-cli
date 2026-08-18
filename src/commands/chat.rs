@@ -5,10 +5,10 @@ use grammers_session::Session;
 use std::collections::HashMap;
 
 use crate::client::{self, ClientGuard};
-use crate::commands::account::tele_invocation;
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
 use crate::entities;
+use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;

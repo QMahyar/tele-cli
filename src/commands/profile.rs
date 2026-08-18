@@ -2,10 +2,10 @@ use clap::{Args, Subcommand};
 use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
-use crate::commands::account::tele_invocation;
 use crate::commands::credentials::creds_api_id;
 use crate::commands::msg::validate_upload_path;
 use crate::entities;
+use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;
@@ -214,7 +214,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     .client
                     .upload_file(p)
                     .await
-                    .map_err(|e| TeleError::Other(e.to_string()))?;
+                    .map_err(|e| TeleError::TaskPanic(e.to_string()))?;
                 let uploaded_photo: tl::enums::photos::Photo = guard
                     .client
                     .invoke(&tl::functions::photos::UploadProfilePhoto {

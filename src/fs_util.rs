@@ -1,5 +1,14 @@
 use std::path::Path;
 
+pub fn is_sensitive_file(filename: &str) -> bool {
+    let lower = filename.to_ascii_lowercase();
+    lower == ".env"
+        || lower.ends_with(".session")
+        || lower.ends_with(".session-journal")
+        || lower == "config.toml"
+        || lower.starts_with("config.toml.")
+}
+
 pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
     #[cfg(unix)]
@@ -270,5 +279,32 @@ mod tests {
         let canon = canon.trim_start_matches(r"\\?\");
         assert_eq!(resolve_for_guard(&base).to_string_lossy(), canon);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn is_sensitive_file_detects_env_file() {
+        assert!(is_sensitive_file(".env"));
+        assert!(is_sensitive_file(".ENV"));
+    }
+
+    #[test]
+    fn is_sensitive_file_detects_session_files() {
+        assert!(is_sensitive_file("account.session"));
+        assert!(is_sensitive_file("account.session-journal"));
+        assert!(is_sensitive_file("ACCOUNT.SESSION"));
+    }
+
+    #[test]
+    fn is_sensitive_file_detects_config_files() {
+        assert!(is_sensitive_file("config.toml"));
+        assert!(is_sensitive_file("CONFIG.TOML"));
+        assert!(is_sensitive_file("config.toml.backup"));
+    }
+
+    #[test]
+    fn is_sensitive_file_allows_normal_files() {
+        assert!(!is_sensitive_file("photo.jpg"));
+        assert!(!is_sensitive_file("document.pdf"));
+        assert!(!is_sensitive_file("myconfig.toml"));
     }
 }
