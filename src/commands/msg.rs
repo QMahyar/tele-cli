@@ -3,6 +3,7 @@ use grammers_client::message::InputMessage;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -42,6 +43,8 @@ pub struct SendArgs {
     reply: Option<i32>,
     #[arg(long, default_value_t = true, help = "show link preview")]
     preview: bool,
+    #[arg(long, action = clap::ArgAction::SetTrue, help = "disable link preview")]
+    no_preview: bool,
     #[arg(long, default_value = "plain", help = "text format: plain or markdown")]
     format: String,
     #[arg(long, help = "send without notification sound")]
@@ -170,7 +173,12 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     }
 }
 
+fn effective_preview(args: &SendArgs) -> bool {
+    args.preview && !args.no_preview
+}
+
 fn validate_send(args: &SendArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
     match args.format.as_str() {
         "plain" | "markdown" => Ok(()),
         other => Err(TeleError::Usage(format!(
@@ -199,7 +207,7 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
         return Err(TeleError::Usage("--caption requires --file".to_string()));
     }
     if let Some(path) = &args.file {
-        if !args.preview {
+        if !effective_preview(args) {
             return Err(TeleError::Usage(
                 "--no-preview is not supported with --file".to_string(),
             ));
@@ -386,7 +394,7 @@ fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::V
         "format": args.format,
         "schedule": schedule,
         "reply": args.reply,
-        "preview": args.preview,
+        "preview": effective_preview(args),
         "silent": args.silent,
         "would": would,
     })
@@ -407,7 +415,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let format = args.format.clone();
         let schedule = schedule.map(|s| s as u64);
         let reply = args.reply;
-        let preview = args.preview;
+        let preview = effective_preview(&args);
         let silent = args.silent;
         Box::pin(async move {
             if dry_run {
@@ -469,6 +477,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_edit(args: &EditArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
     if args.text.trim().is_empty() {
         return Err(TeleError::Usage("--text must not be empty".to_string()));
     }
@@ -518,6 +527,7 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
     if args.all && !args.ids.is_empty() {
         return Err(TeleError::Usage(
             "--all and --ids are mutually exclusive".to_string(),
@@ -657,6 +667,8 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
+    require_chat_target(&args.from, "from")?;
+    require_chat_target(&args.to, "to")?;
     if args.ids.is_empty() {
         return Err(TeleError::Usage("--ids required".to_string()));
     }
@@ -771,6 +783,7 @@ fn forward_report(
 }
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
@@ -808,6 +821,7 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_get(args: &GetArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
     if args.last && args.offset_id.is_some() {
         return Err(TeleError::Usage(
             "--last and --offset-id are mutually exclusive".to_string(),
@@ -892,6 +906,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 }
 
 async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let mark_unread = args.mark_unread;
@@ -947,6 +962,12 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_react(args: &ReactArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    if args.reaction.is_some() && args.remove {
+        return Err(TeleError::Usage(
+            "use --reaction or --remove, not both".to_string(),
+        ));
+    }
     if args.reaction.is_none() && !args.remove {
         return Err(TeleError::Usage(
             "--reaction <emoji> or --remove required".to_string(),
@@ -1006,6 +1027,7 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
@@ -1064,6 +1086,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     validate_download_dir(&args.dir)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -1231,6 +1254,7 @@ mod tests {
             caption: None,
             reply: None,
             preview: true,
+            no_preview: false,
             format: format.to_string(),
             silent: false,
         }
@@ -1704,6 +1728,142 @@ mod tests {
             last: false,
         };
         assert!(validate_get(&no_last).is_ok());
+    }
+
+    #[test]
+    fn msg_validators_reject_empty_or_whitespace_chat() {
+        for chat in ["", "   ", "\t"] {
+            let mut send = send_args("plain");
+            send.chat = chat.to_string();
+            assert!(
+                matches!(validate_send(&send), Err(TeleError::Usage(_))),
+                "{chat:?}"
+            );
+
+            let edit = EditArgs {
+                chat: chat.to_string(),
+                id: 1,
+                text: "x".to_string(),
+            };
+            assert!(
+                matches!(validate_edit(&edit), Err(TeleError::Usage(_))),
+                "{chat:?}"
+            );
+
+            let delete = DeleteArgs {
+                chat: chat.to_string(),
+                ids: vec![1],
+                all: false,
+                self_only: false,
+            };
+            assert!(
+                matches!(validate_delete(&delete), Err(TeleError::Usage(_))),
+                "{chat:?}"
+            );
+
+            let fwd_from = ForwardArgs {
+                from: chat.to_string(),
+                ids: vec![1],
+                to: "b".to_string(),
+            };
+            assert!(
+                matches!(validate_forward(&fwd_from), Err(TeleError::Usage(_))),
+                "{chat:?}"
+            );
+            let fwd_to = ForwardArgs {
+                from: "a".to_string(),
+                ids: vec![1],
+                to: chat.to_string(),
+            };
+            assert!(
+                matches!(validate_forward(&fwd_to), Err(TeleError::Usage(_))),
+                "{chat:?}"
+            );
+
+            let get = GetArgs {
+                chat: chat.to_string(),
+                limit: 10,
+                offset_id: None,
+                last: false,
+            };
+            assert!(
+                matches!(validate_get(&get), Err(TeleError::Usage(_))),
+                "{chat:?}"
+            );
+
+            let react = ReactArgs {
+                chat: chat.to_string(),
+                id: 1,
+                reaction: Some("+1".to_string()),
+                remove: false,
+            };
+            assert!(
+                matches!(validate_react(&react), Err(TeleError::Usage(_))),
+                "{chat:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pin_read_search_download_reject_empty_chat_before_connect() {
+        let err = pin(
+            PinArgs {
+                chat: String::new(),
+                id: 1,
+                unpin: false,
+            },
+            &dryrun_flags("msg pin", true),
+        )
+        .await;
+        assert!(matches!(err, Err(TeleError::Usage(_))));
+
+        let err = read(
+            ReadArgs {
+                chat: "   ".to_string(),
+                mark_unread: false,
+            },
+            &dryrun_flags("msg read", true),
+        )
+        .await;
+        assert!(matches!(err, Err(TeleError::Usage(_))));
+
+        let err = search(
+            SearchArgs {
+                chat: String::new(),
+                query: "x".to_string(),
+                limit: 10,
+            },
+            &dryrun_flags("msg search", true),
+        )
+        .await;
+        assert!(matches!(err, Err(TeleError::Usage(_))));
+
+        let out =
+            std::env::temp_dir().join(format!("telecli-msg-emptychat-{}", std::process::id()));
+        let err = download(
+            DownloadArgs {
+                chat: "\t".to_string(),
+                id: 1,
+                dir: out.to_string_lossy().into_owned(),
+                force: false,
+            },
+            &dryrun_flags("msg download", true),
+        )
+        .await;
+        assert!(matches!(err, Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn react_rejects_reaction_with_remove() {
+        let both = ReactArgs {
+            chat: "me".to_string(),
+            id: 5,
+            reaction: Some("+1".to_string()),
+            remove: true,
+        };
+        let err = validate_react(&both).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("not both"), "{}", err.message());
     }
 
     #[test]
@@ -2373,6 +2533,43 @@ mod tests {
         assert_eq!(value["preview"], serde_json::json!(true));
         assert_eq!(value["silent"], serde_json::json!(false));
         assert_eq!(value["would"], serde_json::json!("send message to chat @x"));
+    }
+
+    #[test]
+    fn send_rejects_no_preview_with_file() {
+        let dir = upload_fixture("nopreview", &["a.pdf"]);
+        let mut args = send_args("plain");
+        args.text = None;
+        args.file = Some(dir.join("a.pdf").to_string_lossy().into_owned());
+        args.no_preview = true;
+        let err = validate_send(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("--no-preview"), "{}", err.message());
+        args.no_preview = false;
+        assert!(validate_send(&args).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn send_dry_run_payload_carries_effective_preview() {
+        let args = send_args("plain");
+        assert_eq!(
+            send_dry_run_payload(&args, None)["preview"],
+            serde_json::json!(true)
+        );
+        let mut disabled = send_args("plain");
+        disabled.no_preview = true;
+        assert_eq!(
+            send_dry_run_payload(&disabled, None)["preview"],
+            serde_json::json!(false)
+        );
+        let mut both = send_args("plain");
+        both.preview = false;
+        both.no_preview = true;
+        assert_eq!(
+            send_dry_run_payload(&both, None)["preview"],
+            serde_json::json!(false)
+        );
     }
 
     #[test]
