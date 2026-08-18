@@ -130,6 +130,11 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
             "at least one of --name, --bio, --photo required".to_string(),
         ));
     }
+    if let Some(name) = &args.name {
+        if name.trim().is_empty() {
+            return Err(TeleError::Usage("name must not be empty".to_string()));
+        }
+    }
     if let Some(path) = &args.photo {
         validate_upload_path(path)?;
     }
@@ -282,6 +287,46 @@ mod tests {
             photo: None,
         };
         assert!(validate_set(&with_name).is_ok());
+    }
+
+    #[test]
+    fn set_rejects_empty_name() {
+        let empty = SetArgs {
+            name: Some(String::new()),
+            bio: None,
+            photo: None,
+        };
+        assert!(matches!(validate_set(&empty), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn set_rejects_whitespace_only_name() {
+        let blank = SetArgs {
+            name: Some("   ".to_string()),
+            bio: None,
+            photo: None,
+        };
+        assert!(matches!(validate_set(&blank), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn set_accepts_valid_name() {
+        let valid = SetArgs {
+            name: Some("John Doe".to_string()),
+            bio: None,
+            photo: None,
+        };
+        assert!(validate_set(&valid).is_ok());
+    }
+
+    #[test]
+    fn set_accepts_empty_bio_with_valid_name() {
+        let clear_bio = SetArgs {
+            name: Some("John".to_string()),
+            bio: Some(String::new()),
+            photo: None,
+        };
+        assert!(validate_set(&clear_bio).is_ok());
     }
 
     #[test]
