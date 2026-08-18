@@ -10,7 +10,7 @@
 ## Why?
 
 - **User accounts, not bots.** Full MTProto client surface — scheduled messages, forum topics, admin log, takeout export, raw TL calls. Anything your Telegram account can do, `tele` can do.
-- **Multi-account.** Name them, tag them, fan out a command across all of them. Sequential by default, `--parallel 1–3` when you need speed.
+- **Multi-account.** Name them, tag them, fan out a command across all of them. Sequential by default, `--parallel 1–32` when you need speed.
 - **Human + machine.** Comfy tables on your terminal; a single JSON envelope (or JSONL from `listen`) on stdout for scripts and AI agents. Logs on stderr only.
 - **Pure Rust.** Built on [grammers](https://docs.rs/grammers-client) 0.10 (MTProto). Zero C/C++ dependencies. `cargo build` and done.
 
