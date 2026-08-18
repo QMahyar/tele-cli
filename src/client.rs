@@ -14,7 +14,7 @@ pub struct ClientGuard {
     pub session: Arc<SqliteSession>,
     pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
     pub rate_limiter: Arc<RateLimiter>,
-    _session_lock: std::fs::File,
+    _session_lock: crate::session::SessionLock,
 }
 
 impl ClientGuard {

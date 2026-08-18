@@ -76,9 +76,30 @@ pub fn remove_session(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub struct SessionLock {
+    file: Option<std::fs::File>,
+    path: PathBuf,
+}
+
+impl SessionLock {
+    fn new(file: std::fs::File, path: PathBuf) -> Self {
+        Self {
+            file: Some(file),
+            path,
+        }
+    }
+}
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 pub struct LockedSession {
     pub session: SqliteSession,
-    pub(crate) lock: std::fs::File,
+    pub(crate) lock: SessionLock,
 }
 
 pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
@@ -87,11 +108,12 @@ pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
     let dir = session_dir();
     crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&dir)?;
+    let lock_path = lock_path(name);
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
-        .open(lock_path(name))?;
+        .open(&lock_path)?;
     match lock.try_lock() {
         Ok(()) => {}
         Err(std::fs::TryLockError::WouldBlock) => {
@@ -103,7 +125,10 @@ pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
     }
     let session = SqliteSession::open(&path).await?;
     crate::fs_util::restrict_file_private(&path)?;
-    Ok(LockedSession { session, lock })
+    Ok(LockedSession {
+        session,
+        lock: SessionLock::new(lock, lock_path),
+    })
 }
 
 #[cfg(test)]
@@ -150,6 +175,21 @@ mod tests {
         drop(first);
         let second = open_session("work").await.unwrap();
         drop(second);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn open_session_removes_lock_file_on_drop() {
+        let _guard = lock_env().await;
+        let dir = test_dir("session-lock-file-gone");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let held = open_session("work").await.unwrap();
+        assert!(lock_path("work").exists());
+        drop(held);
+        assert!(!lock_path("work").exists());
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
