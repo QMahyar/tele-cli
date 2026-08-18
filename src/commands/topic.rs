@@ -225,20 +225,31 @@ fn validate_emoji(emoji: Option<&str>) -> Result<Option<i64>, TeleError> {
     let Some(emoji) = emoji else {
         return Ok(None);
     };
-    let bytes = emoji.as_bytes();
-    if bytes.is_empty() {
+    if emoji.is_empty() {
         return Err(TeleError::Usage(
             "--emoji cannot be empty; only a single-codepoint emoji (4 UTF-8 bytes) is accepted; custom-emoji document IDs are not supported"
                 .to_string(),
         ));
     }
-    let codepoints = emoji.chars().count();
-    if bytes.len() != 4 || codepoints != 1 {
+
+    use unicode_segmentation::UnicodeSegmentation;
+    let graphemes: Vec<&str> = emoji.graphemes(true).collect();
+
+    if graphemes.len() != 1 {
         return Err(TeleError::Usage(format!(
-            "--emoji \"{emoji}\" must be a single-codepoint emoji (4 UTF-8 bytes); custom-emoji document IDs are not supported (got {} bytes, {codepoints} codepoints)",
+            "--emoji \"{emoji}\" must be a single grapheme cluster; multi-codepoint emoji (e.g. family emoji, skin tones) are not supported; custom-emoji document IDs are not supported (got {} grapheme clusters)",
+            graphemes.len(),
+        )));
+    }
+
+    let bytes = emoji.as_bytes();
+    if bytes.len() != 4 {
+        return Err(TeleError::Usage(format!(
+            "--emoji \"{emoji}\" must be exactly 4 UTF-8 bytes; multi-codepoint emoji are not supported; custom-emoji document IDs are not supported (got {} bytes)",
             bytes.len(),
         )));
     }
+
     let c = emoji.chars().next().unwrap();
     if !is_emoji_codepoint(c) {
         return Err(TeleError::Usage(format!(

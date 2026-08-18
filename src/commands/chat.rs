@@ -96,6 +96,16 @@ pub struct AdminArgs {
     demote: bool,
     #[arg(long, help = "admin rank title (e.g. Mod, Admin)")]
     title: Option<String>,
+    #[arg(
+        long,
+        help = "preset rights: moderator, editor, admin (mutually exclusive with --rights)"
+    )]
+    preset: Option<String>,
+    #[arg(
+        long,
+        help = "comma-separated rights: change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call (mutually exclusive with --preset)"
+    )]
+    rights: Option<String>,
 }
 
 #[derive(Args)]
@@ -524,7 +534,140 @@ fn validate_admin(args: &AdminArgs) -> TeleResult<()> {
             "--promote or --demote required".to_string(),
         ));
     }
+    if args.preset.is_some() && args.rights.is_some() {
+        return Err(TeleError::Usage(
+            "--preset and --rights are mutually exclusive".to_string(),
+        ));
+    }
+    if let Some(preset) = &args.preset {
+        if preset != "moderator" && preset != "editor" && preset != "admin" {
+            return Err(TeleError::Usage(format!(
+                "unknown preset '{}': use moderator, editor, or admin",
+                preset
+            )));
+        }
+    }
     Ok(())
+}
+
+struct AdminRights {
+    change_info: bool,
+    post_messages: bool,
+    edit_messages: bool,
+    delete_messages: bool,
+    ban_users: bool,
+    invite_users: bool,
+    pin_messages: bool,
+    add_admins: bool,
+    manage_call: bool,
+}
+
+impl AdminRights {
+    fn all() -> Self {
+        Self {
+            change_info: true,
+            post_messages: true,
+            edit_messages: true,
+            delete_messages: true,
+            ban_users: true,
+            invite_users: true,
+            pin_messages: true,
+            add_admins: true,
+            manage_call: true,
+        }
+    }
+
+    fn moderator() -> Self {
+        Self {
+            change_info: false,
+            post_messages: false,
+            edit_messages: false,
+            delete_messages: true,
+            ban_users: true,
+            invite_users: true,
+            pin_messages: true,
+            add_admins: false,
+            manage_call: false,
+        }
+    }
+
+    fn editor() -> Self {
+        Self {
+            change_info: true,
+            post_messages: true,
+            edit_messages: true,
+            delete_messages: true,
+            ban_users: false,
+            invite_users: true,
+            pin_messages: true,
+            add_admins: false,
+            manage_call: false,
+        }
+    }
+
+    fn from_string(s: &str) -> TeleResult<Self> {
+        let mut rights = Self {
+            change_info: false,
+            post_messages: false,
+            edit_messages: false,
+            delete_messages: false,
+            ban_users: false,
+            invite_users: false,
+            pin_messages: false,
+            add_admins: false,
+            manage_call: false,
+        };
+        for part in s.split(',') {
+            let part = part.trim();
+            match part {
+                "change_info" => rights.change_info = true,
+                "post" => rights.post_messages = true,
+                "edit" => rights.edit_messages = true,
+                "delete" => rights.delete_messages = true,
+                "ban" => rights.ban_users = true,
+                "invite" => rights.invite_users = true,
+                "pin" => rights.pin_messages = true,
+                "add_admins" => rights.add_admins = true,
+                "manage_call" => rights.manage_call = true,
+                "" => {}
+                _ => {
+                    return Err(TeleError::Usage(format!(
+                        "unknown right '{}': use change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call",
+                        part
+                    )))
+                }
+            }
+        }
+        Ok(rights)
+    }
+}
+
+fn resolve_admin_rights(args: &AdminArgs) -> TeleResult<AdminRights> {
+    if args.demote {
+        return Ok(AdminRights {
+            change_info: false,
+            post_messages: false,
+            edit_messages: false,
+            delete_messages: false,
+            ban_users: false,
+            invite_users: false,
+            pin_messages: false,
+            add_admins: false,
+            manage_call: false,
+        });
+    }
+    if let Some(preset) = &args.preset {
+        return Ok(match preset.as_str() {
+            "moderator" => AdminRights::moderator(),
+            "editor" => AdminRights::editor(),
+            "admin" => AdminRights::all(),
+            _ => AdminRights::all(),
+        });
+    }
+    if let Some(rights_str) = &args.rights {
+        return AdminRights::from_string(rights_str);
+    }
+    Ok(AdminRights::all())
 }
 
 async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -533,11 +676,23 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let dry_run = flags.dry_run;
     let promote = args.promote;
     let demote = args.demote;
+    let rights = resolve_admin_rights(&args)?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
         let user = args.user.clone();
         let title = args.title.clone();
+        let rights = AdminRights {
+            change_info: rights.change_info,
+            post_messages: rights.post_messages,
+            edit_messages: rights.edit_messages,
+            delete_messages: rights.delete_messages,
+            ban_users: rights.ban_users,
+            invite_users: rights.invite_users,
+            pin_messages: rights.pin_messages,
+            add_admins: rights.add_admins,
+            manage_call: rights.manage_call,
+        };
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({
@@ -562,18 +717,16 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .await
                 .map_err(tele_invocation)?;
             let mut builder = guard.client.set_admin_rights(chat_ref, user_ref);
-            if promote {
-                builder = builder
-                    .change_info(true)
-                    .post_messages(true)
-                    .edit_messages(true)
-                    .delete_messages(true)
-                    .ban_users(true)
-                    .invite_users(true)
-                    .pin_messages(true)
-                    .add_admins(true)
-                    .manage_call(true);
-            }
+            builder = builder
+                .change_info(rights.change_info)
+                .post_messages(rights.post_messages)
+                .edit_messages(rights.edit_messages)
+                .delete_messages(rights.delete_messages)
+                .ban_users(rights.ban_users)
+                .invite_users(rights.invite_users)
+                .pin_messages(rights.pin_messages)
+                .add_admins(rights.add_admins)
+                .manage_call(rights.manage_call);
             if let Some(t) = &title {
                 builder = builder.rank(t.clone());
             }
@@ -1447,6 +1600,8 @@ mod tests {
             promote: true,
             demote: true,
             title: None,
+            preset: None,
+            rights: None,
         };
         assert!(matches!(validate_admin(&both), Err(TeleError::Usage(_))));
         let promote_only = AdminArgs {
@@ -1455,6 +1610,8 @@ mod tests {
             promote: true,
             demote: false,
             title: None,
+            preset: None,
+            rights: None,
         };
         assert!(validate_admin(&promote_only).is_ok());
         let demote_only = AdminArgs {
@@ -1463,6 +1620,8 @@ mod tests {
             promote: false,
             demote: true,
             title: None,
+            preset: None,
+            rights: None,
         };
         assert!(validate_admin(&demote_only).is_ok());
     }
@@ -1475,6 +1634,8 @@ mod tests {
             promote: false,
             demote: false,
             title: None,
+            preset: None,
+            rights: None,
         };
         assert!(matches!(validate_admin(&neither), Err(TeleError::Usage(_))));
     }
