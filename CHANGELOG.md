@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-18
+
+### Added
+- `msg send --no-preview`: disables link previews on the live send; the effective value is shown in `--dry-run` output. Conflicts with `--file`.
+- `account list` honors `--account`/`--tag` filters; the `--json` envelope reports the filtered `accounts` set.
+
+### Changed
+- `tele listen` and `tele takeout start|export|finish` now require an explicit `--account`/`--tag` (or `all`) instead of silently acting on every session.
+- Multi-account human output labels each account's table with `== name ==` so fanout results are attributable.
+- `--parallel` help text and docs aligned to the real range (1–32).
+- `--jsonl` documented: one-shot commands emit a single envelope line; only `tele listen` streams one record per event.
+- `--config <dir>` now fails with a clear error instead of misreading a directory as a config file.
+
+### Fixed
+- Empty `--chat` values rejected with a usage error across msg/chat commands.
+- `profile set --name ""` (or whitespace-only) rejected; `--bio ""` remains allowed.
+- `msg react --reaction X --remove` conflict is now a usage error.
+- JSON error output no longer contains ANSI escape sequences.
+- Session lock files are removed when the client disconnects (no stale `.session.lock`).
+
 ## [0.3.0] - 2026-08-18
 
 ### Added
