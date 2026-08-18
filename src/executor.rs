@@ -82,7 +82,7 @@ async fn run_one(
     permit: Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>,
     future: impl std::future::Future<Output = TeleResult<serde_json::Value>>,
 ) -> TeleResult<AccountOutcome> {
-    let _permit = permit.map_err(|e| TeleError::Other(e.to_string()))?;
+    let _permit = permit.map_err(|e| TeleError::TaskPanic(e.to_string()))?;
     match future.await {
         Ok(data) => Ok(AccountOutcome {
             account: name,
@@ -102,7 +102,10 @@ async fn collect_one(
     match handle.await {
         Ok(Ok(outcome)) => outcome,
         Ok(Err(e)) => failed_outcome(name, e),
-        Err(_) => failed_outcome(name, TeleError::Other("account task panicked".to_string())),
+        Err(_) => failed_outcome(
+            name,
+            TeleError::TaskPanic("account task panicked".to_string()),
+        ),
     }
 }
 
@@ -117,7 +120,7 @@ async fn collect_outcomes(
     outcomes
 }
 
-fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
+pub fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
     flag.unwrap_or(cfg_max).clamp(1, 32)
 }
 
@@ -598,7 +601,7 @@ mod tests {
         assert!(!outcome.ok);
         assert_eq!(outcome.exit_code, Some(EXIT_ALL_FAILED));
         let error = outcome.error.unwrap();
-        assert_eq!(error["type"], "Error");
+        assert_eq!(error["type"], "TaskPanicError");
         assert_eq!(error["message"], "account task panicked");
     }
 
@@ -611,7 +614,7 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert!(matches!(outcome, TeleError::Other(_)));
+        assert!(matches!(outcome, TeleError::TaskPanic(_)));
     }
 
     #[tokio::test]

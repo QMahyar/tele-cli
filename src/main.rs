@@ -14,7 +14,6 @@ mod session;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use commands::*;
-use error::TeleResult;
 use executor::GlobalFlags;
 
 #[derive(Parser)]
@@ -166,7 +165,7 @@ fn main() -> std::process::ExitCode {
             _ = tokio::signal::ctrl_c() => error::EXIT_INTERRUPTED,
         }
     });
-    std::process::ExitCode::from(code as u8)
+    std::process::ExitCode::from(code.clamp(0, 255) as u8)
 }
 
 pub(crate) fn command_for_completions() -> clap::Command {
@@ -222,7 +221,7 @@ fn argv_command_hint() -> Option<String> {
 }
 
 async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
-    let result: TeleResult<i32> = match command {
+    let result = match command {
         Command::Account(c) => account::run(c, flags).await,
         Command::Msg(c) => msg::run(c, flags).await,
         Command::Chat(c) => chat::run(c, flags).await,
@@ -247,5 +246,22 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
             }
             e.exit_code()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exit_code_clamping_preserves_valid_codes() {
+        assert_eq!(0_i32.clamp(0, 255), 0);
+        assert_eq!(1_i32.clamp(0, 255), 1);
+        assert_eq!(255_i32.clamp(0, 255), 255);
+    }
+
+    #[test]
+    fn exit_code_clamping_limits_out_of_range() {
+        assert_eq!(256_i32.clamp(0, 255), 255);
+        assert_eq!(1000_i32.clamp(0, 255), 255);
+        assert_eq!((-1_i32).clamp(0, 255), 0);
     }
 }

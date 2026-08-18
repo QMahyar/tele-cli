@@ -1,7 +1,7 @@
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds;
 use crate::config;
-use crate::error::{TeleError, TeleResult};
+use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
@@ -530,8 +530,6 @@ fn ensure_account_config_entry(
     );
     Ok(())
 }
-
-pub use crate::error::invocation_error as tele_invocation;
 
 const QR_TOKEN_NON_TTY_WARNING: &str =
     "printing one-time login token to a non-terminal stderr; treat the output as a secret";
