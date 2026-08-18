@@ -173,6 +173,20 @@ fn select_from(
     Ok(selected.into_iter().collect())
 }
 
+pub fn select_sessions(
+    cfg: &crate::config::AppConfig,
+    sessions: &[String],
+    accounts: &[String],
+    tags: &[String],
+) -> TeleResult<Vec<String>> {
+    let session_set: BTreeSet<String> = sessions.iter().cloned().collect();
+    let selected = select_from(cfg, &session_set, accounts, tags)?;
+    Ok(selected
+        .into_iter()
+        .filter(|n| session_set.contains(n))
+        .collect())
+}
+
 pub fn print_envelope(flags: &GlobalFlags, envelope: &crate::output::Envelope) -> TeleResult<()> {
     if flags.json || flags.jsonl {
         let value = serde_json::to_value(envelope)?;
@@ -284,6 +298,66 @@ mod tests {
         tags: &[&str],
     ) -> TeleResult<Vec<String>> {
         select_from(cfg, &sessions(s), &names(accounts), &names(tags))
+    }
+
+    fn pick_list(
+        cfg: &crate::config::AppConfig,
+        s: &[&str],
+        accounts: &[&str],
+        tags: &[&str],
+    ) -> TeleResult<Vec<String>> {
+        select_sessions(cfg, &names(s), &names(accounts), &names(tags))
+    }
+
+    #[test]
+    fn list_explicit_account_filters_to_that_session() {
+        let cfg = cfg_with(&[("home", vec!["iran"]), ("work", vec!["iran"])]);
+        let got = pick_list(&cfg, &["home", "work"], &["home"], &[]).unwrap();
+        assert_eq!(got, vec!["home"]);
+    }
+
+    #[test]
+    fn list_configured_account_without_session_selects_nothing() {
+        let cfg = cfg_with(&[("home", vec![]), ("pending", vec![])]);
+        let got = pick_list(&cfg, &["home"], &["pending"], &[]).unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn list_unknown_account_is_usage_error() {
+        let cfg = cfg_with(&[("home", vec![])]);
+        let err = pick_list(&cfg, &["home"], &["bogus"], &[]).unwrap_err();
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.message().contains("unknown account bogus"));
+    }
+
+    #[test]
+    fn list_unknown_tag_is_usage_error() {
+        let cfg = cfg_with(&[("home", vec!["iran"])]);
+        let err = pick_list(&cfg, &["home"], &[], &["nosuch"]).unwrap_err();
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.message().contains("no accounts with tag nosuch"));
+    }
+
+    #[test]
+    fn list_no_selection_keeps_all_sessions() {
+        let cfg = cfg_with(&[("home", vec![]), ("work", vec![])]);
+        let got = pick_list(&cfg, &["home", "work", "orphan"], &[], &[]).unwrap();
+        assert_eq!(got, vec!["home", "orphan", "work"]);
+    }
+
+    #[test]
+    fn list_account_all_expands_to_all_sessions() {
+        let cfg = cfg_with(&[]);
+        let got = pick_list(&cfg, &["home", "work"], &["all"], &[]).unwrap();
+        assert_eq!(got, vec!["home", "work"]);
+    }
+
+    #[test]
+    fn list_tag_filters_to_tagged_sessions() {
+        let cfg = cfg_with(&[("home", vec!["iran"]), ("work", vec!["us"])]);
+        let got = pick_list(&cfg, &["home", "work"], &[], &["iran"]).unwrap();
+        assert_eq!(got, vec!["home"]);
     }
 
     #[test]
