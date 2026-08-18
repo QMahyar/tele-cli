@@ -89,7 +89,7 @@ impl RateLimiter {
         if tokens >= self.capacity {
             return;
         }
-        let mut last = self.last_refill.lock().unwrap();
+        let mut last = self.last_refill.lock().unwrap_or_else(|e| e.into_inner());
         let elapsed = last.elapsed().as_secs_f64();
         if elapsed < 0.01 {
             return;

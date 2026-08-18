@@ -1,6 +1,3 @@
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::SystemTime;
-
 use clap::{Args, Subcommand};
 use grammers_client::message::InputMessage;
 
@@ -93,8 +90,6 @@ pub struct ForwardArgs {
     ids: Vec<i32>,
     #[arg(long, help = "destination chat to forward to")]
     to: String,
-    #[arg(long, help = "forward without notification sound")]
-    silent: bool,
 }
 
 #[derive(Args)]
@@ -105,8 +100,6 @@ pub struct PinArgs {
     id: i32,
     #[arg(long, help = "remove pin instead of adding")]
     unpin: bool,
-    #[arg(long, help = "pin without notification sound")]
-    silent: bool,
 }
 
 #[derive(Args)]
@@ -215,6 +208,9 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
     if args.format == "markdown" {
         if let Some(text) = &args.text {
             validate_markdown(text)?;
+        }
+        if let Some(caption) = &args.caption {
+            validate_markdown(caption)?;
         }
     }
     Ok(())
@@ -434,7 +430,10 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         _ => TeleError::Other(e.to_string()),
                     }
                 })?;
-                let base = InputMessage::new().text(caption.unwrap_or_default());
+                let base = match format.as_str() {
+                    "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
+                    _ => InputMessage::new().text(caption.unwrap_or_default()),
+                };
                 if looks_like_image(path) {
                     base.photo(uploaded)
                 } else {
@@ -588,20 +587,22 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     requested += 1;
                     batch.push(msg.id());
                     if batch.len() >= 100 {
-                        count += guard
+                        guard
                             .client
                             .delete_messages(chat_ref, &batch)
                             .await
                             .map_err(tele_invocation)?;
+                        count += batch.len();
                         batch.clear();
                     }
                 }
                 if !batch.is_empty() {
-                    count += guard
+                    guard
                         .client
                         .delete_messages(chat_ref, &batch)
                         .await
                         .map_err(tele_invocation)?;
+                    count += batch.len();
                 }
                 let (report, partial) = delete_report(requested, count);
                 if partial {
@@ -620,7 +621,7 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     ));
                 }
                 for chunk in batches(&ids) {
-                    let affected = guard
+                    guard
                         .client
                         .invoke(&grammers_client::tl::functions::messages::DeleteMessages {
                             revoke: false,
@@ -628,20 +629,16 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    let pts_count = match affected {
-                        grammers_client::tl::enums::messages::AffectedMessages::Messages(x) => {
-                            x.pts_count
-                        }
-                    };
-                    count += pts_count as usize;
+                    count += chunk.len();
                 }
             } else {
                 for chunk in batches(&ids) {
-                    count += guard
+                    guard
                         .client
                         .delete_messages(chat_ref, chunk)
                         .await
                         .map_err(tele_invocation)?;
+                    count += chunk.len();
                 }
             }
             let (report, partial) = delete_report(ids.len(), count);
@@ -669,7 +666,6 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_forward(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let silent = args.silent;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let from_target = args.from.clone();
@@ -697,17 +693,11 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let mut dropped: Vec<i32> = Vec::new();
             let mut failed: Vec<i32> = Vec::new();
             for chunk in batches(&ids) {
-                let sent = if silent {
-                    let from_peer = entities::input_peer(&from).await.map_err(tele_invocation)?;
-                    let to_peer = entities::input_peer(&to).await.map_err(tele_invocation)?;
-                    forward_silent(&guard.client, to_ref, from_peer, to_peer, chunk).await
-                } else {
-                    guard
-                        .client
-                        .forward_messages(to_ref, chunk, from_ref)
-                        .await
-                        .map_err(tele_invocation)
-                };
+                let sent = guard
+                    .client
+                    .forward_messages(to_ref, chunk, from_ref)
+                    .await
+                    .map_err(tele_invocation);
                 match sent {
                     Ok(results) => {
                         push_forward_results(&mut forwarded, &mut dropped, chunk, results)?
@@ -779,86 +769,6 @@ fn forward_report(
     (value, should_warn)
 }
 
-static RANDOM_ID: AtomicI64 = AtomicI64::new(0);
-
-fn random_ids(count: usize) -> Vec<i64> {
-    let seed = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
-        .max(1);
-    RANDOM_ID.fetch_max(seed, Ordering::SeqCst);
-    (0..count)
-        .map(|_| RANDOM_ID.fetch_add(1, Ordering::SeqCst))
-        .collect()
-}
-
-fn forwarded_ids(
-    updates: &grammers_client::tl::enums::Updates,
-    random_ids: &[i64],
-) -> TeleResult<Vec<i32>> {
-    let response_updates: &[grammers_client::tl::enums::Update] = match updates {
-        grammers_client::tl::enums::Updates::Updates(u) => &u.updates,
-        grammers_client::tl::enums::Updates::Combined(u) => &u.updates,
-        _ => &[],
-    };
-    let mut new_ids = Vec::new();
-    for update in response_updates {
-        if let grammers_client::tl::enums::Update::MessageId(m) = update {
-            if random_ids.contains(&m.random_id) {
-                new_ids.push(m.id);
-            }
-        }
-    }
-    Ok(new_ids)
-}
-
-async fn forward_silent(
-    client: &grammers_client::Client,
-    to_ref: grammers_session::types::PeerRef,
-    from_peer: grammers_client::tl::enums::InputPeer,
-    to_peer: grammers_client::tl::enums::InputPeer,
-    ids: &[i32],
-) -> TeleResult<Vec<Option<grammers_client::message::Message>>> {
-    let random_ids = random_ids(ids.len());
-    let request = grammers_client::tl::functions::messages::ForwardMessages {
-        silent: true,
-        background: false,
-        with_my_score: false,
-        drop_author: false,
-        drop_media_captions: false,
-        from_peer,
-        id: ids.to_vec(),
-        random_id: random_ids.clone(),
-        to_peer,
-        top_msg_id: None,
-        reply_to: None,
-        schedule_date: None,
-        schedule_repeat_period: None,
-        send_as: None,
-        noforwards: false,
-        quick_reply_shortcut: None,
-        allow_paid_floodskip: false,
-        effect: None,
-        video_timestamp: None,
-        allow_paid_stars: None,
-        suggested_post: None,
-    };
-    let updates = client.invoke(&request).await.map_err(tele_invocation)?;
-    let new_ids = forwarded_ids(&updates, &random_ids)?;
-    if new_ids.is_empty() {
-        crate::output::log_line(
-            "warn",
-            "forward succeeded but no new message ids were reported",
-        );
-        return Ok(Vec::new());
-    }
-    client
-        .get_messages_by_id(to_ref, &new_ids)
-        .await
-        .map_err(tele_invocation)
-}
-
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -896,7 +806,17 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_get(args: &GetArgs) -> TeleResult<()> {
+    if args.last && args.offset_id.is_some() {
+        return Err(TeleError::Usage(
+            "--last and --offset-id are mutually exclusive".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_get(&args)?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
@@ -1611,78 +1531,6 @@ mod tests {
     }
 
     #[test]
-    fn random_ids_are_unique_positive_and_increasing() {
-        let a = random_ids(5);
-        let b = random_ids(5);
-        assert_eq!(a.len(), 5);
-        assert_eq!(b.len(), 5);
-        assert!(a.iter().all(|&x| x > 0));
-        assert!(a.windows(2).all(|w| w[0] < w[1]));
-        assert!(b.windows(2).all(|w| w[0] < w[1]));
-        let mut all = a;
-        all.extend_from_slice(&b);
-        all.sort_unstable();
-        all.dedup();
-        assert_eq!(all.len(), 10);
-    }
-
-    fn message_id_update(random_id: i64, id: i32) -> grammers_client::tl::enums::Update {
-        grammers_client::tl::enums::Update::MessageId(grammers_client::tl::types::UpdateMessageId {
-            id,
-            random_id,
-        })
-    }
-
-    fn plain_updates(
-        updates: Vec<grammers_client::tl::enums::Update>,
-    ) -> grammers_client::tl::enums::Updates {
-        grammers_client::tl::enums::Updates::Updates(grammers_client::tl::types::Updates {
-            updates,
-            users: Vec::new(),
-            chats: Vec::new(),
-            date: 0,
-            seq: 0,
-        })
-    }
-
-    fn combined_updates(
-        updates: Vec<grammers_client::tl::enums::Update>,
-    ) -> grammers_client::tl::enums::Updates {
-        grammers_client::tl::enums::Updates::Combined(grammers_client::tl::types::UpdatesCombined {
-            updates,
-            users: Vec::new(),
-            chats: Vec::new(),
-            date: 0,
-            seq_start: 0,
-            seq: 0,
-        })
-    }
-
-    #[test]
-    fn forwarded_ids_collect_matching_ids_from_plain_updates() {
-        let updates = plain_updates(vec![
-            message_id_update(101, 7),
-            message_id_update(999, 9),
-            message_id_update(102, 8),
-        ]);
-        assert_eq!(forwarded_ids(&updates, &[101, 102]).unwrap(), vec![7, 8]);
-    }
-
-    #[test]
-    fn forwarded_ids_collect_matching_ids_from_combined_updates() {
-        let updates = combined_updates(vec![message_id_update(101, 7), message_id_update(999, 9)]);
-        assert_eq!(forwarded_ids(&updates, &[101]).unwrap(), vec![7]);
-    }
-
-    #[test]
-    fn forwarded_ids_no_matching_updates_returns_empty_ok() {
-        let updates = plain_updates(vec![message_id_update(999, 9)]);
-        assert_eq!(forwarded_ids(&updates, &[101]).unwrap(), Vec::<i32>::new());
-        let empty = combined_updates(Vec::new());
-        assert_eq!(forwarded_ids(&empty, &[101]).unwrap(), Vec::<i32>::new());
-    }
-
-    #[test]
     fn forward_batch_indexing_does_not_panic_on_short_chunk() {
         let chunk: [i32; 3] = [1, 2, 3];
         let mut forwarded: Vec<serde_json::Value> = Vec::new();
@@ -1823,12 +1671,36 @@ mod tests {
             from: "a".to_string(),
             ids: Vec::new(),
             to: "b".to_string(),
-            silent: false,
         };
         assert!(matches!(validate_forward(&args), Err(TeleError::Usage(_))));
         let mut with_ids = args;
         with_ids.ids = vec![3];
         assert!(validate_forward(&with_ids).is_ok());
+    }
+
+    #[test]
+    fn get_rejects_last_with_offset_id() {
+        let args = GetArgs {
+            chat: "me".to_string(),
+            limit: 10,
+            offset_id: Some(5),
+            last: true,
+        };
+        assert!(matches!(validate_get(&args), Err(TeleError::Usage(_))));
+        let no_offset = GetArgs {
+            chat: "me".to_string(),
+            limit: 10,
+            offset_id: None,
+            last: true,
+        };
+        assert!(validate_get(&no_offset).is_ok());
+        let no_last = GetArgs {
+            chat: "me".to_string(),
+            limit: 10,
+            offset_id: Some(5),
+            last: false,
+        };
+        assert!(validate_get(&no_last).is_ok());
     }
 
     #[test]

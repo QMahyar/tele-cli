@@ -6,8 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- `msg forward` no longer accepts `--silent` (forward path unified on grammers `forward_messages`; per-message id mapping is request-ordered and confirms can no longer be silently lost).
+- `msg pin` no longer accepts `--silent` (grammers pins are always silent).
+
 ### Fixed
 - Fixed: download/upload path guards now canonicalize the app-data guard dir too — on volumes with 8.3 short names (e.g. GitHub Actions runners, `RUNNER~1`), a download/upload path written with the short alias could bypass the guard. `resolve_for_guard` tests canonicalize their expectation.
+- Fixed: `msg delete` reports the number of messages actually sent for deletion (batch sizes), not the server's PTS delta — multi-id deletes no longer report `partial` and exit 2 on the happy path.
+- Fixed: `msg --file` captions now honor `--format markdown`.
+- Fixed: `msg get --last` with `--offset-id` is rejected (the combination was ambiguous).
 
 ## [0.2.0] - 2026-08-17
 
@@ -26,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   budget; `None` = unlimited) and `flood_sleep_threshold: u64` (per-account
   AutoSleep threshold; `None` = global default).
 - ADR-008 supersedes ADR-004 for flood/parallel design.
+
 
 ## [0.1.2] - 2026-08-17
 
@@ -95,11 +103,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - JSON/JSONL machine output with structured envelope
 - Dry-run mode for all commands
 - Comprehensive test suite (268 tests)
-- Per-account flood weights: each account now gets its own token-bucket rate limiter
-  (`rpc_per_minute`) and flood cooldown (`flood_sleep_threshold`), replacing the
-  single global semaphore. A flooded account no longer blocks siblings.
-- `--parallel` clamp raised to 1..=32 (was 1..=3); default remains 1.
-- New config keys under `[accounts.<name>]`: `rpc_per_minute: f64` (token-bucket
-  budget; `None` = unlimited) and `flood_sleep_threshold: u64` (per-account
-  AutoSleep threshold; `None` = global default).
-- ADR-007 supersedes ADR-004 for flood/parallel design.

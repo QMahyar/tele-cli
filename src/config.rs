@@ -192,7 +192,11 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     let path = app_data_dir().join(".env");
     let _ = crate::fs_util::restrict_file_private(&path);
     let stamp = FileStamp::of(&path);
-    if let Some(creds) = CREDS_CACHE.lock().unwrap().get(&(path.clone(), stamp)) {
+    if let Some(creds) = CREDS_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(path.clone(), stamp))
+    {
         return Ok(creds.clone());
     }
     let mut env = load_env(&path);
@@ -213,7 +217,7 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     };
     CREDS_CACHE
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert((path, stamp), creds.clone());
     #[cfg(test)]
     ENV_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -239,13 +243,17 @@ pub fn load_config(path: Option<&std::path::Path>) -> TeleResult<AppConfig> {
         None => app_data_dir().join("config.toml"),
     };
     let stamp = FileStamp::of(&cfg_path);
-    if let Some(cfg) = CONFIG_CACHE.lock().unwrap().get(&(cfg_path.clone(), stamp)) {
+    if let Some(cfg) = CONFIG_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(cfg_path.clone(), stamp))
+    {
         return Ok(cfg.clone());
     }
     let cfg = read_config(&cfg_path).map_err(|e| TeleError::Config(format!("{e:#}")))?;
     CONFIG_CACHE
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert((cfg_path, stamp), cfg.clone());
     Ok(cfg)
 }
@@ -318,6 +326,10 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     let tmp_path = std::path::PathBuf::from(tmp_name);
     let result = std::fs::write(&tmp_path, text).and_then(|()| {
         crate::fs_util::restrict_file_private(&tmp_path)?;
+        #[cfg(windows)]
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
         std::fs::rename(&tmp_path, path)
     });
     if result.is_err() {
