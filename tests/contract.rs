@@ -258,7 +258,7 @@ fn parallel_out_of_range_is_clamped_not_usage_error() {
         );
         assert_eq!(
             code, 0,
-            "--parallel {n} must clamp to 1-3, not a usage error: stderr: {err}"
+            "--parallel {n} must clamp to 1-32, not a usage error: stderr: {err}"
         );
     }
 }
@@ -445,6 +445,13 @@ fn clap_parse_error_emits_json_envelope() {
             .unwrap_or_default()
             .contains("foobar"),
         "stdout: {out}"
+    );
+    assert!(
+        !v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains('\u{1b}'),
+        "envelope message must not contain ANSI escapes: stdout: {out}"
     );
 }
 

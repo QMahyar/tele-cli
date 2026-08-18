@@ -10,8 +10,9 @@ tele [GLOBAL] GROUP COMMAND [ARGS]
 Globals (root callback, inherited):
   --account NAME     repeatable; NAME or all
   --tag TAG          repeatable; union with --account
-  --parallel N       default 1; max 3
+  --parallel N       default 1; max 32 (values outside 1..=32 are clamped with a warning)
   --json             machine output on stdout
+  --jsonl            machine output: JSON lines (one-shot commands emit a single envelope line; only `tele listen` emits one record per event)
   --quiet / -q
   --verbose / -v     maps to log level
   --dry-run
@@ -72,6 +73,10 @@ object with the same fields as `results[].error`:
 Clap parse errors (unknown subcommand, missing required flag) and the
 `--json`/`--jsonl` conflict also emit this envelope on stdout when `--json` or
 `--jsonl` is present.
+
+`--jsonl` for one-shot commands is identical to `--json`: exactly one envelope
+line on stdout (valid JSONL). Only `tele listen` emits one record per event
+(see below). Envelope `error.message` strings are stripped of ANSI escapes.
 
 ```json
 {

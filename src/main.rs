@@ -41,12 +41,16 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        help = "parallel accounts (1-3; default from config parallel_max)"
+        help = "parallel accounts (1-32; default from config parallel_max)"
     )]
     parallel: Option<u32>,
     #[arg(long, global = true, help = "machine output: single JSON envelope")]
     json: bool,
-    #[arg(long, global = true, help = "machine output: JSON lines")]
+    #[arg(
+        long,
+        global = true,
+        help = "machine output: JSON lines (one-shot commands emit a single envelope line)"
+    )]
     jsonl: bool,
     #[arg(long, global = true, help = "validate without touching Telegram")]
     dry_run: bool,
@@ -104,6 +108,24 @@ enum Command {
     Completions(completions::Shell),
 }
 
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn main() -> std::process::ExitCode {
     logging::init();
     let matches = match Cli::command().try_get_matches() {
@@ -117,8 +139,7 @@ fn main() -> std::process::ExitCode {
             let _ = e.print();
             if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
                 let hint = argv_command_hint().unwrap_or_default();
-                let error_json =
-                    serde_json::json!({"type": "UsageError", "message": e.to_string()});
+                let error_json = serde_json::json!({"type": "UsageError", "message": strip_ansi(&e.to_string())});
                 let envelope = output::Envelope::failed(false, &hint, error_json);
                 if let Ok(v) = serde_json::to_value(&envelope) {
                     let _ = output::print_json(&v);
@@ -141,8 +162,8 @@ fn main() -> std::process::ExitCode {
     };
     logging::set_flags(cli.verbose, flags.quiet);
     if let Some(p) = flags.parallel {
-        if !(1..=3).contains(&p) {
-            output::log_line("warn", &format!("--parallel {p} is outside 1-3; clamped"));
+        if !(1..=32).contains(&p) {
+            output::log_line("warn", &format!("--parallel {p} is outside 1-32; clamped"));
         }
     }
     if flags.json && flags.jsonl {
@@ -251,6 +272,32 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn strip_ansi_leaves_plain_text_unchanged() {
+        assert_eq!(
+            strip_ansi("error: unexpected argument"),
+            "error: unexpected argument"
+        );
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_code() {
+        assert_eq!(strip_ansi("\x1b[31merror\x1b[0m"), "error");
+    }
+
+    #[test]
+    fn strip_ansi_removes_multiple_escapes() {
+        assert_eq!(strip_ansi("a\x1b[1;31mb\x1b[0mc"), "abc");
+    }
+
+    #[test]
+    fn strip_ansi_removes_escape_at_start_and_end() {
+        assert_eq!(strip_ansi("\x1b[32mstart"), "start");
+        assert_eq!(strip_ansi("end\x1b[0m"), "end");
+    }
+
     #[test]
     fn exit_code_clamping_preserves_valid_codes() {
         assert_eq!(0_i32.clamp(0, 255), 0);
