@@ -323,12 +323,11 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
             "refusing to upload a file from the telecli app data directory".to_string(),
         ));
     }
-    let lower = base.to_ascii_lowercase();
-    if lower == ".env"
+    let lower = base.to_lowercase();
+    if lower.starts_with(".env")
         || lower.ends_with(".session")
         || lower.ends_with(".session-journal")
-        || lower == "config.toml"
-        || lower.starts_with("config.toml.")
+        || lower.starts_with("config.toml")
     {
         return Err(TeleError::Usage(format!(
             "refusing to upload sensitive file {base}"
@@ -2342,6 +2341,16 @@ mod tests {
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn download_force_flag_allows_overwrite() {
+        let dir = temp_path("dl-force");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("existing.txt");
+        std::fs::write(&target, b"old").unwrap();
+        assert!(refuse_existing_download_target(&target).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

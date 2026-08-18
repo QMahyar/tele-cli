@@ -28,7 +28,7 @@ pub async fn run_fanout(
         + 'static,
 ) -> TeleResult<crate::output::Envelope> {
     let cfg = crate::config::load_config(flags.config_path.as_deref())?;
-    let names = select_accounts(flags)?;
+    let names = select_accounts_from_cfg(&cfg, flags)?;
     if names.is_empty() {
         return Err(TeleError::Usage(
             "no accounts selected: use --account <name> or --tag <tag>".to_string(),
@@ -123,8 +123,15 @@ fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
 
 pub fn select_accounts(flags: &GlobalFlags) -> TeleResult<Vec<String>> {
     let cfg = crate::config::load_config(flags.config_path.as_deref())?;
+    select_accounts_from_cfg(&cfg, flags)
+}
+
+fn select_accounts_from_cfg(
+    cfg: &crate::config::AppConfig,
+    flags: &GlobalFlags,
+) -> TeleResult<Vec<String>> {
     let sessions: BTreeSet<String> = crate::session::list_session_names().into_iter().collect();
-    select_from(&cfg, &sessions, &flags.account, &flags.tag)
+    select_from(cfg, &sessions, &flags.account, &flags.tag)
 }
 
 fn select_from(
