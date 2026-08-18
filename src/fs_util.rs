@@ -12,7 +12,103 @@ pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
     restrict(path, 0o600)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE,
+        SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    };
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenUser, ACE_FLAGS, ACL, DACL_SECURITY_INFORMATION, PSID,
+        TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE::default();
+        if let Err(e) = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) {
+            return Err(std::io::Error::other(e.to_string()));
+        }
+
+        let mut size = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut size);
+        let mut buffer = vec![0u8; size as usize];
+        if let Err(e) = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buffer.as_mut_ptr() as *mut _),
+            size,
+            &mut size,
+        ) {
+            let _ = CloseHandle(token);
+            return Err(std::io::Error::other(e.to_string()));
+        }
+
+        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let user_sid = PSID(token_user.User.Sid.0);
+
+        let trustee = TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: PWSTR(user_sid.0 as *mut u16),
+        };
+
+        let ea = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_ALL_ACCESS.0,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: ACE_FLAGS(0),
+            Trustee: trustee,
+        };
+
+        let mut new_acl: *mut ACL = std::ptr::null_mut();
+        let result = SetEntriesInAclW(Some(&[ea]), None, &mut new_acl);
+        if result.0 != 0 {
+            let _ = CloseHandle(token);
+            return Err(std::io::Error::other(format!(
+                "SetEntriesInAclW failed: {}",
+                result.0
+            )));
+        }
+
+        let path_wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let result = SetNamedSecurityInfoW(
+            PCWSTR(path_wide.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(new_acl),
+            None,
+        );
+
+        if !new_acl.is_null() {
+            let _ = LocalFree(HLOCAL(new_acl as *mut _));
+        }
+        let _ = CloseHandle(token);
+
+        if result.0 != 0 {
+            return Err(std::io::Error::other(format!(
+                "SetNamedSecurityInfoW failed: {}",
+                result.0
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn restrict_file_private(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }

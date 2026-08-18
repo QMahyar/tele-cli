@@ -7,6 +7,22 @@ use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
 use std::io::IsTerminal;
+
+fn redact_phone(phone: &str) -> String {
+    let phone = phone.trim();
+    if phone.len() <= 6 {
+        return phone.to_string();
+    }
+    let prefix_len = phone.chars().take_while(|c| !c.is_ascii_digit()).count();
+    let digits: Vec<char> = phone.chars().skip(prefix_len).collect();
+    if digits.len() <= 6 {
+        return phone.to_string();
+    }
+    let prefix: String = phone.chars().take(prefix_len + 1).collect();
+    let suffix: String = digits.iter().rev().take(3).rev().collect();
+    format!("{}***{}", prefix, suffix)
+}
+
 #[derive(Subcommand)]
 pub enum AccountCmd {
     List,
@@ -254,7 +270,10 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let code = code_line.trim().to_string();
             match guard.client.sign_in(&token, &code).await {
                 Ok(_user) => {
-                    log_line("info", &format!("account {} logged in", args.name));
+                    log_line(
+                        "info",
+                        &format!("account {} logged in ({})", args.name, redact_phone(&phone)),
+                    );
                 }
                 Err(grammers_client::SignInError::PasswordRequired(pw_token)) => {
                     let Some(password_line) =
