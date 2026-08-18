@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
+use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -161,6 +162,7 @@ pub async fn run(cmd: ChatCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -241,6 +243,7 @@ fn is_bare_invite_hash(input: &str) -> bool {
 }
 
 async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -307,6 +310,7 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -385,6 +389,7 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -483,6 +488,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
 }
 
 async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -524,6 +530,7 @@ async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_admin(args: &AdminArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
     if args.promote && args.demote {
         return Err(TeleError::Usage(
             "--promote and --demote are mutually exclusive".to_string(),
@@ -744,6 +751,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -884,6 +892,7 @@ fn stats_dry_run_payload(chat: &str, broadcast: bool) -> serde_json::Value {
 }
 
 async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let broadcast = args.broadcast;
@@ -1590,6 +1599,126 @@ mod tests {
                 "kind {kind} should pass"
             );
         }
+    }
+
+    fn dryrun_flags(command: &str) -> GlobalFlags {
+        GlobalFlags {
+            account: vec!["me".to_string()],
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: true,
+            config_path: None,
+            command: command.to_string(),
+        }
+    }
+
+    #[test]
+    fn admin_rejects_empty_chat() {
+        let mut args = AdminArgs {
+            chat: "  ".to_string(),
+            user: "u".to_string(),
+            promote: true,
+            demote: false,
+            title: None,
+            preset: None,
+            rights: None,
+        };
+        assert!(matches!(validate_admin(&args), Err(TeleError::Usage(_))));
+        args.chat = "c".to_string();
+        assert!(validate_admin(&args).is_ok());
+    }
+
+    #[tokio::test]
+    async fn chat_commands_reject_empty_chat_before_connect() {
+        let flags = dryrun_flags("chat join");
+        assert!(matches!(
+            join(
+                ChatArgs {
+                    chat: String::new()
+                },
+                &flags
+            )
+            .await,
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            leave(
+                ChatArgs {
+                    chat: "   ".to_string()
+                },
+                &flags
+            )
+            .await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let flags = dryrun_flags("chat invite");
+        assert!(matches!(
+            invite(
+                InviteArgs {
+                    chat: String::new(),
+                    user: "u".to_string(),
+                },
+                &flags,
+            )
+            .await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let flags = dryrun_flags("chat participants");
+        assert!(matches!(
+            participants(
+                ParticipantsArgs {
+                    chat: "\t".to_string(),
+                    limit: 10,
+                },
+                &flags,
+            )
+            .await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let flags = dryrun_flags("chat kick");
+        assert!(matches!(
+            kick(
+                KickArgs {
+                    chat: String::new(),
+                    user: "u".to_string(),
+                },
+                &flags,
+            )
+            .await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let flags = dryrun_flags("chat admin-log");
+        assert!(matches!(
+            admin_log(
+                AdminLogArgs {
+                    chat: "   ".to_string(),
+                    limit: 10,
+                },
+                &flags,
+            )
+            .await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let flags = dryrun_flags("chat stats");
+        assert!(matches!(
+            stats(
+                StatsArgs {
+                    chat: String::new(),
+                    broadcast: false,
+                },
+                &flags,
+            )
+            .await,
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]
