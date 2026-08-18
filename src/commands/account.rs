@@ -2,7 +2,7 @@ use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds;
 use crate::config;
 use crate::error::{tele_invocation, TeleError, TeleResult};
-use crate::executor::{run_fanout, GlobalFlags};
+use crate::executor::{run_fanout, select_sessions, GlobalFlags};
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
@@ -70,7 +70,12 @@ pub async fn run(cmd: AccountCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
     let cfg = config::load_config(flags.config_path.as_deref())?;
-    let names = session::list_session_names();
+    let names = select_sessions(
+        &cfg,
+        &session::list_session_names(),
+        &flags.account,
+        &flags.tag,
+    )?;
     let mut rows = Vec::new();
     for name in names {
         let tags = cfg
