@@ -57,6 +57,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
 
@@ -102,7 +103,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         ]
                     })
                     .collect();
-                output::print_table(&["id", "name", "phone"], &table_rows);
+                output::print_account_table(&name, multi, &["id", "name", "phone"], &table_rows);
             }
             Ok(serde_json::json!({"contacts": rows}))
         })

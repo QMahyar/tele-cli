@@ -840,6 +840,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let limit = args.limit as usize;
     let offset_id = args.offset_id;
     let last = args.last;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -886,7 +887,12 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         ]
                     })
                     .collect();
-                output::print_table(&["id", "date", "sender", "text"], &table_rows);
+                output::print_account_table(
+                    &name,
+                    multi,
+                    &["id", "date", "sender", "text"],
+                    &table_rows,
+                );
             }
             Ok(serde_json::json!({"messages": rows}))
         })
@@ -1034,6 +1040,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let jsonl = flags.jsonl;
     let dry_run = flags.dry_run;
     let limit = args.limit as usize;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -1076,7 +1083,12 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         ]
                     })
                     .collect();
-                output::print_table(&["id", "date", "sender", "text"], &table_rows);
+                output::print_account_table(
+                    &name,
+                    multi,
+                    &["id", "date", "sender", "text"],
+                    &table_rows,
+                );
             }
             Ok(serde_json::json!({"messages": rows}))
         })
