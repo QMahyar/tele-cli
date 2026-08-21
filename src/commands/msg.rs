@@ -44,6 +44,12 @@ pub struct SendArgs {
     caption: Option<String>,
     #[arg(long, help = "message ID to reply to")]
     reply: Option<i32>,
+    #[arg(
+        long,
+        help = "forum topic ID to post into (conflicts with --reply)",
+        conflicts_with = "reply"
+    )]
+    topic: Option<i32>,
     #[arg(long, default_value_t = true, help = "show link preview")]
     preview: bool,
     #[arg(long, action = clap::ArgAction::SetTrue, help = "disable link preview")]
@@ -238,6 +244,13 @@ fn effective_preview(args: &SendArgs) -> bool {
 
 fn validate_send(args: &SendArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    if let Some(topic) = args.topic {
+        if topic <= 0 {
+            return Err(TeleError::Usage(
+                "--topic must be a positive topic ID".to_string(),
+            ));
+        }
+    }
     match args.format.as_str() {
         "plain" | "markdown" => Ok(()),
         other => Err(TeleError::Usage(format!(
@@ -473,6 +486,7 @@ fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::V
         "format": args.format,
         "schedule": schedule,
         "reply": args.reply,
+        "topic": args.topic,
         "preview": effective_preview(args),
         "silent": args.silent,
         "would": would,
@@ -493,7 +507,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let file = args.file.clone();
         let format = args.format.clone();
         let schedule = schedule.map(|s| s as u64);
-        let reply = args.reply;
+        let reply = args.reply.or(args.topic);
         let preview = effective_preview(&args);
         let silent = args.silent;
         Box::pin(async move {
@@ -1527,6 +1541,7 @@ mod tests {
             file: None,
             caption: None,
             reply: None,
+            topic: None,
             preview: true,
             no_preview: false,
             format: format.to_string(),
@@ -2931,6 +2946,17 @@ mod tests {
         assert_eq!(value["preview"], serde_json::json!(true));
         assert_eq!(value["silent"], serde_json::json!(false));
         assert_eq!(value["would"], serde_json::json!("send message to chat @x"));
+    }
+
+    #[test]
+    fn validate_send_rejects_nonpositive_topic() {
+        let mut args = send_args("plain");
+        args.topic = Some(0);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.topic = Some(-5);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.topic = Some(7);
+        assert!(validate_send(&args).is_ok());
     }
 
     #[test]
