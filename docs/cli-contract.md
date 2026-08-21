@@ -118,6 +118,12 @@ Rules:
   describing the exact intended action (using the command's argument values),
   and the command's own argument keys — all additive. `account add` and
   `tele listen` follow the same `would` convention where applicable.
+- Message objects may carry `media_kind` (`photo`, `document`, `sticker`,
+  `poll`, …) and `media_label` (filename / emoji / question; `null` when the
+  kind has no label) alongside the legacy colon-joined `media` string.
+- `dialog drafts` keys drafts by chat id: positive for users,
+  `-chat_id`/`-channel_id` (negated) for basic groups/channels — matching the
+  Telegram bare-id convention used by `--chat` numeric targets.
 
 Human mode (no `--json`): Rich tables on stdout. Same exit codes.
 
@@ -159,6 +165,16 @@ account describing the intended stream, following the `would` convention
 ```json
 {"event":"NewMessage","account":"work","dry_run":true,"would":"stream NewMessage updates from account work"}
 ```
+
+Runtime semantics:
+
+- **Ctrl+C** exits `130`; the stream task is aborted with the process.
+- On stream failure, `listen` reconnects with exponential backoff (1s → 30s,
+  capped at 5 consecutive attempts); an auth failure fails fast instead of
+  retrying.
+- The underlying update stream uses `catch_up: true`: after downtime, backlog
+  accumulated while offline is replayed before live events. Consumers that
+  require live-only behavior must filter by `date`.
 
 ## `tele raw`
 
