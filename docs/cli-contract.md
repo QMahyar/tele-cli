@@ -151,6 +151,19 @@ Rules:
 
 Human mode (no `--json`): Rich tables on stdout. Same exit codes.
 
+## `msg pin` / `msg read` / `msg download`
+
+- `msg pin --show` emits `results[].data.pinned_message` (message object or
+  null). `msg pin --all` emits `{"unpinned_all": true}`. Both are mutually
+  exclusive with `--id`, `--unpin`, and each other.
+- `msg pin --notify` pins with a member notification (default stays silent);
+  it uses the raw `messages.updatePinnedMessage` path.
+- `msg read --mentions` clears only the mention badge
+  (`{"mentions_cleared": true}`); mutually exclusive with `--mark-unread`.
+- `msg download --chunk-size-kb <4-512, multiple of 4>` streams the media via
+  chunked `iter_download` into the same temp+commit flow; without it the
+  default one-shot download is unchanged.
+
 ## `msg delete`
 
 `results[].data` carries `requested` (number asked to delete) and `deleted`

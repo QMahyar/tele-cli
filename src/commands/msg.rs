@@ -111,9 +111,27 @@ pub struct PinArgs {
     )]
     chat: String,
     #[arg(long, help = "message ID to pin or unpin")]
-    id: i32,
+    id: Option<i32>,
     #[arg(long, help = "remove pin instead of adding")]
     unpin: bool,
+    #[arg(
+        long,
+        help = "notify chat members when pinning",
+        conflicts_with_all = &["unpin", "show", "all"]
+    )]
+    notify: bool,
+    #[arg(
+        long,
+        help = "show the currently pinned message",
+        conflicts_with_all = &["id", "unpin", "all", "notify"]
+    )]
+    show: bool,
+    #[arg(
+        long,
+        help = "unpin all pinned messages",
+        conflicts_with_all = &["id", "unpin", "show", "notify"]
+    )]
+    all: bool,
 }
 
 #[derive(Args)]
@@ -140,6 +158,12 @@ pub struct ReadArgs {
     chat: String,
     #[arg(long, help = "mark as unread instead of read")]
     mark_unread: bool,
+    #[arg(
+        long,
+        help = "clear the mention badge only",
+        conflicts_with = "mark_unread"
+    )]
+    mentions: bool,
 }
 
 #[derive(Args)]
@@ -183,6 +207,8 @@ pub struct DownloadArgs {
     dir: String,
     #[arg(long, help = "overwrite existing files")]
     force: bool,
+    #[arg(long, help = "streaming chunk size in KB (4-512, multiple of 4)")]
+    chunk_size_kb: Option<usize>,
 }
 
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -822,20 +848,37 @@ fn forward_report(
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
+    validate_pin(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
     let unpin = args.unpin;
+    let notify = args.notify;
+    let show = args.show;
+    let all = args.all;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
+                let would = if show {
+                    "show pinned message".to_string()
+                } else if all {
+                    "unpin all messages".to_string()
+                } else {
+                    format!(
+                        "{} message {}",
+                        if unpin { "unpin" } else { "pin" },
+                        id.unwrap_or_default()
+                    )
+                };
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "id": id,
                     "unpin": unpin,
-                    "would": format!("{} message {id}", if unpin { "unpin" } else { "pin" })
+                    "show": show,
+                    "all": all,
+                    "would": would
                 }));
             }
             let guard =
@@ -845,8 +888,44 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let result = if unpin {
+            if show {
+                let pinned = guard
+                    .client
+                    .get_pinned_message(chat_ref)
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({
+                    "pinned_message": match &pinned {
+                        Some(m) => crate::serialize::message_to_json(m)?,
+                        None => serde_json::Value::Null,
+                    }
+                }));
+            }
+            if all {
+                guard
+                    .client
+                    .unpin_all_messages(chat_ref)
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({"unpinned_all": true}));
+            }
+            let id = id.expect("validated: id required outside show/all modes");
+            use grammers_client::tl;
+            let result: std::result::Result<(), grammers_client::InvocationError> = if unpin {
                 guard.client.unpin_message(chat_ref, id).await
+            } else if notify {
+                let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                guard
+                    .client
+                    .invoke(&tl::functions::messages::UpdatePinnedMessage {
+                        silent: false,
+                        unpin: false,
+                        pm_oneside: false,
+                        peer: input_peer,
+                        id,
+                    })
+                    .await
+                    .map(drop)
             } else {
                 guard.client.pin_message(chat_ref, id).await
             };
@@ -856,6 +935,18 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn validate_pin(args: &PinArgs) -> TeleResult<()> {
+    if args.show || args.all {
+        return Ok(());
+    }
+    if args.id.is_none() {
+        return Err(TeleError::Usage(
+            "--id required (or use --show / --all)".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_get(args: &GetArgs) -> TeleResult<()> {
@@ -969,6 +1060,7 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let mark_unread = args.mark_unread;
+    let mentions = args.mentions;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -977,9 +1069,16 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "unread": mark_unread,
+                    "mentions": mentions,
                     "would": format!(
                         "mark chat {chat_target} as {}",
-                        if mark_unread { "unread" } else { "read" }
+                        if mentions {
+                            "mentions-cleared"
+                        } else if mark_unread {
+                            "unread"
+                        } else {
+                            "read"
+                        }
                     ),
                 }));
             }
@@ -989,7 +1088,15 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            if mark_unread {
+            if mentions {
+                let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+                guard
+                    .client
+                    .clear_mentions(chat_ref)
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({"mentions_cleared": true}));
+            } else if mark_unread {
                 let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
                 let dialog = grammers_client::tl::enums::InputDialogPeer::Peer(
                     grammers_client::tl::types::InputDialogPeer { peer },
@@ -1153,9 +1260,13 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
     validate_download_dir(&args.dir)?;
+    if let Some(kb) = args.chunk_size_kb {
+        validate_chunk_size_kb(kb)?;
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
+    let chunk_size_kb = args.chunk_size_kb;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -1204,10 +1315,45 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             })
             .await
             .map_err(|e| TeleError::Other(e.to_string()))??;
-            let ok = msg.download_media(&temp).await.map_err(|e| {
-                let _ = std::fs::remove_file(&temp);
-                tele_invocation(e)
-            })?;
+            if msg.media().is_none() {
+                return Err(TeleError::Usage("message has no media".to_string()));
+            }
+            let ok = match chunk_size_kb {
+                Some(kb) => {
+                    let media = msg.media().expect("media checked above");
+                    let mut iter = guard
+                        .client
+                        .iter_download(&media)
+                        .chunk_size((kb * 1024) as i32);
+                    let mut file = tokio::fs::File::create(&temp)
+                        .await
+                        .map_err(|e| TeleError::Other(e.to_string()))?;
+                    use tokio::io::AsyncWriteExt;
+                    loop {
+                        match iter.next().await {
+                            Ok(Some(bytes)) => {
+                                file.write_all(&bytes).await.map_err(|err| {
+                                    let _ = std::fs::remove_file(&temp);
+                                    TeleError::Other(err.to_string())
+                                })?;
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                let _ = std::fs::remove_file(&temp);
+                                return Err(tele_invocation(e));
+                            }
+                        }
+                    }
+                    file.sync_all()
+                        .await
+                        .map_err(|e| TeleError::Other(e.to_string()))?;
+                    true
+                }
+                None => msg.download_media(&temp).await.map_err(|e| {
+                    let _ = std::fs::remove_file(&temp);
+                    tele_invocation(e)
+                })?,
+            };
             if !ok {
                 let _ = std::fs::remove_file(&temp);
                 return Err(TeleError::Usage("message has no media".to_string()));
@@ -1224,6 +1370,15 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn validate_chunk_size_kb(kb: usize) -> TeleResult<()> {
+    if !(4..=512).contains(&kb) || !kb.is_multiple_of(4) {
+        return Err(TeleError::Usage(
+            "--chunk-size-kb must be 4-512 and a multiple of 4".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn download_name(msg: &grammers_client::message::Message) -> String {
@@ -1938,8 +2093,11 @@ mod tests {
         let err = pin(
             PinArgs {
                 chat: String::new(),
-                id: 1,
+                id: Some(1),
                 unpin: false,
+                notify: false,
+                show: false,
+                all: false,
             },
             &dryrun_flags("msg pin", true),
         )
@@ -1950,6 +2108,7 @@ mod tests {
             ReadArgs {
                 chat: "   ".to_string(),
                 mark_unread: false,
+                mentions: false,
             },
             &dryrun_flags("msg read", true),
         )
@@ -1975,11 +2134,62 @@ mod tests {
                 id: 1,
                 dir: out.to_string_lossy().into_owned(),
                 force: false,
+                chunk_size_kb: None,
             },
             &dryrun_flags("msg download", true),
         )
         .await;
         assert!(matches!(err, Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn validate_pin_requires_mode() {
+        let no_mode = PinArgs {
+            chat: "me".to_string(),
+            id: None,
+            unpin: false,
+            notify: false,
+            show: false,
+            all: false,
+        };
+        assert!(matches!(validate_pin(&no_mode), Err(TeleError::Usage(_))));
+        let with_id = PinArgs {
+            chat: "me".to_string(),
+            id: Some(7),
+            unpin: false,
+            notify: false,
+            show: false,
+            all: false,
+        };
+        assert!(validate_pin(&with_id).is_ok());
+        let show = PinArgs {
+            chat: "me".to_string(),
+            id: None,
+            unpin: false,
+            notify: false,
+            show: true,
+            all: false,
+        };
+        assert!(validate_pin(&show).is_ok());
+    }
+
+    #[test]
+    fn validate_chunk_size_kb_bounds_and_alignment() {
+        assert!(validate_chunk_size_kb(4).is_ok());
+        assert!(validate_chunk_size_kb(512).is_ok());
+        assert!(validate_chunk_size_kb(128).is_ok());
+        assert!(matches!(
+            validate_chunk_size_kb(0),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_chunk_size_kb(5),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_chunk_size_kb(600),
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]
@@ -2626,6 +2836,7 @@ mod tests {
                 id: 1,
                 dir: out.to_string_lossy().to_string(),
                 force: false,
+                chunk_size_kb: None,
             },
             &dryrun_flags("msg download", true),
         )
