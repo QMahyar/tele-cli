@@ -130,7 +130,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     multi,
                     &["chat", "unread", "draft"],
                     &table_rows,
-                );
+                )?;
             }
             Ok(serde_json::json!({"dialogs": rows}))
         })
@@ -201,7 +201,7 @@ async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         ]
                     })
                     .collect();
-                output::print_account_table(&name, multi, &["id", "draft"], &table_rows);
+                output::print_account_table(&name, multi, &["id", "draft"], &table_rows)?;
             }
             Ok(serde_json::json!({"drafts": rows}))
         })

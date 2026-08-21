@@ -163,7 +163,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     multi,
                     &["id", "title", "icon_emoji_id"],
                     &table_rows,
-                );
+                )?;
             }
             Ok(serde_json::json!({"topics": rows}))
         })

@@ -69,12 +69,12 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         match human_display(&value) {
             HumanView::Lines(lines) => {
                 for line in lines {
-                    println!("{line}");
+                    crate::output::print_line(&line)?;
                 }
             }
             HumanView::Table(headers, rows) => {
                 let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
-                crate::output::print_table(&header_refs, &rows);
+                crate::output::print_table(&header_refs, &rows)?;
             }
         }
     }

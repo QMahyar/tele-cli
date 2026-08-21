@@ -145,7 +145,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 }
             }
             if !output::machine_mode(json, jsonl) {
-                output::print_table(&["key", "rule", "peers"], &table_rows);
+                output::print_table(&["key", "rule", "peers"], &table_rows)?;
             }
             Ok(serde_json::json!({"privacy": rows}))
         })
