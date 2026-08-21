@@ -68,6 +68,9 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
 | dialog.list | Dialog list | `messages.getDialogs` | `iter_dialogs` | `tele dialog list` | done |
+| dialog.draft | Set / clear draft | `messages.saveDraft` | raw | `tele dialog draft` (`--text` saves, `--clear` removes) | done |
+| dialog.pin | Pin / unpin dialog | `messages.toggleDialogPin` | raw | `tele dialog pin` (`--unpin`; `reorderPinnedDialogs` deferred) | done |
+| dialog.delete | Remove dialog (honest semantics) | `channels.leaveChannel`, `messages.deleteChatUser`, `messages.deleteHistory` | `delete_dialog` + raw | `tele dialog delete` (JSON `left`/`cleared`; `--revoke` deletes history on both sides for user chats) | done |
 | contact.* | Contacts / block | `/api/contacts`, `/api/block` | raw | `tele contact *` | done |
 | profile.* | Profile, colors, emoji status | `/api/profile`, `/api/colors` | `get_me` + raw | `tele profile` | done |
 | privacy.* | Privacy rules | `/api/privacy` | raw | `tele privacy` | done |

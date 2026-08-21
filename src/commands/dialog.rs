@@ -14,8 +14,15 @@ use crate::output;
 pub enum DialogCmd {
     List(ListArgs),
     Drafts(ListArgs),
+    #[command(about = "save or clear a message draft for a chat (--text / --clear)")]
+    Draft(DraftArgs),
     Archive(ArchiveArgs),
-    Delete(ChatArgs),
+    #[command(about = "pin or unpin a dialog in the chat list (--unpin)")]
+    Pin(PinArgs),
+    #[command(
+        about = "remove a dialog from the list: leaves channels and groups; private chats keep history on both sides unless --revoke also deletes it"
+    )]
+    Delete(DeleteArgs),
 }
 
 #[derive(Args)]
@@ -46,11 +53,54 @@ pub struct ChatArgs {
     chat: String,
 }
 
+#[derive(Args)]
+pub struct DraftArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    chat: String,
+    #[arg(long, help = "draft text to save; mutually exclusive with --clear")]
+    text: Option<String>,
+    #[arg(
+        long,
+        help = "remove the saved draft instead of saving text; mutually exclusive with --text"
+    )]
+    clear: bool,
+}
+
+#[derive(Args)]
+pub struct PinArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    chat: String,
+    #[arg(long, help = "unpin instead of pin")]
+    unpin: bool,
+}
+
+#[derive(Args)]
+pub struct DeleteArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    chat: String,
+    #[arg(
+        long,
+        help = "private chats only: also delete the history for both sides (channels/groups are left regardless; their history is untouched)"
+    )]
+    revoke: bool,
+}
+
 pub async fn run(cmd: DialogCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         DialogCmd::List(a) => list(a, flags).await,
         DialogCmd::Drafts(a) => drafts(a, flags).await,
+        DialogCmd::Draft(a) => draft(a, flags).await,
         DialogCmd::Archive(a) => archive(a, flags).await,
+        DialogCmd::Pin(a) => pin(a, flags).await,
         DialogCmd::Delete(a) => delete(a, flags).await,
     }
 }
@@ -323,20 +373,96 @@ async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+#[derive(Clone, Debug)]
+enum DraftAction {
+    Set(String),
+    Clear,
+}
+
+fn draft_action(text: &Option<String>, clear: bool) -> TeleResult<DraftAction> {
+    if clear {
+        if text.is_some() {
+            return Err(TeleError::Usage(
+                "--text and --clear are mutually exclusive".to_string(),
+            ));
+        }
+        return Ok(DraftAction::Clear);
+    }
+    match text {
+        Some(t) => Ok(DraftAction::Set(t.clone())),
+        None => Err(TeleError::Usage(
+            "nothing to do: pass --text <t> to save a draft or --clear to remove it".to_string(),
+        )),
+    }
+}
+
+fn draft_request(
+    peer: tl::enums::InputPeer,
+    action: &DraftAction,
+) -> tl::functions::messages::SaveDraft {
+    let message = match action {
+        DraftAction::Set(text) => text.clone(),
+        DraftAction::Clear => String::new(),
+    };
+    tl::functions::messages::SaveDraft {
+        no_webpage: false,
+        invert_media: false,
+        reply_to: None,
+        peer,
+        message,
+        entities: None,
+        media: None,
+        effect: None,
+        suggested_post: None,
+        rich_message: None,
+    }
+}
+
+fn pin_request(
+    peer: tl::enums::InputPeer,
+    pinned: bool,
+) -> tl::functions::messages::ToggleDialogPin {
+    tl::functions::messages::ToggleDialogPin {
+        pinned,
+        peer: tl::enums::InputDialogPeer::Peer(tl::types::InputDialogPeer { peer }),
+    }
+}
+
+enum DeleteRoute {
+    Leave,
+    HistoryClear,
+}
+
+fn delete_route(peer: &tl::enums::InputPeer) -> DeleteRoute {
+    match peer {
+        tl::enums::InputPeer::User(_) => DeleteRoute::HistoryClear,
+        _ => DeleteRoute::Leave,
+    }
+}
+
+fn delete_result(target: &str, left: bool, cleared: bool) -> serde_json::Value {
+    serde_json::json!({
+        "chat": target,
+        "deleted": true,
+        "left": left,
+        "cleared": cleared,
+    })
+}
+
+async fn draft(args: DraftArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
+    let action = draft_action(&args.text, args.clear)?;
+    let cleared = matches!(action, DraftAction::Clear);
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
+    let target = args.chat.clone();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = args.chat.clone();
+        let target = target.clone();
+        let action = action.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": target,
-                    "would": format!("delete dialog with chat {target}")
-                }));
+                return Ok(draft_dry_run_data(&target, cleared));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -344,13 +470,151 @@ async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            guard
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let _: bool = guard
                 .client
-                .delete_dialog(chat_ref)
+                .invoke(&draft_request(peer, &action))
                 .await
                 .map_err(tele_invocation)?;
-            Ok(serde_json::json!({"chat": target, "deleted": true}))
+            Ok(draft_result(&target, &action))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
+    let pinned = !args.unpin;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let target = args.chat.clone();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let target = target.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(pin_dry_run_data(&target, pinned));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let _: bool = guard
+                .client
+                .invoke(&pin_request(peer, pinned))
+                .await
+                .map_err(tele_invocation)?;
+            Ok(serde_json::json!({
+                "chat": target,
+                "pinned": pinned,
+            }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+fn draft_result(target: &str, action: &DraftAction) -> serde_json::Value {
+    match action {
+        DraftAction::Set(text) => serde_json::json!({
+            "chat": target,
+            "cleared": false,
+            "draft": text,
+        }),
+        DraftAction::Clear => serde_json::json!({
+            "chat": target,
+            "cleared": true,
+            "draft": "",
+        }),
+    }
+}
+
+fn draft_dry_run_data(target: &str, cleared: bool) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": target,
+        "cleared": cleared,
+        "would": format!(
+            "{} draft for chat {target}",
+            if cleared { "clear" } else { "save" }
+        ),
+    })
+}
+
+fn pin_dry_run_data(target: &str, pinned: bool) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": target,
+        "pinned": pinned,
+        "would": format!(
+            "{} dialog with chat {target}",
+            if pinned { "pin" } else { "unpin" }
+        ),
+    })
+}
+
+fn delete_dry_run_data(target: &str, revoke: bool) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": target,
+        "revoke": revoke,
+        "would": format!(
+            "delete dialog with chat {target} (leaves channels/groups; clears private-chat history{})",
+            if revoke { " for both sides" } else { "" }
+        ),
+    })
+}
+
+async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let revoke = args.revoke;
+    let target = args.chat.clone();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let target = target.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(delete_dry_run_data(&target, revoke));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            match delete_route(&peer) {
+                DeleteRoute::HistoryClear => {
+                    let _: tl::enums::messages::AffectedHistory = guard
+                        .client
+                        .invoke(&tl::functions::messages::DeleteHistory {
+                            just_clear: false,
+                            revoke,
+                            peer,
+                            max_id: 0,
+                            min_date: None,
+                            max_date: None,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                    Ok(delete_result(&target, false, true))
+                }
+                DeleteRoute::Leave => {
+                    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+                    guard
+                        .client
+                        .delete_dialog(chat_ref)
+                        .await
+                        .map_err(tele_invocation)?;
+                    Ok(delete_result(&target, true, false))
+                }
+            }
         })
     })
     .await?;
@@ -673,6 +937,263 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("--folder"));
+    }
+
+    #[test]
+    fn draft_action_requires_text_or_clear() {
+        let err = draft_action(&None, false).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("--text"));
+        assert!(err.message().contains("--clear"));
+    }
+
+    #[test]
+    fn draft_action_rejects_text_and_clear_together() {
+        let text = Some("hi".to_string());
+        let err = draft_action(&text, true).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn draft_action_set_carries_text_and_clear_when_only_clear() {
+        assert!(matches!(
+            draft_action(&Some("hello".to_string()), false).unwrap(),
+            DraftAction::Set(t) if t == "hello"
+        ));
+        assert!(matches!(
+            draft_action(&None, true).unwrap(),
+            DraftAction::Clear
+        ));
+    }
+
+    #[tokio::test]
+    async fn draft_validates_target_flags_before_connect_even_in_dry_run() {
+        let dir = temp_app("draft-validate");
+        let flags = dialog_flags("dialog draft", &dir.join("config.toml"));
+        let err = draft(
+            DraftArgs {
+                chat: "me".to_string(),
+                text: None,
+                clear: false,
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        let err = draft(
+            DraftArgs {
+                chat: "me".to_string(),
+                text: Some("a".to_string()),
+                clear: true,
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn peer_user(user_id: i64) -> tl::enums::InputPeer {
+        tl::enums::InputPeer::User(tl::types::InputPeerUser {
+            user_id,
+            access_hash: 0,
+        })
+    }
+
+    fn peer_chat(chat_id: i64) -> tl::enums::InputPeer {
+        tl::enums::InputPeer::Chat(tl::types::InputPeerChat { chat_id })
+    }
+
+    fn peer_channel(channel_id: i64) -> tl::enums::InputPeer {
+        tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+            channel_id,
+            access_hash: 0,
+        })
+    }
+
+    #[test]
+    fn draft_request_set_shapes_save_draft_fields() {
+        let req = draft_request(peer_user(7), &DraftAction::Set("hello".to_string()));
+        assert_eq!(req.peer, peer_user(7));
+        assert_eq!(req.message, "hello");
+        assert!(!req.no_webpage);
+        assert!(!req.invert_media);
+        assert!(req.reply_to.is_none());
+        assert!(req.entities.is_none());
+        assert!(req.media.is_none());
+    }
+
+    #[test]
+    fn draft_request_clear_saves_empty_message() {
+        let req = draft_request(peer_user(7), &DraftAction::Clear);
+        assert_eq!(req.peer, peer_user(7));
+        assert!(req.message.is_empty());
+    }
+
+    #[test]
+    fn pin_request_wraps_peer_in_input_dialog_peer() {
+        let req = pin_request(peer_channel(11), true);
+        assert!(req.pinned);
+        match req.peer {
+            tl::enums::InputDialogPeer::Peer(p) => assert_eq!(p.peer, peer_channel(11)),
+            _ => panic!("peer must wrap InputDialogPeer::Peer"),
+        }
+        let req = pin_request(peer_user(7), false);
+        assert!(!req.pinned);
+    }
+
+    #[test]
+    fn delete_route_clears_history_for_users_only() {
+        assert!(matches!(
+            delete_route(&peer_user(7)),
+            DeleteRoute::HistoryClear
+        ));
+        assert!(matches!(delete_route(&peer_chat(9)), DeleteRoute::Leave));
+        assert!(matches!(
+            delete_route(&peer_channel(11)),
+            DeleteRoute::Leave
+        ));
+    }
+
+    #[test]
+    fn delete_result_reports_left_and_cleared_honestly() {
+        let left = delete_result("@x", true, false);
+        assert_eq!(left["deleted"], serde_json::json!(true));
+        assert_eq!(left["left"], serde_json::json!(true));
+        assert_eq!(left["cleared"], serde_json::json!(false));
+
+        let cleared = delete_result("@x", false, true);
+        assert_eq!(cleared["deleted"], serde_json::json!(true));
+        assert_eq!(cleared["left"], serde_json::json!(false));
+        assert_eq!(cleared["cleared"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn draft_result_echoes_text_on_set_and_empty_on_clear() {
+        let set = draft_result("me", &DraftAction::Set("note".to_string()));
+        assert_eq!(set["chat"], serde_json::json!("me"));
+        assert_eq!(set["cleared"], serde_json::json!(false));
+        assert_eq!(set["draft"], serde_json::json!("note"));
+
+        let clear = draft_result("me", &DraftAction::Clear);
+        assert_eq!(clear["cleared"], serde_json::json!(true));
+        assert_eq!(clear["draft"], serde_json::json!(""));
+    }
+
+    #[test]
+    fn draft_dry_run_data_echoes_cleared_flag() {
+        let set = draft_dry_run_data("@x", false);
+        assert_eq!(set["dry_run"], serde_json::json!(true));
+        assert_eq!(set["chat"], serde_json::json!("@x"));
+        assert_eq!(set["cleared"], serde_json::json!(false));
+        assert_eq!(set["would"], serde_json::json!("save draft for chat @x"));
+
+        let clear = draft_dry_run_data("@x", true);
+        assert_eq!(clear["cleared"], serde_json::json!(true));
+        assert_eq!(clear["would"], serde_json::json!("clear draft for chat @x"));
+    }
+
+    #[test]
+    fn pin_dry_run_data_echoes_pinned_flag() {
+        let pin = pin_dry_run_data("@x", true);
+        assert_eq!(pin["dry_run"], serde_json::json!(true));
+        assert_eq!(pin["pinned"], serde_json::json!(true));
+        assert_eq!(pin["would"], serde_json::json!("pin dialog with chat @x"));
+
+        let unpin = pin_dry_run_data("@x", false);
+        assert_eq!(unpin["pinned"], serde_json::json!(false));
+        assert_eq!(
+            unpin["would"],
+            serde_json::json!("unpin dialog with chat @x")
+        );
+    }
+
+    #[test]
+    fn delete_dry_run_data_echoes_revoke_flag_and_honest_would() {
+        let plain = delete_dry_run_data("@x", false);
+        assert_eq!(plain["dry_run"], serde_json::json!(true));
+        assert_eq!(plain["revoke"], serde_json::json!(false));
+        let would = plain["would"].as_str().unwrap();
+        assert!(would.contains("leaves channels/groups"));
+        assert!(would.contains("clears private-chat history"));
+        assert!(!would.contains("both sides"));
+
+        let revoked = delete_dry_run_data("@x", true);
+        assert_eq!(revoked["revoke"], serde_json::json!(true));
+        assert!(revoked["would"].as_str().unwrap().contains("both sides"));
+    }
+
+    #[tokio::test]
+    async fn draft_dry_run_exits_ok_before_connect() {
+        let dir = temp_app("draft-dry");
+        let flags = dialog_flags("dialog draft", &dir.join("config.toml"));
+        let code = draft(
+            DraftArgs {
+                chat: "@someone".to_string(),
+                text: Some("hello".to_string()),
+                clear: false,
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn draft_clear_dry_run_exits_ok_before_connect() {
+        let dir = temp_app("draft-clear-dry");
+        let flags = dialog_flags("dialog draft", &dir.join("config.toml"));
+        let code = draft(
+            DraftArgs {
+                chat: "@someone".to_string(),
+                text: None,
+                clear: true,
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pin_dry_run_exits_ok_before_connect() {
+        let dir = temp_app("pin-dry");
+        let flags = dialog_flags("dialog pin", &dir.join("config.toml"));
+        let code = pin(
+            PinArgs {
+                chat: "@someone".to_string(),
+                unpin: true,
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn delete_dry_run_exits_ok_before_connect() {
+        let dir = temp_app("delete-dry");
+        let flags = dialog_flags("dialog delete", &dir.join("config.toml"));
+        let code = delete(
+            DeleteArgs {
+                chat: "@someone".to_string(),
+                revoke: true,
+            },
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn dialog_flags(command: &str, config: &std::path::Path) -> GlobalFlags {

@@ -132,6 +132,25 @@ Rules:
   `-chat_id`/`-channel_id` (negated) for basic groups/channels — matching the
   Telegram bare-id convention used by `--chat` numeric targets.
 
+## `dialog draft` / `dialog pin` / `dialog delete`
+
+- `dialog draft --chat X --text T` saves a draft via raw
+  `messages.saveDraft`; `--clear` removes it (empty message). `--text` and
+  `--clear` are mutually exclusive; passing neither is a Usage error. Success
+  rows carry `cleared` (bool) and echo `draft` (the saved text, or `""` after
+  a clear).
+- `dialog pin --chat X [--unpin]` toggles dialog pinning via raw
+  `messages.toggleDialogPin`; rows carry `pinned` reflecting the requested
+  state. Reordering pinned dialogs (`messages.reorderPinnedDialogs`) is
+  deferred.
+- `dialog delete` reports honest per-kind outcome keys additively alongside
+  the legacy `deleted: true`: `left` is true for channels/supergroups and
+  basic groups (the dialog is left), `cleared` is true for private chats (the
+  dialog entry is removed; history stays on both sides unless `--revoke`).
+  `--revoke` routes user chats through raw `messages.deleteHistory` with
+  `revoke: true`; for groups/channels it has no effect. Dry-run `would`
+  describes the leave/clear semantics.
+
 ## `account login`
 
 - Code login takes the phone from `--phone` or, when absent, the `TELE_PHONE`

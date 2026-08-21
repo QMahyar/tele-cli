@@ -1045,6 +1045,139 @@ fn done_rows_have_cli_surface() {
 }
 
 #[test]
+fn dialog_help_lists_draft_pin_delete() {
+    let ghelp = help(&["dialog"]);
+    for sub in ["draft", "pin", "delete"] {
+        assert!(
+            ghelp.lines().any(|l| {
+                let word = l.split_whitespace().next().unwrap_or("");
+                word.replace('-', "") == sub
+            }),
+            "subcommand {sub} missing from `tele dialog --help`"
+        );
+    }
+}
+
+#[test]
+fn dialog_draft_requires_text_or_clear_offline() {
+    let (code, _out, err) = run_isolated("dlgdr1", &["dialog", "draft", "--chat", "me"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--text"), "stderr: {err}");
+    assert!(err.contains("--clear"), "stderr: {err}");
+}
+
+#[test]
+fn dialog_draft_rejects_text_and_clear_together_offline() {
+    let (code, _out, err) = run_isolated(
+        "dlgdr2",
+        &["dialog", "draft", "--chat", "me", "--text", "a", "--clear"],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("mutually exclusive"), "stderr: {err}");
+}
+
+#[test]
+fn dialog_draft_dry_run_json_reports_cleared_flag() {
+    let dir = isolated_appdir("dlgdr3");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "draft",
+            "--chat",
+            "@x",
+            "--text",
+            "hello",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["cleared"], serde_json::json!(false));
+    assert_eq!(d["would"], serde_json::json!("save draft for chat @x"));
+
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "draft",
+            "--chat",
+            "@x",
+            "--clear",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["cleared"], serde_json::json!(true));
+    assert_eq!(d["would"], serde_json::json!("clear draft for chat @x"));
+}
+
+#[test]
+fn dialog_pin_dry_run_json_reports_pinned_flag() {
+    let dir = isolated_appdir("dlgpin");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "pin",
+            "--chat",
+            "@x",
+            "--unpin",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["pinned"], serde_json::json!(false));
+    assert_eq!(d["would"], serde_json::json!("unpin dialog with chat @x"));
+}
+
+#[test]
+fn dialog_delete_dry_run_json_describes_leave_and_clear_semantics() {
+    let dir = isolated_appdir("dlgdel");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "delete",
+            "--chat",
+            "@x",
+            "--revoke",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["revoke"], serde_json::json!(true));
+    let would = d["would"].as_str().unwrap_or_default();
+    assert!(would.contains("leaves channels/groups"), "would: {would}");
+    assert!(
+        would.contains("clears private-chat history"),
+        "would: {would}"
+    );
+    assert!(would.contains("both sides"), "would: {would}");
+}
+
+#[test]
 fn raw_registry_names_are_offline_usable() {
     let src =
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/raw.rs")).unwrap();

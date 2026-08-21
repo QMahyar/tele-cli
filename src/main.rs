@@ -87,7 +87,7 @@ enum Command {
     /// Chats: join, leave, invite, participants, kick, admin, admin-log, stats, create
     #[command(subcommand)]
     Chat(chat::ChatCmd),
-    /// Dialogs: list, drafts, archive, delete
+    /// Dialogs: list, drafts, draft, archive, pin, delete
     #[command(subcommand)]
     Dialog(dialog::DialogCmd),
     /// Forum topics
