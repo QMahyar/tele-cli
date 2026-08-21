@@ -92,10 +92,13 @@ pub async fn authorize(client: &Client) -> TeleResult<()> {
     }
 }
 
+const QR_MAX_TRANSIENT_ERRORS: usize = 3;
+
 pub async fn qr_login(
     client: &Client,
     updates: &mut mpsc::UnboundedReceiver<UpdatesLike>,
     creds: &crate::config::Credentials,
+    timeout_secs: u64,
     mut on_token: impl FnMut(&str),
 ) -> anyhow::Result<()> {
     use grammers_client::tl::{self, enums};
@@ -112,7 +115,12 @@ pub async fn qr_login(
         .await
         .map_err(|e| anyhow::anyhow!("stream updates failed: {e}"))?;
 
+    let overall_deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut transient_errors = 0usize;
     loop {
+        if std::time::Instant::now() >= overall_deadline {
+            anyhow::bail!("QR login timed out after {timeout_secs}s");
+        }
         let response = client
             .invoke(&tl::functions::auth::ExportLoginToken {
                 api_id: creds.api_id,
@@ -128,6 +136,9 @@ pub async fn qr_login(
                 on_token(&uri);
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
                 loop {
+                    if std::time::Instant::now() >= overall_deadline {
+                        anyhow::bail!("QR login timed out after {timeout_secs}s");
+                    }
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                     if remaining.is_zero() {
                         break;
@@ -135,7 +146,16 @@ pub async fn qr_login(
                     match tokio::time::timeout(remaining, stream.next_raw()).await {
                         Ok(Ok((enums::Update::LoginToken, _, _))) => break,
                         Ok(Ok(_)) => continue,
-                        Ok(Err(e)) => return Err(e.into()),
+                        Ok(Err(e)) => {
+                            transient_errors += 1;
+                            if transient_errors > QR_MAX_TRANSIENT_ERRORS {
+                                return Err(e.into());
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                500u64 * transient_errors as u64,
+                            ))
+                            .await;
+                        }
                         Err(_) => break,
                     }
                 }

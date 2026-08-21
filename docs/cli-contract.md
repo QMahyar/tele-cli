@@ -125,6 +125,23 @@ Rules:
   `-chat_id`/`-channel_id` (negated) for basic groups/channels — matching the
   Telegram bare-id convention used by `--chat` numeric targets.
 
+## `account login`
+
+- Code login takes the phone from `--phone` or, when absent, the `TELE_PHONE`
+  env var (trimmed; empty values ignored). The argv-exposure warning fires only
+  when `--phone` was used.
+- Invalid code: prompted again, up to 3 attempts on the same login token;
+  exhaustion exits Usage and requires a fresh `tele account login`.
+- Wrong 2FA password: re-prompted, up to 3 attempts (token refreshed via
+  `account.GetPassword` between attempts); no new SMS/code is sent.
+- `--qr-timeout-secs <n>` (default 300, must be > 0): overall QR-login deadline.
+  Transient update-stream errors during QR polling are retried (backoff), up to
+  3, before failing. On timeout the command fails with a clear error instead of
+  polling forever.
+- If the account was not authorized at entry and the login fails or is aborted,
+  session files created during the attempt (session + lock + SQLite sidecars)
+  are removed automatically, so `account list` never shows a phantom entry.
+
 Human mode (no `--json`): Rich tables on stdout. Same exit codes.
 
 ## `msg delete`
