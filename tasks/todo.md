@@ -172,3 +172,17 @@ Final review of merged `main` (code-reviewer, `ce5c282..HEAD`, +1353/−77): no 
 
 ### Unverified remainder (medium/low, not re-checked at HEAD; verify via RED test when scheduled)
 Slices 4-15 mediums/lows not listed above, incl. 3.9/3.10/3.12/3.13, 4.F5/F7/F8, 5.5/5.6, 6.F4/F5/F7/F8, 7.5-7.9/7.11, 8.L2/L3/L5/L6/L7, 9.3-9.8, 10.5-10.12, 11.F1-F8, 12.4-12.6/12.9/12.10/12.12/12.13, 13.3/13.5/13.6/13.7, 14.3-14.9, 15.M1/M3, 15.L1-L6 — each gets a RED test before code when scheduled.
+
+## Review-findings effort (2026-08-21) — COMPLETE
+
+Five-agent codebase review; all confirmed findings fixed on `fix/review-findings` via wayfinder tickets (`.wayfinder/`), merged to `main`, pushed. 655 tests green (588 unit + 47 contract + 20 selection), clippy+fmt clean. Per-ticket branches `fix/t1..t7`.
+
+- [x] T1 output pipe safety — all stdout/stderr writes fallible; BrokenPipe → silent exit 0 (`tele chat stats | head`); comfy-table Dynamic width
+- [x] T2 auth/error surfaces — no-echo 2FA password on Windows; RPC `code`/`name` additive JSON keys; `Dropped` translated once to peer-cache hint; `media_kind`/`media_label`; `--show-token` gates raw QR URI
+- [x] T3 session security — lock files persist as stale markers (no unlink race); SQLite sidecars restricted; protected owner-only DACLs + inheritable dir ACLs; private-key upload blocklist; config tmp-write ordering; `.env` restrict warn
+- [x] T4 fanout cancellation — AbortOnDrop structurally cancels pending account tasks on Ctrl+C; ClientGuard owns runner task (`close()`); semaphore AcquireError honest mapping; dead flood cooldown removed (ADR-008 amended); exit aggregation unified on executor rule
+- [x] T5 CLI contract — clap `conflicts_with` (json/jsonl, promote/demote, preset/rights); dialog archive/delete validate `--chat`; `--raw` help truth ("also emit"); raw.rs helpers deduped; i64→i32 `try_from` Usage errors; argv hint stops at unknown flags; drafts negated-id + listen runtime semantics documented
+- [x] T6 test hardening — proptest property tests (message_to_json, .env loader, classify_target); structural-abort regression test; oversized-input contract tests (2K-char argv cap = Windows CreateProcess limit)
+- [x] T7 CI/docs — cargo-audit job; MSRV job pinned 1.89 (`File::try_lock` floor, mirrored in `Cargo.toml rust-version`); concurrency group; AGENTS.md/capabilities/security/observability/release/CHANGELOG synced
+
+Out of scope: raw.rs registry dev-facing error text (contract-mandated), macOS CI job (release.yml ships mac binaries but ci.yml never tests the target).

@@ -13,8 +13,8 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
 | auth.code | Phone login code | `auth.sendCode` / `auth.signIn` | `request_login_code`, `sign_in` | `tele account login` | done |
-| auth.2fa | 2FA password | `auth.checkPassword` | `check_password` | `tele account login` (interactive 2FA prompt) | done |
-| auth.qr | QR login | `auth.exportLoginToken` | raw flow (no friendly helper) | `tele account login --method qr` | done |
+| auth.2fa | 2FA password | `auth.checkPassword` | `check_password` | `tele account login` (interactive 2FA prompt; no-echo input on Windows) | done |
+| auth.qr | QR login | `auth.exportLoginToken` | raw flow (no friendly helper) | `tele account login --method qr` (raw `tg://login` URI printed only on TTY stderr or `--show-token`) | done |
 | auth.logout | Logout + delete session | `auth.logOut` | `sign_out` | `tele account logout` | done |
 | auth.session-ttl | Session TTL / auth settings | `account.setAuthorizationTTL` | raw | `tele raw` registry | later |
 | auth.passkey | Passkeys | `/api/passkeys` | none friendly | — | later |
@@ -110,8 +110,9 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 |---|---|---|---|
 | kernel.config | TOML + .env | `src/config.rs` | done |
 | kernel.accounts | Names, tags, all | `src/executor.rs` | done |
-| kernel.session | Per-account session path | `src/session.rs` | done |
+| kernel.session | Per-account session path; OS-level exclusive lock (stale `.session.lock` marker persists by design); SQLite sidecars (`-journal`/`-wal`/`-shm`) permission-restricted like the session | `src/session.rs`, `src/fs_util.rs` | done |
 | kernel.executor | Sequential by default; `--parallel` cap 1..=32; per-account token-bucket rate limiter layered on global semaphore (FloodWait/SlowModeWait handled by grammers AutoSleep retry policy); Ctrl+C aborts pending account tasks structurally; `listen`/`takeout` require explicit account selection | `src/executor.rs`, `src/rate_limiter.rs` | done |
+| kernel.output | Broken stdout pipes exit 0 silently; stderr write failures ignored; tables use dynamic width arrangement | `src/output.rs`, `src/main.rs` | done |
 | kernel.proxy | Global + per-account SOCKS5 (grammers 0.10 proxy feature is socks5-only) | `src/client.rs` | done |
 | kernel.json | Serialize results | `src/serialize.rs` | done |
 | kernel.raw | Build-time TL registry | `tele raw` (`src/commands/raw.rs` + `build.rs` + vendored `tl/api.tl`) — validation, registry, and help generated from TL schema at build time via `grammers-tl-parser`; dispatch arms hand-written for response shaping; human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `messages.ExportChatInvite`) require an explicit `--account` and honor `--dry-run` | done |
