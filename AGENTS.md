@@ -17,7 +17,7 @@
 ```bash
 cargo build                              # debug build
 cargo build --release                    # optimized build
-cargo test                               # 578 tests, no network
+cargo test                               # 655+ tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
