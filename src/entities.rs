@@ -1099,4 +1099,19 @@ mod tests {
     fn classify_whitespace_only_is_invalid() {
         assert_eq!(classify_target(" \t "), Target::Invalid);
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn plus_prefixed_digits_always_classify_phone(digits in "[0-9]{1,15}") {
+            let raw = format!("+{digits}");
+            assert!(matches!(classify_target(&raw), Target::Phone(_)));
+        }
+
+        #[test]
+        fn plain_integers_always_classify_numeric(n in any::<i64>()) {
+            assert!(matches!(classify_target(&n.to_string()), Target::Numeric(_)));
+        }
+    }
 }

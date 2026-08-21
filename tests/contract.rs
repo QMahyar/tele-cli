@@ -181,6 +181,22 @@ fn raw_invalid_args_json_exits_1() {
 }
 
 #[test]
+fn oversized_raw_args_value_rejected_without_panic() {
+    let big = format!("{{\"limit\": {}}}", "9".repeat(2_000));
+    let (code, _out, err) =
+        run_isolated("bigargs", &["raw", "messages.GetAllDrafts", "--args", &big]);
+    assert_eq!(code, 1, "stderr: {err}");
+}
+
+#[test]
+fn oversized_chat_target_rejected_without_panic() {
+    let chat = "x".repeat(2_000);
+    let (code, _out, err) =
+        run_isolated("bigchat", &["msg", "send", "--chat", &chat, "--text", "hi"]);
+    assert_eq!(code, 1, "stderr: {err}");
+}
+
+#[test]
 fn raw_registered_name_reaches_fanout() {
     let (code, _out, err) = run_isolated("rawreg", &["raw", "messages.GetAllDrafts"]);
     assert_eq!(code, 1);

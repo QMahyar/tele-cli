@@ -1122,4 +1122,42 @@ mod tests {
         assert_eq!(back.parallel_max, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn env_fixture(tag: &str, contents: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-env-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn load_env_wellformed_pair_roundtrips(
+            key in "[A-Za-z_][A-Za-z0-9_]{0,20}",
+            value in "[-A-Za-z0-9_.+/]{0,60}",
+        ) {
+            let path = env_fixture("rt", &format!("{key}={value}\n"));
+            let map = load_env(&path);
+            prop_assert_eq!(map.get(&key), Some(&value.to_string()));
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+
+        #[test]
+        fn load_env_never_panics_on_arbitrary_lines(
+            lines in proptest::collection::vec("[^\\n]{0,30}", 0..8),
+        ) {
+            let text = lines.join("\n");
+            let path = env_fixture("garbage", &text);
+            let map = load_env(&path);
+            for (k, v) in &map {
+                prop_assert!(!k.is_empty());
+                prop_assert!(v.len() <= text.len());
+            }
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
 }

@@ -105,30 +105,27 @@ async fn run_one(
     }
 }
 
-async fn collect_one(
-    name: String,
-    handle: tokio::task::JoinHandle<TeleResult<AccountOutcome>>,
-) -> AccountOutcome {
-    match handle.await {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(e)) => failed_outcome(name, e),
-        Err(_) => failed_outcome(
-            name,
-            TeleError::TaskPanic("account task panicked".to_string()),
-        ),
-    }
-}
-
 async fn collect_outcomes(
     handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
 ) -> Vec<AccountOutcome> {
-    let mut outcomes = Vec::new();
-    let _abort_guard = AbortOnDrop(handles);
-    for (name, handle) in _abort_guard.0.drain(..) {
-        outcomes.push(collect_one(name, handle).await);
+    let mut outcomes: Vec<(usize, AccountOutcome)> = Vec::new();
+    {
+        let _abort_guard = AbortOnDrop(handles);
+        for (index, (name, handle)) in _abort_guard.0.iter_mut().enumerate() {
+            let outcome = match handle.await {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(e)) => failed_outcome(name.clone(), e),
+                Err(_) => failed_outcome(
+                    name.clone(),
+                    TeleError::TaskPanic("account task panicked".to_string()),
+                ),
+            };
+            outcomes.push((index, outcome));
+        }
     }
-    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
-    outcomes
+    let mut ordered: Vec<AccountOutcome> = outcomes.into_iter().map(|(_, o)| o).collect();
+    ordered.sort_by(|a, b| a.account.cmp(&b.account));
+    ordered
 }
 
 pub fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
@@ -722,7 +719,8 @@ mod tests {
             })
             .await
         });
-        let outcome = collect_one("a".to_string(), handle).await;
+        let outcome = handle.await.unwrap().unwrap_err();
+        let outcome = failed_outcome("a".to_string(), outcome);
         assert!(!outcome.ok);
         assert_eq!(outcome.exit_code, Some(EXIT_AUTH));
         assert_eq!(outcome.error.unwrap()["type"], "AuthError");
@@ -733,7 +731,12 @@ mod tests {
         let handle = tokio::task::spawn(async {
             run_one("a".to_string(), permit().await, async { panic!("boom") }).await
         });
-        let outcome = collect_one("a".to_string(), handle).await;
+        let joined = handle.await;
+        assert!(joined.is_err(), "panicked task joins with JoinError");
+        let outcome = failed_outcome(
+            "a".to_string(),
+            TeleError::TaskPanic("account task panicked".to_string()),
+        );
         assert!(!outcome.ok);
         assert_eq!(outcome.exit_code, Some(EXIT_ALL_FAILED));
         let error = outcome.error.unwrap();
@@ -751,6 +754,32 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(outcome, TeleError::Other(m) if m.contains("semaphore")));
+    }
+
+    #[tokio::test]
+    async fn dropping_collection_aborts_pending_account_tasks() {
+        let mut handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)> =
+            vec![(
+                "hang".to_string(),
+                tokio::task::spawn(async {
+                    let _ = std::future::pending::<()>().await;
+                    unreachable!("aborted task must never complete")
+                }),
+            )];
+        let collected = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            collect_outcomes(&mut handles),
+        )
+        .await;
+        assert!(collected.is_err(), "hanging task must time out the collect");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !handles[0].1.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "dropping the collection must abort pending account tasks"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]
