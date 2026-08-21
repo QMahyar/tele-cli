@@ -1,5 +1,6 @@
 # T1 — fix/output-pipe-safety
 
+Status: closed
 Labels: wayfinder:task
 Branch: fix/t1-output-pipe-safety
 Blocked by: (none — first)

@@ -1,5 +1,6 @@
 # T5 — fix/cli-contract-consistency
 
+Status: closed
 Labels: wayfinder:task
 Branch: fix/t5-cli-contract
 Blocked by: T4

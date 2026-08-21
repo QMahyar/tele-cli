@@ -1,5 +1,6 @@
 # T3 — fix/session-security-hardening
 
+Status: closed
 Labels: wayfinder:task
 Branch: fix/t3-session-security
 Blocked by: T2

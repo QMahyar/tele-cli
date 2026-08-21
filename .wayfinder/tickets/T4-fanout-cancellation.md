@@ -1,5 +1,6 @@
 # T4 — fix/fanout-cancellation
 
+Status: closed
 Labels: wayfinder:task
 Branch: fix/t4-fanout-cancellation
 Blocked by: T3

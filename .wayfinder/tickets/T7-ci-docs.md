@@ -1,5 +1,6 @@
 # T7 — ci/docs-sync
 
+Status: closed
 Labels: wayfinder:task
 Branch: fix/t7-ci-docs
 Blocked by: T6

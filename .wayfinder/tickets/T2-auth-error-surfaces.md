@@ -1,5 +1,6 @@
 # T2 — fix/auth-and-error-surfaces
 
+Status: closed
 Labels: wayfinder:task
 Branch: fix/t2-auth-error-surfaces
 Blocked by: T1

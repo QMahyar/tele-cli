@@ -1,5 +1,6 @@
 # T6 — test/hardening-gaps
 
+Status: closed
 Labels: wayfinder:task
 Branch: fix/t6-test-gaps
 Blocked by: T1, T2, T3, T4, T5
