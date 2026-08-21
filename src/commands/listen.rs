@@ -23,7 +23,10 @@ pub struct ListenArgs {
         help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw"
     )]
     events: Vec<String>,
-    #[arg(long, help = "output raw TL updates instead of parsed events")]
+    #[arg(
+        long,
+        help = "also emit raw TL updates alongside the parsed event allowlist"
+    )]
     raw: bool,
     #[arg(long, help = "only show events from this chat")]
     chat: Option<String>,

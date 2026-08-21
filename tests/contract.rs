@@ -427,7 +427,10 @@ fn error_envelope_shape() {
 fn json_and_jsonl_are_rejected() {
     let (code, _out, err) = run_isolated("bothjson", &["account", "list", "--json", "--jsonl"]);
     assert_eq!(code, 1);
-    assert!(err.contains("mutually exclusive"), "stderr: {err}");
+    assert!(
+        err.contains("cannot be used with") || err.contains("mutually exclusive"),
+        "stderr: {err}"
+    );
 }
 
 #[test]
@@ -472,10 +475,11 @@ fn json_jsonl_conflict_emits_envelope() {
     let v = parse_json(&out);
     assert_eq!(v["ok"], serde_json::json!(false));
     assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
-    assert!(v["error"]["message"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("mutually exclusive"));
+    let msg = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("cannot be used with") || msg.contains("mutually exclusive"),
+        "message: {msg}"
+    );
 }
 
 #[test]
@@ -806,7 +810,10 @@ fn chat_admin_promote_demote_conflict() {
         ],
     );
     assert_eq!(code, 1);
-    assert!(err.contains("mutually exclusive"), "stderr: {err}");
+    assert!(
+        err.contains("cannot be used with") || err.contains("mutually exclusive"),
+        "stderr: {err}"
+    );
     let dir = isolated_appdir("admok");
     write_session(&dir, "work");
     let (code, _out, err) = run_in(

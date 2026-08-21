@@ -3,6 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -317,14 +318,6 @@ fn str_field(p: &serde_json::Value, key: &str) -> TeleResult<String> {
         .to_string())
 }
 
-fn peer_id(peer: &tl::enums::Peer) -> i64 {
-    match peer {
-        tl::enums::Peer::User(p) => p.user_id,
-        tl::enums::Peer::Chat(p) => p.chat_id,
-        tl::enums::Peer::Channel(p) => p.channel_id,
-    }
-}
-
 fn all_drafts_summary(r: &tl::enums::Updates) -> serde_json::Value {
     match r {
         tl::enums::Updates::Updates(u) => serde_json::json!({
@@ -379,43 +372,29 @@ fn update_summary(u: &tl::enums::Update) -> serde_json::Value {
     }
 }
 
-fn stats_period(v: &tl::enums::StatsDateRangeDays) -> serde_json::Value {
-    match v {
-        tl::enums::StatsDateRangeDays::Days(d) => {
-            serde_json::json!({"min_date": d.min_date, "max_date": d.max_date})
-        }
-    }
-}
-
-fn stats_abs(v: &tl::enums::StatsAbsValueAndPrev) -> serde_json::Value {
-    match v {
-        tl::enums::StatsAbsValueAndPrev::Prev(p) => {
-            serde_json::json!({"current": p.current, "previous": p.previous})
-        }
-    }
-}
-
-fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Value {
-    match v {
-        tl::enums::StatsPercentValue::Value(p) => {
-            serde_json::json!({"part": p.part, "total": p.total})
-        }
-    }
-}
-
 fn opt_str_field(p: &serde_json::Value, key: &str) -> TeleResult<Option<String>> {
     Ok(p.get(key).and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
 fn int_field(p: &serde_json::Value, key: &str) -> TeleResult<i32> {
-    Ok(p.get(key)
+    p.get(key)
         .and_then(|v| v.as_i64())
-        .map(|v| v as i32)
-        .unwrap_or(10))
+        .map(|v| i32::try_from(v).map_err(|_| invalid_int(key, v)))
+        .transpose()
+        .map(|v| v.unwrap_or(10))
 }
 
 fn opt_int_field(p: &serde_json::Value, key: &str) -> TeleResult<Option<i32>> {
-    Ok(p.get(key).and_then(|v| v.as_i64()).map(|v| v as i32))
+    p.get(key)
+        .and_then(|v| v.as_i64())
+        .map(|v| i32::try_from(v).map_err(|_| invalid_int(key, v)))
+        .transpose()
+}
+
+fn invalid_int(key: &str, v: i64) -> TeleError {
+    TeleError::Usage(format!(
+        "invalid --args value for {key:?}: {v} is outside the 32-bit integer range"
+    ))
 }
 
 fn bool_field(p: &serde_json::Value, key: &str) -> TeleResult<bool> {

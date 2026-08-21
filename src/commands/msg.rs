@@ -26,7 +26,10 @@ pub enum MsgCmd {
 
 #[derive(Args, Clone)]
 pub struct SendArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message text (mutually exclusive with --file)")]
     text: Option<String>,
@@ -53,7 +56,10 @@ pub struct SendArgs {
 
 #[derive(Args)]
 pub struct EditArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to edit")]
     id: i32,
@@ -63,7 +69,10 @@ pub struct EditArgs {
 
 #[derive(Args)]
 pub struct DeleteArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(
         long,
@@ -96,7 +105,10 @@ pub struct ForwardArgs {
 
 #[derive(Args)]
 pub struct PinArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to pin or unpin")]
     id: i32,
@@ -106,7 +118,10 @@ pub struct PinArgs {
 
 #[derive(Args)]
 pub struct GetArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     limit: u32,
@@ -118,7 +133,10 @@ pub struct GetArgs {
 
 #[derive(Args)]
 pub struct ReadArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "mark as unread instead of read")]
     mark_unread: bool,
@@ -126,7 +144,10 @@ pub struct ReadArgs {
 
 #[derive(Args)]
 pub struct ReactArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to react to")]
     id: i32,
@@ -138,7 +159,10 @@ pub struct ReactArgs {
 
 #[derive(Args)]
 pub struct SearchArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "search query text")]
     query: String,
@@ -148,7 +172,10 @@ pub struct SearchArgs {
 
 #[derive(Args)]
 pub struct DownloadArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to download media from")]
     id: i32,

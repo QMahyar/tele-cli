@@ -31,7 +31,7 @@ pub enum ChatCmd {
 pub struct ChatArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, or invite link"
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
     )]
     chat: String,
 }
@@ -40,12 +40,12 @@ pub struct ChatArgs {
 pub struct InviteArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, or invite link"
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
     )]
     chat: String,
     #[arg(
         long,
-        help = "user to invite: @username, t.me link, numeric ID, or phone"
+        help = "user to invite: @username, t.me link, numeric ID, +phone, or me"
     )]
     user: String,
 }
@@ -54,7 +54,7 @@ pub struct InviteArgs {
 pub struct ParticipantsArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, or invite link"
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
     )]
     chat: String,
     #[arg(
@@ -69,12 +69,12 @@ pub struct ParticipantsArgs {
 pub struct KickArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, or invite link"
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
     )]
     chat: String,
     #[arg(
         long,
-        help = "user to kick: @username, t.me link, numeric ID, or phone"
+        help = "user to kick: @username, t.me link, numeric ID, +phone, or me"
     )]
     user: String,
 }
@@ -83,27 +83,37 @@ pub struct KickArgs {
 pub struct AdminArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, or invite link"
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
     )]
     chat: String,
     #[arg(
         long,
-        help = "user to promote or demote: @username, t.me link, numeric ID, or phone"
+        help = "user to promote or demote: @username, t.me link, numeric ID, +phone, or me"
     )]
     user: String,
-    #[arg(long, help = "grant admin rights (mutually exclusive with --demote)")]
+    #[arg(
+        long,
+        conflicts_with = "demote",
+        help = "grant admin rights (mutually exclusive with --demote)"
+    )]
     promote: bool,
-    #[arg(long, help = "revoke admin rights (mutually exclusive with --promote)")]
+    #[arg(
+        long,
+        conflicts_with = "promote",
+        help = "revoke admin rights (mutually exclusive with --promote)"
+    )]
     demote: bool,
     #[arg(long, help = "admin rank title (e.g. Mod, Admin)")]
     title: Option<String>,
     #[arg(
         long,
+        conflicts_with = "rights",
         help = "preset rights: moderator, editor, admin (mutually exclusive with --rights)"
     )]
     preset: Option<String>,
     #[arg(
         long,
+        conflicts_with = "preset",
         help = "comma-separated rights: change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call (mutually exclusive with --preset)"
     )]
     rights: Option<String>,
@@ -113,7 +123,7 @@ pub struct AdminArgs {
 pub struct AdminLogArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, or invite link"
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
     )]
     chat: String,
     #[arg(long, default_value_t = 20, help = "max events to return (1-10000)")]
@@ -124,7 +134,7 @@ pub struct AdminLogArgs {
 pub struct StatsArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, or invite link"
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
     )]
     chat: String,
     #[arg(long, help = "use broadcast channel stats (default: megagroup stats)")]

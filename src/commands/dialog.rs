@@ -3,6 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -27,7 +28,10 @@ pub struct ListArgs {
 
 #[derive(Args)]
 pub struct ArchiveArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "unarchive (restore) instead of archive")]
     unarchive: bool,
@@ -35,7 +39,10 @@ pub struct ArchiveArgs {
 
 #[derive(Args)]
 pub struct ChatArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
 }
 
@@ -251,6 +258,7 @@ fn collect_updates(updates: &tl::enums::Updates) -> Vec<&tl::enums::Update> {
 }
 
 async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let unarchive = args.unarchive;
@@ -294,6 +302,7 @@ async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn delete(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {

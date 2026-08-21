@@ -17,7 +17,7 @@ pub enum TopicCmd {
 
 #[derive(Args)]
 pub struct CreateArgs {
-    #[arg(long, help = "forum group: @username, numeric ID, or me")]
+    #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
     chat: String,
     #[arg(long, help = "topic title")]
     title: String,
@@ -30,7 +30,7 @@ pub struct CreateArgs {
 
 #[derive(Args)]
 pub struct ListArgs {
-    #[arg(long, help = "forum group: @username, numeric ID, or me")]
+    #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
     chat: String,
     #[arg(long, default_value_t = 20, help = "max topics to list (1-10000)")]
     limit: u32,
