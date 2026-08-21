@@ -11,6 +11,7 @@ pub enum TeleError {
     Auth(String),
     Config(String),
     Invocation(String, Option<u32>),
+    Rpc(String, i32, String, Option<u32>),
     TaskPanic(String),
     BrokenPipe,
     Other(String),
@@ -33,6 +34,7 @@ impl TeleError {
             | TeleError::Auth(m)
             | TeleError::Config(m)
             | TeleError::Invocation(m, _)
+            | TeleError::Rpc(m, ..)
             | TeleError::TaskPanic(m)
             | TeleError::Other(m) => m,
             TeleError::BrokenPipe => "output stream closed",
@@ -45,13 +47,24 @@ impl TeleError {
             TeleError::Auth(_) => "AuthError",
             TeleError::Config(_) => "ConfigError",
             TeleError::Invocation(..) => "InvocationError",
+            TeleError::Rpc(..) => "InvocationError",
             TeleError::TaskPanic(_) => "TaskPanicError",
             TeleError::Other(_) => "Error",
             TeleError::BrokenPipe => "Error",
         };
         let mut value = serde_json::json!({ "type": kind, "message": self.message() });
-        if let TeleError::Invocation(_, Some(seconds)) = self {
-            value["seconds"] = serde_json::json!(seconds);
+        match self {
+            TeleError::Invocation(_, Some(seconds)) => {
+                value["seconds"] = serde_json::json!(seconds);
+            }
+            TeleError::Rpc(_, code, name, seconds) => {
+                value["code"] = serde_json::json!(code);
+                value["name"] = serde_json::json!(name);
+                if let Some(seconds) = seconds {
+                    value["seconds"] = serde_json::json!(seconds);
+                }
+            }
+            _ => {}
         }
         value
     }
@@ -97,9 +110,13 @@ pub fn invocation_is_unauthorized(e: &grammers_client::InvocationError) -> bool 
     matches!(e, grammers_client::InvocationError::Rpc(rpc) if rpc.code == 401)
 }
 
+pub const PEER_UNKNOWN_HINT: &str =
+    "peer unknown to this session; run tele dialog list to refresh the peer cache";
+
 pub fn invocation_message(e: &grammers_client::InvocationError) -> String {
     match e {
         grammers_client::InvocationError::Rpc(rpc) => rpc.to_string(),
+        grammers_client::InvocationError::Dropped => PEER_UNKNOWN_HINT.to_string(),
         other => other.to_string(),
     }
 }
@@ -117,7 +134,13 @@ pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
     if invocation_is_unauthorized(&e) {
         TeleError::Auth("not logged in (session invalid)".to_string())
     } else {
-        TeleError::Invocation(invocation_message(&e), invocation_wait_seconds(&e))
+        match e {
+            grammers_client::InvocationError::Rpc(rpc) => {
+                let seconds = if rpc.code == 420 { rpc.value } else { None };
+                TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name, seconds)
+            }
+            other => TeleError::Invocation(invocation_message(&other), None),
+        }
     }
 }
 
@@ -284,9 +307,27 @@ mod tests {
             caused_by: None,
         });
         let err = invocation_error(e);
-        assert!(matches!(err, TeleError::Invocation(_, None)));
+        assert!(matches!(err, TeleError::Rpc(_, 400, _, None)));
         assert_eq!(err.exit_code(), EXIT_ALL_FAILED);
         assert_eq!(err.message(), "rpc error 400: CHAT_INVALID");
+        let v = err.as_json();
+        assert_eq!(v["code"], 400);
+        assert_eq!(v["name"], "CHAT_INVALID");
+        assert!(v.get("seconds").is_none());
+    }
+
+    #[test]
+    fn rpc_error_json_carries_code_and_name() {
+        let e = grammers_client::InvocationError::Rpc(RpcError {
+            code: 403,
+            name: "CHAT_WRITE_FORBIDDEN".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        let v = invocation_error(e).as_json();
+        assert_eq!(v["type"], "InvocationError");
+        assert_eq!(v["code"], 403);
+        assert_eq!(v["name"], "CHAT_WRITE_FORBIDDEN");
     }
 
     #[test]
@@ -298,8 +339,14 @@ mod tests {
             caused_by: None,
         });
         let err = invocation_error(e);
-        assert!(matches!(err, TeleError::Invocation(_, Some(17))));
+        assert!(matches!(err, TeleError::Rpc(_, 420, _, Some(17))));
         assert_eq!(err.message(), "rpc error 420: FLOOD_WAIT (value: 17)");
+    }
+
+    #[test]
+    fn dropped_invocation_translates_to_peer_hint() {
+        let err = invocation_error(grammers_client::InvocationError::Dropped);
+        assert_eq!(err.message(), PEER_UNKNOWN_HINT);
     }
 
     #[test]
