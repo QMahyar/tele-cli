@@ -132,6 +132,34 @@ Rules:
   `-chat_id`/`-channel_id` (negated) for basic groups/channels — matching the
   Telegram bare-id convention used by `--chat` numeric targets.
 
+## `chat participants` / `chat kick` / `chat admin`
+
+- `chat participants --chat X` accepts additive `--role admin|banned|kicked|recent`
+  and `--search <q>` filters (channels/supergroups; they map to the grammers
+  `iter_participants` filter param: `ChannelParticipantsAdmins`,
+  `ChannelParticipantsBanned{q}`, `ChannelParticipantsKicked{q}`,
+  `ChannelParticipantsSearch{q}` for bare search, `ChannelParticipantsRecent`
+  otherwise). Unknown roles are a Usage error before connect. On basic groups
+  the filters are rejected with a clear Usage error instead of being ignored.
+- `chat kick --chat X --user U` stays a plain friendly kick by default. With
+  `--ban`, `--duration <secs|forever>`, or `--rights CSV`, it constructs
+  `ChatBannedRights` via `set_banned_rights` (restrict / ban with optional
+  duration) instead. `--duration` requires `--ban` or `--rights`. `--rights`
+  takes comma-separated `name:true|false` pairs where `true` means the user
+  keeps the right; names: `view_messages,send_messages,send_media,
+  send_stickers,send_gifs,send_games,send_inline,embed_links,send_polls,
+  change_info,invite_users,pin_messages`. Success rows keep legacy `kicked:
+  true` and additively carry `banned` (bool), `until` (epoch seconds, only when
+  `--duration` was given) and `restricted` (denied right names, only when
+  rights were revoked). Dry-run rows echo `ban` plus `duration`/`rights` when
+  present.
+- `chat admin --rights CSV` additionally accepts `anonymous`, `other`, and
+  `manage_topics`. Presets now cover them too (`admin` = everything except
+  `anonymous`; `moderator`/`editor` include `manage_topics`). When any of
+  `other`/`manage_topics` is requested, the command uses raw
+  `channels.EditAdmin` (the grammers builder has no setters for those flags);
+  otherwise it stays on the friendly `set_admin_rights` chain.
+
 ## `dialog draft` / `dialog pin` / `dialog delete`
 
 - `dialog draft --chat X --text T` saves a draft via raw
