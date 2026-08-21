@@ -12,7 +12,7 @@ use crate::output;
 
 #[derive(Subcommand)]
 pub enum MsgCmd {
-    Send(SendArgs),
+    Send(Box<SendArgs>),
     Edit(EditArgs),
     Delete(DeleteArgs),
     Forward(ForwardArgs),
@@ -38,9 +38,13 @@ pub struct SendArgs {
         help = "send time: Unix timestamp or RFC3339 datetime (must be in the future)"
     )]
     schedule: Option<String>,
-    #[arg(long, help = "file path to upload (mutually exclusive with --text)")]
-    file: Option<String>,
-    #[arg(long, help = "caption for uploaded file (requires --file)")]
+    #[arg(
+        long,
+        help = "file path(s) to upload; 2-10 paths send as an album (mutually exclusive with --text)",
+        value_name = "PATH"
+    )]
+    files: Vec<String>,
+    #[arg(long, help = "caption for uploaded file(s) (requires --file)")]
     caption: Option<String>,
     #[arg(long, help = "message ID to reply to")]
     reply: Option<i32>,
@@ -50,6 +54,43 @@ pub struct SendArgs {
         conflicts_with = "reply"
     )]
     topic: Option<i32>,
+    #[arg(
+        long,
+        help = "auto-destruct media after N seconds",
+        value_name = "SECS"
+    )]
+    media_ttl: Option<i32>,
+    #[arg(
+        long,
+        help = "custom thumbnail path for document uploads",
+        value_name = "PATH"
+    )]
+    thumbnail: Option<String>,
+    #[arg(
+        long,
+        help = "upload a remote URL as media (with --kind photo|document)",
+        value_name = "URL"
+    )]
+    url: Option<String>,
+    #[arg(
+        long,
+        help = "media kind for --url: photo or document",
+        requires = "url"
+    )]
+    kind: Option<String>,
+    #[arg(
+        long,
+        help = "re-send media from this chat's message without forward header (requires --copy-id)",
+        value_name = "CHAT"
+    )]
+    copy_from: Option<String>,
+    #[arg(
+        long,
+        help = "message ID whose media is re-sent (requires --copy-from)",
+        requires = "copy_from",
+        value_name = "ID"
+    )]
+    copy_id: Option<i32>,
     #[arg(long, default_value_t = true, help = "show link preview")]
     preview: bool,
     #[arg(long, action = clap::ArgAction::SetTrue, help = "disable link preview")]
@@ -225,7 +266,7 @@ pub struct DownloadArgs {
 
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
-        MsgCmd::Send(a) => send(a, flags).await,
+        MsgCmd::Send(a) => send(*a, flags).await,
         MsgCmd::Edit(a) => edit(a, flags).await,
         MsgCmd::Delete(a) => delete(a, flags).await,
         MsgCmd::Forward(a) => forward(a, flags).await,
@@ -257,34 +298,84 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "unknown --format {other} (use plain or markdown)"
         ))),
     }?;
-    match (&args.text, &args.file) {
-        (None, None) => {
+    match (
+        &args.text,
+        args.files.is_empty(),
+        &args.url,
+        &args.copy_from,
+    ) {
+        (None, true, None, None) => {
             return Err(TeleError::Usage(
-                "msg send requires --text or --file".to_string(),
+                "msg send requires --text, --file, --url, or --copy-from".to_string(),
             ))
         }
-        (Some(_), Some(_)) => {
+        (Some(_), false, _, _) | (Some(_), _, Some(_), _) => {
             return Err(TeleError::Usage(
-                "--text and --file are mutually exclusive".to_string(),
+                "--text is mutually exclusive with --file/--url/--copy-from".to_string(),
+            ))
+        }
+        (_, false, Some(_), _) => {
+            return Err(TeleError::Usage(
+                "--file and --url are mutually exclusive".to_string(),
             ))
         }
         _ => {}
+    }
+    if !args.files.is_empty() && args.files.len() > 10 {
+        return Err(TeleError::Usage(
+            "albums support at most 10 files; send larger sets in batches".to_string(),
+        ));
+    }
+    if let Some(ttl) = args.media_ttl {
+        if ttl <= 0 {
+            return Err(TeleError::Usage("--media-ttl must be positive".to_string()));
+        }
     }
     if let Some(text) = &args.text {
         if text.trim().is_empty() {
             return Err(TeleError::Usage("--text must not be empty".to_string()));
         }
     }
-    if args.caption.is_some() && args.file.is_none() {
+    if let Some(kind) = &args.kind {
+        if kind != "photo" && kind != "document" {
+            return Err(TeleError::Usage(
+                "--kind must be photo or document".to_string(),
+            ));
+        }
+    }
+    if args.url.is_some() && args.kind.is_none() {
+        return Err(TeleError::Usage(
+            "--url requires --kind photo|document".to_string(),
+        ));
+    }
+    if args.caption.as_ref().is_some_and(|c| c.trim().is_empty()) {
+        return Err(TeleError::Usage("--caption must not be empty".to_string()));
+    }
+    if args.caption.is_some() && args.files.is_empty() {
         return Err(TeleError::Usage("--caption requires --file".to_string()));
     }
-    if let Some(path) = &args.file {
+    if !args.files.is_empty() {
         if !effective_preview(args) {
             return Err(TeleError::Usage(
                 "--no-preview is not supported with --file".to_string(),
             ));
         }
-        validate_upload_path(path)?;
+        for path in &args.files {
+            validate_upload_path(path)?;
+        }
+    }
+    if let Some(thumb) = &args.thumbnail {
+        validate_upload_path(thumb)?;
+        if args.files.len() > 1 {
+            return Err(TeleError::Usage(
+                "--thumbnail applies to a single document upload".to_string(),
+            ));
+        }
+    }
+    if args.schedule.as_deref() == Some("online") && !args.files.is_empty() {
+        return Err(TeleError::Usage(
+            "--schedule online is not supported with albums".to_string(),
+        ));
     }
     if args.format == "markdown" {
         if let Some(text) = &args.text {
@@ -457,10 +548,15 @@ fn canonical_guard_path(path: &str) -> std::path::PathBuf {
     resolve_for_guard(std::path::Path::new(path))
 }
 
+const SCHEDULE_ONLINE_SENTINEL: i32 = 0;
+
 fn parse_schedule(value: Option<&str>) -> TeleResult<Option<i32>> {
     let Some(value) = value else {
         return Ok(None);
     };
+    if value.eq_ignore_ascii_case("online") {
+        return Ok(Some(SCHEDULE_ONLINE_SENTINEL));
+    }
     let dt = crate::commands::parse_unixtime(value)?;
     let ts = dt.timestamp();
     if ts <= chrono::Utc::now().timestamp() {
@@ -481,7 +577,13 @@ fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::V
         "dry_run": true,
         "chat": args.chat,
         "text": args.text,
-        "file": args.file,
+        "files": args.files,
+        "url": args.url,
+        "kind": args.kind,
+        "copy_from": args.copy_from,
+        "copy_id": args.copy_id,
+        "media_ttl": args.media_ttl,
+        "thumbnail": args.thumbnail,
         "caption": args.caption,
         "format": args.format,
         "schedule": schedule,
@@ -504,12 +606,18 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_target = args.chat.clone();
         let text = args.text.clone();
         let caption = args.caption.clone();
-        let file = args.file.clone();
+        let files = args.files.clone();
         let format = args.format.clone();
         let schedule = schedule.map(|s| s as u64);
         let reply = args.reply.or(args.topic);
         let preview = effective_preview(&args);
         let silent = args.silent;
+        let media_ttl = args.media_ttl;
+        let thumbnail = args.thumbnail.clone();
+        let url = args.url.clone();
+        let kind = args.kind.clone();
+        let copy_from = args.copy_from.clone();
+        let copy_id = args.copy_id;
         Box::pin(async move {
             if dry_run {
                 return Ok(send_dry_run_payload(&args, schedule));
@@ -521,12 +629,109 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let mut msg = if let Some(path) = &file {
-                let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+            let apply_common = |msg: InputMessage| -> InputMessage {
+                let mut msg = msg.reply_to(reply);
+                if silent {
+                    msg = msg.silent(true);
+                }
+                if let Some(ttl) = media_ttl {
+                    msg = msg.media_ttl(ttl);
+                }
+                msg
+            };
+            if let Some(src_chat) = &copy_from {
+                let id = copy_id.expect("validated: copy-id required with copy-from");
+                let src =
+                    entities::resolve_peer(&guard.client, guard.session.as_ref(), src_chat).await?;
+                let src_ref = entities::peer_ref(&src).await.map_err(tele_invocation)?;
+                let found = guard
+                    .client
+                    .get_messages_by_id(src_ref, &[id])
+                    .await
+                    .map_err(tele_invocation)?;
+                let source_msg = found
+                    .into_iter()
+                    .flatten()
+                    .next()
+                    .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+                let media = source_msg.media().ok_or_else(|| {
+                    TeleError::Usage(format!("message {id} has no media to copy"))
+                })?;
                 let base = match format.as_str() {
+                    "markdown" => InputMessage::new()
+                        .copy_media(&media)
+                        .markdown(caption.unwrap_or_default()),
+                    _ => InputMessage::new().copy_media(&media),
+                };
+                let base = base.link_preview(preview);
+                let sent = guard
+                    .client
+                    .send_message(chat_ref, apply_common(base))
+                    .await
+                    .map_err(tele_invocation)?;
+                return crate::serialize::message_to_json(&sent);
+            }
+            if let Some(link) = &url {
+                let base = match kind.as_deref() {
+                    Some("document") => InputMessage::new().document_url(link),
+                    _ => InputMessage::new().photo_url(link),
+                };
+                let base = if let Some(cap) = &caption {
+                    match format.as_str() {
+                        "markdown" => base.markdown(cap.clone()),
+                        _ => base.text(cap.clone()),
+                    }
+                } else {
+                    base
+                };
+                let base = base.link_preview(preview);
+                let sent = guard
+                    .client
+                    .send_message(chat_ref, apply_common(base))
+                    .await
+                    .map_err(tele_invocation)?;
+                return crate::serialize::message_to_json(&sent);
+            }
+            if files.len() > 1 {
+                let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
+                for path in &files {
+                    let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+                    let mut media = match looks_like_image(path) {
+                        true => grammers_client::media::InputMedia::new().photo(uploaded),
+                        false => grammers_client::media::InputMedia::new().document(uploaded),
+                    };
+                    media = match format.as_str() {
+                        "markdown" => media.markdown(caption.clone().unwrap_or_default()),
+                        _ => media.caption(caption.clone().unwrap_or_default()),
+                    };
+                    media = media.reply_to(reply);
+                    medias.push(media);
+                }
+                let sent_album = guard
+                    .client
+                    .send_album(chat_ref, medias)
+                    .await
+                    .map_err(tele_invocation)?;
+                let mut rows = Vec::new();
+                for m in sent_album.into_iter().flatten() {
+                    rows.push(crate::serialize::message_to_json(&m)?);
+                }
+                return Ok(serde_json::json!({"album": rows}));
+            }
+            let mut msg = if let Some(path) = files.first() {
+                let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+                let mut base = match format.as_str() {
                     "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
                     _ => InputMessage::new().text(caption.unwrap_or_default()),
                 };
+                if let Some(thumb_path) = &thumbnail {
+                    let thumb_uploaded = guard
+                        .client
+                        .upload_file(thumb_path)
+                        .await
+                        .map_err(upload_error)?;
+                    base = base.thumbnail(thumb_uploaded);
+                }
                 if looks_like_image(path) {
                     base.photo(uploaded)
                 } else {
@@ -541,13 +746,14 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 base.link_preview(preview)
             };
             if let Some(s) = schedule {
-                let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
-                msg = msg.schedule_date(Some(ts));
+                if s == 0 {
+                    msg = msg.schedule_once_online();
+                } else {
+                    let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
+                    msg = msg.schedule_date(Some(ts));
+                }
             }
-            msg = msg.reply_to(reply);
-            if silent {
-                msg = msg.silent(true);
-            }
+            msg = apply_common(msg);
             let sent = guard
                 .client
                 .send_message(chat_ref, msg)
@@ -1538,7 +1744,13 @@ mod tests {
             chat: "me".to_string(),
             text: Some("hi".to_string()),
             schedule: None,
-            file: None,
+            files: vec![],
+            media_ttl: None,
+            thumbnail: None,
+            url: None,
+            kind: None,
+            copy_from: None,
+            copy_id: None,
             caption: None,
             reply: None,
             topic: None,
@@ -1725,7 +1937,7 @@ mod tests {
     #[test]
     fn send_rejects_text_with_file() {
         let mut args = send_args("plain");
-        args.file = Some("C:/tmp/a.pdf".to_string());
+        args.files = vec!["C:/tmp/a.pdf".to_string()];
         assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
     }
 
@@ -1741,7 +1953,7 @@ mod tests {
         let dir = upload_fixture("caption", &["a.pdf"]);
         let mut args = send_args("plain");
         args.text = None;
-        args.file = Some(dir.join("a.pdf").to_string_lossy().into_owned());
+        args.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
         args.caption = Some("cap".to_string());
         assert!(validate_send(&args).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
@@ -2960,11 +3172,80 @@ mod tests {
     }
 
     #[test]
+    fn validate_send_album_bounds_and_conflicts() {
+        let dir = upload_fixture("album-bounds", &["a.pdf"]);
+        let mut args = send_args("plain");
+        args.text = None;
+        let p = dir.join("a.pdf").to_string_lossy().into_owned();
+        args.files = vec![p.clone()];
+        assert!(validate_send(&args).is_ok());
+        args.files = (0..10)
+            .map(|i| dir.join(format!("f{i}.jpg")).to_string_lossy().into_owned())
+            .collect();
+        for i in 0..10 {
+            std::fs::write(dir.join(format!("f{i}.jpg")), b"x").unwrap();
+        }
+        assert!(validate_send(&args).is_ok());
+        let missing = dir.join("nope.jpg").to_string_lossy().into_owned();
+        args.files.push(missing);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_send_url_requires_kind_and_conflicts_with_text() {
+        let url_only = SendArgs {
+            chat: "me".to_string(),
+            text: Some("hi".to_string()),
+            schedule: None,
+            files: vec![],
+            media_ttl: None,
+            thumbnail: None,
+            url: Some("https://example.com/cat.jpg".to_string()),
+            kind: Some("photo".to_string()),
+            copy_from: None,
+            copy_id: None,
+            caption: None,
+            reply: None,
+            topic: None,
+            preview: true,
+            no_preview: false,
+            format: "plain".to_string(),
+            silent: false,
+        };
+        assert!(matches!(validate_send(&url_only), Err(TeleError::Usage(_))));
+        let with_kind = SendArgs {
+            kind: Some("document".to_string()),
+            ..clone_without_text_for_tests(&url_only)
+        };
+        assert!(validate_send(&with_kind).is_ok());
+    }
+
+    fn clone_without_text_for_tests(args: &SendArgs) -> SendArgs {
+        let mut c = args.clone();
+        c.text = None;
+        c
+    }
+
+    #[test]
+    fn validate_send_rejects_bad_media_ttl_and_kind() {
+        let mut args = clone_without_text_for_tests(&send_args("plain"));
+        args.url = Some("https://example.com/x.jpg".to_string());
+        args.kind = Some("sticker".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.kind = Some("photo".to_string());
+        args.media_ttl = Some(0);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.media_ttl = Some(60);
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
     fn send_rejects_no_preview_with_file() {
         let dir = upload_fixture("nopreview", &["a.pdf"]);
         let mut args = send_args("plain");
         args.text = None;
-        args.file = Some(dir.join("a.pdf").to_string_lossy().into_owned());
+        args.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
         args.no_preview = true;
         let err = validate_send(&args).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));

@@ -180,11 +180,22 @@ updated the display name of an existing contact.
 
 ## `msg send`
 
-`--topic <id>` posts into a forum topic (mutually exclusive with `--reply`;
-both set the reply-to header, and replying to the topic root lands the message
-in that topic). Reads scoped to a topic are available via
-`tele raw messages.Search` (`top_msg_id`), since grammers 0.10 does not expose
-topic filters on its history/search iterators.
+- `--file` is repeatable: one path sends a single media, 2-10 paths send an
+  album (`{"album": [message objects]}`); albums do not support `--schedule`
+  (including `--schedule online`) or `--thumbnail`.
+- `--schedule online` schedules delivery for when the peer comes online
+  (dry-run `data.schedule` is `0` for online).
+- `--media-ttl <secs>` sets an auto-destruct timer on sent media.
+- `--thumbnail <path>` attaches a custom thumbnail to single-document uploads.
+- `--url <url> --kind photo|document` uploads remote media by URL instead of a
+  local file.
+- `--copy-from <chat> --copy-id <id>` re-sends an existing message's media
+  without the forward header.
+- `--topic <id>` posts into a forum topic (mutually exclusive with `--reply`;
+  both set the reply-to header, and replying to the topic root lands the message
+  in that topic). Reads scoped to a topic are available via
+  `tele raw messages.Search` (`top_msg_id`), since grammers 0.10 does not expose
+  topic filters on its history/search iterators.
 
 ## `msg delete`
 
