@@ -52,9 +52,9 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.join | Join public / invite | `channels.joinChannel`, `messages.importChatInvite` | `join_chat`, `accept_invite_link` | `tele chat join` | done |
 | chat.leave | Leave / delete dialog | `channels.leaveChannel`, `messages.deleteChatUser` | `delete_dialog` | `tele chat leave` | done |
 | chat.invite | Export / edit invites | `/api/invites` | raw | `tele chat invite` adds users (channels.InviteToChannel); export a link via `tele raw messages.ExportChatInvite` | done |
-| chat.participants | List members | `channels.getParticipants` | `iter_participants` (channels/supergroups); basic groups via raw `messages.GetFullChat` — members whose user data is missing are skipped, never a panic | `tele chat participants` | done |
-| chat.kick | Kick / ban | `channels.editBanned` | `kick_participant`, `set_banned_rights` | `tele chat kick` | done |
-| chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` | `tele chat admin` | done |
+| chat.participants | List members | `channels.getParticipants` | `iter_participants` (channels/supergroups; `--role admin/banned/kicked/recent` + `--search` pass the TL filter param); basic groups via raw `messages.GetFullChat` — members whose user data is missing are skipped, never a panic | `tele chat participants` | done |
+| chat.kick | Kick / ban / restrict | `channels.editBanned` | `kick_participant`, `set_banned_rights` | `tele chat kick` (`--ban`, `--duration secs-or-forever`, `--rights CSV`) | done |
+| chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` (+ raw `channels.EditAdmin` when `other`/`manage_topics` requested) | `tele chat admin` (`--rights` incl. anonymous, other, manage_topics) | done |
 | chat.adminlog | Admin log | `channels.getAdminLog` | raw | `tele chat admin-log` | done |
 | chat.stats | Channel / group stats | `/api/stats` | raw | `tele chat stats` | done |
 | chat.forum | Forums / topics | `/api/forum` | raw | `tele topic *` incl. lifecycle close / reopen / edit / delete / pin (`topic create --emoji` single-codepoint only, see note) | done |

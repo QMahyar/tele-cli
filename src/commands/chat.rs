@@ -59,6 +59,16 @@ pub struct ParticipantsArgs {
     chat: String,
     #[arg(
         long,
+        help = "filter by role: admin, banned, kicked, recent (channels/supergroups only)"
+    )]
+    role: Option<String>,
+    #[arg(
+        long,
+        help = "search participants by name/username (channels/supergroups only)"
+    )]
+    search: Option<String>,
+    #[arg(
+        long,
         default_value_t = 100,
         help = "max participants to return (1-10000)"
     )]
@@ -77,6 +87,23 @@ pub struct KickArgs {
         help = "user to kick: @username, t.me link, numeric ID, +phone, or me"
     )]
     user: String,
+    #[arg(
+        long,
+        help = "ban instead of plain kick (deny view_messages; permanent unless --duration)"
+    )]
+    ban: bool,
+    #[arg(
+        long,
+        value_name = "SECS|forever",
+        help = "ban/restriction length in seconds, or forever (requires --ban or --rights)"
+    )]
+    duration: Option<String>,
+    #[arg(
+        long,
+        value_name = "CSV",
+        help = "comma-separated right:value pairs, e.g. send_stickers:false (right: view_messages,send_messages,send_media,send_stickers,send_gifs,send_games,send_inline,embed_links,send_polls,change_info,invite_users,pin_messages)"
+    )]
+    rights: Option<String>,
 }
 
 #[derive(Args)]
@@ -114,7 +141,8 @@ pub struct AdminArgs {
     #[arg(
         long,
         conflicts_with = "preset",
-        help = "comma-separated rights: change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call (mutually exclusive with --preset)"
+        value_name = "CSV",
+        help = "comma-separated rights: change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call,anonymous,other,manage_topics (mutually exclusive with --preset)"
     )]
     rights: Option<String>,
 }
@@ -398,9 +426,63 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ParticipantRole {
+    Admin,
+    Banned,
+    Kicked,
+    Recent,
+}
+
+fn parse_participant_role(role: Option<&str>) -> TeleResult<Option<ParticipantRole>> {
+    match role {
+        None => Ok(None),
+        Some("admin") => Ok(Some(ParticipantRole::Admin)),
+        Some("banned") => Ok(Some(ParticipantRole::Banned)),
+        Some("kicked") => Ok(Some(ParticipantRole::Kicked)),
+        Some("recent") => Ok(Some(ParticipantRole::Recent)),
+        Some(other) => Err(TeleError::Usage(format!(
+            "unknown role '{other}': use admin, banned, kicked, or recent"
+        ))),
+    }
+}
+
+fn participant_filter(
+    role: Option<ParticipantRole>,
+    search: Option<&str>,
+) -> tl::enums::ChannelParticipantsFilter {
+    use tl::enums::ChannelParticipantsFilter as F;
+    use tl::types::{
+        ChannelParticipantsBanned, ChannelParticipantsKicked, ChannelParticipantsSearch,
+    };
+    let q = search.unwrap_or_default().to_string();
+    match role {
+        Some(ParticipantRole::Admin) => F::ChannelParticipantsAdmins,
+        Some(ParticipantRole::Banned) => {
+            F::ChannelParticipantsBanned(ChannelParticipantsBanned { q })
+        }
+        Some(ParticipantRole::Kicked) => {
+            F::ChannelParticipantsKicked(ChannelParticipantsKicked { q })
+        }
+        Some(ParticipantRole::Recent) | None => match search {
+            Some(s) if !s.is_empty() => {
+                F::ChannelParticipantsSearch(ChannelParticipantsSearch { q: s.to_string() })
+            }
+            _ => F::ChannelParticipantsRecent,
+        },
+    }
+}
+
 async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    let role = parse_participant_role(args.role.as_deref())?;
+    let search = args
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
@@ -410,6 +492,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
+        let search = search.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({
@@ -429,6 +512,11 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
             if matches!(&chat, grammers_client::peer::Peer::Group(_))
                 && !entities::is_channel(&chat)
             {
+                if role.is_some() || search.is_some() {
+                    return Err(TeleError::Usage(
+                        "--role/--search filters require a channel or supergroup; basic groups list all members".to_string(),
+                    ));
+                }
                 let full = guard
                     .client
                     .invoke(&tl::functions::messages::GetFullChat {
@@ -465,7 +553,10 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
                 rows = basic_rows;
             } else {
                 let mut count = 0u32;
-                let mut iter = guard.client.iter_participants(chat_ref);
+                let mut iter = guard
+                    .client
+                    .iter_participants(chat_ref)
+                    .filter(participant_filter(role, search.as_deref()));
                 while count < limit {
                     match iter.next().await.map_err(tele_invocation)? {
                         Some(p) => {
@@ -498,22 +589,122 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
     crate::executor::finish(flags, &envelope)
 }
 
-async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+const BANNED_RIGHT_NAMES: &[&str] = &[
+    "view_messages",
+    "send_messages",
+    "send_media",
+    "send_stickers",
+    "send_gifs",
+    "send_games",
+    "send_inline",
+    "embed_links",
+    "send_polls",
+    "change_info",
+    "invite_users",
+    "pin_messages",
+];
+
+fn parse_ban_duration(duration: Option<&str>) -> TeleResult<Option<u32>> {
+    match duration {
+        None | Some("forever") => Ok(None),
+        Some(raw) => {
+            let secs: u64 = raw.parse().map_err(|_| {
+                TeleError::Usage(format!(
+                    "invalid --duration '{raw}': use seconds or 'forever'"
+                ))
+            })?;
+            if secs == 0 {
+                return Err(TeleError::Usage(
+                    "--duration must be greater than 0 or 'forever'".to_string(),
+                ));
+            }
+            u32::try_from(secs)
+                .ok()
+                .map(Some)
+                .ok_or_else(|| TeleError::Usage("--duration is too large".to_string()))
+        }
+    }
+}
+
+fn parse_banned_rights_csv(csv: &str) -> TeleResult<Vec<(String, bool)>> {
+    let mut out = Vec::new();
+    for part in csv.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = part.split_once(':') else {
+            return Err(TeleError::Usage(format!(
+                "invalid rights entry '{part}': use name:true or name:false"
+            )));
+        };
+        let name = name.trim();
+        if !BANNED_RIGHT_NAMES.contains(&name) {
+            return Err(TeleError::Usage(format!(
+                "unknown right '{name}': use {}",
+                BANNED_RIGHT_NAMES.join(",")
+            )));
+        }
+        let allowed = match value.trim() {
+            "true" => true,
+            "false" => false,
+            other => {
+                return Err(TeleError::Usage(format!(
+                    "invalid value '{other}' for right '{name}': use true or false"
+                )))
+            }
+        };
+        out.push((name.to_string(), allowed));
+    }
+    Ok(out)
+}
+
+fn validate_kick(args: &KickArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    let has_duration = args.duration.is_some();
+    if has_duration && !args.ban && args.rights.is_none() {
+        return Err(TeleError::Usage(
+            "--duration requires --ban or --rights".to_string(),
+        ));
+    }
+    parse_ban_duration(args.duration.as_deref())?;
+    if let Some(rights) = &args.rights {
+        parse_banned_rights_csv(rights)?;
+    }
+    Ok(())
+}
+
+async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_kick(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
+    let ban = args.ban;
+    let until_secs = parse_ban_duration(args.duration.as_deref())?;
+    let rights_entries = match &args.rights {
+        Some(csv) => parse_banned_rights_csv(csv)?,
+        None => Vec::new(),
+    };
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
         let user = args.user.clone();
+        let rights_entries = rights_entries.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
+                let mut data = serde_json::json!({
                     "dry_run": true,
                     "chat": target,
                     "user": user,
+                    "ban": ban,
                     "would": format!("kick user {user} from chat {target}")
-                }));
+                });
+                if let Some(secs) = until_secs {
+                    data["duration"] = serde_json::json!(secs);
+                }
+                if !rights_entries.is_empty() {
+                    data["rights"] = serde_json::json!(rights_entries);
+                }
+                return Ok(data);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -528,12 +719,61 @@ async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let user_ref = entities::peer_ref(&user_peer)
                 .await
                 .map_err(tele_invocation)?;
-            guard
-                .client
-                .kick_participant(chat_ref, user_ref)
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({"chat": target, "user": user, "kicked": true}))
+            if !ban && rights_entries.is_empty() && until_secs.is_none() {
+                guard
+                    .client
+                    .kick_participant(chat_ref, user_ref)
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({"chat": target, "user": user, "kicked": true}));
+            }
+            let mut call = guard.client.set_banned_rights(chat_ref, user_ref);
+            for (right, allowed) in &rights_entries {
+                call = match right.as_str() {
+                    "view_messages" => call.view_messages(*allowed),
+                    "send_messages" => call.send_messages(*allowed),
+                    "send_media" => call.send_media(*allowed),
+                    "send_stickers" => call.send_stickers(*allowed),
+                    "send_gifs" => call.send_gifs(*allowed),
+                    "send_games" => call.send_games(*allowed),
+                    "send_inline" => call.send_inline(*allowed),
+                    "embed_links" => call.embed_link_previews(*allowed),
+                    "send_polls" => call.send_polls(*allowed),
+                    "change_info" => call.change_info(*allowed),
+                    "invite_users" => call.invite_users(*allowed),
+                    "pin_messages" => call.pin_messages(*allowed),
+                    _ => call,
+                };
+            }
+            if ban {
+                call = call.view_messages(false);
+            }
+            if let Some(secs) = until_secs {
+                call = call.duration(std::time::Duration::from_secs(u64::from(secs)));
+            }
+            call.await.map_err(tele_invocation)?;
+            let mut data = serde_json::json!({
+                "chat": target,
+                "user": user,
+                "kicked": true,
+                "banned": ban,
+            });
+            if let Some(secs) = until_secs {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+                data["until"] = serde_json::json!(i64::from(secs) + now as i64);
+            }
+            if !rights_entries.is_empty() {
+                let denied: Vec<&str> = rights_entries
+                    .iter()
+                    .filter(|(_, allowed)| !allowed)
+                    .map(|(right, _)| right.as_str())
+                    .collect();
+                data["restricted"] = serde_json::json!(denied);
+            }
+            Ok(data)
         })
     })
     .await?;
@@ -568,6 +808,7 @@ fn validate_admin(args: &AdminArgs) -> TeleResult<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
 struct AdminRights {
     change_info: bool,
     post_messages: bool,
@@ -578,53 +819,14 @@ struct AdminRights {
     pin_messages: bool,
     add_admins: bool,
     manage_call: bool,
+    anonymous: bool,
+    other: bool,
+    manage_topics: bool,
 }
 
 impl AdminRights {
-    fn all() -> Self {
+    fn none() -> Self {
         Self {
-            change_info: true,
-            post_messages: true,
-            edit_messages: true,
-            delete_messages: true,
-            ban_users: true,
-            invite_users: true,
-            pin_messages: true,
-            add_admins: true,
-            manage_call: true,
-        }
-    }
-
-    fn moderator() -> Self {
-        Self {
-            change_info: false,
-            post_messages: false,
-            edit_messages: false,
-            delete_messages: true,
-            ban_users: true,
-            invite_users: true,
-            pin_messages: true,
-            add_admins: false,
-            manage_call: false,
-        }
-    }
-
-    fn editor() -> Self {
-        Self {
-            change_info: true,
-            post_messages: true,
-            edit_messages: true,
-            delete_messages: true,
-            ban_users: false,
-            invite_users: true,
-            pin_messages: true,
-            add_admins: false,
-            manage_call: false,
-        }
-    }
-
-    fn from_string(s: &str) -> TeleResult<Self> {
-        let mut rights = Self {
             change_info: false,
             post_messages: false,
             edit_messages: false,
@@ -634,7 +836,57 @@ impl AdminRights {
             pin_messages: false,
             add_admins: false,
             manage_call: false,
-        };
+            anonymous: false,
+            other: false,
+            manage_topics: false,
+        }
+    }
+
+    fn all() -> Self {
+        Self::none().with_all_set()
+    }
+
+    fn with_all_set(mut self) -> Self {
+        self.change_info = true;
+        self.post_messages = true;
+        self.edit_messages = true;
+        self.delete_messages = true;
+        self.ban_users = true;
+        self.invite_users = true;
+        self.pin_messages = true;
+        self.add_admins = true;
+        self.manage_call = true;
+        self.other = true;
+        self.manage_topics = true;
+        self
+    }
+
+    fn moderator() -> Self {
+        Self {
+            delete_messages: true,
+            ban_users: true,
+            invite_users: true,
+            pin_messages: true,
+            manage_topics: true,
+            ..Self::none()
+        }
+    }
+
+    fn editor() -> Self {
+        Self {
+            change_info: true,
+            post_messages: true,
+            edit_messages: true,
+            delete_messages: true,
+            invite_users: true,
+            pin_messages: true,
+            manage_topics: true,
+            ..Self::none()
+        }
+    }
+
+    fn from_string(s: &str) -> TeleResult<Self> {
+        let mut rights = Self::none();
         for part in s.split(',') {
             let part = part.trim();
             match part {
@@ -647,10 +899,13 @@ impl AdminRights {
                 "pin" => rights.pin_messages = true,
                 "add_admins" => rights.add_admins = true,
                 "manage_call" => rights.manage_call = true,
+                "anonymous" => rights.anonymous = true,
+                "other" => rights.other = true,
+                "manage_topics" => rights.manage_topics = true,
                 "" => {}
                 _ => {
                     return Err(TeleError::Usage(format!(
-                        "unknown right '{}': use change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call",
+                        "unknown right '{}': use change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call,anonymous,other,manage_topics",
                         part
                     )))
                 }
@@ -658,27 +913,42 @@ impl AdminRights {
         }
         Ok(rights)
     }
+
+    fn to_raw(self) -> tl::enums::ChatAdminRights {
+        tl::enums::ChatAdminRights::Rights(tl::types::ChatAdminRights {
+            change_info: self.change_info,
+            post_messages: self.post_messages,
+            edit_messages: self.edit_messages,
+            delete_messages: self.delete_messages,
+            ban_users: self.ban_users,
+            invite_users: self.invite_users,
+            pin_messages: self.pin_messages,
+            add_admins: self.add_admins,
+            manage_call: self.manage_call,
+            anonymous: self.anonymous,
+            other: self.other,
+            manage_topics: self.manage_topics,
+            post_stories: false,
+            edit_stories: false,
+            delete_stories: false,
+            manage_direct_messages: false,
+            manage_ranks: false,
+        })
+    }
+
+    fn needs_raw_edit_admin(self) -> bool {
+        self.other || self.manage_topics
+    }
 }
 
 fn resolve_admin_rights(args: &AdminArgs) -> TeleResult<AdminRights> {
     if args.demote {
-        return Ok(AdminRights {
-            change_info: false,
-            post_messages: false,
-            edit_messages: false,
-            delete_messages: false,
-            ban_users: false,
-            invite_users: false,
-            pin_messages: false,
-            add_admins: false,
-            manage_call: false,
-        });
+        return Ok(AdminRights::none());
     }
     if let Some(preset) = &args.preset {
         return Ok(match preset.as_str() {
             "moderator" => AdminRights::moderator(),
             "editor" => AdminRights::editor(),
-            "admin" => AdminRights::all(),
             _ => AdminRights::all(),
         });
     }
@@ -700,17 +970,6 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let target = args.chat.clone();
         let user = args.user.clone();
         let title = args.title.clone();
-        let rights = AdminRights {
-            change_info: rights.change_info,
-            post_messages: rights.post_messages,
-            edit_messages: rights.edit_messages,
-            delete_messages: rights.delete_messages,
-            ban_users: rights.ban_users,
-            invite_users: rights.invite_users,
-            pin_messages: rights.pin_messages,
-            add_admins: rights.add_admins,
-            manage_call: rights.manage_call,
-        };
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({
@@ -730,6 +989,28 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             let user_peer =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &user).await?;
+            if rights.needs_raw_edit_admin() {
+                guard
+                    .client
+                    .invoke(&tl::functions::channels::EditAdmin {
+                        channel: entities::input_channel(&chat)
+                            .await
+                            .map_err(tele_invocation)?,
+                        user_id: entities::input_user(&user_peer)
+                            .await
+                            .map_err(tele_invocation)?,
+                        admin_rights: rights.to_raw(),
+                        rank: title,
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({
+                    "chat": target,
+                    "user": user,
+                    "promote": promote,
+                    "demote": demote,
+                }));
+            }
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
             let user_ref = entities::peer_ref(&user_peer)
                 .await
@@ -744,7 +1025,8 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .invite_users(rights.invite_users)
                 .pin_messages(rights.pin_messages)
                 .add_admins(rights.add_admins)
-                .manage_call(rights.manage_call);
+                .manage_call(rights.manage_call)
+                .anonymous(rights.anonymous);
             if let Some(t) = &title {
                 builder = builder.rank(t.clone());
             }
@@ -1685,6 +1967,8 @@ mod tests {
             participants(
                 ParticipantsArgs {
                     chat: "\t".to_string(),
+                    role: None,
+                    search: None,
                     limit: 10,
                 },
                 &flags,
@@ -1699,6 +1983,9 @@ mod tests {
                 KickArgs {
                     chat: String::new(),
                     user: "u".to_string(),
+                    ban: false,
+                    duration: None,
+                    rights: None,
                 },
                 &flags,
             )
@@ -2029,5 +2316,214 @@ mod tests {
             bot_verification_icon: None,
             send_paid_messages_stars: None,
         })
+    }
+
+    #[test]
+    fn parse_participant_role_accepts_known_roles() {
+        assert_eq!(
+            parse_participant_role(Some("admin")).unwrap(),
+            Some(ParticipantRole::Admin)
+        );
+        assert_eq!(
+            parse_participant_role(Some("banned")).unwrap(),
+            Some(ParticipantRole::Banned)
+        );
+        assert_eq!(
+            parse_participant_role(Some("kicked")).unwrap(),
+            Some(ParticipantRole::Kicked)
+        );
+        assert_eq!(
+            parse_participant_role(Some("recent")).unwrap(),
+            Some(ParticipantRole::Recent)
+        );
+        assert_eq!(parse_participant_role(None).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_participant_role_rejects_unknown_and_case_mismatch() {
+        for bad in ["Admin", "ADMIN", "owner", "member", ""] {
+            assert!(
+                matches!(parse_participant_role(Some(bad)), Err(TeleError::Usage(_))),
+                "role {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn participant_filter_maps_roles() {
+        use tl::enums::ChannelParticipantsFilter as F;
+        let role = |r| parse_participant_role(Some(r)).unwrap();
+        assert!(matches!(
+            participant_filter(role("admin"), None),
+            F::ChannelParticipantsAdmins
+        ));
+        assert!(matches!(
+            participant_filter(role("recent"), None),
+            F::ChannelParticipantsRecent
+        ));
+        assert!(matches!(
+            participant_filter(None, None),
+            F::ChannelParticipantsRecent
+        ));
+        match participant_filter(role("banned"), Some("spam")) {
+            F::ChannelParticipantsBanned(f) => assert_eq!(f.q, "spam"),
+            other => panic!("unexpected filter {other:?}"),
+        }
+        match participant_filter(role("kicked"), None) {
+            F::ChannelParticipantsKicked(f) => assert_eq!(f.q, ""),
+            other => panic!("unexpected filter {other:?}"),
+        }
+    }
+
+    #[test]
+    fn participant_filter_search_without_role_uses_search_filter() {
+        use tl::enums::ChannelParticipantsFilter as F;
+        match participant_filter(None, Some("ali")) {
+            F::ChannelParticipantsSearch(f) => assert_eq!(f.q, "ali"),
+            other => panic!("unexpected filter {other:?}"),
+        }
+        assert!(matches!(
+            participant_filter(Some(ParticipantRole::Recent), Some("")),
+            F::ChannelParticipantsRecent
+        ));
+    }
+
+    #[test]
+    fn admin_rights_csv_accepts_new_rights() {
+        let rights = AdminRights::from_string("anonymous,other,manage_topics").unwrap();
+        assert!(rights.anonymous);
+        assert!(rights.other);
+        assert!(rights.manage_topics);
+        assert!(rights.needs_raw_edit_admin());
+        assert!(!rights.change_info);
+    }
+
+    #[test]
+    fn admin_rights_csv_rejects_unknown_right() {
+        let err = AdminRights::from_string("ban,fly").unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.to_string().contains("manage_topics"));
+    }
+
+    #[test]
+    fn admin_presets_carry_new_rights() {
+        let admin = AdminRights::all();
+        assert!(admin.other && admin.manage_topics && !admin.anonymous);
+        assert!(admin.needs_raw_edit_admin());
+        let moderator = AdminRights::moderator();
+        assert!(moderator.manage_topics && !moderator.other && !moderator.anonymous);
+        assert!(moderator.needs_raw_edit_admin());
+        let editor = AdminRights::editor();
+        assert!(editor.manage_topics && !editor.ban_users);
+        assert!(grants_nothing(&AdminRights::none()));
+    }
+
+    fn grants_nothing(rights: &AdminRights) -> bool {
+        !(rights.change_info
+            || rights.post_messages
+            || rights.edit_messages
+            || rights.delete_messages
+            || rights.ban_users
+            || rights.invite_users
+            || rights.pin_messages
+            || rights.add_admins
+            || rights.manage_call
+            || rights.anonymous
+            || rights.other
+            || rights.manage_topics)
+    }
+
+    #[test]
+    fn resolve_admin_rights_demote_grants_nothing() {
+        let args = AdminArgs {
+            chat: "c".to_string(),
+            user: "u".to_string(),
+            promote: false,
+            demote: true,
+            title: None,
+            preset: Some("admin".to_string()),
+            rights: Some("ban".to_string()),
+        };
+        assert!(grants_nothing(&resolve_admin_rights(&args).unwrap()));
+    }
+
+    #[test]
+    fn ban_duration_parses_secs_and_forever() {
+        assert_eq!(parse_ban_duration(None).unwrap(), None);
+        assert_eq!(parse_ban_duration(Some("forever")).unwrap(), None);
+        assert_eq!(parse_ban_duration(Some("3600")).unwrap(), Some(3600));
+        assert_eq!(parse_ban_duration(Some("60")).unwrap(), Some(60));
+    }
+
+    #[test]
+    fn ban_duration_rejects_garbage_zero_negative_overflow() {
+        for bad in ["", "abc", "-5", "0", "1.5", "99999999999"] {
+            assert!(
+                matches!(parse_ban_duration(Some(bad)), Err(TeleError::Usage(_))),
+                "duration {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn banned_rights_csv_maps_names_and_values() {
+        let entries = parse_banned_rights_csv("send_stickers:false, invite_users:true").unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                ("send_stickers".to_string(), false),
+                ("invite_users".to_string(), true)
+            ]
+        );
+    }
+
+    #[test]
+    fn banned_rights_csv_normalizes_embed_links_alias() {
+        let entries = parse_banned_rights_csv("embed_links:false").unwrap();
+        assert_eq!(entries, vec![("embed_links".to_string(), false)]);
+    }
+
+    #[test]
+    fn banned_rights_csv_rejects_bad_entries() {
+        for bad in [
+            "send_stickers",
+            "send_stickers:maybe",
+            "fly:false",
+            ":false",
+            "send_stickers:",
+        ] {
+            assert!(
+                matches!(parse_banned_rights_csv(bad), Err(TeleError::Usage(_))),
+                "csv '{bad}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn kick_duration_requires_ban_or_rights() {
+        let base = |duration: Option<String>, ban: bool, rights: Option<String>| KickArgs {
+            chat: "@c".to_string(),
+            user: "@u".to_string(),
+            ban,
+            duration,
+            rights,
+        };
+        assert!(matches!(
+            validate_kick(&base(Some("60".to_string()), false, None)),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_kick(&base(Some("60".to_string()), true, None)).is_ok());
+        assert!(validate_kick(&base(
+            Some("60".to_string()),
+            false,
+            Some("send_stickers:false".to_string())
+        ))
+        .is_ok());
+        assert!(validate_kick(&base(None, false, None)).is_ok());
+        assert!(validate_kick(&base(None, true, None)).is_ok());
+        assert!(matches!(
+            validate_kick(&base(Some("nope".to_string()), true, None)),
+            Err(TeleError::Usage(_))
+        ));
     }
 }
