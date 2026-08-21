@@ -178,6 +178,14 @@ privacy settings prevent saving the contact, the account row fails with a
 clear error instead of a false `"added": true`. A warn is logged when the add
 updated the display name of an existing contact.
 
+## `msg send`
+
+`--topic <id>` posts into a forum topic (mutually exclusive with `--reply`;
+both set the reply-to header, and replying to the topic root lands the message
+in that topic). Reads scoped to a topic are available via
+`tele raw messages.Search` (`top_msg_id`), since grammers 0.10 does not expose
+topic filters on its history/search iterators.
+
 ## `msg delete`
 
 `results[].data` carries `requested` (number asked to delete) and `deleted`
