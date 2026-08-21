@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use log::{LevelFilter, Metadata, Record};
@@ -16,7 +17,7 @@ impl log::Log for StderrLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            eprintln!("[{}] {}", record.level(), record.args());
+            let _ = writeln!(std::io::stderr(), "[{}] {}", record.level(), record.args());
         }
     }
 

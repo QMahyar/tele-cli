@@ -892,7 +892,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     multi,
                     &["id", "date", "sender", "text"],
                     &table_rows,
-                );
+                )?;
             }
             Ok(serde_json::json!({"messages": rows}))
         })
@@ -1088,7 +1088,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     multi,
                     &["id", "date", "sender", "text"],
                     &table_rows,
-                );
+                )?;
             }
             Ok(serde_json::json!({"messages": rows}))
         })

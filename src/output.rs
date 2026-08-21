@@ -1,4 +1,5 @@
-use comfy_table::{Cell, Table};
+use comfy_table::{Cell, ContentArrangement, Table};
+use std::io::Write;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Envelope {
@@ -55,7 +56,7 @@ pub fn log_line(level: &str, message: &str) {
     if lv < min {
         return;
     }
-    eprintln!("[{level}] {message}");
+    let _ = writeln!(std::io::stderr(), "[{level}] {message}");
 }
 
 pub fn print_json(value: &serde_json::Value) -> crate::error::TeleResult<()> {
@@ -76,8 +77,9 @@ pub fn print_json_result(value: &serde_json::Value) -> crate::error::TeleResult<
     print_json_to(&mut std::io::stdout(), value)
 }
 
-pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
-    print_table_to(&mut std::io::stdout(), headers, rows).expect("write table to stdout");
+pub fn print_table(headers: &[&str], rows: &[Vec<String>]) -> crate::error::TeleResult<()> {
+    print_table_to(&mut std::io::stdout(), headers, rows)?;
+    Ok(())
 }
 
 fn print_table_to(
@@ -86,6 +88,7 @@ fn print_table_to(
     rows: &[Vec<String>],
 ) -> std::io::Result<()> {
     let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
     table.set_header(headers.iter().map(|h| Cell::new(*h)));
     for row in rows {
         table.add_row(row.iter().map(Cell::new));
@@ -95,9 +98,24 @@ fn print_table_to(
     Ok(())
 }
 
-pub fn print_account_table(account: &str, multi: bool, headers: &[&str], rows: &[Vec<String>]) {
-    print_account_table_to(&mut std::io::stdout(), account, multi, headers, rows)
-        .expect("write account table to stdout");
+pub fn print_line(line: &str) -> crate::error::TeleResult<()> {
+    print_line_to(&mut std::io::stdout(), line)
+}
+
+pub fn print_line_to(w: &mut impl std::io::Write, line: &str) -> crate::error::TeleResult<()> {
+    writeln!(w, "{line}")?;
+    w.flush()?;
+    Ok(())
+}
+
+pub fn print_account_table(
+    account: &str,
+    multi: bool,
+    headers: &[&str],
+    rows: &[Vec<String>],
+) -> crate::error::TeleResult<()> {
+    print_account_table_to(&mut std::io::stdout(), account, multi, headers, rows)?;
+    Ok(())
 }
 
 fn print_account_table_to(
@@ -280,6 +298,55 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         print_json_to(&mut buf, &serde_json::json!({"a": 1})).unwrap();
         assert_eq!(String::from_utf8(buf).unwrap(), "{\"a\":1}\n");
+    }
+
+    struct FailingWriter {
+        kind: std::io::ErrorKind,
+    }
+
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(self.kind, "sink failed"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn print_table_to_failing_writer_returns_err_without_panic() {
+        let mut w = FailingWriter {
+            kind: std::io::ErrorKind::BrokenPipe,
+        };
+        let res = print_table_to(&mut w, &["a"], &sample_rows());
+        assert!(res.is_err(), "expected Err from failing writer");
+    }
+
+    #[test]
+    fn print_line_to_failing_writer_propagates_broken_pipe() {
+        let mut w = FailingWriter {
+            kind: std::io::ErrorKind::BrokenPipe,
+        };
+        let err = print_line_to(&mut w, "boom").unwrap_err();
+        assert!(
+            crate::error::TeleError::BrokenPipe.is_broken_pipe(),
+            "variant exists"
+        );
+        assert_eq!(err.exit_code(), crate::error::EXIT_OK);
+    }
+
+    #[test]
+    fn print_line_to_open_writer_emits_line() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_line_to(&mut buf, "hello").unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn other_io_error_stays_other() {
+        let err: crate::error::TeleError =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied").into();
+        assert!(!err.is_broken_pipe());
     }
 
     fn sample_rows() -> Vec<Vec<String>> {

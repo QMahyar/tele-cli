@@ -12,6 +12,7 @@ pub enum TeleError {
     Config(String),
     Invocation(String, Option<u32>),
     TaskPanic(String),
+    BrokenPipe,
     Other(String),
 }
 
@@ -21,6 +22,7 @@ impl TeleError {
             TeleError::Usage(_) => EXIT_USAGE,
             TeleError::Config(_) => EXIT_USAGE,
             TeleError::Auth(_) => EXIT_AUTH,
+            TeleError::BrokenPipe => EXIT_OK,
             _ => EXIT_ALL_FAILED,
         }
     }
@@ -33,6 +35,7 @@ impl TeleError {
             | TeleError::Invocation(m, _)
             | TeleError::TaskPanic(m)
             | TeleError::Other(m) => m,
+            TeleError::BrokenPipe => "output stream closed",
         }
     }
 
@@ -44,12 +47,17 @@ impl TeleError {
             TeleError::Invocation(..) => "InvocationError",
             TeleError::TaskPanic(_) => "TaskPanicError",
             TeleError::Other(_) => "Error",
+            TeleError::BrokenPipe => "Error",
         };
         let mut value = serde_json::json!({ "type": kind, "message": self.message() });
         if let TeleError::Invocation(_, Some(seconds)) = self {
             value["seconds"] = serde_json::json!(seconds);
         }
         value
+    }
+
+    pub fn is_broken_pipe(&self) -> bool {
+        matches!(self, TeleError::BrokenPipe)
     }
 }
 
@@ -69,7 +77,11 @@ impl From<anyhow::Error> for TeleError {
 
 impl From<std::io::Error> for TeleError {
     fn from(e: std::io::Error) -> Self {
-        TeleError::Other(e.to_string())
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            TeleError::BrokenPipe
+        } else {
+            TeleError::Other(e.to_string())
+        }
     }
 }
 
@@ -288,5 +300,19 @@ mod tests {
         let err = invocation_error(e);
         assert!(matches!(err, TeleError::Invocation(_, Some(17))));
         assert_eq!(err.message(), "rpc error 420: FLOOD_WAIT (value: 17)");
+    }
+
+    #[test]
+    fn broken_pipe_maps_from_io_error_and_exits_ok() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+        let err: TeleError = io_err.into();
+        assert!(err.is_broken_pipe());
+        assert_eq!(err.exit_code(), EXIT_OK);
+        assert_eq!(err.message(), "output stream closed");
+    }
+
+    #[test]
+    fn broken_pipe_is_not_confused_with_other_errors() {
+        assert!(!TeleError::Other("pipe?".to_string()).is_broken_pipe());
     }
 }

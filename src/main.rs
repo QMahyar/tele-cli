@@ -259,6 +259,9 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
     match result {
         Ok(code) => code,
         Err(e) => {
+            if e.is_broken_pipe() {
+                return error::EXIT_OK;
+            }
             output::log_line("error", e.message());
             if output::machine_mode(flags.json, flags.jsonl) {
                 let envelope = output::Envelope::failed(flags.dry_run, &flags.command, e.as_json());

@@ -104,9 +104,9 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
         })
         .collect();
     if table_rows.is_empty() {
-        println!("no sessions yet: tele account add + tele account login");
+        output::print_line("no sessions yet: tele account add + tele account login")?;
     } else {
-        output::print_table(&["name", "tags", "session"], &table_rows);
+        output::print_table(&["name", "tags", "session"], &table_rows)?;
     }
     Ok(crate::error::EXIT_OK)
 }
@@ -137,7 +137,7 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
     if !output::machine_mode(flags.json, flags.jsonl) {
         let rows = status_table_rows(&envelope);
         if !rows.is_empty() {
-            output::print_table(&["account", "authorized"], &rows);
+            output::print_table(&["account", "authorized"], &rows)?;
         }
     }
     crate::executor::finish(flags, &envelope)

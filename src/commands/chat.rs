@@ -479,7 +479,7 @@ async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult
                         r["role"].as_str().unwrap_or_default().to_string(),
                     ])
                     .collect();
-                output::print_account_table(&name, multi, &["id", "name", "role"], &table_rows);
+                output::print_account_table(&name, multi, &["id", "name", "role"], &table_rows)?;
             }
             Ok(serde_json::json!({"participants": rows}))
         })
@@ -844,7 +844,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         ]
                     })
                     .collect();
-                output::print_account_table(&name, multi, &["id", "date", "action"], &table_rows);
+                output::print_account_table(&name, multi, &["id", "date", "action"], &table_rows)?;
             }
             Ok(serde_json::json!({"events": rows}))
         })
