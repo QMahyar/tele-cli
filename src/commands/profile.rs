@@ -134,11 +134,52 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
         if name.trim().is_empty() {
             return Err(TeleError::Usage("name must not be empty".to_string()));
         }
+        let (first, last) = split_full_name(name);
+        if let Some(first) = &first {
+            if first.chars().count() > MAX_NAME_CHARS {
+                return Err(TeleError::Usage(
+                    "first name exceeds 64 characters".to_string(),
+                ));
+            }
+        }
+        if let Some(last) = &last {
+            if last.chars().count() > MAX_NAME_CHARS {
+                return Err(TeleError::Usage(
+                    "last name exceeds 64 characters".to_string(),
+                ));
+            }
+        }
+    }
+    if let Some(bio) = &args.bio {
+        if bio.trim().chars().count() > MAX_BIO_CHARS {
+            return Err(TeleError::Usage("bio exceeds 140 characters".to_string()));
+        }
     }
     if let Some(path) = &args.photo {
         validate_upload_path(path)?;
     }
     Ok(())
+}
+
+const MAX_NAME_CHARS: usize = 64;
+const MAX_BIO_CHARS: usize = 140;
+
+fn split_full_name(raw: &str) -> (Option<String>, Option<String>) {
+    let trimmed = raw.trim();
+    match trimmed.split_once(' ') {
+        Some((first, last)) => {
+            let last = last.trim();
+            (
+                Some(first.trim().to_string()),
+                if last.is_empty() {
+                    None
+                } else {
+                    Some(last.to_string())
+                },
+            )
+        }
+        None => (Some(trimmed.to_string()), None),
+    }
 }
 
 fn redact_phone(phone: Option<&str>, show_phone: bool) -> Option<&str> {
@@ -195,13 +236,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             guard.rate_limiter.acquire().await;
             if new_name.is_some() || new_bio.is_some() {
                 let (first, last) = match &new_name {
-                    Some(n) => {
-                        let mut parts = n.splitn(2, ' ');
-                        (
-                            Some(parts.next().unwrap_or(n).to_string()),
-                            Some(parts.next().unwrap_or("").to_string()),
-                        )
-                    }
+                    Some(n) => split_full_name(n),
                     None => (None, None),
                 };
                 let _: tl::enums::User = guard
@@ -287,6 +322,55 @@ mod tests {
             photo: None,
         };
         assert!(validate_set(&with_name).is_ok());
+    }
+
+    #[test]
+    fn split_full_name_preserves_last_name_semantics() {
+        assert_eq!(split_full_name("John"), (Some("John".to_string()), None));
+        assert_eq!(
+            split_full_name("John Smith"),
+            (Some("John".to_string()), Some("Smith".to_string()))
+        );
+        assert_eq!(
+            split_full_name("A  B"),
+            (Some("A".to_string()), Some("B".to_string()))
+        );
+        assert_eq!(split_full_name("John "), (Some("John".to_string()), None));
+        assert_eq!(
+            split_full_name(" Mary Jane Watson "),
+            (Some("Mary".to_string()), Some("Jane Watson".to_string()))
+        );
+    }
+
+    #[test]
+    fn validate_set_rejects_oversized_fields() {
+        let long_first = SetArgs {
+            name: Some("x".repeat(65)),
+            bio: None,
+            photo: None,
+        };
+        assert!(matches!(
+            validate_set(&long_first),
+            Err(TeleError::Usage(_))
+        ));
+        let long_last = SetArgs {
+            name: Some(format!("ok {}", "y".repeat(65))),
+            bio: None,
+            photo: None,
+        };
+        assert!(matches!(validate_set(&long_last), Err(TeleError::Usage(_))));
+        let long_bio = SetArgs {
+            name: None,
+            bio: Some("z".repeat(141)),
+            photo: None,
+        };
+        assert!(matches!(validate_set(&long_bio), Err(TeleError::Usage(_))));
+        let at_cap = SetArgs {
+            name: Some(format!("{} Wat", "a".repeat(60))),
+            bio: Some("b".repeat(140)),
+            photo: None,
+        };
+        assert!(validate_set(&at_cap).is_ok());
     }
 
     #[test]
