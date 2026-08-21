@@ -106,6 +106,20 @@ impl From<serde_json::Error> for TeleError {
 
 pub type TeleResult<T> = Result<T, TeleError>;
 
+pub fn aggregate_exit_code(ok_count: usize, failed: &[i32]) -> i32 {
+    if failed.is_empty() {
+        EXIT_OK
+    } else if ok_count > 0 {
+        EXIT_PARTIAL
+    } else if failed.iter().all(|c| *c == EXIT_AUTH) {
+        EXIT_AUTH
+    } else if failed.contains(&EXIT_USAGE) {
+        EXIT_USAGE
+    } else {
+        EXIT_ALL_FAILED
+    }
+}
+
 pub fn invocation_is_unauthorized(e: &grammers_client::InvocationError) -> bool {
     matches!(e, grammers_client::InvocationError::Rpc(rpc) if rpc.code == 401)
 }
