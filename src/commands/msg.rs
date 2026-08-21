@@ -476,16 +476,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
             let mut msg = if let Some(path) = &file {
-                let uploaded = guard.client.upload_file(path).await.map_err(|e| {
-                    match std::error::Error::source(&e)
-                        .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>())
-                    {
-                        Some(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 420 => {
-                            TeleError::Invocation(rpc.to_string(), rpc.value)
-                        }
-                        _ => TeleError::Other(e.to_string()),
-                    }
-                })?;
+                let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
                 let base = match format.as_str() {
                     "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
                     _ => InputMessage::new().text(caption.unwrap_or_default()),
@@ -875,6 +866,18 @@ fn validate_get(args: &GetArgs) -> TeleResult<()> {
         ));
     }
     Ok(())
+}
+
+fn upload_error(e: std::io::Error) -> TeleError {
+    let invocation = e
+        .get_ref()
+        .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
+    match invocation {
+        Some(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 420 => {
+            TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name.clone(), rpc.value)
+        }
+        _ => TeleError::Other(e.to_string()),
+    }
 }
 
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1306,6 +1309,26 @@ fn looks_like_image(path: &str) -> bool {
 mod tests {
     use super::*;
     use grammers_session::types::PeerKind;
+
+    #[test]
+    fn upload_flood_wait_carries_rpc_keys_like_send_path() {
+        let rpc = grammers_client::sender::RpcError {
+            code: 420,
+            name: "FLOOD_WAIT".to_string(),
+            value: Some(17),
+            caused_by: None,
+        };
+        let e = std::io::Error::other(grammers_client::InvocationError::Rpc(rpc));
+        let err = upload_error(e);
+        assert!(matches!(err, TeleError::Rpc(_, 420, _, Some(17))));
+        assert_eq!(err.message(), "rpc error 420: FLOOD_WAIT (value: 17)");
+    }
+
+    #[test]
+    fn upload_non_flood_error_maps_to_other() {
+        let e = std::io::Error::other(grammers_client::InvocationError::Dropped);
+        assert!(matches!(upload_error(e), TeleError::Other(_)));
+    }
 
     fn send_args(format: &str) -> SendArgs {
         SendArgs {
