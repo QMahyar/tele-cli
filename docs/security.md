@@ -27,37 +27,44 @@ Assets: live user sessions (full account), `TELE_API_HASH`, phone numbers, 2FA p
 - `contact list` prints phone numbers, and `takeout export` writes them — this is
   intended behavior (the contact list shows phones; takeout exports them). Scrub
   phone numbers from any output you share before pasting it into a ticket or log.
-- QR-login fallback prints the `tg://login?token=…` URI to stderr when QR
-  rendering fails (terminal too small, etc.). Transient and low risk, but treat
-  stderr during login as potentially sensitive.
+- QR-login fallback prints the `tg://login?token=…` URI to stderr only when
+  stderr is an interactive terminal or `account login --show-token` is passed;
+  redirected stderr gets a warning line without the token. Treat stderr during
+  login as potentially sensitive regardless.
 - The code-login prompt omits the account phone number when stderr is not a
   terminal, so non-TTY stderr redirected to logs never carries the number.
 - `account login --phone …` puts the number on argv: visible in process
   listings and shell history on non-TTY flows. Prefer the stdin prompt or the
   `TELE_PHONE` env for automation.
+- 2FA password input echo cannot be disabled portably: Windows terminals get
+  no-echo input (`SetConsoleMode`); other platforms print a warning that the
+  typed password may be visible. Passwords are never accepted on argv on any
+  platform.
 
 ## Windows permission model
 
-- `create_dir_private` / `restrict_file_private` are Unix-only: they chmod the
-  app data dir to 0700 and session files to 0600 (`fs_util.rs`) and are no-ops
-  on Windows.
-- On Windows the app data dir and session files rely on the default inherited
-  ACLs of the user profile.
+- On Unix, `create_dir_private` / `restrict_file_private` chmod the app data
+  dir to 0700 and session files (plus SQLite sidecars `-journal`/`-wal`/`-shm`,
+  created up front and re-checked after close) to 0600 (`fs_util.rs`).
+- On Windows, directories are created with an explicit inheritable owner-only
+  DACL and files with a protected DACL (`PROTECTED_DACL_SECURITY_INFORMATION`
+  blocks inheritance from parent dirs) via `fs_util::set_user_only_dacl`.
+- A failed `.env` restriction attempt is warned about at startup; config errors
+  report the leaf filename so logs do not leak install paths.
 - This is safe when the app dir is the default `%APPDATA%` (per-user profile,
-  user-owned).
-- It becomes sensitive only if `TELE_APP_DIR` is redirected to a shared
-  directory (e.g. `C:\telecli` or a network share) where other users can read
-  it; keep sessions on a per-user path.
-- No remediation in v0.1.x.
+  user-owned). It becomes sensitive only if `TELE_APP_DIR` points somewhere ACLs
+  cannot protect — keep sessions on a per-user path.
 
 ## Always
 
 - `.gitignore`: `.env`, `*.session`, `*.session-journal`, app-dir copies
 - Session path = `{app_dir}/sessions/{safe_name}.session` (`safe_name` = `[A-Za-z0-9._-]+` only)
 - `--config` / `--file` must be real files; no `~` surprises without expanduser; reject directories
-- `--file` upload refuses anything under the app data dir and `.env` / `*.session` / `*.session-journal` basenames
+- `--file` upload refuses anything under the app data dir, `.env`, `*.session`, `*.session-journal`,
+  and private-key material: `id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa` basenames and prefixes,
+  `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `.netrc`, `.git-credentials`, bare `credentials`
 - Upload basenames that Windows would alias are rejected up front: trailing `.`/space, `:`, and reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`)
-- 2FA passwords are never accepted on argv; read from stdin only
+- 2FA passwords are never accepted on argv; read from stdin only, with echo disabled on Windows
 - `--limit` / `--message-limit` are capped (10k lists, 1M takeout) with a usage error
 - Invite URLs parsed; do not fetch arbitrary HTTP (Telegram only)
 - Live tests: designated chat only

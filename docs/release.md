@@ -46,7 +46,15 @@ behavior, not `git log`.
 ## CI
 
 The `ci` workflow runs on PR and push to `main` (and `master` until stale refs
-clear), on `ubuntu-latest` and `windows-latest`. In a fresh checkout:
+clear), on `ubuntu-latest` and `windows-latest`. Jobs:
+
+- **test** (matrix, both OSes): fmt check, clippy `-D warnings`, `cargo test`.
+- **msrv**: `cargo check --workspace --all-targets` on the pinned MSRV
+  toolchain (`1.89`, mirrored from `rust-version` in `Cargo.toml` — keep both
+  in sync; `File::try_lock` in `session.rs` currently sets the floor).
+- **audit**: `cargo audit` on every run (advisory gate).
+
+In a fresh checkout the offline gate is:
 
 1. `cargo fmt --all -- --check`
 2. `cargo clippy --all-targets -- -D warnings`

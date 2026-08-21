@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- RPC errors in `--json` envelopes now carry additive `code` and `name` keys — scripts should match on these instead of parsing the human `message` string.
+- Message objects may carry additive `media_kind` and `media_label` fields alongside the legacy colon-joined `media` string.
+- `account login --show-token`: prints the raw `tg://login?token=…` URI to stderr even when stderr is redirected to a log. Without the flag the URI is printed only on an interactive terminal.
+
+### Changed
+- Broken stdout pipes exit 0 silently (`tele chat stats | head` no longer panics with exit code 101); stderr write failures are ignored.
+- Ctrl+C structurally aborts pending per-account tasks instead of waiting for in-flight RPCs to finish.
+- Mixed usage errors + Telegram failures now exit 1 uniformly across fanout commands and `tele listen` (previously `listen` could exit 2).
+- Mutually exclusive flag pairs (`--json`/`--jsonl`, `--promote`/`--demote`, `--preset`/`--rights`) are rejected by clap at parse time.
+- Stale `.session.lock` marker files persist after disconnect (supersedes 0.3.1's removal behavior); session exclusivity is guarded by the OS-level file lock, not the marker.
+- `dialog archive` / `dialog delete` validate `--chat` before connecting, so missing targets exit 1 (usage) instead of 3.
+- Config-related errors show the leaf filename only, not the full app-data path.
+
+### Fixed
+- The 2FA password prompt no longer echoes typed characters on Windows terminals (other platforms warn that input may echo).
+- Peer-resolution failures misreported as "request error: dropped (cancelled)" are translated to an actionable hint about the peer cache.
+- SQLite sidecar files (`*.session-journal`, `-wal`, `-shm`) are created permission-restricted like the session itself and re-checked after close.
+- Security: Windows app-data directories and session files now carry explicit owner-only DACLs (protected from inheritance) instead of relying on profile defaults.
+- Security: upload guard refuses private-key material (`id_rsa` family basenames, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `.netrc`, `.git-credentials`, bare `credentials`).
+- Security: a failed config-file write can no longer clobber the previous config (tmp file is written and verified first).
+- Security: a restrictive-ACL failure on `%APPDATA%\telecli\.env` is now warned about at startup.
+- `listen --raw` help text corrected: raw TL updates are emitted *in addition to* the parsed event allowlist, not instead of it.
+- Oversized numeric values in `raw --args` and `--chat` targets fail with a usage error instead of a silent i32 wraparound.
+
+### Removed
+- Never-wired flood-cooldown API in the per-account rate limiter; FloodWait/SlowModeWait handling is unchanged (grammers AutoSleep retry policy).
+
 ## [0.3.1] - 2026-08-18
 
 ### Added
