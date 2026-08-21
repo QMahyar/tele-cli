@@ -88,17 +88,13 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         if !is_dialog_row(&dialog.raw) {
                             continue;
                         }
-                        let (unread, draft) = match &dialog.raw {
-                            tl::enums::Dialog::Dialog(d) => (
-                                d.unread_count,
-                                match &d.draft {
-                                    Some(tl::enums::DraftMessage::Message(dm)) => {
-                                        dm.message.clone()
-                                    }
-                                    _ => String::new(),
-                                },
-                            ),
+                        let d = match &dialog.raw {
+                            tl::enums::Dialog::Dialog(d) => d,
                             tl::enums::Dialog::Folder(_) => continue,
+                        };
+                        let draft = match &d.draft {
+                            Some(tl::enums::DraftMessage::Message(dm)) => dm.message.clone(),
+                            _ => String::new(),
                         };
                         if !matches_folder(&dialog.raw, folder) {
                             continue;
@@ -108,12 +104,15 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             .as_ref()
                             .map(|m| m.text().to_string())
                             .unwrap_or_default();
-                        rows.push(serde_json::json!({
-                            "chat": crate::serialize::peer_key(&dialog.peer),
-                            "unread": unread,
-                            "draft": draft,
-                            "last_message": last,
-                        }));
+                        let last_message_date =
+                            dialog.last_message.as_ref().map(|m| m.date().to_rfc3339());
+                        rows.push(dialog_row(
+                            d,
+                            crate::serialize::peer_key(&dialog.peer),
+                            draft,
+                            last,
+                            last_message_date,
+                        ));
                         count += 1;
                     }
                     None => break,
@@ -231,6 +230,26 @@ fn list_dry_run_data(limit: u32, folder: Option<i32>) -> serde_json::Value {
 
 fn is_dialog_row(raw: &tl::enums::Dialog) -> bool {
     matches!(raw, tl::enums::Dialog::Dialog(_))
+}
+
+fn dialog_row(
+    d: &tl::types::Dialog,
+    chat: serde_json::Value,
+    draft: String,
+    last_message: String,
+    last_message_date: Option<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "chat": chat,
+        "unread": d.unread_count,
+        "pinned": d.pinned,
+        "unread_mark": d.unread_mark,
+        "unread_mentions": d.unread_mentions_count,
+        "unread_reactions": d.unread_reactions_count,
+        "draft": draft,
+        "last_message": last_message,
+        "last_message_date": last_message_date,
+    })
 }
 
 fn matches_folder(raw: &tl::enums::Dialog, folder: i32) -> bool {
@@ -505,6 +524,86 @@ mod tests {
             folder_id,
             ttl_period: None,
         })
+    }
+
+    fn rich_dialog() -> tl::types::Dialog {
+        tl::types::Dialog {
+            pinned: true,
+            unread_mark: true,
+            view_forum_as_messages: false,
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 1 }),
+            top_message: 10,
+            read_inbox_max_id: 5,
+            read_outbox_max_id: 8,
+            unread_count: 3,
+            unread_mentions_count: 2,
+            unread_reactions_count: 4,
+            unread_poll_votes_count: 0,
+            notify_settings: notify_settings(),
+            pts: None,
+            draft: None,
+            folder_id: Some(0),
+            ttl_period: None,
+        }
+    }
+
+    #[test]
+    fn dialog_row_locks_every_key_and_value() {
+        let row = dialog_row(
+            &rich_dialog(),
+            serde_json::json!({"id": 1, "kind": "user"}),
+            "draft text".to_string(),
+            "last message".to_string(),
+            Some("2026-08-21T00:00:00+00:00".to_string()),
+        );
+        let obj = row.as_object().expect("row must be an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "chat",
+                "draft",
+                "last_message",
+                "last_message_date",
+                "pinned",
+                "unread",
+                "unread_mark",
+                "unread_mentions",
+                "unread_reactions",
+            ]
+        );
+        assert_eq!(row["unread"], 3);
+        assert_eq!(row["pinned"], serde_json::json!(true));
+        assert_eq!(row["unread_mark"], serde_json::json!(true));
+        assert_eq!(row["unread_mentions"], 2);
+        assert_eq!(row["unread_reactions"], 4);
+        assert_eq!(row["draft"], "draft text");
+        assert_eq!(row["last_message"], "last message");
+        assert_eq!(row["last_message_date"], "2026-08-21T00:00:00+00:00");
+    }
+
+    #[test]
+    fn dialog_row_last_message_date_is_null_without_last_message() {
+        let mut d = rich_dialog();
+        d.pinned = false;
+        d.unread_mark = false;
+        d.unread_count = 0;
+        d.unread_mentions_count = 0;
+        d.unread_reactions_count = 0;
+        let row = dialog_row(
+            &d,
+            serde_json::json!({"id": 1}),
+            String::new(),
+            String::new(),
+            None,
+        );
+        assert_eq!(row["pinned"], serde_json::json!(false));
+        assert_eq!(row["unread_mark"], serde_json::json!(false));
+        assert_eq!(row["unread"], 0);
+        assert_eq!(row["unread_mentions"], 0);
+        assert_eq!(row["unread_reactions"], 0);
+        assert!(row["last_message_date"].is_null());
     }
 
     fn phantom_dialog() -> tl::enums::Dialog {
