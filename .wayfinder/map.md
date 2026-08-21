@@ -3,7 +3,7 @@
 Label: wayfinder:map
 Tracker: local markdown (`.wayfinder/tickets/`)
 Plan: `tasks/plan.md`
-Status: ACTIVE — Phase 1 COMPLETE (all 7 BUG tickets merged into `fix/hardening`, 674 tests green); Phase 2 (CAP tickets) next
+Status: ACTIVE — Phase 1 COMPLETE + CAP-1/2/3/4/5 merged into `fix/hardening` (690 tests green); remaining: CAP-6..CAP-16
 
 ## Destination
 
@@ -26,6 +26,12 @@ All 9 confirmed bugs from the 2026-08-21 deep-dive fixed, then the merged gramme
 - [BUG-5 config tolerance](tickets/BUG-5-config-tolerance.md) — unknown per-account TOML keys survive rewrites (toml_edit key carry-over); empty per-account proxy table falls back to global.
 - [BUG-6 stale-cache evict-retry-hint](tickets/BUG-6-stale-cache-retry.md) — PEER_ID_INVALID/CHANNEL_INVALID after cache hit falls through to uncached fallback then PEER_UNKNOWN_HINT; corrupt rows warn instead of silent miss. Note: no session API to delete a cached ref, so "evict" = fall-through retry; entry is overwritten on next successful write.
 - [BUG-7 upload flood keys + name-split](tickets/BUG-7-upload-flood-namesplit.md) — root cause deeper than review claimed: io::Error::source() is always None for wrapped payloads so the old FLOOD_WAIT arm was dead code; fixed via get_ref() downcast, keys now parity with send path; split_full_name sends last_name only when present (server keeps existing otherwise), 64/64/140 caps as Usage errors.
+- [BUG-3 contact add result parsing](tickets/BUG-3-contact-add-result.md) — parses returned User from AddContact Updates; additive `contact`/`mutual` JSON; honest failure on privacy block (row error instead of false added:true); warn on rename-overwrite. Note: grammers 0.10 has no UpdatesCombined variant name — it is `Updates::Combined`.
+- [CAP-1 serialize enrichment](tickets/CAP-1-serialize-enrichment.md) — message JSON gains grouped_id/views/forwards/edit_date/reply_to/via_bot (omitted when absent); dialog rows gain pinned/unread_mark/unread_mentions/unread_reactions/last_message_date; contract doc updated.
+- [CAP-4 download/pin/read extras](tickets/CAP-4-download-pin-read.md) — pin --show/--all/--notify (raw UpdatePinnedMessage for notify), read --mentions (clear_mentions), download --chunk-size-kb streaming via iter_download; `dialog unread` skipped as duplicate of existing msg read --mark-unread.
+- [CAP-5 global search](tickets/CAP-5-global-search.md) — msg search --global via search_all_messages; per-chat path byte-identical.
+- [CAP-2 topic scoping](tickets/CAP-2-topic-scope) — send-only: msg send --topic (reply-header semantics, conflicts --reply). get/search --topic NOT implemented: grammers Message::from_raw needs a PeerMap that cannot be constructed publicly, so raw Search results cannot be shaped as messages; reads documented to go through tele raw messages.Search (CAP-16).
+- [CAP-3 album + builders](tickets/CAP-3-album-and-builders.md) — repeatable --file (2-10 = album via client.send_album), --media-ttl, --thumbnail (single doc), --url+--kind (photo_url/document_url), --copy-from/--copy-id (copy_media), --schedule online (sentinel 0 → schedule_once_online). upload_stream/stdin piping deferred (ergonomics need mime/name plumbing). Note: CAP-3 commit landed directly on fix/hardening (branch was lost to a dead agent); content identical to branch flow.
 
 ## Tickets — Phase 1 (bugs; parallel-ready, file-disjoint)
 
