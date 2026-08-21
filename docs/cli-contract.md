@@ -66,6 +66,21 @@ Stdout is **one JSON object** (pretty=false, UTF-8). No logs on stdout.
 
 `seconds` is present only for flood-wait errors (FLOOD_WAIT / SLOWMODE_WAIT, RPC 420) and carries the wait duration in seconds.
 
+RPC-backed `InvocationError` errors additionally carry the raw Telegram RPC
+identity as additive keys:
+
+```json
+{
+  "type": "InvocationError",
+  "message": "rpc error 400: CHAT_INVALID",
+  "code": 400,
+  "name": "CHAT_INVALID"
+}
+```
+
+`code` and `name` are present only when the failure maps to a Telegram RPC
+error; scripts should match on these instead of parsing `message`.
+
 Pre-flight failures (usage validation, config load/parse, account selection)
 happen before any account runs. In `--json`/`--jsonl` mode they still emit one
 envelope on stdout: `ok: false`, empty `results`, and a top-level `error`
