@@ -919,7 +919,10 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 iter = iter.limit(limit);
             }
             let mut rows: Vec<serde_json::Value> = Vec::new();
+            let mut served = 0usize;
             while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                served += 1;
+                guard.rate_limiter.acquire_for_items(served).await;
                 rows.push(crate::serialize::message_to_json(&msg)?);
             }
             if !output::machine_mode(json, jsonl) {

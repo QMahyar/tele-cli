@@ -79,9 +79,12 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let mut iter = guard.client.iter_dialogs();
             let mut rows = Vec::new();
             let mut count = 0u32;
+            let mut seen = 0usize;
             while count < limit {
                 match iter.next().await.map_err(tele_invocation)? {
                     Some(dialog) => {
+                        seen += 1;
+                        guard.rate_limiter.acquire_for_items(seen).await;
                         if !is_dialog_row(&dialog.raw) {
                             continue;
                         }

@@ -4,6 +4,12 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
+pub const PAGE_ITEMS: usize = 100;
+
+pub fn needs_page_token(served: usize) -> bool {
+    served > 0 && served.is_multiple_of(PAGE_ITEMS)
+}
+
 pub struct RateLimiter {
     tokens: AtomicU64,
     capacity: u64,
@@ -53,6 +59,12 @@ impl RateLimiter {
             let mut notified = Box::pin(self.notify.notified());
             notified.as_mut().enable();
             let _ = tokio::time::timeout(Duration::from_millis(100), notified).await;
+        }
+    }
+
+    pub async fn acquire_for_items(&self, served: usize) {
+        if needs_page_token(served) {
+            self.acquire().await;
         }
     }
 
@@ -164,6 +176,24 @@ mod tests {
         }
         assert_eq!(rl_a.available_tokens(), 0);
         assert_eq!(rl_b.available_tokens(), 10);
+    }
+
+    #[test]
+    fn needs_page_token_fires_on_page_boundaries_only() {
+        assert!(!needs_page_token(0));
+        assert!(!needs_page_token(1));
+        assert!(!needs_page_token(99));
+        assert!(needs_page_token(100));
+        assert!(!needs_page_token(101));
+        assert!(needs_page_token(200));
+    }
+
+    #[tokio::test]
+    async fn acquire_for_items_never_stalls_on_unlimited() {
+        let rl = RateLimiter::new(None);
+        for served in 1..=250 {
+            rl.acquire_for_items(served).await;
+        }
     }
 
     #[test]
