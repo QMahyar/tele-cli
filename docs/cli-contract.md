@@ -206,6 +206,22 @@ the process exits 2. `--self-only` deletes only for yourself (private chats and
 basic groups; rejected for channels) via `messages.deleteMessages { revoke: false }`.
 Mutually exclusive with `--all`.
 
+## `topic close|reopen|edit|delete|pin`
+
+- Lifecycle commands take `--chat <target> --topic <id>` (`id` is the positive
+  integer topic id shown by `tele topic list`). All go through raw TL:
+  close/reopen via `messages.EditForumTopic { closed: true/false }`, edit via
+  `messages.EditForumTopic { title?, closed? }` (at least one of `--title`,
+  `--closed <bool>` required), pin via `messages.updatePinnedForumTopic
+  { pinned: true }`, and delete via `messages.deleteTopicHistory`
+  (`top_msg_id` = topic id) which removes the whole topic history.
+- `topic edit --emoji` is not offered; emoji icon changes stay deferred (M7).
+- Success rows carry `{"chat", "topic", "ok": true}` plus additive `"title"` /
+  `"closed"` on `edit` reflecting exactly what was requested. Dry-run rows add
+  `"would": "<action> topic <id> in chat <chat>"`.
+- `topic list` rows gain additive `"closed"` and `"pinned"` booleans per topic;
+  the human table appends matching columns (existing columns keep their order).
+
 ## Listen / stream
 
 `tele listen` always streams **JSON Lines** on stdout, one event per line; `--json`
