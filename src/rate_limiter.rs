@@ -15,7 +15,10 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(rpc_per_minute: Option<f64>) -> Arc<Self> {
-        let budget = rpc_per_minute.unwrap_or(f64::INFINITY);
+        let budget = match rpc_per_minute {
+            Some(rate) if rate > 0.0 => rate,
+            _ => f64::INFINITY,
+        };
         let capacity = budget.ceil() as u64;
         Arc::new(Self {
             tokens: AtomicU64::new(capacity),
@@ -167,6 +170,26 @@ mod tests {
     fn unlimited_capacity_is_max() {
         let rl = RateLimiter::new(None);
         assert_eq!(rl.capacity, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn zero_budget_acts_as_unlimited() {
+        let rl = RateLimiter::new(Some(0.0));
+        assert_eq!(rl.capacity, u64::MAX);
+        let start = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_millis(500), rl.acquire())
+            .await
+            .expect("zero budget must not stall acquire");
+        assert!(start.elapsed() < Duration::from_millis(400));
+    }
+
+    #[tokio::test]
+    async fn negative_budget_acts_as_unlimited() {
+        let rl = RateLimiter::new(Some(-5.0));
+        assert_eq!(rl.capacity, u64::MAX);
+        tokio::time::timeout(Duration::from_millis(500), rl.acquire())
+            .await
+            .expect("negative budget must not stall acquire");
     }
 
     #[test]
