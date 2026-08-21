@@ -164,6 +164,12 @@ Human mode (no `--json`): Rich tables on stdout. Same exit codes.
   chunked `iter_download` into the same temp+commit flow; without it the
   default one-shot download is unchanged.
 
+## `msg search`
+
+`--global` searches across all dialogs (`messages.searchGlobal`) instead of
+one chat; with it, `--chat` is not required and dry-run `data.chat` is null
+while `data.global` is `true`. Rows use the same message object shape.
+
 ## `msg delete`
 
 `results[].data` carries `requested` (number asked to delete) and `deleted`

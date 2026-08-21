@@ -192,6 +192,12 @@ pub struct SearchArgs {
     query: String,
     #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     limit: u32,
+    #[arg(
+        long,
+        help = "search across all dialogs instead of one chat",
+        requires = "query"
+    )]
+    global: bool,
 }
 
 #[derive(Args)]
@@ -1193,7 +1199,10 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    let global = args.global;
+    if !global {
+        require_chat_target(&args.chat, "chat")?;
+    }
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
@@ -1209,27 +1218,52 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if dry_run {
                 return Ok(serde_json::json!({
                     "dry_run": true,
-                    "chat": chat_target,
+                    "chat": if global { serde_json::Value::Null } else { serde_json::json!(chat_target) },
+                    "global": global,
                     "query": query,
                     "limit": limit,
-                    "would": format!("search messages in chat {chat_target}"),
+                    "would": if global {
+                        format!("search all dialogs for \"{query}\"")
+                    } else {
+                        format!("search messages in chat {chat_target}")
+                    },
                 }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let mut iter = guard
-                .client
-                .search_messages(chat_ref)
-                .query(&query)
-                .limit(limit);
             let mut rows: Vec<serde_json::Value> = Vec::new();
-            while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-                rows.push(crate::serialize::message_to_json(&msg)?);
+            let mut served = 0usize;
+            if global {
+                let mut iter = guard
+                    .client
+                    .search_all_messages()
+                    .query(&query)
+                    .limit(limit);
+                while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                    served += 1;
+                    guard.rate_limiter.acquire_for_items(served).await;
+                    rows.push(crate::serialize::message_to_json(&msg)?);
+                }
+            } else {
+                let chat = entities::resolve_peer(
+                    &guard.client,
+                    guard.session.as_ref(),
+                    &chat_target,
+                )
+                .await?;
+                let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+                let mut iter = guard
+                    .client
+                    .search_messages(chat_ref)
+                    .query(&query)
+                    .limit(limit);
+                while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                    served += 1;
+                    guard.rate_limiter.acquire_for_items(served).await;
+                    rows.push(crate::serialize::message_to_json(&msg)?);
+                }
             }
             if !output::machine_mode(json, jsonl) {
                 let table_rows: Vec<Vec<String>> = rows
@@ -2120,6 +2154,7 @@ mod tests {
                 chat: String::new(),
                 query: "x".to_string(),
                 limit: 10,
+                global: false,
             },
             &dryrun_flags("msg search", true),
         )
@@ -2793,6 +2828,28 @@ mod tests {
                 chat: "me".to_string(),
                 query: "hello".to_string(),
                 limit: 10,
+                global: false,
+            },
+            &dryrun_flags("msg search", true),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn search_global_dry_run_skips_chat_requirement() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = search(
+            SearchArgs {
+                chat: String::new(),
+                query: "hello".to_string(),
+                limit: 10,
+                global: true,
             },
             &dryrun_flags("msg search", true),
         )
@@ -2813,6 +2870,7 @@ mod tests {
                 chat: "me".to_string(),
                 query: "hello".to_string(),
                 limit: 10,
+                global: false,
             },
             &dryrun_flags("msg search", false),
         )
