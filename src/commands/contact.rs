@@ -25,7 +25,7 @@ pub struct ListArgs {
 
 #[derive(Args)]
 pub struct AddArgs {
-    #[arg(long, help = "user to add: @username, numeric ID, or me")]
+    #[arg(long, help = "user to add: @username, numeric ID, +phone, or me")]
     user: String,
     #[arg(long, help = "first name (defaults to peer name)")]
     first: Option<String>,
@@ -37,7 +37,10 @@ pub struct AddArgs {
 
 #[derive(Args)]
 pub struct BlockArgs {
-    #[arg(long, help = "user to block/unblock: @username, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "user to block/unblock: @username, numeric ID, +phone, or me"
+    )]
     user: String,
 }
 
@@ -103,7 +106,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         ]
                     })
                     .collect();
-                output::print_account_table(&name, multi, &["id", "name", "phone"], &table_rows);
+                output::print_account_table(&name, multi, &["id", "name", "phone"], &table_rows)?;
             }
             Ok(serde_json::json!({"contacts": rows}))
         })

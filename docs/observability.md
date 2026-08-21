@@ -16,6 +16,11 @@ On-call questions this CLI must answer without reading source:
 | 3 | `[error] ...` freeform stderr line from the failing command | stderr |
 | 4 | `[info]` listen lifecycle lines (`listen streams JSONL events on stdout`, `listen timeout reached`, per-account stream failures) | stderr + stdout JSONL rows |
 
+RPC failures are classified by the additive `error.code` / `error.name` JSON keys
+(numeric Telegram error code and TL error name); match on those, not on the
+freeform `message`. Peer-resolution failures surface as a hint about refreshing
+the peer cache instead of a bare "dropped (cancelled)" message.
+
 No Prometheus in v1. Two freeform stderr channels are enough for a local CLI.
 
 ## Log rules

@@ -114,7 +114,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             };
             if !output::machine_mode(json, jsonl) {
                 for (k, v) in row.as_object().unwrap() {
-                    println!("{k}: {v}");
+                    output::print_line(&format!("{k}: {v}"))?;
                 }
             }
             Ok(row)

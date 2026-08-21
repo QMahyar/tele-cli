@@ -14,6 +14,7 @@ pub struct ClientGuard {
     pub session: Arc<SqliteSession>,
     pub updates: mpsc::UnboundedReceiver<UpdatesLike>,
     pub rate_limiter: Arc<RateLimiter>,
+    runner: Option<tokio::task::JoinHandle<()>>,
     _session_lock: crate::session::SessionLock,
 }
 
@@ -45,7 +46,7 @@ impl ClientGuard {
             handle,
             updates,
         } = pool;
-        tokio::spawn(runner.run());
+        let runner_task = tokio::spawn(runner.run());
         let conf = ClientConfiguration {
             retry_policy: Box::new(AutoSleep {
                 threshold: Duration::from_secs(flood_threshold),
@@ -59,14 +60,25 @@ impl ClientGuard {
             session,
             updates,
             rate_limiter,
+            runner: Some(runner_task),
             _session_lock: locked.lock,
         })
+    }
+
+    pub async fn close(mut self) {
+        self.client.disconnect();
+        if let Some(runner) = self.runner.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), runner).await;
+        }
     }
 }
 
 impl Drop for ClientGuard {
     fn drop(&mut self) {
         self.client.disconnect();
+        if let Some(runner) = self.runner.take() {
+            runner.abort();
+        }
     }
 }
 

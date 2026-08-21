@@ -6,7 +6,7 @@ use crate::executor::{run_fanout, select_sessions, GlobalFlags};
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 fn redact_phone(phone: &str) -> String {
     let phone = phone.trim();
@@ -47,6 +47,8 @@ pub struct LoginArgs {
     method: String,
     #[arg(long)]
     phone: Option<String>,
+    #[arg(long, help = "print the QR login URI to stderr if QR rendering fails")]
+    show_token: bool,
 }
 #[derive(Args)]
 pub struct LogoutArgs {
@@ -104,9 +106,9 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
         })
         .collect();
     if table_rows.is_empty() {
-        println!("no sessions yet: tele account add + tele account login");
+        output::print_line("no sessions yet: tele account add + tele account login")?;
     } else {
-        output::print_table(&["name", "tags", "session"], &table_rows);
+        output::print_table(&["name", "tags", "session"], &table_rows)?;
     }
     Ok(crate::error::EXIT_OK)
 }
@@ -137,7 +139,7 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
     if !output::machine_mode(flags.json, flags.jsonl) {
         let rows = status_table_rows(&envelope);
         if !rows.is_empty() {
-            output::print_table(&["account", "authorized"], &rows);
+            output::print_table(&["account", "authorized"], &rows)?;
         }
     }
     crate::executor::finish(flags, &envelope)
@@ -249,8 +251,9 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     match args.method.as_str() {
         "qr" => {
+            let show_token = args.show_token;
             client::qr_login(&guard.client, &mut guard.updates, &credentials, |uri| {
-                render_qr(uri);
+                render_qr(uri, show_token);
             })
             .await?;
         }
@@ -281,9 +284,16 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     );
                 }
                 Err(grammers_client::SignInError::PasswordRequired(pw_token)) => {
-                    let Some(password_line) =
-                        prompt_line("Enter the 2FA password: ", &mut stdin, &mut stderr)?
-                    else {
+                    let echo_disabled = disable_stdin_echo();
+                    if !echo_disabled {
+                        log_line(
+                            "warn",
+                            "secure password input unavailable; input will be echoed to the terminal",
+                        );
+                    }
+                    let read = prompt_line("Enter the 2FA password: ", &mut stdin, &mut stderr);
+                    restore_stdin_echo(echo_disabled);
+                    let Some(password_line) = read? else {
                         return Err(TeleError::Auth(
                             "2FA password required; stdin closed".to_string(),
                         ));
@@ -350,7 +360,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             return Err(tele_invocation(e));
         }
     }
-    drop(guard);
+    guard.close().await;
     remove_session_file_retry(&session::session_path(&args.name)).await?;
     remove_session_file_retry(&session::lock_path(&args.name)).await?;
     log_line("info", &format!("account {} logged out", args.name));
@@ -485,14 +495,10 @@ fn code_prompt(phone: Option<&str>, stderr_is_terminal: bool) -> String {
     }
 }
 
-fn argv_phone_warning(phone: Option<&str>, stderr_is_terminal: bool) -> Option<&'static str> {
-    if phone.is_some() && !stderr_is_terminal {
-        Some(
-            "--phone is visible in process listings and shell history; prefer TELE_PHONE env or a stdin prompt",
-        )
-    } else {
-        None
-    }
+fn argv_phone_warning(phone: Option<&str>, _stderr_is_terminal: bool) -> Option<&'static str> {
+    phone.map(|_| {
+        "--phone is visible in process listings and shell history; prefer TELE_PHONE env or a stdin prompt"
+    })
 }
 
 fn prompt_line(
@@ -512,6 +518,51 @@ fn prompt_line(
 fn strip_line_ending(line: &str) -> &str {
     line.trim_end_matches(['\r', '\n'])
 }
+
+#[cfg(windows)]
+fn disable_stdin_echo() -> bool {
+    use windows::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
+    };
+    unsafe {
+        let Ok(handle) = GetStdHandle(STD_INPUT_HANDLE) else {
+            return false;
+        };
+        let mut mode = Default::default();
+        if GetConsoleMode(handle, &mut mode).is_err() {
+            return false;
+        }
+        SetConsoleMode(handle, mode & !ENABLE_ECHO_INPUT).is_ok()
+    }
+}
+
+#[cfg(windows)]
+fn restore_stdin_echo(disabled: bool) {
+    use windows::Win32::System::Console::{
+        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
+    };
+    if !disabled {
+        return;
+    }
+    unsafe {
+        let Ok(handle) = GetStdHandle(STD_INPUT_HANDLE) else {
+            return;
+        };
+        let mut mode = Default::default();
+        if GetConsoleMode(handle, &mut mode).is_err() {
+            return;
+        }
+        let _ = SetConsoleMode(handle, mode | ENABLE_ECHO_INPUT);
+    }
+}
+
+#[cfg(not(windows))]
+fn disable_stdin_echo() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+fn restore_stdin_echo(_disabled: bool) {}
 
 fn ensure_account_config_entry(
     name: &str,
@@ -548,7 +599,7 @@ fn qr_token_lines(uri: &str, stderr_is_terminal: bool) -> (Option<&'static str>,
     (warning, format!("URI: {uri}"))
 }
 
-fn render_qr(uri: &str) {
+fn render_qr(uri: &str, show_token: bool) {
     eprintln!("Scan this QR code with Telegram (Settings > Devices > Link Desktop Device):");
     match qrcode::QrCode::new(uri.as_bytes()) {
         Ok(code) => {
@@ -557,16 +608,27 @@ fn render_qr(uri: &str) {
                 .quiet_zone(true)
                 .module_dimensions(2, 1)
                 .build();
-            eprintln!("{rendered}");
+            let _ = writeln!(std::io::stderr(), "{rendered}");
         }
         Err(_) => {
-            let (warning, line) = qr_token_lines(uri, std::io::stderr().is_terminal());
-            if let Some(warning) = warning {
-                output::log_line("warn", warning);
+            if should_print_token(show_token, std::io::stderr().is_terminal()) {
+                let (warning, line) = qr_token_lines(uri, std::io::stderr().is_terminal());
+                if let Some(warning) = warning {
+                    output::log_line("warn", warning);
+                }
+                let _ = writeln!(std::io::stderr(), "{line}");
+            } else {
+                output::log_line(
+                    "warn",
+                    "QR rendering failed; re-run with --show-token to print the login URI",
+                );
             }
-            eprintln!("{line}");
         }
     }
+}
+
+fn should_print_token(show_token: bool, stderr_is_terminal: bool) -> bool {
+    show_token || stderr_is_terminal
 }
 
 #[cfg(test)]
@@ -579,6 +641,7 @@ mod tests {
             name: "x".to_string(),
             method: method.to_string(),
             phone: phone.map(str::to_string),
+            show_token: false,
         }
     }
 
@@ -635,11 +698,18 @@ mod tests {
     }
 
     #[test]
-    fn argv_phone_warning_fires_only_on_non_terminal_stderr() {
+    fn argv_phone_warning_fires_whenever_phone_is_passed() {
         assert!(argv_phone_warning(Some("+15551234567"), false).is_some());
-        assert!(argv_phone_warning(Some("+15551234567"), true).is_none());
+        assert!(argv_phone_warning(Some("+15551234567"), true).is_some());
         assert!(argv_phone_warning(None, false).is_none());
         assert!(argv_phone_warning(None, true).is_none());
+    }
+
+    #[test]
+    fn should_print_token_gates_raw_uri() {
+        assert!(should_print_token(true, false));
+        assert!(should_print_token(false, true));
+        assert!(!should_print_token(false, false));
     }
 
     #[test]

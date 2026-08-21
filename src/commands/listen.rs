@@ -23,7 +23,10 @@ pub struct ListenArgs {
         help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw"
     )]
     events: Vec<String>,
-    #[arg(long, help = "output raw TL updates instead of parsed events")]
+    #[arg(
+        long,
+        help = "also emit raw TL updates alongside the parsed event allowlist"
+    )]
     raw: bool,
     #[arg(long, help = "only show events from this chat")]
     chat: Option<String>,
@@ -299,7 +302,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if timeout_secs > 0 {
         output::log_line("info", "listen timeout reached");
     }
-    Ok(aggregate_exit(ok_count, &failed))
+    Ok(crate::error::aggregate_exit_code(ok_count, &failed))
 }
 
 async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
@@ -312,20 +315,6 @@ async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
     .await
     .map_err(|e| TeleError::TaskPanic(e.to_string()))??;
     Ok(())
-}
-
-fn aggregate_exit(ok_count: usize, failed: &[i32]) -> i32 {
-    if failed.is_empty() {
-        crate::error::EXIT_OK
-    } else if ok_count > 0 {
-        crate::error::EXIT_PARTIAL
-    } else if failed.iter().all(|c| *c == crate::error::EXIT_USAGE) {
-        crate::error::EXIT_USAGE
-    } else if failed.iter().all(|c| *c == crate::error::EXIT_AUTH) {
-        crate::error::EXIT_AUTH
-    } else {
-        crate::error::EXIT_ALL_FAILED
-    }
 }
 
 async fn handle_stream_failure(
@@ -1160,13 +1149,16 @@ mod tests {
 
     #[test]
     fn aggregate_exit_all_ok_is_ok() {
-        assert_eq!(aggregate_exit(3, &[]), crate::error::EXIT_OK);
+        assert_eq!(
+            crate::error::aggregate_exit_code(3, &[]),
+            crate::error::EXIT_OK
+        );
     }
 
     #[test]
     fn aggregate_exit_any_success_is_partial() {
         assert_eq!(
-            aggregate_exit(1, &[crate::error::EXIT_ALL_FAILED]),
+            crate::error::aggregate_exit_code(1, &[crate::error::EXIT_ALL_FAILED]),
             crate::error::EXIT_PARTIAL
         );
     }
@@ -1174,21 +1166,34 @@ mod tests {
     #[test]
     fn aggregate_exit_all_failed_auth_only_is_auth() {
         assert_eq!(
-            aggregate_exit(0, &[crate::error::EXIT_AUTH, crate::error::EXIT_AUTH]),
+            crate::error::aggregate_exit_code(
+                0,
+                &[crate::error::EXIT_AUTH, crate::error::EXIT_AUTH]
+            ),
             crate::error::EXIT_AUTH
         );
     }
 
     #[test]
-    fn aggregate_exit_all_failed_mixed_is_all_failed() {
+    fn aggregate_exit_mixed_usage_dominates_like_fanout() {
         assert_eq!(
-            aggregate_exit(0, &[crate::error::EXIT_AUTH, crate::error::EXIT_ALL_FAILED]),
-            crate::error::EXIT_ALL_FAILED
-        );
-        assert_eq!(
-            aggregate_exit(
+            crate::error::aggregate_exit_code(
                 0,
                 &[crate::error::EXIT_USAGE, crate::error::EXIT_ALL_FAILED]
+            ),
+            crate::error::EXIT_USAGE
+        );
+        assert_eq!(
+            crate::error::aggregate_exit_code(
+                0,
+                &[crate::error::EXIT_USAGE, crate::error::EXIT_AUTH]
+            ),
+            crate::error::EXIT_USAGE
+        );
+        assert_eq!(
+            crate::error::aggregate_exit_code(
+                0,
+                &[crate::error::EXIT_AUTH, crate::error::EXIT_ALL_FAILED]
             ),
             crate::error::EXIT_ALL_FAILED
         );
@@ -1197,7 +1202,10 @@ mod tests {
     #[test]
     fn aggregate_exit_returns_usage_when_all_failures_usage() {
         assert_eq!(
-            aggregate_exit(0, &[crate::error::EXIT_USAGE, crate::error::EXIT_USAGE]),
+            crate::error::aggregate_exit_code(
+                0,
+                &[crate::error::EXIT_USAGE, crate::error::EXIT_USAGE]
+            ),
             crate::error::EXIT_USAGE
         );
     }
@@ -1205,28 +1213,15 @@ mod tests {
     #[test]
     fn aggregate_exit_returns_auth_when_all_failures_auth() {
         assert_eq!(
-            aggregate_exit(0, &[crate::error::EXIT_AUTH]),
+            crate::error::aggregate_exit_code(0, &[crate::error::EXIT_AUTH]),
             crate::error::EXIT_AUTH
         );
     }
 
     #[test]
-    fn aggregate_exit_returns_all_failed_for_mixed() {
-        assert_eq!(
-            aggregate_exit(0, &[crate::error::EXIT_USAGE, crate::error::EXIT_AUTH]),
-            crate::error::EXIT_ALL_FAILED
-        );
-    }
-
-    #[test]
-    fn aggregate_exit_returns_ok_when_no_failures() {
-        assert_eq!(aggregate_exit(1, &[]), crate::error::EXIT_OK);
-    }
-
-    #[test]
     fn aggregate_exit_returns_partial_when_some_ok() {
         assert_eq!(
-            aggregate_exit(1, &[crate::error::EXIT_USAGE]),
+            crate::error::aggregate_exit_code(1, &[crate::error::EXIT_USAGE]),
             crate::error::EXIT_PARTIAL
         );
     }

@@ -46,6 +46,37 @@ pub fn list_session_names() -> Vec<String> {
     names
 }
 
+const SESSION_SIDECAR_SUFFIXES: [&str; 3] = ["-journal", "-wal", "-shm"];
+
+fn sidecar_path(name: &str, suffix: &str) -> PathBuf {
+    session_dir().join(format!("{name}.session{suffix}"))
+}
+
+fn pre_restrict_sidecars(name: &str) -> anyhow::Result<()> {
+    for suffix in SESSION_SIDECAR_SUFFIXES {
+        let path = sidecar_path(name, suffix);
+        if !path.try_exists()? {
+            std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)?;
+        }
+        crate::fs_util::restrict_file_private(&path)?;
+    }
+    Ok(())
+}
+
+fn restrict_session_files(name: &str) -> anyhow::Result<()> {
+    let prefix = format!("{name}.session");
+    for entry in std::fs::read_dir(session_dir())? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            crate::fs_util::restrict_file_private(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 pub fn remove_session(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     if !session_path(name).try_exists()? {
@@ -65,35 +96,35 @@ pub fn remove_session(name: &str) -> anyhow::Result<()> {
         }
         Err(e) => return Err(e.into()),
     }
-    drop(lock);
-    for path in [session_path(name), lock_path(name)] {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
+    let mut targets = vec![session_path(name), lock_path(name)];
+    for suffix in SESSION_SIDECAR_SUFFIXES {
+        targets.push(sidecar_path(name, suffix));
     }
+    let result = targets
+        .iter()
+        .try_for_each(|path| match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        });
+    drop(lock);
+    result?;
     Ok(())
 }
 
 pub struct SessionLock {
     file: Option<std::fs::File>,
-    path: PathBuf,
 }
 
 impl SessionLock {
-    fn new(file: std::fs::File, path: PathBuf) -> Self {
-        Self {
-            file: Some(file),
-            path,
-        }
+    fn new(file: std::fs::File) -> Self {
+        Self { file: Some(file) }
     }
 }
 
 impl Drop for SessionLock {
     fn drop(&mut self) {
         drop(self.file.take());
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -123,11 +154,12 @@ pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
         }
         Err(e) => return Err(e.into()),
     }
+    pre_restrict_sidecars(name)?;
     let session = SqliteSession::open(&path).await?;
-    crate::fs_util::restrict_file_private(&path)?;
+    restrict_session_files(name)?;
     Ok(LockedSession {
         session,
-        lock: SessionLock::new(lock, lock_path),
+        lock: SessionLock::new(lock),
     })
 }
 
@@ -180,16 +212,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_session_removes_lock_file_on_drop() {
+    async fn open_session_keeps_stale_lock_file_on_drop() {
         let _guard = lock_env().await;
-        let dir = test_dir("session-lock-file-gone");
+        let dir = test_dir("session-lock-file-stale");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("TELE_APP_DIR", &dir);
         let held = open_session("work").await.unwrap();
         assert!(lock_path("work").exists());
         drop(held);
-        assert!(!lock_path("work").exists());
+        assert!(
+            lock_path("work").exists(),
+            "stale lock file stays behind; the OS lock is what guards exclusivity"
+        );
+        let second = open_session("work").await.unwrap();
+        drop(second);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_session_restricts_sqlite_sidecars() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = lock_env().await;
+        let dir = test_dir("session-sidecars");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+            for suffix in ["-journal", "-wal", "-shm"] {
+                let path = sidecar_path("work", suffix);
+                if !path.exists() {
+                    std::fs::write(&path, b"x").unwrap();
+                }
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "sidecar {suffix}");
+            }
+        }
+        remove_session("work").unwrap();
+        assert!(!sidecar_path("work", "-journal").exists());
+        assert!(!sidecar_path("work", "-wal").exists());
+        assert!(!sidecar_path("work", "-shm").exists());
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }

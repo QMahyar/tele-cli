@@ -2,6 +2,7 @@
 name = "telecli"
 version = "0.3.1"
 edition = "2021"
+rust-version = "1.89"
 description = "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming. No bot tokens."
 license = "MIT"
 repository = "https://github.com/QMahyar/tele-cli"
@@ -29,12 +30,13 @@ toml_edit = "0.22"
 unicode-segmentation = "1.12"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Threading"] }
 
 [build-dependencies]
 grammers-tl-parser = "1.2"
 
 [dev-dependencies]
+proptest = "1"
 serde_json = "1"
 
 [profile.release]

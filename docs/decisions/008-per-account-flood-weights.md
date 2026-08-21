@@ -44,3 +44,9 @@ Rejected: duplicates tokio Semaphore semantics already available in rate_limiter
 - Callers add one line per handler (`guard.rate_limiter.acquire().await`) — minimal callsite churn.
 - Flood cooldown is advisory: `record_flood(seconds)` is available but not auto-called on FLOOD_WAIT; the existing JSON `error.seconds` field surfaces the wait.
 - ADR-004 is superseded; its history is preserved.
+
+## Amendment (2026-08)
+The advisory flood-cooldown half (`record_flood` / cooldown window) was removed:
+it was never wired into any RPC path and FloodWait/SlowModeWait is handled
+solely by the grammers `AutoSleep` retry policy configured in `src/client.rs`.
+The token-bucket rate limiter itself remains unchanged.

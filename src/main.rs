@@ -44,11 +44,17 @@ struct Cli {
         help = "parallel accounts (1-32; default from config parallel_max)"
     )]
     parallel: Option<u32>,
-    #[arg(long, global = true, help = "machine output: single JSON envelope")]
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "jsonl",
+        help = "machine output: single JSON envelope"
+    )]
     json: bool,
     #[arg(
         long,
         global = true,
+        conflicts_with = "json",
         help = "machine output: JSON lines (one-shot commands emit a single envelope line)"
     )]
     jsonl: bool,
@@ -204,7 +210,17 @@ fn invoked_path(matches: &clap::ArgMatches) -> String {
 }
 
 fn argv_command_hint() -> Option<String> {
-    let mut parts = Vec::new();
+    const GLOBAL_VALUE_FLAGS: [&str; 4] = ["--account", "--tag", "--parallel", "--config"];
+    const GLOBAL_BOOL_FLAGS: [&str; 7] = [
+        "--json",
+        "--jsonl",
+        "--dry-run",
+        "--quiet",
+        "-q",
+        "--verbose",
+        "-v",
+    ];
+    let mut parts: Vec<String> = Vec::new();
     let mut skip_value = false;
     for arg in std::env::args_os().skip(1) {
         let s = arg.to_string_lossy().into_owned();
@@ -212,22 +228,21 @@ fn argv_command_hint() -> Option<String> {
             skip_value = false;
             continue;
         }
-        if matches!(
-            s.as_str(),
-            "--account" | "--tag" | "--parallel" | "--config"
-        ) {
+        if GLOBAL_VALUE_FLAGS.contains(&s.as_str()) {
             skip_value = true;
             continue;
         }
-        if s.starts_with("--account=")
-            || s.starts_with("--tag=")
-            || s.starts_with("--parallel=")
-            || s.starts_with("--config=")
+        if GLOBAL_VALUE_FLAGS
+            .iter()
+            .any(|f| s.starts_with(&format!("{f}=")))
         {
             continue;
         }
-        if s.starts_with('-') {
+        if GLOBAL_BOOL_FLAGS.contains(&s.as_str()) || s == "--" {
             continue;
+        }
+        if s.starts_with('-') {
+            break;
         }
         parts.push(s);
         if parts.len() == 2 {
@@ -259,6 +274,9 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
     match result {
         Ok(code) => code,
         Err(e) => {
+            if e.is_broken_pipe() {
+                return error::EXIT_OK;
+            }
             output::log_line("error", e.message());
             if output::machine_mode(flags.json, flags.jsonl) {
                 let envelope = output::Envelope::failed(flags.dry_run, &flags.command, e.as_json());

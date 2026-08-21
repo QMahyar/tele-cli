@@ -190,7 +190,16 @@ static ENV_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsiz
 
 pub fn credentials() -> anyhow::Result<Credentials> {
     let path = app_data_dir().join(".env");
-    let _ = crate::fs_util::restrict_file_private(&path);
+    if path.exists() {
+        if let Err(e) = crate::fs_util::restrict_file_private(&path) {
+            crate::output::log_line(
+                "warn",
+                &format!("failed to tighten permissions on the credentials file: {e}"),
+            );
+        }
+    } else {
+        let _ = crate::fs_util::restrict_file_private(&path);
+    }
     let stamp = FileStamp::of(&path);
     if let Some(creds) = CREDS_CACHE
         .lock()
@@ -258,6 +267,13 @@ pub fn load_config(path: Option<&std::path::Path>) -> TeleResult<AppConfig> {
     Ok(cfg)
 }
 
+fn config_display_name(cfg_path: &std::path::Path) -> String {
+    cfg_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "config.toml".to_string())
+}
+
 fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     if !cfg_path.exists() {
         return Ok(AppConfig::default());
@@ -265,12 +281,12 @@ fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     if cfg_path.is_dir() {
         return Err(anyhow::anyhow!(
             "failed to read config: {} is a directory",
-            cfg_path.display()
+            config_display_name(cfg_path)
         ));
     }
     let text = std::fs::read_to_string(cfg_path)?;
     let mut cfg: AppConfig = toml::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", cfg_path.display()))?;
+        .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", config_display_name(cfg_path)))?;
     cfg.parallel_max = cfg.parallel_max.clamp(1, 32);
     Ok(cfg)
 }
@@ -330,14 +346,16 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
-    let result = std::fs::write(&tmp_path, text).and_then(|()| {
-        crate::fs_util::restrict_file_private(&tmp_path)?;
-        #[cfg(windows)]
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
-        std::fs::rename(&tmp_path, path)
-    });
+    let result = std::fs::write(&tmp_path, "")
+        .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
+        .and_then(|()| std::fs::write(&tmp_path, text))
+        .and_then(|()| {
+            #[cfg(windows)]
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+            std::fs::rename(&tmp_path, path)
+        });
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
@@ -522,7 +540,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let err = read_config(&dir).unwrap_err().to_string();
         assert!(err.contains("directory"), "err: {err}");
-        assert!(err.contains(&dir.display().to_string()), "err: {err}");
+        let leaf = dir.file_name().unwrap().to_string_lossy().to_string();
+        assert!(err.contains(&leaf), "err: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1102,5 +1121,43 @@ mod tests {
         assert_eq!(back.accounts["bar"].tags, vec!["new".to_string()]);
         assert_eq!(back.parallel_max, 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn env_fixture(tag: &str, contents: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-env-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn load_env_wellformed_pair_roundtrips(
+            key in "[A-Za-z_][A-Za-z0-9_]{0,20}",
+            value in "[-A-Za-z0-9_.+/]{0,60}",
+        ) {
+            let path = env_fixture("rt", &format!("{key}={value}\n"));
+            let map = load_env(&path);
+            prop_assert_eq!(map.get(&key), Some(&value.to_string()));
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+
+        #[test]
+        fn load_env_never_panics_on_arbitrary_lines(
+            lines in proptest::collection::vec("[^\\n]{0,30}", 0..8),
+        ) {
+            let text = lines.join("\n");
+            let path = env_fixture("garbage", &text);
+            let map = load_env(&path);
+            for (k, v) in &map {
+                prop_assert!(!k.is_empty());
+                prop_assert!(v.len() <= text.len());
+            }
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
     }
 }

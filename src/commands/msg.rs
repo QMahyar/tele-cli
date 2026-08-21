@@ -26,7 +26,10 @@ pub enum MsgCmd {
 
 #[derive(Args, Clone)]
 pub struct SendArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message text (mutually exclusive with --file)")]
     text: Option<String>,
@@ -53,7 +56,10 @@ pub struct SendArgs {
 
 #[derive(Args)]
 pub struct EditArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to edit")]
     id: i32,
@@ -63,7 +69,10 @@ pub struct EditArgs {
 
 #[derive(Args)]
 pub struct DeleteArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(
         long,
@@ -96,7 +105,10 @@ pub struct ForwardArgs {
 
 #[derive(Args)]
 pub struct PinArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to pin or unpin")]
     id: i32,
@@ -106,7 +118,10 @@ pub struct PinArgs {
 
 #[derive(Args)]
 pub struct GetArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     limit: u32,
@@ -118,7 +133,10 @@ pub struct GetArgs {
 
 #[derive(Args)]
 pub struct ReadArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "mark as unread instead of read")]
     mark_unread: bool,
@@ -126,7 +144,10 @@ pub struct ReadArgs {
 
 #[derive(Args)]
 pub struct ReactArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to react to")]
     id: i32,
@@ -138,7 +159,10 @@ pub struct ReactArgs {
 
 #[derive(Args)]
 pub struct SearchArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "search query text")]
     query: String,
@@ -148,7 +172,10 @@ pub struct SearchArgs {
 
 #[derive(Args)]
 pub struct DownloadArgs {
-    #[arg(long, help = "target chat: @username, t.me link, numeric ID, or me")]
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
     chat: String,
     #[arg(long, help = "message ID to download media from")]
     id: i32,
@@ -333,11 +360,7 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
         ));
     }
     let lower = base.to_lowercase();
-    if lower.starts_with(".env")
-        || lower.ends_with(".session")
-        || lower.ends_with(".session-journal")
-        || lower.starts_with("config.toml")
-    {
+    if is_sensitive_basename(&lower) {
         return Err(TeleError::Usage(format!(
             "refusing to upload sensitive file {base}"
         )));
@@ -347,6 +370,30 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
         return Err(TeleError::Usage(format!("upload file not found: {path:?}")));
     }
     check_upload_size(std::fs::metadata(path)?.len())
+}
+
+pub fn is_sensitive_basename(lower: &str) -> bool {
+    const SUFFIXES: [&str; 7] = [
+        ".session",
+        ".session-journal",
+        ".pem",
+        ".key",
+        ".p12",
+        ".pfx",
+        ".kdbx",
+    ];
+    const PREFIXES: [&str; 6] = [
+        ".env",
+        "config.toml",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+    ];
+    const EXACT: [&str; 3] = [".netrc", ".git-credentials", "credentials"];
+    SUFFIXES.iter().any(|s| lower.ends_with(s))
+        || PREFIXES.iter().any(|s| lower.starts_with(s))
+        || EXACT.contains(&lower)
 }
 
 fn validate_download_dir(dir: &str) -> TeleResult<()> {
@@ -892,7 +939,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     multi,
                     &["id", "date", "sender", "text"],
                     &table_rows,
-                );
+                )?;
             }
             Ok(serde_json::json!({"messages": rows}))
         })
@@ -1088,7 +1135,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     multi,
                     &["id", "date", "sender", "text"],
                     &table_rows,
-                );
+                )?;
             }
             Ok(serde_json::json!({"messages": rows}))
         })
@@ -1329,6 +1376,50 @@ mod tests {
         let ok_path = dir.join("notes.txt");
         std::fs::write(&ok_path, b"x").unwrap();
         validate_upload_path(ok_path.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn is_sensitive_basename_covers_private_key_families() {
+        for name in [
+            "id_rsa",
+            "id_rsa.old",
+            "ID_ED25519",
+            "id_ecdsa",
+            "id_dsa",
+            "server.pem",
+            "CERT.KEY",
+            "keystore.p12",
+            "backup.pfx",
+            "vault.kdbx",
+            ".netrc",
+            ".git-credentials",
+            ".env.local",
+            "work.session",
+            "work.session-journal",
+        ] {
+            assert!(
+                is_sensitive_basename(&name.to_lowercase()),
+                "{name} must be blocked"
+            );
+        }
+        for name in ["notes.txt", "report.pdf", "archive.tar.gz"] {
+            assert!(
+                !is_sensitive_basename(&name.to_lowercase()),
+                "{name} must be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_upload_path_rejects_aws_credentials_basename() {
+        let dir = temp_path("uploadaws");
+        let aws = dir.join(".aws");
+        std::fs::create_dir_all(&aws).unwrap();
+        let path = aws.join("credentials");
+        std::fs::write(&path, b"x").unwrap();
+        let err = validate_upload_path(path.to_str().unwrap()).unwrap_err();
+        assert!(err.message().contains("sensitive"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

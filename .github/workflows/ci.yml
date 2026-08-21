@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [master, main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -25,3 +29,25 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@v2
+      - name: check (MSRV)
+        run: cargo check --workspace --all-targets
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-audit
+        run: cargo install cargo-audit --locked || cargo audit --version
+      - name: audit
+        run: cargo audit

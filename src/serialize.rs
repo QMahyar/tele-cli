@@ -42,19 +42,42 @@ pub fn message_to_json(
     out.insert("text".into(), serde_json::json!(msg.text()));
     if let Some(media) = msg.media() {
         out.insert("media".into(), serde_json::json!(media_name(&media)));
+        out.insert("media_kind".into(), serde_json::json!(media_kind(&media)));
+        let label = match media_label(&media) {
+            Some(label) => serde_json::json!(label),
+            None => serde_json::Value::Null,
+        };
+        out.insert("media_label".into(), label);
     }
     Ok(serde_json::Value::Object(out))
 }
 
 pub fn peer_key(peer: &Peer) -> serde_json::Value {
-    serde_json::json!({
-        "id": peer.id().bare_id().unwrap_or_default(),
-        "kind": peer_kind(peer),
-        "name": peer_name(peer),
-    })
+    let mut out = serde_json::Map::new();
+    if let Some(id) = peer.id().bare_id() {
+        out.insert("id".into(), serde_json::json!(id));
+    }
+    out.insert("kind".into(), serde_json::json!(peer_kind(peer)));
+    out.insert("name".into(), serde_json::json!(peer_name(peer)));
+    serde_json::Value::Object(out)
 }
 
 pub fn media_name(media: &Media) -> String {
+    match media_parts(media) {
+        (kind, Some(label)) => format!("{kind}:{label}"),
+        (kind, None) => kind.to_string(),
+    }
+}
+
+pub fn media_kind(media: &Media) -> &'static str {
+    media_parts(media).0
+}
+
+pub fn media_label(media: &Media) -> Option<String> {
+    media_parts(media).1
+}
+
+fn media_parts(media: &Media) -> (&'static str, Option<String>) {
     let name = |d: &grammers_client::media::Document| {
         d.raw
             .document
@@ -74,22 +97,22 @@ pub fn media_name(media: &Media) -> String {
             .unwrap_or_else(|| "unnamed".into())
     };
     match media {
-        Media::Photo(_) => "photo".into(),
-        Media::Geo(_) => "geo".into(),
-        Media::GeoLive(_) => "geo_live".into(),
-        Media::Contact(c) => format!("contact:{}", c.first_name()),
-        Media::Document(d) => format!("document:{}", name(d)),
-        Media::Sticker(d) => format!("sticker:{}", d.emoji()),
-        Media::Poll(p) => format!(
-            "poll:{}",
-            match p.question() {
+        Media::Photo(_) => ("photo", None),
+        Media::Geo(_) => ("geo", None),
+        Media::GeoLive(_) => ("geo_live", None),
+        Media::Contact(c) => ("contact", Some(c.first_name().to_string())),
+        Media::Document(d) => ("document", Some(name(d))),
+        Media::Sticker(d) => ("sticker", Some(d.emoji().to_string())),
+        Media::Poll(p) => (
+            "poll",
+            Some(match p.question() {
                 grammers_client::tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
-            }
+            }),
         ),
-        Media::Dice(d) => format!("dice:{}", d.emoji()),
-        Media::Venue(_) => "venue".into(),
-        Media::WebPage(_) => "webpage".into(),
-        _ => "media".into(),
+        Media::Dice(d) => ("dice", Some(d.emoji().to_string())),
+        Media::Venue(_) => ("venue", None),
+        Media::WebPage(_) => ("webpage", None),
+        _ => ("media", None),
     }
 }
 
@@ -585,5 +608,28 @@ mod tests {
             media_name(&Media::from_raw(document_media_without_object()).unwrap()),
             "document:unnamed"
         );
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn message_to_json_never_panics_on_arbitrary_text(text in "\\PC{0,500}") {
+            let client = offline_client();
+            let msg = make_message(&client, 1, false, &text, None);
+            let value = message_to_json(&msg).unwrap();
+            serde_json::to_string(&value).unwrap();
+            assert_eq!(value["text"], text);
+        }
+
+        #[test]
+        fn peer_key_id_matches_bare_id_for_users(id in 1..1_000_000_000_i64) {
+            let client = offline_client();
+            let peer = make_user_peer(&client, id);
+            let value = peer_key(&peer);
+            assert_eq!(value["id"], id);
+            assert_eq!(value["kind"], "user");
+            assert!(value["name"].is_string());
+        }
     }
 }

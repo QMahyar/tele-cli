@@ -318,7 +318,10 @@ fn json_and_jsonl_are_mutually_exclusive() {
         ],
     );
     assert_eq!(code, 1);
-    assert!(err.contains("mutually exclusive"), "stderr: {err}");
+    assert!(
+        err.contains("cannot be used with") || err.contains("mutually exclusive"),
+        "stderr: {err}"
+    );
 }
 
 #[test]
