@@ -609,4 +609,27 @@ mod tests {
             "document:unnamed"
         );
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn message_to_json_never_panics_on_arbitrary_text(text in "\\PC{0,500}") {
+            let client = offline_client();
+            let msg = make_message(&client, 1, false, &text, None);
+            let value = message_to_json(&msg).unwrap();
+            serde_json::to_string(&value).unwrap();
+            assert_eq!(value["text"], text);
+        }
+
+        #[test]
+        fn peer_key_id_matches_bare_id_for_users(id in 1..1_000_000_000_i64) {
+            let client = offline_client();
+            let peer = make_user_peer(&client, id);
+            let value = peer_key(&peer);
+            assert_eq!(value["id"], id);
+            assert_eq!(value["kind"], "user");
+            assert!(value["name"].is_string());
+        }
+    }
 }
