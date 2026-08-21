@@ -291,11 +291,16 @@ fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     Ok(cfg)
 }
 
+fn proxy_is_unset(p: &ProxyConfig) -> bool {
+    p.r#type.is_empty() && p.host.is_empty() && p.port == 0
+}
+
 pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<String>> {
     let p = cfg
         .accounts
         .get(name)
         .and_then(|a| a.proxy.as_ref())
+        .filter(|p| !proxy_is_unset(p))
         .or(cfg.proxy.as_ref());
     let Some(p) = p else {
         return Ok(None);
@@ -315,6 +320,28 @@ pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<Strin
     Ok(Some(format!("socks5://{}:{}", p.host, p.port)))
 }
 
+fn preserve_unknown_account_keys(
+    existing: Option<&mut toml_edit::Table>,
+    fresh: Option<&mut toml_edit::Table>,
+) {
+    let (Some(existing), Some(fresh)) = (existing, fresh) else {
+        return;
+    };
+    for (name, entry) in fresh.iter_mut() {
+        let Some(new_table) = entry.as_table_mut() else {
+            continue;
+        };
+        let Some(old_table) = existing.get_mut(&name).and_then(|item| item.as_table_mut()) else {
+            continue;
+        };
+        for (key, value) in old_table.iter() {
+            if !new_table.contains_key(key) {
+                new_table.insert(key, value.clone());
+            }
+        }
+    }
+}
+
 pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<()> {
     let app_dir = app_data_dir();
     if path.starts_with(&app_dir) {
@@ -332,7 +359,11 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;
         match fresh.as_table_mut().remove("accounts") {
-            Some(accounts) => {
+            Some(mut accounts) => {
+                preserve_unknown_account_keys(
+                    doc.get_mut("accounts").and_then(|item| item.as_table_mut()),
+                    accounts.as_table_mut(),
+                );
                 doc["accounts"] = accounts;
             }
             None => {
@@ -435,6 +466,70 @@ mod tests {
             proxy_url_for(&cfg, "other").unwrap(),
             Some("socks5://global:9050".to_string())
         );
+    }
+
+    #[test]
+    fn empty_account_proxy_table_falls_back_to_global() {
+        let cfg = AppConfig {
+            proxy: Some(socks5("global", 9050)),
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec![],
+                    proxy: Some(ProxyConfig::default()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            proxy_url_for(&cfg, "work").unwrap(),
+            Some("socks5://global:9050".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_account_proxy_table_with_no_global_is_none() {
+        let cfg = AppConfig {
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec![],
+                    proxy: Some(ProxyConfig::default()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert_eq!(proxy_url_for(&cfg, "work").unwrap(), None);
+    }
+
+    #[test]
+    fn partial_account_proxy_still_overrides_and_validates() {
+        let cfg = AppConfig {
+            proxy: Some(socks5("global", 9050)),
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec![],
+                    proxy: Some(ProxyConfig {
+                        r#type: String::new(),
+                        host: "127.0.0.1".to_string(),
+                        port: 0,
+                    }),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let err = proxy_url_for(&cfg, "work").unwrap_err().to_string();
+        assert!(err.contains("port"), "err: {err}");
     }
 
     #[test]
@@ -1120,6 +1215,41 @@ mod tests {
         assert_eq!(back.accounts.len(), 2);
         assert_eq!(back.accounts["bar"].tags, vec!["new".to_string()]);
         assert_eq!(back.parallel_max, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_config_preserves_unknown_per_account_keys_roundtrip() {
+        let dir = atomic_dir("preserve-acct");
+        let path = dir.join("config.toml");
+        let original = "[accounts.work]\ntags = [\"a\"]\noperator_note = \"call back tuesday\"\n";
+        std::fs::write(&path, original).unwrap();
+        let cfg = AppConfig {
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    tags: vec!["b".to_string()],
+                    proxy: None,
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        write_config(&path, &cfg).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("operator_note"),
+            "unknown per-account key lost:\n{text}"
+        );
+        assert!(text.contains("call back tuesday"));
+        write_config(&path, &cfg).unwrap();
+        let text2 = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text2.contains("operator_note"),
+            "unknown per-account key lost on second rewrite:\n{text2}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
