@@ -25,6 +25,8 @@ pub enum ChatCmd {
     AdminLog(AdminLogArgs),
     Stats(StatsArgs),
     Settings(SettingsArgs),
+    Edit(EditArgs),
+    Link(LinkArgs),
     Create(CreateArgs),
 }
 
@@ -171,6 +173,40 @@ pub struct StatsArgs {
 }
 
 #[derive(Args)]
+pub struct EditArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
+    )]
+    chat: String,
+    #[arg(long, help = "new title (1-128 chars)")]
+    title: Option<String>,
+    #[arg(long, help = "new description (0-255 chars; empty string clears it)")]
+    about: Option<String>,
+    #[arg(
+        long,
+        value_name = "PATH|remove",
+        help = "path to new photo, or 'remove' to delete the current one"
+    )]
+    photo: Option<String>,
+}
+
+#[derive(Args)]
+pub struct LinkArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
+    )]
+    chat: String,
+    #[arg(
+        long,
+        value_name = "CHANNEL|remove",
+        help = "discussion channel/group to link with --chat; omit to show the current link"
+    )]
+    to: Option<String>,
+}
+
+#[derive(Args)]
 pub struct SettingsArgs {
     #[arg(
         long,
@@ -236,6 +272,8 @@ pub async fn run(cmd: ChatCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         ChatCmd::AdminLog(a) => admin_log(a, flags).await,
         ChatCmd::Stats(a) => stats(a, flags).await,
         ChatCmd::Settings(a) => settings(a, flags).await,
+        ChatCmd::Edit(a) => edit_chat(a, flags).await,
+        ChatCmd::Link(a) => link_chat(a, flags).await,
         ChatCmd::Create(a) => create(a, flags).await,
     }
 }
@@ -1278,6 +1316,363 @@ async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 "pre_history_hidden": full_chat.hidden_prehistory,
                 "join_request": channel.map(|c| c.join_request),
                 "linked_chat_id": full_chat.linked_chat_id,
+            }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+const CHAT_TITLE_MAX_CHARS: usize = 128;
+const CHAT_ABOUT_MAX_CHARS: usize = 255;
+
+fn validate_edit(args: &EditArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    if args.title.is_none() && args.about.is_none() && args.photo.is_none() {
+        return Err(TeleError::Usage(
+            "at least one of --title, --about, --photo required".to_string(),
+        ));
+    }
+    if let Some(title) = &args.title {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(TeleError::Usage("--title cannot be empty".to_string()));
+        }
+        if title.chars().count() > CHAT_TITLE_MAX_CHARS {
+            return Err(TeleError::Usage(format!(
+                "--title is too long: {} chars (max {CHAT_TITLE_MAX_CHARS})",
+                title.chars().count()
+            )));
+        }
+    }
+    if let Some(about) = &args.about {
+        if about.trim().chars().count() > CHAT_ABOUT_MAX_CHARS {
+            return Err(TeleError::Usage(format!(
+                "--about is too long: {} chars (max {CHAT_ABOUT_MAX_CHARS})",
+                about.trim().chars().count()
+            )));
+        }
+    }
+    if let Some(photo) = &args.photo {
+        if photo != "remove" {
+            crate::commands::msg::validate_upload_path(photo)?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_link_target(target: Option<&str>) -> TeleResult<Option<String>> {
+    match target {
+        None => Ok(None),
+        Some("remove") => Err(TeleError::Usage(
+            "--to remove is not supported: this API layer has no unlink method (channels.setDiscussionGroup requires a group); re-point the link to another group instead".to_string(),
+        )),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(TeleError::Usage("--to cannot be empty".to_string()));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+}
+
+fn validate_link(args: &LinkArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    parse_link_target(args.to.as_deref())?;
+    Ok(())
+}
+
+fn chat_photo_input_photo(photo: &tl::enums::Photo) -> Option<tl::enums::InputPhoto> {
+    if let tl::enums::Photo::Photo(p) = photo {
+        return Some(tl::enums::InputPhoto::Photo(tl::types::InputPhoto {
+            id: p.id,
+            access_hash: p.access_hash,
+            file_reference: p.file_reference.clone(),
+        }));
+    }
+    None
+}
+
+async fn fetch_full_chat_info(
+    guard: &ClientGuard,
+    chat: &grammers_client::peer::Peer,
+) -> TeleResult<tl::enums::messages::ChatFull> {
+    if matches!(chat, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(chat) {
+        guard
+            .client
+            .invoke(&tl::functions::messages::GetFullChat {
+                chat_id: chat.id().bare_id().unwrap_or_default(),
+            })
+            .await
+            .map_err(tele_invocation)
+    } else {
+        let input_channel = entities::input_channel(chat)
+            .await
+            .map_err(tele_invocation)?;
+        guard
+            .client
+            .invoke(&tl::functions::channels::GetFullChannel {
+                channel: input_channel,
+            })
+            .await
+            .map_err(tele_invocation)
+    }
+}
+
+async fn edit_chat(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_edit(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let title = args.title.clone();
+    let about = args.about.clone();
+    let photo = args.photo.clone();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let target = args.chat.clone();
+        let title = title.clone();
+        let about = about.clone();
+        let photo = photo.clone();
+        Box::pin(async move {
+            if dry_run {
+                let mut data = serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": format!("edit metadata of chat {target}"),
+                });
+                if let Some(t) = &title {
+                    data["title"] = serde_json::json!(t.trim());
+                }
+                if let Some(a) = &about {
+                    data["about"] = serde_json::json!(a.trim());
+                }
+                if let Some(p) = &photo {
+                    data["photo"] = serde_json::json!(p);
+                }
+                return Ok(data);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "chat edit")?;
+            let is_basic_group = matches!(&chat, grammers_client::peer::Peer::Group(_))
+                && !entities::is_channel(&chat);
+            let mut applied = Vec::new();
+            if let Some(new_title) = &title {
+                applied.push("title");
+                let new_title = new_title.trim().to_string();
+                if is_basic_group {
+                    guard.rate_limiter.acquire().await;
+                    guard
+                        .client
+                        .invoke(&tl::functions::messages::EditChatTitle {
+                            chat_id: chat.id().bare_id().unwrap_or_default(),
+                            title: new_title,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                } else {
+                    guard.rate_limiter.acquire().await;
+                    guard
+                        .client
+                        .invoke(&tl::functions::channels::EditTitle {
+                            channel: entities::input_channel(&chat)
+                                .await
+                                .map_err(tele_invocation)?,
+                            title: new_title,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+            }
+            if let Some(new_about) = &about {
+                applied.push("about");
+                let new_about = new_about.trim().to_string();
+                let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                guard.rate_limiter.acquire().await;
+                guard
+                    .client
+                    .invoke(&tl::functions::messages::EditChatAbout {
+                        peer,
+                        about: new_about,
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+            }
+            if let Some(photo) = &photo {
+                applied.push("photo");
+                if photo == "remove" {
+                    let full = fetch_full_chat_info(&guard, &chat).await?;
+                    let tl::enums::messages::ChatFull::Full(full) = full;
+                    let current: Option<tl::enums::Photo> = match &full.full_chat {
+                        tl::enums::ChatFull::ChannelFull(f) => Some(f.chat_photo.clone()),
+                        tl::enums::ChatFull::Full(f) => f.chat_photo.clone(),
+                    };
+                    let input_photo = current
+                        .as_ref()
+                        .and_then(chat_photo_input_photo)
+                        .ok_or_else(|| {
+                            TeleError::Other("chat has no photo to remove".to_string())
+                        })?;
+                    guard.rate_limiter.acquire().await;
+                    let _: Vec<i64> = guard
+                        .client
+                        .invoke(&tl::functions::photos::DeletePhotos {
+                            id: vec![input_photo],
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                } else {
+                    let uploaded = guard
+                        .client
+                        .upload_file(photo)
+                        .await
+                        .map_err(|e| TeleError::TaskPanic(e.to_string()))?;
+                    let chat_photo = tl::enums::InputChatPhoto::InputChatUploadedPhoto(
+                        tl::types::InputChatUploadedPhoto {
+                            file: Some(uploaded.raw),
+                            video: None,
+                            video_start_ts: None,
+                            video_emoji_markup: None,
+                        },
+                    );
+                    guard.rate_limiter.acquire().await;
+                    if is_basic_group {
+                        guard
+                            .client
+                            .invoke(&tl::functions::messages::EditChatPhoto {
+                                chat_id: chat.id().bare_id().unwrap_or_default(),
+                                photo: chat_photo,
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                    } else {
+                        guard
+                            .client
+                            .invoke(&tl::functions::channels::EditPhoto {
+                                channel: entities::input_channel(&chat)
+                                    .await
+                                    .map_err(tele_invocation)?,
+                                photo: chat_photo,
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                    }
+                }
+            }
+            Ok(serde_json::json!({
+                "chat": target,
+                "applied": applied,
+            }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+fn discussion_pair(
+    x: grammers_client::peer::Peer,
+    y: grammers_client::peer::Peer,
+) -> TeleResult<(grammers_client::peer::Peer, grammers_client::peer::Peer)> {
+    const NOT_A_DISCUSSION_PEER: &str =
+        "discussion links need one broadcast channel and one supergroup";
+    let x_broadcast = match &x {
+        grammers_client::peer::Peer::Channel(_) => Ok(true),
+        grammers_client::peer::Peer::Group(g) if g.is_megagroup() => Ok(false),
+        _ => Err(TeleError::Usage(NOT_A_DISCUSSION_PEER.to_string())),
+    }?;
+    let y_broadcast = match &y {
+        grammers_client::peer::Peer::Channel(_) => Ok(true),
+        grammers_client::peer::Peer::Group(g) if g.is_megagroup() => Ok(false),
+        _ => Err(TeleError::Usage(NOT_A_DISCUSSION_PEER.to_string())),
+    }?;
+    match (x_broadcast, y_broadcast) {
+        (true, false) => Ok((x, y)),
+        (false, true) => Ok((y, x)),
+        _ => Err(TeleError::Usage(format!(
+            "--chat and --to must be one broadcast channel and one supergroup (got {} + {})",
+            if x_broadcast {
+                "broadcast"
+            } else {
+                "supergroup"
+            },
+            if y_broadcast {
+                "broadcast"
+            } else {
+                "supergroup"
+            }
+        ))),
+    }
+}
+
+async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_link(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let to_target = parse_link_target(args.to.as_deref())?;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let target = args.chat.clone();
+        let to_target = to_target.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(match &to_target {
+                    None => serde_json::json!({
+                        "dry_run": true,
+                        "chat": target,
+                        "would": format!("read discussion link of chat {target}"),
+                    }),
+                    Some(to) => serde_json::json!({
+                        "dry_run": true,
+                        "chat": target,
+                        "to": to,
+                        "would": format!("link chat {target} with discussion group {to}"),
+                    }),
+                });
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "link")?;
+            let Some(to_target) = to_target else {
+                let full = fetch_full_chat_info(&guard, &chat).await?;
+                let tl::enums::messages::ChatFull::Full(full) = full;
+                let linked = match full.full_chat {
+                    tl::enums::ChatFull::ChannelFull(f) => f.linked_chat_id,
+                    tl::enums::ChatFull::Full(_) => None,
+                };
+                return Ok(serde_json::json!({
+                    "chat": target,
+                    "linked_chat_id": linked,
+                }));
+            };
+            let to_peer =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &to_target).await?;
+            ensure_chat_peer(&to_peer, "--to")?;
+            let (broadcast, group) = discussion_pair(chat.clone(), to_peer)?;
+            guard.rate_limiter.acquire().await;
+            guard
+                .client
+                .invoke(&tl::functions::channels::SetDiscussionGroup {
+                    broadcast: entities::input_channel(&broadcast)
+                        .await
+                        .map_err(tele_invocation)?,
+                    group: entities::input_channel(&group)
+                        .await
+                        .map_err(tele_invocation)?,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(serde_json::json!({
+                "chat": target,
+                "to": to_target,
+                "linked": true,
             }))
         })
     })
@@ -2918,5 +3313,255 @@ mod tests {
         assert!(found.signatures);
         assert!(channel_from_chats(&chats, 77).is_none());
         assert!(channel_from_chats(&chats, 999).is_none());
+    }
+
+    fn edit_args(chat: &str) -> EditArgs {
+        EditArgs {
+            chat: chat.to_string(),
+            title: None,
+            about: None,
+            photo: None,
+        }
+    }
+
+    #[test]
+    fn edit_requires_at_least_one_flag_and_valid_chat() {
+        let mut args = edit_args("");
+        args.title = Some("t".to_string());
+        assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+        args = edit_args("@c");
+        assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+        args.title = Some("New title".to_string());
+        assert!(validate_edit(&args).is_ok());
+    }
+
+    #[test]
+    fn edit_title_rejects_empty_and_over_cap() {
+        let mut args = edit_args("@c");
+        args.title = Some("   ".to_string());
+        assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+        args.title = Some("x".repeat(CHAT_TITLE_MAX_CHARS));
+        assert!(validate_edit(&args).is_ok());
+        args.title = Some("x".repeat(CHAT_TITLE_MAX_CHARS + 1));
+        let err = validate_edit(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.to_string().contains("--title"));
+    }
+
+    #[test]
+    fn edit_about_allows_empty_clear_and_enforces_cap() {
+        let mut args = edit_args("@c");
+        args.about = Some(String::new());
+        assert!(validate_edit(&args).is_ok());
+        args.about = Some("x".repeat(CHAT_ABOUT_MAX_CHARS));
+        assert!(validate_edit(&args).is_ok());
+        args.about = Some("x".repeat(CHAT_ABOUT_MAX_CHARS + 1));
+        let err = validate_edit(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.to_string().contains("--about"));
+    }
+
+    #[test]
+    fn edit_photo_accepts_remove_literal_and_rejects_sensitive_paths() {
+        let mut args = edit_args("@c");
+        args.photo = Some("remove".to_string());
+        assert!(validate_edit(&args).is_ok());
+        args.photo = Some("/tmp/x/.env".to_string());
+        assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+        args.photo = Some("/tmp/x/account.session".to_string());
+        assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn edit_photo_accepts_regular_existing_file() {
+        let dir = std::env::temp_dir().join(format!("telecli-chat-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("photo.jpg");
+        std::fs::write(&photo, b"fake").unwrap();
+        let mut args = edit_args("@c");
+        args.photo = Some(photo.to_string_lossy().into_owned());
+        assert!(validate_edit(&args).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn link_remove_is_honest_usage_error_before_connect() {
+        let mut args = LinkArgs {
+            chat: "@group".to_string(),
+            to: None,
+        };
+        assert!(validate_link(&args).is_ok());
+        args.to = Some("remove".to_string());
+        let err = validate_link(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.to_string().contains("setDiscussionGroup"));
+        args.to = Some("   ".to_string());
+        assert!(matches!(validate_link(&args), Err(TeleError::Usage(_))));
+        args.chat = String::new();
+        args.to = None;
+        assert!(matches!(validate_link(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn chat_photo_input_photo_extracts_ids_or_none() {
+        let empty =
+            chat_photo_input_photo(&tl::enums::Photo::Empty(tl::types::PhotoEmpty { id: 0 }));
+        assert!(empty.is_none());
+        let photo = tl::enums::Photo::Photo(tl::types::Photo {
+            id: 555,
+            access_hash: -7,
+            file_reference: vec![1, 2],
+            has_stickers: false,
+            date: 0,
+            sizes: Vec::new(),
+            video_sizes: None,
+            dc_id: 1,
+        });
+        let input = chat_photo_input_photo(&photo).expect("input photo");
+        match input {
+            tl::enums::InputPhoto::Photo(p) => {
+                assert_eq!(p.id, 555);
+                assert_eq!(p.access_hash, -7);
+                assert_eq!(p.file_reference, vec![1, 2]);
+            }
+            other => panic!("unexpected input photo {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discussion_pair_orders_broadcast_first() {
+        let client = offline_client();
+        let broadcast_chat = tl::enums::Chat::Channel(tl::types::Channel {
+            creator: false,
+            left: false,
+            broadcast: true,
+            verified: false,
+            megagroup: false,
+            restricted: false,
+            signatures: false,
+            min: false,
+            scam: false,
+            has_link: false,
+            has_geo: false,
+            slowmode_enabled: false,
+            call_active: false,
+            call_not_empty: false,
+            fake: false,
+            gigagroup: false,
+            noforwards: false,
+            join_to_send: false,
+            join_request: false,
+            forum: false,
+            stories_hidden: false,
+            stories_hidden_min: false,
+            stories_unavailable: false,
+            signature_profiles: false,
+            autotranslation: false,
+            broadcast_messages_allowed: false,
+            monoforum: false,
+            forum_tabs: false,
+            id: 1,
+            access_hash: None,
+            title: "broadcast".to_string(),
+            username: None,
+            photo: tl::enums::ChatPhoto::Empty,
+            date: 0,
+            restriction_reason: None,
+            admin_rights: None,
+            banned_rights: None,
+            default_banned_rights: None,
+            participants_count: None,
+            usernames: None,
+            stories_max_id: None,
+            color: None,
+            profile_color: None,
+            emoji_status: None,
+            level: None,
+            subscription_until_date: None,
+            bot_verification_icon: None,
+            send_paid_messages_stars: None,
+            linked_monoforum_id: None,
+        });
+        let megagroup_chat = tl::enums::Chat::Channel(tl::types::Channel {
+            creator: false,
+            left: false,
+            broadcast: false,
+            verified: false,
+            megagroup: true,
+            restricted: false,
+            signatures: false,
+            min: false,
+            scam: false,
+            has_link: false,
+            has_geo: false,
+            slowmode_enabled: false,
+            call_active: false,
+            call_not_empty: false,
+            fake: false,
+            gigagroup: false,
+            noforwards: false,
+            join_to_send: false,
+            join_request: false,
+            forum: false,
+            stories_hidden: false,
+            stories_hidden_min: false,
+            stories_unavailable: false,
+            signature_profiles: false,
+            autotranslation: false,
+            broadcast_messages_allowed: false,
+            monoforum: false,
+            forum_tabs: false,
+            id: 2,
+            access_hash: None,
+            title: "supergroup".to_string(),
+            username: None,
+            photo: tl::enums::ChatPhoto::Empty,
+            date: 0,
+            restriction_reason: None,
+            admin_rights: None,
+            banned_rights: None,
+            default_banned_rights: None,
+            participants_count: None,
+            usernames: None,
+            stories_max_id: None,
+            color: None,
+            profile_color: None,
+            emoji_status: None,
+            level: None,
+            subscription_until_date: None,
+            bot_verification_icon: None,
+            send_paid_messages_stars: None,
+            linked_monoforum_id: None,
+        });
+        let broadcast = grammers_client::peer::Peer::from_raw(&client, broadcast_chat.clone());
+        let group = grammers_client::peer::Peer::from_raw(&client, megagroup_chat.clone());
+
+        let (b, g) = discussion_pair(group.clone(), broadcast.clone()).expect("ordered pair");
+        assert!(matches!(b, grammers_client::peer::Peer::Channel(_)));
+        assert!(matches!(g, grammers_client::peer::Peer::Group(ref grp) if grp.is_megagroup()));
+
+        assert!(discussion_pair(broadcast.clone(), broadcast.clone()).is_err());
+        let user_peer = grammers_client::peer::Peer::from_raw(
+            &client,
+            tl::enums::Chat::Chat(tl::types::Chat {
+                creator: false,
+                left: false,
+                deactivated: false,
+                call_active: false,
+                call_not_empty: false,
+                noforwards: false,
+                id: 3,
+                title: "basic".to_string(),
+                photo: tl::enums::ChatPhoto::Empty,
+                participants_count: 0,
+                date: 0,
+                version: 0,
+                migrated_to: None,
+                admin_rights: None,
+                default_banned_rights: None,
+            }),
+        );
+        assert!(discussion_pair(user_peer.clone(), broadcast.clone()).is_err());
     }
 }
