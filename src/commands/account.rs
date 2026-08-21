@@ -49,7 +49,14 @@ pub struct LoginArgs {
     phone: Option<String>,
     #[arg(long, help = "print the QR login URI to stderr if QR rendering fails")]
     show_token: bool,
+    #[arg(long, default_value_t = DEFAULT_QR_TIMEOUT_SECS, help = "overall QR login deadline in seconds")]
+    qr_timeout_secs: u64,
 }
+
+const DEFAULT_QR_TIMEOUT_SECS: u64 = 300;
+const TELE_PHONE_ENV: &str = "TELE_PHONE";
+const MAX_CODE_ATTEMPTS: usize = 3;
+const MAX_PASSWORD_ATTEMPTS: usize = 3;
 #[derive(Args)]
 pub struct LogoutArgs {
     #[arg(long)]
@@ -176,10 +183,13 @@ async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         );
     }
     let mut cfg = config::load_config(flags.config_path.as_deref())?;
-    cfg.accounts
+    let entry = cfg
+        .accounts
         .entry(args.name.clone())
-        .or_insert_with(config::AccountConfig::default)
-        .tags = args.tags.clone().unwrap_or_default();
+        .or_insert_with(config::AccountConfig::default);
+    if let Some(tags) = &args.tags {
+        entry.tags = tags.clone();
+    }
     config::write_config(&path, &cfg)?;
     log_line(
         "info",
@@ -194,14 +204,13 @@ async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         &action_envelope(&args.name, data, flags.dry_run, &flags.command),
     )
 }
-fn validate_login(args: &LoginArgs) -> TeleResult<()> {
-    session::validate_name(&args.name).map_err(TeleError::Usage)?;
-    match args.method.as_str() {
+fn validate_login(method: &str, phone: Option<&str>, qr_timeout_secs: u64) -> TeleResult<()> {
+    match method {
         "qr" => {}
         "code" => {
-            if args.phone.is_none() {
+            if phone.is_none() {
                 return Err(TeleError::Usage(
-                    "--phone required for code login".to_string(),
+                    "--phone required for code login (or set TELE_PHONE)".to_string(),
                 ));
             }
         }
@@ -211,11 +220,31 @@ fn validate_login(args: &LoginArgs) -> TeleResult<()> {
             )));
         }
     }
+    if qr_timeout_secs == 0 {
+        return Err(TeleError::Usage(
+            "--qr-timeout-secs must be greater than 0".to_string(),
+        ));
+    }
     Ok(())
 }
 
+fn resolve_phone(explicit: Option<&str>) -> Option<String> {
+    if let Some(phone) = explicit {
+        let trimmed = phone.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    std::env::var(TELE_PHONE_ENV)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    validate_login(args)?;
+    let phone = resolve_phone(args.phone.as_deref());
+    session::validate_name(&args.name).map_err(TeleError::Usage)?;
+    validate_login(&args.method, phone.as_deref(), args.qr_timeout_secs)?;
     if let Some(message) =
         argv_phone_warning(args.phone.as_deref(), std::io::stderr().is_terminal())
     {
@@ -231,14 +260,27 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     let credentials = creds()?;
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
+    let session_existed_before = session::session_path(&args.name)
+        .try_exists()
+        .unwrap_or(false);
     let mut guard =
-        ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref()).await?;
-    if guard
+        match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(e) => {
+                if !session_existed_before {
+                    cleanup_partial_session(&args.name);
+                }
+                return Err(e.into());
+            }
+        };
+    let was_authorized = guard
         .client
         .is_authorized()
         .await
-        .map_err(tele_invocation)?
-    {
+        .map_err(tele_invocation)?;
+    if was_authorized {
         log_line("info", "account already authorized");
         let data = serde_json::json!({
             "authorized": true,
@@ -249,82 +291,66 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             &action_envelope(&args.name, data, flags.dry_run, &flags.command),
         );
     }
+    let result = login_flow(args, flags, &credentials, &mut guard, phone.as_deref()).await;
+    if result.is_err() && !session_existed_before {
+        drop(guard);
+        cleanup_partial_session(&args.name);
+    }
+    result
+}
+
+fn cleanup_partial_session(name: &str) {
+    match session::remove_session(name) {
+        Ok(()) => log_line("warn", "login failed; removed partial session files"),
+        Err(e) => log_line(
+            "warn",
+            &format!("login failed; could not remove partial session files: {e:#}"),
+        ),
+    }
+}
+
+async fn login_flow(
+    args: &LoginArgs,
+    flags: &GlobalFlags,
+    credentials: &crate::config::Credentials,
+    guard: &mut ClientGuard,
+    phone: Option<&str>,
+) -> TeleResult<i32> {
     match args.method.as_str() {
         "qr" => {
             let show_token = args.show_token;
-            client::qr_login(&guard.client, &mut guard.updates, &credentials, |uri| {
-                render_qr(uri, show_token);
-            })
+            client::qr_login(
+                &guard.client,
+                &mut guard.updates,
+                credentials,
+                args.qr_timeout_secs,
+                |uri| {
+                    render_qr(uri, show_token);
+                },
+            )
             .await?;
         }
         "code" => {
-            let phone = args
-                .phone
-                .clone()
+            let phone = phone
                 .ok_or_else(|| TeleError::Usage("--phone required for code login".to_string()))?;
             let token = guard
                 .client
-                .request_login_code(&phone, &credentials.api_hash)
+                .request_login_code(phone, &credentials.api_hash)
                 .await
                 .map_err(tele_invocation)?;
             let mut stdin = std::io::stdin().lock();
             let mut stderr = std::io::stderr();
-            let prompt = code_prompt(Some(&phone), stderr.is_terminal());
-            let Some(code_line) = prompt_line(&prompt, &mut stdin, &mut stderr)? else {
-                return Err(TeleError::Usage(
-                    "no code entered (stdin closed)".to_string(),
-                ));
-            };
-            let code = code_line.trim().to_string();
-            match guard.client.sign_in(&token, &code).await {
-                Ok(_user) => {
-                    log_line(
-                        "info",
-                        &format!("account {} logged in ({})", args.name, redact_phone(&phone)),
-                    );
-                }
-                Err(grammers_client::SignInError::PasswordRequired(pw_token)) => {
-                    let echo_disabled = disable_stdin_echo();
-                    if !echo_disabled {
-                        log_line(
-                            "warn",
-                            "secure password input unavailable; input will be echoed to the terminal",
-                        );
-                    }
-                    let read = prompt_line("Enter the 2FA password: ", &mut stdin, &mut stderr);
-                    restore_stdin_echo(echo_disabled);
-                    let Some(password_line) = read? else {
-                        return Err(TeleError::Auth(
-                            "2FA password required; stdin closed".to_string(),
-                        ));
-                    };
-                    let password = strip_line_ending(&password_line).to_string();
-                    match guard.client.check_password(pw_token, &password).await {
-                        Ok(_) => log_line("info", "2FA passed"),
-                        Err(grammers_client::SignInError::InvalidPassword(_)) => {
-                            return Err(TeleError::Auth("invalid 2FA password".to_string()));
-                        }
-                        Err(grammers_client::SignInError::Other(e)) => {
-                            return Err(tele_invocation(e));
-                        }
-                        Err(_) => {
-                            return Err(TeleError::Auth("2FA check failed".to_string()));
-                        }
-                    }
-                }
-                Err(grammers_client::SignInError::InvalidCode) => {
-                    return Err(TeleError::Usage("invalid code".to_string()));
-                }
-                Err(grammers_client::SignInError::InvalidPassword(_)) => {
-                    return Err(TeleError::Usage("invalid code".to_string()));
-                }
-                Err(grammers_client::SignInError::SignUpRequired) => {
-                    return Err(TeleError::Usage(
-                        "sign up with an official client first".to_string(),
-                    ));
-                }
-                Err(grammers_client::SignInError::Other(e)) => return Err(tele_invocation(e)),
-            }
+            let prompt = code_prompt(Some(phone), stderr.is_terminal());
+            sign_in_with_retries(
+                &guard.client,
+                &token,
+                &prompt,
+                &mut stdin,
+                &mut stderr,
+                &args.name,
+                phone,
+            )
+            .await?;
         }
         other => {
             return Err(TeleError::Usage(format!(
@@ -340,6 +366,121 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         flags,
         &action_envelope(&args.name, data, flags.dry_run, &flags.command),
     )
+}
+
+async fn sign_in_with_retries(
+    client: &grammers_client::Client,
+    token: &grammers_client::client::LoginToken,
+    prompt: &str,
+    stdin: &mut impl std::io::BufRead,
+    stderr: &mut impl std::io::Write,
+    account_name: &str,
+    phone: &str,
+) -> TeleResult<()> {
+    for attempt in 1..=MAX_CODE_ATTEMPTS {
+        let Some(code_line) = prompt_line(prompt, stdin, stderr)? else {
+            return Err(TeleError::Usage(
+                "no code entered (stdin closed)".to_string(),
+            ));
+        };
+        let code = code_line.trim().to_string();
+        match client.sign_in(token, &code).await {
+            Ok(_user) => {
+                log_line(
+                    "info",
+                    &format!(
+                        "account {} logged in ({})",
+                        account_name,
+                        redact_phone(phone)
+                    ),
+                );
+                return Ok(());
+            }
+            Err(grammers_client::SignInError::PasswordRequired(pw_token)) => {
+                return password_flow(client, pw_token, stdin, stderr).await;
+            }
+            Err(grammers_client::SignInError::InvalidCode) => {
+                if attempt >= MAX_CODE_ATTEMPTS {
+                    return Err(TeleError::Usage(
+                        "invalid code: attempts exhausted; run tele account login again to request a new code"
+                            .to_string(),
+                    ));
+                }
+                log_line("warn", "invalid code; try again");
+            }
+            Err(grammers_client::SignInError::InvalidPassword(_)) => {
+                return Err(TeleError::Usage("invalid code".to_string()));
+            }
+            Err(grammers_client::SignInError::SignUpRequired) => {
+                return Err(TeleError::Usage(
+                    "sign up with an official client first".to_string(),
+                ));
+            }
+            Err(grammers_client::SignInError::Other(e)) => return Err(tele_invocation(e)),
+        }
+    }
+    Ok(())
+}
+
+async fn password_flow(
+    client: &grammers_client::Client,
+    pw_token: grammers_client::client::PasswordToken,
+    stdin: &mut impl std::io::BufRead,
+    stderr: &mut impl std::io::Write,
+) -> TeleResult<()> {
+    let mut pw_token = Some(pw_token);
+    for attempt in 1..=MAX_PASSWORD_ATTEMPTS {
+        let Some(token) = pw_token.take() else {
+            return Err(TeleError::Auth(
+                "2FA password token unavailable".to_string(),
+            ));
+        };
+        let echo_disabled = disable_stdin_echo();
+        if !echo_disabled && attempt == 1 {
+            log_line(
+                "warn",
+                "secure password input unavailable; input will be echoed to the terminal",
+            );
+        }
+        let read = prompt_line("Enter the 2FA password: ", stdin, stderr);
+        restore_stdin_echo(echo_disabled);
+        let Some(password_line) = read? else {
+            return Err(TeleError::Auth(
+                "2FA password required; stdin closed".to_string(),
+            ));
+        };
+        let password = strip_line_ending(&password_line).to_string();
+        match client.check_password(token, &password).await {
+            Ok(_) => {
+                log_line("info", "2FA passed");
+                return Ok(());
+            }
+            Err(grammers_client::SignInError::InvalidPassword(_)) => {
+                if attempt >= MAX_PASSWORD_ATTEMPTS {
+                    return Err(TeleError::Auth(
+                        "invalid 2FA password: attempts exhausted".to_string(),
+                    ));
+                }
+                log_line("warn", "invalid 2FA password; try again");
+                pw_token = Some(refresh_password_token(client).await?);
+            }
+            Err(grammers_client::SignInError::Other(e)) => return Err(tele_invocation(e)),
+            Err(_) => return Err(TeleError::Auth("2FA check failed".to_string())),
+        }
+    }
+    Ok(())
+}
+
+async fn refresh_password_token(
+    client: &grammers_client::Client,
+) -> TeleResult<grammers_client::client::PasswordToken> {
+    use grammers_client::tl::{self, enums};
+    let response = client
+        .invoke(&tl::functions::account::GetPassword {})
+        .await
+        .map_err(tele_invocation)?;
+    let enums::account::Password::Password(password) = response;
+    Ok(grammers_client::client::PasswordToken::new(password))
 }
 async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if flags.dry_run {
@@ -497,7 +638,7 @@ fn code_prompt(phone: Option<&str>, stderr_is_terminal: bool) -> String {
 
 fn argv_phone_warning(phone: Option<&str>, _stderr_is_terminal: bool) -> Option<&'static str> {
     phone.map(|_| {
-        "--phone is visible in process listings and shell history; prefer TELE_PHONE env or a stdin prompt"
+        "--phone is visible in process listings and shell history; prefer TELE_PHONE or an interactive prompt"
     })
 }
 
@@ -642,6 +783,7 @@ mod tests {
             method: method.to_string(),
             phone: phone.map(str::to_string),
             show_token: false,
+            qr_timeout_secs: DEFAULT_QR_TIMEOUT_SECS,
         }
     }
 
@@ -667,23 +809,61 @@ mod tests {
     #[test]
     fn login_code_requires_phone() {
         assert!(matches!(
-            validate_login(&login_args("code", None)),
+            validate_login("code", None, DEFAULT_QR_TIMEOUT_SECS),
             Err(TeleError::Usage(_))
         ));
-        assert!(validate_login(&login_args("code", Some("+1"))).is_ok());
+        assert!(validate_login("code", Some("+1"), DEFAULT_QR_TIMEOUT_SECS).is_ok());
     }
 
     #[test]
     fn login_qr_needs_no_phone() {
-        assert!(validate_login(&login_args("qr", None)).is_ok());
+        assert!(validate_login("qr", None, DEFAULT_QR_TIMEOUT_SECS).is_ok());
     }
 
     #[test]
     fn login_unknown_method_rejected() {
         assert!(matches!(
-            validate_login(&login_args("sms", Some("+1"))),
+            validate_login("sms", Some("+1"), DEFAULT_QR_TIMEOUT_SECS),
             Err(TeleError::Usage(_))
         ));
+    }
+
+    #[test]
+    fn login_qr_timeout_must_be_positive() {
+        assert!(matches!(
+            validate_login("qr", None, 0),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_login("code", Some("+1"), 1).is_ok());
+    }
+
+    #[test]
+    fn resolve_phone_prefers_explicit_arg_over_env() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        std::env::set_var(TELE_PHONE_ENV, "+15550001111");
+        let resolved = resolve_phone(Some("+15557772222"));
+        std::env::remove_var(TELE_PHONE_ENV);
+        assert_eq!(resolved.as_deref(), Some("+15557772222"));
+    }
+
+    #[test]
+    fn resolve_phone_falls_back_to_nonempty_env() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        std::env::set_var(TELE_PHONE_ENV, " +15550001111 ");
+        let resolved = resolve_phone(None);
+        std::env::remove_var(TELE_PHONE_ENV);
+        assert_eq!(resolved.as_deref(), Some("+15550001111"));
+    }
+
+    #[test]
+    fn resolve_phone_ignores_empty_env_and_empty_arg() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        std::env::remove_var(TELE_PHONE_ENV);
+        assert!(resolve_phone(None).is_none());
+        std::env::set_var(TELE_PHONE_ENV, "+15550001111");
+        let from_env = resolve_phone(Some("   "));
+        std::env::remove_var(TELE_PHONE_ENV);
+        assert_eq!(from_env.as_deref(), Some("+15550001111"));
     }
 
     #[test]
@@ -950,6 +1130,28 @@ mod tests {
         assert_eq!(code, 0);
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(text.contains("work"), "config: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn add_readd_without_tags_preserves_existing_tags() {
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("telecli-add-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account add", false, false, &dir.join("config.toml"));
+        let with_tags = AddArgs {
+            name: "work".to_string(),
+            tags: Some(vec!["ops".to_string()]),
+        };
+        add(&with_tags, &flags).await.unwrap();
+        let without_tags = AddArgs {
+            name: "work".to_string(),
+            tags: None,
+        };
+        add(&without_tags, &flags).await.unwrap();
+        let cfg = config::load_config(Some(&dir.join("config.toml"))).unwrap();
+        assert_eq!(cfg.accounts["work"].tags, vec!["ops".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
