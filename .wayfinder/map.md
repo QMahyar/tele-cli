@@ -3,7 +3,7 @@
 Label: wayfinder:map
 Tracker: local markdown (`.wayfinder/tickets/`)
 Plan: `tasks/plan.md`
-Status: ACTIVE — Phase 1 (BUG tickets) in execution
+Status: ACTIVE — Phase 1 COMPLETE (all 7 BUG tickets merged into `fix/hardening`, 674 tests green); Phase 2 (CAP tickets) next
 
 ## Destination
 
@@ -20,6 +20,12 @@ All 9 confirmed bugs from the 2026-08-21 deep-dive fixed, then the merged gramme
 ## Decisions so far
 
 - [Merge feature gaps into capabilities phase] — user direction; grammers-unused friendly methods and feature gaps are one workstream organized by domain (recorded in tasks/plan.md).
+- [BUG-1 rate-limiter zero-budget hang](tickets/BUG-1-rate-limiter-zero-budget.md) — budget <= 0 acts as unlimited; timeout-guarded tests.
+- [BUG-2 per-RPC tokens](tickets/BUG-2-per-rpc-tokens.md) — acquire_for_items paces every 100 items in dialog list + msg get; privacy get acquires per key RPC; drafts was already 1:1 (single GetAllDrafts RPC, no change needed).
+- [BUG-4 login UX cluster](tickets/BUG-4-login-ux-cluster.md) — TELE_PHONE env honored (warning truthful), 3-attempt code retry on same token, 3-attempt 2FA retry with PasswordToken refresh via account.GetPassword, phantom-session cleanup when unauthorized at entry, --qr-timeout-secs default 300 + transient stream tolerance, account add preserves tags unless --tags passed.
+- [BUG-5 config tolerance](tickets/BUG-5-config-tolerance.md) — unknown per-account TOML keys survive rewrites (toml_edit key carry-over); empty per-account proxy table falls back to global.
+- [BUG-6 stale-cache evict-retry-hint](tickets/BUG-6-stale-cache-retry.md) — PEER_ID_INVALID/CHANNEL_INVALID after cache hit falls through to uncached fallback then PEER_UNKNOWN_HINT; corrupt rows warn instead of silent miss. Note: no session API to delete a cached ref, so "evict" = fall-through retry; entry is overwritten on next successful write.
+- [BUG-7 upload flood keys + name-split](tickets/BUG-7-upload-flood-namesplit.md) — root cause deeper than review claimed: io::Error::source() is always None for wrapped payloads so the old FLOOD_WAIT arm was dead code; fixed via get_ref() downcast, keys now parity with send path; split_full_name sends last_name only when present (server keeps existing otherwise), 64/64/140 caps as Usage errors.
 
 ## Tickets — Phase 1 (bugs; parallel-ready, file-disjoint)
 
