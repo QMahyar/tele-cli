@@ -4,6 +4,8 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
     #[cfg(unix)]
     restrict(path, 0o700)?;
+    #[cfg(windows)]
+    set_user_only_dacl(path, true)?;
     Ok(())
 }
 
@@ -14,6 +16,11 @@ pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
+    set_user_only_dacl(path, false)
+}
+
+#[cfg(windows)]
+fn set_user_only_dacl(path: &Path, inheritable: bool) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
@@ -22,7 +29,8 @@ pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
         SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
     };
     use windows::Win32::Security::{
-        GetTokenInformation, TokenUser, ACE_FLAGS, ACL, DACL_SECURITY_INFORMATION, PSID,
+        GetTokenInformation, TokenUser, ACE_FLAGS, ACL, CONTAINER_INHERIT_ACE,
+        DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
         TOKEN_QUERY, TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
@@ -62,7 +70,11 @@ pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
         let ea = EXPLICIT_ACCESS_W {
             grfAccessPermissions: FILE_ALL_ACCESS.0,
             grfAccessMode: SET_ACCESS,
-            grfInheritance: ACE_FLAGS(0),
+            grfInheritance: if inheritable {
+                CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE
+            } else {
+                ACE_FLAGS(0)
+            },
             Trustee: trustee,
         };
 
@@ -85,7 +97,7 @@ pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
         let result = SetNamedSecurityInfoW(
             PCWSTR(path_wide.as_ptr()),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
             None,
             None,
             Some(new_acl),

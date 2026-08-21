@@ -333,11 +333,7 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
         ));
     }
     let lower = base.to_lowercase();
-    if lower.starts_with(".env")
-        || lower.ends_with(".session")
-        || lower.ends_with(".session-journal")
-        || lower.starts_with("config.toml")
-    {
+    if is_sensitive_basename(&lower) {
         return Err(TeleError::Usage(format!(
             "refusing to upload sensitive file {base}"
         )));
@@ -347,6 +343,30 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
         return Err(TeleError::Usage(format!("upload file not found: {path:?}")));
     }
     check_upload_size(std::fs::metadata(path)?.len())
+}
+
+pub fn is_sensitive_basename(lower: &str) -> bool {
+    const SUFFIXES: [&str; 7] = [
+        ".session",
+        ".session-journal",
+        ".pem",
+        ".key",
+        ".p12",
+        ".pfx",
+        ".kdbx",
+    ];
+    const PREFIXES: [&str; 6] = [
+        ".env",
+        "config.toml",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+    ];
+    const EXACT: [&str; 3] = [".netrc", ".git-credentials", "credentials"];
+    SUFFIXES.iter().any(|s| lower.ends_with(s))
+        || PREFIXES.iter().any(|s| lower.starts_with(s))
+        || EXACT.contains(&lower)
 }
 
 fn validate_download_dir(dir: &str) -> TeleResult<()> {
@@ -1329,6 +1349,50 @@ mod tests {
         let ok_path = dir.join("notes.txt");
         std::fs::write(&ok_path, b"x").unwrap();
         validate_upload_path(ok_path.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn is_sensitive_basename_covers_private_key_families() {
+        for name in [
+            "id_rsa",
+            "id_rsa.old",
+            "ID_ED25519",
+            "id_ecdsa",
+            "id_dsa",
+            "server.pem",
+            "CERT.KEY",
+            "keystore.p12",
+            "backup.pfx",
+            "vault.kdbx",
+            ".netrc",
+            ".git-credentials",
+            ".env.local",
+            "work.session",
+            "work.session-journal",
+        ] {
+            assert!(
+                is_sensitive_basename(&name.to_lowercase()),
+                "{name} must be blocked"
+            );
+        }
+        for name in ["notes.txt", "report.pdf", "archive.tar.gz"] {
+            assert!(
+                !is_sensitive_basename(&name.to_lowercase()),
+                "{name} must be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_upload_path_rejects_aws_credentials_basename() {
+        let dir = temp_path("uploadaws");
+        let aws = dir.join(".aws");
+        std::fs::create_dir_all(&aws).unwrap();
+        let path = aws.join("credentials");
+        std::fs::write(&path, b"x").unwrap();
+        let err = validate_upload_path(path.to_str().unwrap()).unwrap_err();
+        assert!(err.message().contains("sensitive"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
