@@ -360,7 +360,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             return Err(tele_invocation(e));
         }
     }
-    drop(guard);
+    guard.close().await;
     remove_session_file_retry(&session::session_path(&args.name)).await?;
     remove_session_file_retry(&session::lock_path(&args.name)).await?;
     log_line("info", &format!("account {} logged out", args.name));

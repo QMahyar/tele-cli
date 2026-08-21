@@ -48,7 +48,7 @@ pub async fn run_fanout(
             }),
         ));
     }
-    let outcomes = collect_outcomes(handles).await;
+    let outcomes = collect_outcomes(&mut handles).await;
     for o in &outcomes {
         if let Some(line) = outcome_error_line(o) {
             log_line("error", &line);
@@ -59,6 +59,16 @@ pub async fn run_fanout(
         flags.dry_run,
         &flags.command,
     ))
+}
+
+struct AbortOnDrop<'a>(&'a mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>);
+
+impl Drop for AbortOnDrop<'_> {
+    fn drop(&mut self) {
+        for (_, handle) in self.0.iter() {
+            handle.abort();
+        }
+    }
 }
 
 fn outcome_error_line(o: &AccountOutcome) -> Option<String> {
@@ -82,7 +92,7 @@ async fn run_one(
     permit: Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>,
     future: impl std::future::Future<Output = TeleResult<serde_json::Value>>,
 ) -> TeleResult<AccountOutcome> {
-    let _permit = permit.map_err(|e| TeleError::TaskPanic(e.to_string()))?;
+    let _permit = permit.map_err(|e| TeleError::Other(format!("internal semaphore error: {e}")))?;
     match future.await {
         Ok(data) => Ok(AccountOutcome {
             account: name,
@@ -110,10 +120,11 @@ async fn collect_one(
 }
 
 async fn collect_outcomes(
-    handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
+    handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
 ) -> Vec<AccountOutcome> {
     let mut outcomes = Vec::new();
-    for (name, handle) in handles {
+    let _abort_guard = AbortOnDrop(handles);
+    for (name, handle) in _abort_guard.0.drain(..) {
         outcomes.push(collect_one(name, handle).await);
     }
     outcomes.sort_by(|a, b| a.account.cmp(&b.account));
@@ -220,26 +231,13 @@ pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
         return if partial { EXIT_PARTIAL } else { EXIT_OK };
     }
     let ok_count = envelope.accounts.iter().filter(|a| a.ok).count();
-    if ok_count > 0 {
-        return EXIT_PARTIAL;
-    }
-    let auth_count = envelope
+    let failed: Vec<i32> = envelope
         .accounts
         .iter()
-        .filter(|a| a.exit_code == Some(EXIT_AUTH))
-        .count();
-    if auth_count == envelope.accounts.len() {
-        return EXIT_AUTH;
-    }
-    let usage = envelope.accounts.iter().any(|a| {
-        a.error
-            .as_ref()
-            .is_some_and(|e| matches!(e["type"].as_str(), Some("UsageError") | Some("ConfigError")))
-    });
-    if usage {
-        return EXIT_USAGE;
-    }
-    EXIT_ALL_FAILED
+        .filter(|a| !a.ok)
+        .filter_map(|a| a.exit_code)
+        .collect();
+    aggregate_exit_code(ok_count, &failed)
 }
 
 #[cfg(test)]
@@ -752,7 +750,7 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert!(matches!(outcome, TeleError::TaskPanic(_)));
+        assert!(matches!(outcome, TeleError::Other(m) if m.contains("semaphore")));
     }
 
     #[tokio::test]
@@ -767,7 +765,7 @@ mod tests {
         });
         let _ = release.send(());
         let outcomes =
-            collect_outcomes(vec![("b".to_string(), slow), ("a".to_string(), fast)]).await;
+            collect_outcomes(&mut vec![("b".to_string(), slow), ("a".to_string(), fast)]).await;
         let names: Vec<&str> = outcomes.iter().map(|o| o.account.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
         assert!(outcomes.iter().all(|o| o.ok));
@@ -781,7 +779,7 @@ mod tests {
         let healthy = tokio::task::spawn(async {
             run_one("b".to_string(), permit().await, async { ok_data() }).await
         });
-        let outcomes = collect_outcomes(vec![
+        let outcomes = collect_outcomes(&mut vec![
             ("a".to_string(), panicking),
             ("b".to_string(), healthy),
         ])
