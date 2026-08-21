@@ -170,6 +170,14 @@ Human mode (no `--json`): Rich tables on stdout. Same exit codes.
 one chat; with it, `--chat` is not required and dry-run `data.chat` is null
 while `data.global` is `true`. Rows use the same message object shape.
 
+## `contact add`
+
+`results[].data` carries additive `contact` (bool) and `mutual` (bool)
+reflecting the post-add state parsed from the RPC response. When the peer's
+privacy settings prevent saving the contact, the account row fails with a
+clear error instead of a false `"added": true`. A warn is logged when the add
+updated the display name of an existing contact.
+
 ## `msg delete`
 
 `results[].data` carries `requested` (number asked to delete) and `deleted`
