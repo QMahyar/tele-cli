@@ -181,6 +181,31 @@ Rules:
   settings apply to channels/supergroups only. Values validate offline
   (`slow_mode` 0–3600 or `off`; strict `on|off`) before connect.
 
+## `chat edit` / `chat link`
+
+- `tele chat edit --chat X` requires at least one of `--title`, `--about`,
+  `--photo`. Title is trimmed and capped at 128 chars; about is trimmed and
+  capped at 255 chars (`--about ""` clears the description). Success rows carry
+  `"applied": [flag names]` in application order; dry-run rows echo the
+  requested values.
+- Title routes through raw `channels.editTitle`; basic groups use raw
+  `messages.editChatTitle` with the bare chat id. About always uses raw
+  `messages.editChatAbout` (works for channels/supergroups and basic groups;
+  this TL layer has no `channels.editAbout`).
+- `--photo <path>` reuses the msg upload path validation (sensitive basenames,
+  app-data dir, size caps) then uploads via `upload_file` and raw
+  `channels.editPhoto` / `messages.editChatPhoto`. `--photo remove` reads the
+  current photo from full chat info and deletes it via raw
+  `photos.deletePhotos`; a chat without a photo errors clearly.
+- `tele chat link --chat X` with no `--to` prints the current discussion link:
+  rows carry `linked_chat_id` (`null` when unlinked) from raw
+  `channels.getFullChannel`.
+- `tele chat link --chat X --to CHANNEL` links via raw
+  `channels.setDiscussionGroup`; one side must be a broadcast channel and the
+  other a supergroup (order-independent — the command classifies both peers).
+  `--to remove` is an honest Usage error before connect: this API layer has no
+  unlink method.
+
 ## `dialog draft` / `dialog pin` / `dialog delete`
 
 - `dialog draft --chat X --text T` saves a draft via raw
