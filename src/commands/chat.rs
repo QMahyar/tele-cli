@@ -24,6 +24,7 @@ pub enum ChatCmd {
     Admin(AdminArgs),
     AdminLog(AdminLogArgs),
     Stats(StatsArgs),
+    Settings(SettingsArgs),
     Create(CreateArgs),
 }
 
@@ -170,6 +171,45 @@ pub struct StatsArgs {
 }
 
 #[derive(Args)]
+pub struct SettingsArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
+    )]
+    chat: String,
+    #[arg(
+        long,
+        value_name = "SECS|off",
+        help = "slow mode seconds (0-3600) or off; channels/supergroups only"
+    )]
+    slow_mode: Option<String>,
+    #[arg(
+        long,
+        value_name = "on|off",
+        help = "restrict saving content (not available in this API layer; read-only)"
+    )]
+    noforwards: Option<String>,
+    #[arg(
+        long,
+        value_name = "on|off",
+        help = "show author signatures in broadcast channels"
+    )]
+    signatures: Option<String>,
+    #[arg(
+        long,
+        value_name = "on|off",
+        help = "hide history before join (supergroups/channels)"
+    )]
+    pre_history: Option<String>,
+    #[arg(
+        long,
+        value_name = "on|off",
+        help = "require admin approval to join (channels/supergroups)"
+    )]
+    join_request: Option<String>,
+}
+
+#[derive(Args)]
 pub struct CreateArgs {
     #[arg(long, help = "chat title")]
     title: String,
@@ -195,6 +235,7 @@ pub async fn run(cmd: ChatCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         ChatCmd::Admin(a) => admin(a, flags).await,
         ChatCmd::AdminLog(a) => admin_log(a, flags).await,
         ChatCmd::Stats(a) => stats(a, flags).await,
+        ChatCmd::Settings(a) => settings(a, flags).await,
         ChatCmd::Create(a) => create(a, flags).await,
     }
 }
@@ -1036,6 +1077,207 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 "user": user,
                 "promote": promote,
                 "demote": demote,
+            }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+fn parse_on_off(value: Option<&str>) -> TeleResult<Option<bool>> {
+    match value {
+        None => Ok(None),
+        Some("on") => Ok(Some(true)),
+        Some("off") => Ok(Some(false)),
+        Some(other) => Err(TeleError::Usage(format!(
+            "invalid value '{other}': use on or off"
+        ))),
+    }
+}
+
+fn parse_slow_mode(value: Option<&str>) -> TeleResult<Option<i32>> {
+    match value {
+        None => Ok(None),
+        Some("off") => Ok(Some(0)),
+        Some(raw) => {
+            let secs: i64 = raw.parse().map_err(|_| {
+                TeleError::Usage(format!("invalid --slow-mode '{raw}': use seconds or 'off'"))
+            })?;
+            if !(0..=3600).contains(&secs) {
+                return Err(TeleError::Usage(
+                    "--slow-mode must be between 0 and 3600 seconds, or 'off'".to_string(),
+                ));
+            }
+            Ok(Some(secs as i32))
+        }
+    }
+}
+
+fn validate_settings(args: &SettingsArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    parse_slow_mode(args.slow_mode.as_deref())?;
+    parse_on_off(args.noforwards.as_deref())?;
+    if let Some(value) = args.noforwards.as_deref() {
+        return Err(TeleError::Usage(format!(
+            "--noforwards {value} cannot be applied: the toggle method is not available in this API layer; current value is reported by read-back"
+        )));
+    }
+    parse_on_off(args.signatures.as_deref())?;
+    parse_on_off(args.pre_history.as_deref())?;
+    parse_on_off(args.join_request.as_deref())?;
+    Ok(())
+}
+
+fn channel_from_chats(chats: &[tl::enums::Chat], id: i64) -> Option<&tl::types::Channel> {
+    for chat in chats {
+        if let tl::enums::Chat::Channel(c) = chat {
+            if c.id == id {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_settings(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let slow_mode = parse_slow_mode(args.slow_mode.as_deref())?;
+    let signatures = parse_on_off(args.signatures.as_deref())?;
+    let pre_history = parse_on_off(args.pre_history.as_deref())?;
+    let join_request = parse_on_off(args.join_request.as_deref())?;
+    let has_toggles = slow_mode.is_some()
+        || signatures.is_some()
+        || pre_history.is_some()
+        || join_request.is_some();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let target = args.chat.clone();
+        Box::pin(async move {
+            if dry_run {
+                let mut data = serde_json::json!({
+                    "dry_run": true,
+                    "chat": target,
+                    "would": if has_toggles {
+                        format!("update settings of chat {target}")
+                    } else {
+                        format!("read settings of chat {target}")
+                    },
+                });
+                if let Some(secs) = slow_mode {
+                    data["slow_mode"] = serde_json::json!(secs);
+                }
+                if let Some(v) = signatures {
+                    data["signatures"] = serde_json::json!(v);
+                }
+                if let Some(v) = pre_history {
+                    data["pre_history"] = serde_json::json!(v);
+                }
+                if let Some(v) = join_request {
+                    data["join_request"] = serde_json::json!(v);
+                }
+                return Ok(data);
+            }            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "settings")?;
+            let is_basic_group = matches!(&chat, grammers_client::peer::Peer::Group(_))
+                && !entities::is_channel(&chat);
+            if is_basic_group {
+                return Err(TeleError::Usage(
+                    "chat settings are not supported for basic groups; these toggles apply to channels and supergroups only".to_string(),
+                ));
+            }
+            let input_channel = entities::input_channel(&chat).await.map_err(tele_invocation)?;
+            if has_toggles {
+                let mut applied = Vec::new();
+                if let Some(secs) = slow_mode {
+                    applied.push("slow_mode");
+                    guard.rate_limiter.acquire().await;
+                    guard
+                        .client
+                        .invoke(&tl::functions::channels::ToggleSlowMode {
+                            channel: input_channel.clone(),
+                            seconds: secs,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                if let Some(enabled) = signatures {
+                    applied.push("signatures");
+                    guard.rate_limiter.acquire().await;
+                    guard
+                        .client
+                        .invoke(&tl::functions::channels::ToggleSignatures {
+                            signatures_enabled: enabled,
+                            profiles_enabled: false,
+                            channel: input_channel.clone(),
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                if let Some(enabled) = pre_history {
+                    applied.push("pre_history");
+                    guard.rate_limiter.acquire().await;
+                    guard
+                        .client
+                        .invoke(&tl::functions::channels::TogglePreHistoryHidden {
+                            channel: input_channel.clone(),
+                            enabled,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                if let Some(enabled) = join_request {
+                    applied.push("join_request");
+                    guard.rate_limiter.acquire().await;
+                    guard
+                        .client
+                        .invoke(&tl::functions::channels::ToggleJoinRequest {
+                            apply_to_invites: enabled,
+                            channel: input_channel.clone(),
+                            enabled,
+                            guard_bot: None,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                return Ok(serde_json::json!({
+                    "chat": target,
+                    "applied": applied,
+                }));
+            }
+            guard.rate_limiter.acquire().await;
+            let full = guard
+                .client
+                .invoke(&tl::functions::channels::GetFullChannel {
+                    channel: input_channel,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            let tl::enums::messages::ChatFull::Full(full) = full;
+            let full_chat = match full.full_chat {
+                tl::enums::ChatFull::ChannelFull(f) => f,
+                tl::enums::ChatFull::Full(_) => {
+                    return Err(TeleError::Other(
+                        "settings unavailable: server returned group info for this chat"
+                            .to_string(),
+                    ));
+                }
+            };
+            let channel = channel_from_chats(&full.chats, full_chat.id);
+            Ok(serde_json::json!({
+                "chat": target,
+                "slow_mode": full_chat.slowmode_seconds.unwrap_or(0),
+                "noforwards": channel.map(|c| c.noforwards),
+                "signatures": channel.map(|c| c.signatures),
+                "pre_history_hidden": full_chat.hidden_prehistory,
+                "join_request": channel.map(|c| c.join_request),
+                "linked_chat_id": full_chat.linked_chat_id,
             }))
         })
     })
@@ -2525,5 +2767,156 @@ mod tests {
             validate_kick(&base(Some("nope".to_string()), true, None)),
             Err(TeleError::Usage(_))
         ));
+    }
+
+    fn settings_args(chat: &str) -> SettingsArgs {
+        SettingsArgs {
+            chat: chat.to_string(),
+            slow_mode: None,
+            noforwards: None,
+            signatures: None,
+            pre_history: None,
+            join_request: None,
+        }
+    }
+
+    #[test]
+    fn on_off_values_parse_strictly() {
+        assert_eq!(parse_on_off(None).unwrap(), None);
+        assert_eq!(parse_on_off(Some("on")).unwrap(), Some(true));
+        assert_eq!(parse_on_off(Some("off")).unwrap(), Some(false));
+        for bad in ["", "true", "yes", "On", "OFF"] {
+            assert!(
+                matches!(parse_on_off(Some(bad)), Err(TeleError::Usage(_))),
+                "on/off value {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn slow_mode_parses_secs_and_off_with_range_check() {
+        assert_eq!(parse_slow_mode(None).unwrap(), None);
+        assert_eq!(parse_slow_mode(Some("off")).unwrap(), Some(0));
+        assert_eq!(parse_slow_mode(Some("0")).unwrap(), Some(0));
+        assert_eq!(parse_slow_mode(Some("3600")).unwrap(), Some(3600));
+        for bad in ["", "abc", "-1", "3601", "99999999999", "1.5"] {
+            assert!(
+                matches!(parse_slow_mode(Some(bad)), Err(TeleError::Usage(_))),
+                "slow mode {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_validation_rejects_empty_chat_and_bad_values() {
+        let mut args = settings_args("");
+        assert!(matches!(validate_settings(&args), Err(TeleError::Usage(_))));
+        args = settings_args("@chat");
+        args.slow_mode = Some("nope".to_string());
+        assert!(matches!(validate_settings(&args), Err(TeleError::Usage(_))));
+        args.slow_mode = Some("30".to_string());
+        assert!(validate_settings(&args).is_ok());
+    }
+
+    #[test]
+    fn settings_noforwards_toggle_is_rejected_as_unavailable() {
+        let mut args = settings_args("@chat");
+        args.noforwards = Some("on".to_string());
+        let err = validate_settings(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.to_string().contains("--noforwards"));
+        args.noforwards = Some("off".to_string());
+        assert!(matches!(validate_settings(&args), Err(TeleError::Usage(_))));
+        args.noforwards = None;
+        assert!(validate_settings(&args).is_ok());
+    }
+
+    #[test]
+    fn settings_all_toggles_validate_before_connect() {
+        let mut args = settings_args("@chat");
+        args.signatures = Some("off".to_string());
+        args.pre_history = Some("on".to_string());
+        args.join_request = Some("on".to_string());
+        args.slow_mode = Some("60".to_string());
+        assert!(validate_settings(&args).is_ok());
+    }
+
+    #[test]
+    fn channel_from_chats_matches_by_id_only_for_channels() {
+        let chats = vec![
+            tl::enums::Chat::Chat(tl::types::Chat {
+                creator: false,
+                left: false,
+                deactivated: false,
+                call_active: false,
+                call_not_empty: false,
+                noforwards: false,
+                id: 77,
+                title: "basic".to_string(),
+                photo: tl::enums::ChatPhoto::Empty,
+                participants_count: 0,
+                date: 0,
+                version: 0,
+                migrated_to: None,
+                admin_rights: None,
+                default_banned_rights: None,
+            }),
+            tl::enums::Chat::Channel(tl::types::Channel {
+                creator: false,
+                left: false,
+                broadcast: true,
+                verified: false,
+                megagroup: false,
+                restricted: false,
+                signatures: true,
+                min: false,
+                scam: false,
+                has_link: false,
+                has_geo: false,
+                slowmode_enabled: false,
+                call_active: false,
+                call_not_empty: false,
+                fake: false,
+                gigagroup: false,
+                noforwards: false,
+                join_to_send: false,
+                join_request: false,
+                forum: false,
+                stories_hidden: false,
+                stories_hidden_min: false,
+                stories_unavailable: false,
+                signature_profiles: false,
+                autotranslation: false,
+                broadcast_messages_allowed: false,
+                monoforum: false,
+                forum_tabs: false,
+                id: 42,
+                access_hash: None,
+                title: "ch".to_string(),
+                username: None,
+                photo: tl::enums::ChatPhoto::Empty,
+                date: 0,
+                restriction_reason: None,
+                admin_rights: None,
+                banned_rights: None,
+                default_banned_rights: None,
+                participants_count: None,
+                usernames: None,
+                stories_max_id: None,
+                color: None,
+                profile_color: None,
+                emoji_status: None,
+                level: None,
+                subscription_until_date: None,
+                bot_verification_icon: None,
+                send_paid_messages_stars: None,
+                linked_monoforum_id: None,
+            }),
+        ];
+        let found = channel_from_chats(&chats, 42).expect("channel 42");
+        assert_eq!(found.id, 42);
+        assert!(found.signatures);
+        assert!(channel_from_chats(&chats, 77).is_none());
+        assert!(channel_from_chats(&chats, 999).is_none());
     }
 }

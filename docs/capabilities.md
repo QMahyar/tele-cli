@@ -57,6 +57,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` (+ raw `channels.EditAdmin` when `other`/`manage_topics` requested) | `tele chat admin` (`--rights` incl. anonymous, other, manage_topics) | done |
 | chat.adminlog | Admin log | `channels.getAdminLog` | raw | `tele chat admin-log` | done |
 | chat.stats | Channel / group stats | `/api/stats` | raw | `tele chat stats` | done |
+| chat.settings | Slow mode, signatures, join-request, pre-history | `channels.{toggleSlowMode,toggleSignatures,togglePreHistoryHidden,toggleJoinRequest}`, read-back via `channels.getFullChannel` | raw | `tele chat settings` (`--noforwards` rejected: no toggle method in this TL layer; value still reported by read-back) | done |
 | chat.forum | Forums / topics | `/api/forum` | raw | `tele topic *` incl. lifecycle close / reopen / edit / delete / pin (`topic create --emoji` single-codepoint only, see note) | done |
 | chat.folders | Folders / archive | `/api/folders` | raw | `tele dialog archive` | done |
 | chat.create | Create channel / group | `channels.createChannel` | raw | `tele chat create` | done |

@@ -160,6 +160,27 @@ Rules:
   `channels.EditAdmin` (the grammers builder has no setters for those flags);
   otherwise it stays on the friendly `set_admin_rights` chain.
 
+## `chat settings`
+
+- `tele chat settings --chat X` with no toggle flags reads the current values
+  from raw `channels.GetFullChannel`: rows carry `slow_mode` (seconds; `0`
+  when off), `noforwards`, `signatures`, `join_request` (from the channel
+  object in the response; may be `null` when the server omits it),
+  `pre_history_hidden`, and `linked_chat_id` (`null` when unset).
+- Toggles: `--slow-mode <secs|off>` via raw `channels.toggleSlowMode`
+  (`off` sends 0), `--signatures on|off` via `channels.toggleSignatures`,
+  `--pre-history on|off` ("on" hides pre-join history) via
+  `channels.togglePreHistoryHidden`, and `--join-request on|off` via
+  `channels.toggleJoinRequest` (`apply_to_invites` follows the requested
+  state, so existing invite links require approval when enabled).
+- Success rows carry `"applied": [flag names]` in application order.
+- `--noforwards on|off` is a Usage error before any RPC: the toggle method is
+  not part of this TL layer (grammers vendored schema); read-back still reports
+  the current value.
+- Basic groups: the whole command errors with a clear message naming that these
+  settings apply to channels/supergroups only. Values validate offline
+  (`slow_mode` 0–3600 or `off`; strict `on|off`) before connect.
+
 ## `dialog draft` / `dialog pin` / `dialog delete`
 
 - `dialog draft --chat X --text T` saves a draft via raw
