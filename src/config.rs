@@ -67,6 +67,14 @@ pub struct AccountConfig {
     pub flood_sleep_threshold: Option<u64>,
     #[serde(default)]
     pub rpc_per_minute: Option<f64>,
+    #[serde(default)]
+    pub device_model: Option<String>,
+    #[serde(default)]
+    pub system_version: Option<String>,
+    #[serde(default)]
+    pub app_version: Option<String>,
+    #[serde(default)]
+    pub lang_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -318,6 +326,25 @@ pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<Strin
         return Err(anyhow::anyhow!("proxy for {name}: port must be non-zero"));
     }
     Ok(Some(format!("socks5://{}:{}", p.host, p.port)))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceIdentity {
+    pub device_model: Option<String>,
+    pub system_version: Option<String>,
+    pub app_version: Option<String>,
+    pub lang_code: Option<String>,
+}
+
+pub fn account_identity(cfg: &AppConfig, name: &str) -> DeviceIdentity {
+    cfg.accounts
+        .get(name)
+        .map_or_else(DeviceIdentity::default, |a| DeviceIdentity {
+            device_model: a.device_model.clone(),
+            system_version: a.system_version.clone(),
+            app_version: a.app_version.clone(),
+            lang_code: a.lang_code.clone(),
+        })
 }
 
 fn preserve_unknown_account_keys(
@@ -732,6 +759,7 @@ mod tests {
                     proxy: None,
                     flood_sleep_threshold: Some(30),
                     rpc_per_minute: Some(120.0),
+                    ..Default::default()
                 },
             )]
             .into_iter()
@@ -759,6 +787,7 @@ mod tests {
                     proxy: None,
                     flood_sleep_threshold: None,
                     rpc_per_minute: None,
+                    ..Default::default()
                 },
             )]
             .into_iter()
@@ -780,6 +809,7 @@ mod tests {
                     proxy: None,
                     flood_sleep_threshold: None,
                     rpc_per_minute: None,
+                    ..Default::default()
                 },
             )]
             .into_iter()
@@ -1222,14 +1252,13 @@ mod tests {
     fn write_config_preserves_unknown_per_account_keys_roundtrip() {
         let dir = atomic_dir("preserve-acct");
         let path = dir.join("config.toml");
-        let original = "[accounts.work]\ntags = [\"a\"]\noperator_note = \"call back tuesday\"\n";
+        let original = "[accounts.work]\ntags = [\"a\"]\noperator_note = \"call back tuesday\"\ndevice_model = \"OldBox\"\n";
         std::fs::write(&path, original).unwrap();
         let cfg = AppConfig {
             accounts: [(
                 "work".to_string(),
                 AccountConfig {
                     tags: vec!["b".to_string()],
-                    proxy: None,
                     ..Default::default()
                 },
             )]
@@ -1244,12 +1273,114 @@ mod tests {
             "unknown per-account key lost:\n{text}"
         );
         assert!(text.contains("call back tuesday"));
+        assert!(
+            text.contains("device_model = \"OldBox\""),
+            "unset optional identity key lost:\n{text}"
+        );
         write_config(&path, &cfg).unwrap();
         let text2 = std::fs::read_to_string(&path).unwrap();
         assert!(
             text2.contains("operator_note"),
             "unknown per-account key lost on second rewrite:\n{text2}"
         );
+        assert!(
+            text2.contains("device_model = \"OldBox\""),
+            "unset optional identity key lost on second rewrite:\n{text2}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn per_account_identity_keys_parse_individually() {
+        for (key, value) in [
+            ("device_model", "Desktop"),
+            ("system_version", "Windows 11"),
+            ("app_version", "0.4.0"),
+            ("lang_code", "de"),
+        ] {
+            let toml_str = format!("[accounts.work]\n{key} = \"{value}\"\n");
+            let cfg: AppConfig = toml::from_str(&toml_str).unwrap();
+            let acct = &cfg.accounts["work"];
+            let got = match key {
+                "device_model" => acct.device_model.clone(),
+                "system_version" => acct.system_version.clone(),
+                "app_version" => acct.app_version.clone(),
+                _ => acct.lang_code.clone(),
+            };
+            assert_eq!(got.as_deref(), Some(value), "key {key}");
+        }
+    }
+
+    #[test]
+    fn per_account_identity_keys_default_to_none() {
+        let cfg: AppConfig = toml::from_str("[accounts.work]\ntags = [\"a\"]\n").unwrap();
+        let acct = &cfg.accounts["work"];
+        assert_eq!(acct.device_model, None);
+        assert_eq!(acct.system_version, None);
+        assert_eq!(acct.app_version, None);
+        assert_eq!(acct.lang_code, None);
+    }
+
+    #[test]
+    fn account_identity_echo_accessor_returns_all_configured_fields() {
+        let cfg: AppConfig = toml::from_str(
+            "[accounts.work]\ndevice_model = \"Desktop\"\nsystem_version = \"Win 11\"\napp_version = \"1.2.3\"\nlang_code = \"fa\"\n",
+        )
+        .unwrap();
+        let id = account_identity(&cfg, "work");
+        assert_eq!(id.device_model.as_deref(), Some("Desktop"));
+        assert_eq!(id.system_version.as_deref(), Some("Win 11"));
+        assert_eq!(id.app_version.as_deref(), Some("1.2.3"));
+        assert_eq!(id.lang_code.as_deref(), Some("fa"));
+    }
+
+    #[test]
+    fn account_identity_partial_config_sets_only_present_fields() {
+        let cfg: AppConfig = toml::from_str("[accounts.work]\nlang_code = \"de\"\n").unwrap();
+        let id = account_identity(&cfg, "work");
+        assert_eq!(id.lang_code.as_deref(), Some("de"));
+        assert_eq!(id.device_model, None);
+        assert_eq!(id.system_version, None);
+        assert_eq!(id.app_version, None);
+    }
+
+    #[test]
+    fn account_identity_unknown_account_is_neutral() {
+        let cfg: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(account_identity(&cfg, "ghost"), DeviceIdentity::default());
+    }
+
+    #[test]
+    fn write_config_identity_keys_survive_disk_roundtrip() {
+        let dir = atomic_dir("identity-roundtrip");
+        let path = dir.join("config.toml");
+        let cfg = AppConfig {
+            accounts: [(
+                "work".to_string(),
+                AccountConfig {
+                    device_model: Some("Desktop".to_string()),
+                    system_version: Some("Windows 11".to_string()),
+                    app_version: Some("0.4.0".to_string()),
+                    lang_code: Some("en".to_string()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        write_config(&path, &cfg).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("rpc_per_minute") && !text.contains("proxy"),
+            "unset optional account keys must not serialize:\n{text}"
+        );
+        let back = read_config(&path).unwrap();
+        let id = account_identity(&back, "work");
+        assert_eq!(id.device_model.as_deref(), Some("Desktop"));
+        assert_eq!(id.system_version.as_deref(), Some("Windows 11"));
+        assert_eq!(id.app_version.as_deref(), Some("0.4.0"));
+        assert_eq!(id.lang_code.as_deref(), Some("en"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

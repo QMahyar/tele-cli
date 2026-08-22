@@ -31,16 +31,19 @@ impl ClientGuard {
             .unwrap_or(cfg.flood_sleep_threshold);
         let rate_limiter = RateLimiter::new(acct.and_then(|a| a.rpc_per_minute));
         let proxy = crate::config::proxy_url_for(&cfg, name)?;
+        let identity = crate::config::account_identity(&cfg, name);
         let locked = crate::session::open_session(name).await?;
         let session = Arc::new(locked.session);
-        let pool = SenderPool::with_configuration(
-            Arc::clone(&session),
-            api_id,
-            grammers_client::sender::ConnectionParams {
-                proxy_url: proxy,
-                ..Default::default()
-            },
-        );
+        let defaults = grammers_client::sender::ConnectionParams::default();
+        let params = grammers_client::sender::ConnectionParams {
+            proxy_url: proxy,
+            device_model: identity.device_model.unwrap_or(defaults.device_model),
+            system_version: identity.system_version.unwrap_or(defaults.system_version),
+            app_version: identity.app_version.unwrap_or(defaults.app_version),
+            lang_code: identity.lang_code.unwrap_or(defaults.lang_code),
+            ..defaults
+        };
+        let pool = SenderPool::with_configuration(Arc::clone(&session), api_id, params);
         let SenderPool {
             runner,
             handle,
