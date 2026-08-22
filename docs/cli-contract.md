@@ -520,6 +520,41 @@ Runtime semantics:
   accumulated while offline is replayed before live events. Consumers that
   require live-only behavior must filter by `date`.
 
+## `tele takeout`
+
+```
+tele takeout start [--contacts] [--messages] [--photos]
+tele takeout export [--message-limit <n>]
+tele takeout finish [--abandon]
+```
+
+All three require explicit account selection. Per-account export artifacts live
+under `<app data>/export/<account>/`: `contacts.json`, `messages.jsonl`,
+`dialogs.json`, and the state file `takeout.json`.
+
+**Progress (human mode):** without `--json`/`--jsonl`, export reports each
+dialogs page (`dialogs page 2: +100 dialogs`) and each history page
+(`dialog 3/57 Alice msgs=120`, style `dialog i/N <name> msgs=<n>`) on **stderr**
+via the standard log line channel; stdout stays empty until the final envelope.
+Machine mode emits no progress lines.
+
+**Cursor resume:** `takeout.json` carries per-dialog checkpoints
+(`{"takeout_id":1,"checkpoints":{"-1001234":4567,"42":-1}}`). A checkpoint
+value is the oldest message id written for that dialog; `-1` marks a completed
+dialog. On re-run, `export` appends to `messages.jsonl` instead of truncating:
+completed dialogs are skipped, partially exported dialogs continue from their
+checkpoint cursor, and pages are flushed + synced to disk before their
+checkpoint is saved. A crash between page write and checkpoint save can
+duplicate at most one page of one dialog on resume — never lose data.
+Checkpoints assume the same `--message-limit`; delete the export dir to redo an
+export with different settings. The failure message for partial exports points
+at this automatic resume.
+
+**Finish:** default `finish` ends the session as successful (`success:true`);
+`finish --abandon` sends `success:false` so the server treats the session as
+abandoned. Both clear the local state file afterwards and echo the server
+boolean in `"finished"`.
+
 ## `tele raw`
 
 ```

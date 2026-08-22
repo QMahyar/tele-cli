@@ -12,6 +12,7 @@ use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{require_explicit_selection, run_fanout, GlobalFlags};
+use crate::output;
 
 #[derive(Subcommand)]
 pub enum TakeoutCmd {
@@ -41,13 +42,19 @@ pub struct ExportArgs {
 }
 
 #[derive(Args)]
-pub struct FinishArgs {}
+pub struct FinishArgs {
+    #[arg(
+        long,
+        help = "end the session as abandoned (success:false) instead of completed"
+    )]
+    abandon: bool,
+}
 
 pub async fn run(cmd: TakeoutCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         TakeoutCmd::Start(a) => start(a, flags).await,
         TakeoutCmd::Export(a) => export(a, flags).await,
-        TakeoutCmd::Finish(_) => finish(flags).await,
+        TakeoutCmd::Finish(a) => finish(a, flags).await,
     }
 }
 
@@ -98,7 +105,13 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let tl::enums::account::Takeout::Takeout(info) = info;
             let dir = export_dir(&name);
             crate::fs_util::create_dir_private(&dir)?;
-            write_takeout_state(&dir, info.id)?;
+            write_takeout_state(
+                &dir,
+                &TakeoutStateFile {
+                    takeout_id: info.id,
+                    checkpoints: HashMap::new(),
+                },
+            )?;
             Ok(serde_json::json!({
                 "takeout_id": info.id,
                 "dir": dir.to_string_lossy(),
@@ -122,18 +135,27 @@ fn export_dir(name: &str) -> std::path::PathBuf {
 
 const TAKEOUT_STATE_FILE: &str = "takeout.json";
 
+const CHECKPOINT_DONE: i64 = -1;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TakeoutStateFile {
+    takeout_id: i64,
+    #[serde(default)]
+    checkpoints: HashMap<String, i64>,
+}
+
 fn takeout_state_path(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join(TAKEOUT_STATE_FILE)
 }
 
-fn write_takeout_state(dir: &std::path::Path, takeout_id: i64) -> TeleResult<()> {
+fn write_takeout_state(dir: &std::path::Path, state: &TakeoutStateFile) -> TeleResult<()> {
     crate::fs_util::create_dir_private(dir)?;
-    let json = serde_json::to_string_pretty(&serde_json::json!({ "takeout_id": takeout_id }))?;
+    let json = serde_json::to_string_pretty(state)?;
     std::fs::write(takeout_state_path(dir), json)?;
     Ok(())
 }
 
-fn read_takeout_state(dir: &std::path::Path) -> TeleResult<i64> {
+fn read_takeout_state(dir: &std::path::Path) -> TeleResult<TakeoutStateFile> {
     let path = takeout_state_path(dir);
     if !path.exists() {
         return Err(TeleError::Other(
@@ -142,7 +164,7 @@ fn read_takeout_state(dir: &std::path::Path) -> TeleResult<i64> {
     }
     let json = std::fs::read_to_string(&path)?;
     let value: serde_json::Value = serde_json::from_str(&json)?;
-    value
+    let takeout_id = value
         .get("takeout_id")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| {
@@ -150,7 +172,18 @@ fn read_takeout_state(dir: &std::path::Path) -> TeleResult<i64> {
                 "invalid takeout state at {} (run takeout start to renew)",
                 path.to_string_lossy()
             ))
-        })
+        })?;
+    let checkpoints = match value.get("checkpoints") {
+        Some(serde_json::Value::Object(map)) => map
+            .iter()
+            .filter_map(|(k, v)| v.as_i64().map(|n| (k.clone(), n)))
+            .collect(),
+        _ => HashMap::new(),
+    };
+    Ok(TakeoutStateFile {
+        takeout_id,
+        checkpoints,
+    })
 }
 
 fn delete_takeout_state(dir: &std::path::Path) {
@@ -180,10 +213,65 @@ fn export_state(dir: &std::path::Path) -> String {
 
 fn export_error_message(dir: &std::path::Path, cause: &str) -> String {
     format!(
-        "takeout export failed; export dir {}: {}; server-side takeout session kept alive for resume: re-run `tele takeout export` (or `tele takeout start` if the session expired), then `tele takeout finish`; cause: {cause}",
+        "takeout export failed; export dir {}: {}; server-side takeout session kept alive for resume: re-run `tele takeout export` to resume automatically from the saved per-dialog checkpoints (completed dialogs are skipped, messages.jsonl is appended, not truncated), or `tele takeout start` if the session expired, then `tele takeout finish`; cause: {cause}",
         dir.to_string_lossy(),
         export_state(dir),
     )
+}
+
+#[derive(Debug)]
+enum ResumeCursor {
+    Fresh,
+    From(i32),
+    Skip,
+}
+
+fn resume_cursor(checkpoints: &HashMap<String, i64>, dialog_key: &str) -> ResumeCursor {
+    match checkpoints.get(dialog_key) {
+        Some(min_id) if *min_id == CHECKPOINT_DONE => ResumeCursor::Skip,
+        Some(min_id) if *min_id > 0 && *min_id <= i32::MAX as i64 => {
+            ResumeCursor::From(*min_id as i32)
+        }
+        _ => ResumeCursor::Fresh,
+    }
+}
+
+fn persist_checkpoints(
+    dir: &std::path::Path,
+    takeout_id: i64,
+    checkpoints: &HashMap<String, i64>,
+) -> TeleResult<()> {
+    write_takeout_state(
+        dir,
+        &TakeoutStateFile {
+            takeout_id,
+            checkpoints: checkpoints.clone(),
+        },
+    )
+}
+
+fn progress_enabled(machine_mode: bool) -> bool {
+    !machine_mode
+}
+
+fn report_progress(human: bool, message: &str) {
+    if human {
+        crate::output::log_line("info", message);
+    }
+}
+
+fn dialog_page_message(dialog_index: usize, total: Option<i32>, name: &str, msgs: u32) -> String {
+    match total {
+        Some(n) => format!("dialog {dialog_index}/{n} {name} msgs={msgs}"),
+        None => format!("dialog {dialog_index} {name} msgs={msgs}"),
+    }
+}
+
+fn dialog_skipped_message(dialog_index: usize, total: Option<i32>, name: &str) -> String {
+    match total {
+        Some(n) => format!("dialog {dialog_index}/{n} {name} complete (skipped)"),
+        None => format!("dialog {dialog_index} {name} complete (skipped)"),
+    }
 }
 
 async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -192,6 +280,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.message_limit, 1_000_000, "message-limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
+    let human = progress_enabled(output::machine_mode(flags.json, flags.jsonl));
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let limit = args.message_limit;
@@ -205,12 +294,13 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "would": format!("export takeout data to {}", dir.to_string_lossy()),
                 }));
             }
-            let takeout_id = read_takeout_state(&dir)?;
+            let state_file = read_takeout_state(&dir)?;
+            let takeout_id = state_file.takeout_id;
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             guard.rate_limiter.acquire().await;
-            run_export(&guard, &dir, limit, takeout_id)
+            run_export(&guard, &dir, limit, takeout_id, human)
                 .await
                 .map_err(|e| TeleError::Other(export_error_message(&dir, &e.to_string())))
         })
@@ -224,8 +314,10 @@ async fn run_export(
     dir: &std::path::Path,
     limit: u32,
     takeout_id: i64,
+    human_progress: bool,
 ) -> TeleResult<serde_json::Value> {
     crate::fs_util::create_dir_private(dir)?;
+    let mut checkpoints: HashMap<String, i64> = read_takeout_state(dir).map(|s| s.checkpoints)?;
 
     let mut contacts = Vec::new();
     let raw: tl::enums::contacts::Contacts = guard
@@ -261,7 +353,11 @@ async fn run_export(
     let mut dialogs = Vec::new();
     let messages_path = dir.join("messages.jsonl");
     let mut messages_file = tokio::task::spawn_blocking(move || {
-        std::fs::File::create(&messages_path).map(std::io::BufWriter::new)
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&messages_path)
+            .map(std::io::BufWriter::new)
     })
     .await
     .map_err(|e| TeleError::Other(e.to_string()))??;
@@ -269,6 +365,8 @@ async fn run_export(
     let mut offset_date = 0i32;
     let mut offset_id = 0i32;
     let mut offset_peer = tl::enums::InputPeer::Empty;
+    let mut page_no = 0usize;
+    let mut dialog_index = 0usize;
     loop {
         let res: tl::enums::messages::Dialogs = guard
             .client
@@ -286,16 +384,24 @@ async fn run_export(
             })
             .await
             .map_err(tele_invocation)?;
-        let (page_dialogs, page_messages, page_users, page_chats, last_chunk) = match res {
-            tl::enums::messages::Dialogs::Dialogs(d) => {
-                (d.dialogs, d.messages, d.users, d.chats, true)
-            }
-            tl::enums::messages::Dialogs::Slice(d) => {
-                let last_chunk = d.dialogs.len() < PAGE_LIMIT as usize;
-                (d.dialogs, d.messages, d.users, d.chats, last_chunk)
-            }
-            tl::enums::messages::Dialogs::NotModified(_) => break,
-        };
+        let (page_dialogs, page_messages, page_users, page_chats, last_chunk, total_dialogs) =
+            match res {
+                tl::enums::messages::Dialogs::Dialogs(d) => {
+                    (d.dialogs, d.messages, d.users, d.chats, true, None)
+                }
+                tl::enums::messages::Dialogs::Slice(d) => {
+                    let last_chunk = d.dialogs.len() < PAGE_LIMIT as usize;
+                    (
+                        d.dialogs,
+                        d.messages,
+                        d.users,
+                        d.chats,
+                        last_chunk,
+                        Some(d.count),
+                    )
+                }
+                tl::enums::messages::Dialogs::NotModified(_) => break,
+            };
         let peers = build_peers(&guard.client, page_users, page_chats);
         let entries = page_dialogs
             .into_iter()
@@ -316,7 +422,13 @@ async fn run_export(
                 Ok((dlg, peer, last_message))
             })
             .collect::<TeleResult<Vec<_>>>()?;
+        page_no += 1;
+        report_progress(
+            human_progress,
+            &format!("dialogs page {page_no}: +{} dialogs", entries.len()),
+        );
         for (dlg, peer, _) in &entries {
+            dialog_index += 1;
             let chat_name = crate::serialize::peer_name(peer);
             let unread = match dlg {
                 tl::enums::Dialog::Dialog(d) => d.unread_count,
@@ -330,9 +442,27 @@ async fn run_export(
                 .await
                 .map_err(tele_invocation)?;
             let chat_id = chat_ref.id;
+            let dialog_key = chat_id.to_string();
             let mut count = 0u32;
             let mut msg_offset_date = 0i32;
             let mut msg_offset_id = 0i32;
+            match resume_cursor(&checkpoints, &dialog_key) {
+                ResumeCursor::Skip => {
+                    report_progress(
+                        human_progress,
+                        &dialog_skipped_message(dialog_index, total_dialogs, &chat_name),
+                    );
+                    continue;
+                }
+                ResumeCursor::From(min_id) => {
+                    msg_offset_id = min_id;
+                    report_progress(
+                        human_progress,
+                        &format!("dialog {dialog_index} {chat_name} resuming from min_id={min_id}"),
+                    );
+                }
+                ResumeCursor::Fresh => {}
+            }
             loop {
                 if count >= limit {
                     break;
@@ -382,17 +512,30 @@ async fn run_export(
                     count += 1;
                 }
                 if !lines.is_empty() {
+                    let written = lines.len();
                     messages_file = tokio::task::spawn_blocking(move || {
                         let mut file = messages_file;
                         for line in &lines {
                             writeln!(file, "{line}")?;
                         }
+                        file.flush()?;
+                        file.get_ref().sync_all()?;
                         Ok::<_, std::io::Error>(file)
                     })
                     .await
                     .map_err(|e| TeleError::Other(e.to_string()))??;
+                    let oldest_written =
+                        msgs.iter().take(written).map(|m| m.id()).min().unwrap_or(0);
+                    checkpoints.insert(dialog_key.clone(), oldest_written as i64);
+                    persist_checkpoints(dir, takeout_id, &checkpoints)?;
                 }
-                if m_last_chunk {
+                report_progress(
+                    human_progress,
+                    &dialog_page_message(dialog_index, total_dialogs, &chat_name, count),
+                );
+                if m_last_chunk || count >= limit {
+                    checkpoints.insert(dialog_key.clone(), CHECKPOINT_DONE);
+                    persist_checkpoints(dir, takeout_id, &checkpoints)?;
                     break;
                 }
                 let last = msgs.last().expect("non-empty page");
@@ -545,22 +688,30 @@ fn raw_message_to_json(
     Ok(serde_json::Value::Object(out))
 }
 
-async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
+async fn finish(args: FinishArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_explicit_selection("takeout finish", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
+    let success = !args.abandon;
+    let abandon = args.abandon;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         Box::pin(async move {
             if dry_run {
+                let would = if abandon {
+                    "abandon takeout session (success:false)"
+                } else {
+                    "finish takeout session"
+                };
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "finished": true,
-                    "would": "finish takeout session"
+                    "abandon": abandon,
+                    "would": would
                 }));
             }
             let dir = export_dir(&name);
-            let takeout_id = read_takeout_state(&dir)?;
+            let takeout_id = read_takeout_state(&dir)?.takeout_id;
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
@@ -569,13 +720,13 @@ async fn finish(flags: &GlobalFlags) -> TeleResult<i32> {
                 .client
                 .invoke(&tl::functions::InvokeWithTakeout {
                     takeout_id,
-                    query: tl::functions::account::FinishTakeoutSession { success: true },
+                    query: tl::functions::account::FinishTakeoutSession { success },
                 })
                 .await;
             match result {
-                Ok(success) => {
+                Ok(server_success) => {
                     delete_takeout_state(&dir);
-                    Ok(serde_json::json!({"finished": success}))
+                    Ok(serde_json::json!({"finished": server_success}))
                 }
                 Err(grammers_client::InvocationError::Rpc(e)) if e.name == "TAKEOUT_REQUIRED" => {
                     delete_takeout_state(&dir);
@@ -672,8 +823,17 @@ mod tests {
     #[test]
     fn takeout_state_round_trips() {
         let dir = temp_dir("state-roundtrip");
-        write_takeout_state(&dir, 123456).unwrap();
-        assert_eq!(read_takeout_state(&dir).unwrap(), 123456);
+        write_takeout_state(
+            &dir,
+            &TakeoutStateFile {
+                takeout_id: 123456,
+                checkpoints: HashMap::new(),
+            },
+        )
+        .unwrap();
+        let read = read_takeout_state(&dir).unwrap();
+        assert_eq!(read.takeout_id, 123456);
+        assert!(read.checkpoints.is_empty());
         delete_takeout_state(&dir);
         assert!(matches!(read_takeout_state(&dir), Err(TeleError::Other(_))));
         let _ = std::fs::remove_dir_all(&dir);
@@ -684,6 +844,121 @@ mod tests {
         let dir = temp_dir("state-missing");
         let err = read_takeout_state(&dir).unwrap_err();
         assert!(err.message().contains("takeout start first"), "err: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn takeout_state_checkpoints_round_trip() {
+        let dir = temp_dir("checkpoints-roundtrip");
+        let mut checkpoints = HashMap::new();
+        checkpoints.insert("100".to_string(), CHECKPOINT_DONE);
+        checkpoints.insert("200".to_string(), 4321i64);
+        write_takeout_state(
+            &dir,
+            &TakeoutStateFile {
+                takeout_id: 7,
+                checkpoints: checkpoints.clone(),
+            },
+        )
+        .unwrap();
+        let read = read_takeout_state(&dir).unwrap();
+        assert_eq!(read.takeout_id, 7);
+        assert_eq!(read.checkpoints, checkpoints);
+        assert_eq!(
+            read.checkpoints.get("200"),
+            Some(&4321),
+            "cursor survives restart"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_state_without_checkpoints_reads_with_empty_map() {
+        let dir = temp_dir("legacy-state");
+        std::fs::write(
+            takeout_state_path(&dir),
+            serde_json::to_string_pretty(&serde_json::json!({"takeout_id": 42})).unwrap(),
+        )
+        .unwrap();
+        let read = read_takeout_state(&dir).unwrap();
+        assert_eq!(read.takeout_id, 42);
+        assert!(read.checkpoints.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fixture_checkpoints() -> HashMap<String, i64> {
+        HashMap::from([
+            ("done".to_string(), CHECKPOINT_DONE),
+            ("mid".to_string(), 555i64),
+            ("zero".to_string(), 0),
+        ])
+    }
+
+    #[test]
+    fn resume_cursor_skips_completed_dialogs() {
+        let cps = fixture_checkpoints();
+        assert!(matches!(resume_cursor(&cps, "done"), ResumeCursor::Skip,));
+    }
+
+    #[test]
+    fn resume_cursor_resumes_from_saved_min_id() {
+        let cps = fixture_checkpoints();
+        match resume_cursor(&cps, "mid") {
+            ResumeCursor::From(min_id) => assert_eq!(min_id, 555),
+            other => panic!("expected From cursor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_cursor_fresh_for_absent_zero_or_invalid() {
+        let mut cps = fixture_checkpoints();
+        assert!(matches!(resume_cursor(&cps, "absent"), ResumeCursor::Fresh));
+        assert!(matches!(resume_cursor(&cps, "zero"), ResumeCursor::Fresh));
+        cps.insert("huge".to_string(), i64::from(i32::MAX) + 1);
+        assert!(matches!(resume_cursor(&cps, "huge"), ResumeCursor::Fresh));
+        cps.insert("negative".to_string(), -9);
+        assert!(matches!(
+            resume_cursor(&cps, "negative"),
+            ResumeCursor::Fresh
+        ));
+    }
+
+    #[test]
+    fn progress_only_enabled_in_human_mode() {
+        assert!(progress_enabled(false));
+        assert!(!progress_enabled(true), "machine mode stays silent");
+    }
+
+    #[test]
+    fn dialog_page_message_matches_contract_style() {
+        assert_eq!(
+            dialog_page_message(3, Some(57), "Alice", 120),
+            "dialog 3/57 Alice msgs=120"
+        );
+        assert_eq!(
+            dialog_page_message(3, None, "Alice", 120),
+            "dialog 3 Alice msgs=120"
+        );
+    }
+
+    #[test]
+    fn dialog_skipped_message_reports_completion_without_counts() {
+        assert_eq!(
+            dialog_skipped_message(2, Some(57), "Bob"),
+            "dialog 2/57 Bob complete (skipped)"
+        );
+    }
+
+    #[test]
+    fn persist_checkpoints_writes_readable_state_file() {
+        let dir = temp_dir("persist-checkpoints");
+        crate::fs_util::create_dir_private(&dir).unwrap();
+        let mut cps = HashMap::new();
+        cps.insert("-1001234".to_string(), 99);
+        persist_checkpoints(&dir, 5, &cps).unwrap();
+        let read = read_takeout_state(&dir).unwrap();
+        assert_eq!(read.takeout_id, 5);
+        assert_eq!(read.checkpoints.get("-1001234"), Some(&99));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -801,6 +1076,9 @@ mod tests {
         assert!(msg.contains("`tele takeout start`"), "msg: {msg}");
         assert!(msg.contains("`tele takeout finish`"), "msg: {msg}");
         assert!(msg.contains("FLOOD_WAIT"), "msg: {msg}");
+        assert!(msg.contains("resume automatically"), "msg: {msg}");
+        assert!(msg.contains("per-dialog checkpoints"), "msg: {msg}");
+        assert!(msg.contains("appended, not truncated"), "msg: {msg}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
