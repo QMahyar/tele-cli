@@ -85,10 +85,11 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 |---|---|---|---|---|---|
 | listen.new | NewMessage | updates | `Update::NewMessage` | `tele listen` (default; requires explicit `--account`/`--tag`) | done |
 | listen.edit | MessageEdited | updates | `Update::EditMessage` | `--events MessageEdited` | done |
-| listen.delete | MessageDeleted | updates | `Update::DeleteMessages` | `--events MessageDeleted` | done |
+| listen.delete | MessageDeleted | updates | `Update::DeleteMessages` | `--events MessageDeleted` (DM/basic-group deletions match under `--chat` via bounded observed-id map) | done |
 | listen.action | ChatAction | updates | `Update::UserStatus`/raw | `--events ChatAction` | later |
 | listen.user | UserUpdate | updates | `Update::*` | `--events UserUpdate` | later |
-| listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` | later |
+| listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` (coalesce by grouped_id, ~500 ms quiescence flush) | done |
+| listen.gap | Gap (update-loss marker) | updates | pts tracking per message box | `--events Gap` (synthetic row when updates were dropped/difference ended early) | done |
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
 | listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |

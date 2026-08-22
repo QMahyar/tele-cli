@@ -450,6 +450,58 @@ the message-box variant, `pts` (common/channel box), `qts` (secondary box), or
 Default event type: `NewMessage` only. `--events` is an allowlist that gates all
 rows, including `Raw`. Unknown event names → exit 1 before connect.
 
+Valid names: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw`, `Album`,
+`Gap`.
+
+### `Album` rows
+
+With `--events Album`, consecutive `NewMessage`s that share a non-null
+`grouped_id` and the same chat coalesce into a single `Album` row. Album
+members never also appear as individual `NewMessage` rows; ungrouped messages
+behave as before (emitted only when `NewMessage` is also in the allowlist):
+
+```json
+{"event":"Album","account":"work","chat_id":456,"grouped_id":9001,"ids":[1,2],"date":"2026-08-13T12:00:00+00:00","messages":[{"id":1,"text":"a"},{"id":2,"text":"b"}]}
+```
+
+`messages` holds full message payloads with the same shape as the body of a
+`NewMessage` row; `ids` is a convenience list in member order; `date` is the
+first member's date. The album flushes ~500 ms after the last member arrives,
+so a straggler cannot hang the stream — an `Album` row may therefore appear up
+to ~500 ms after other events that arrived in between.
+
+### `Gap` rows
+
+With `--events Gap`, `listen` tracks update sequence numbers (`pts`) per
+message stream (common box, plus one box per channel). When an update reports
+a `pts` higher than the previously observed `pts` + its `pts_count` — i.e.
+updates were dropped because `update_queue_limit` was exceeded, or a
+difference fetch ended prematurely (channel banned / server issues) — a
+synthetic `Gap` row precedes the next events:
+
+```json
+{"event":"Gap","account":"work","reason":"pts_jump","expected_pts":11,"observed_pts":15,"state":{"date":123,"seq":456,"pts":15}}
+```
+
+The `state` object has exactly the shape documented for `Raw` rows. Channel
+gaps add a top-level `channel_id`. Healed difference fetches (backfill that
+replays every missed update) do **not** produce `Gap` rows, because no events
+were lost from the stream.
+
+### Deletion matching under `--chat`
+
+Channel deletions carry a channel id and match directly. DM and basic-group
+deletions (`UpdateDeleteMessages`) do not identify their chat; when `--chat`
+targets a user or basic group, `listen` matches them through a local
+id→peer map built from observed `NewMessage`/`MessageEdited` rows under the
+same filter. Consequences:
+
+- A deletion is matched only if the deleted message id was observed earlier in
+  the same stream session; deletions of never-seen ids are suppressed while
+  `--chat` is active (without `--chat` all deletion events pass through).
+- The map is bounded at 10,000 entries (<1 MB); the oldest entries are evicted
+  first, so very old message ids may stop matching after long sessions.
+
 `tele listen --dry-run --json`/`--jsonl` emits one JSONL row per selected
 account describing the intended stream, following the `would` convention
 (`event` holds the configured event allowlist, comma-joined):
