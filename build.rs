@@ -8,22 +8,50 @@ use grammers_tl_parser::parse_tl_file;
 use grammers_tl_parser::tl::{Category, ParameterType};
 
 const REGISTRY: &[&str] = &[
+    "account.GetAuthorizations",
+    "account.SetAuthorizationTTL",
     "account.UpdateProfile",
+    "channels.GetFullChannel",
+    "contacts.DeleteByPhones",
     "contacts.Search",
     "messages.ExportChatInvite",
     "messages.GetAllDrafts",
+    "messages.GetDialogUnreadMarks",
+    "messages.GetHistory",
+    "messages.GetMessagesViews",
+    "messages.GetScheduledHistory",
+    "messages.ReadMentions",
+    "messages.ReadReactions",
+    "messages.Search",
     "stats.GetBroadcastStats",
     "stats.GetMegagroupStats",
+    "users.GetUsers",
 ];
 
 const NEEDS_PEER_RESOLVE: &[&str] = &[
+    "channels.GetFullChannel",
     "messages.ExportChatInvite",
+    "messages.GetHistory",
+    "messages.GetMessagesViews",
+    "messages.GetScheduledHistory",
+    "messages.ReadMentions",
+    "messages.ReadReactions",
+    "messages.Search",
     "stats.GetBroadcastStats",
     "stats.GetMegagroupStats",
+    "users.GetUsers",
 ];
 
 // TL parameter name → CLI-facing alias
-const PARAM_ALIASES: &[(&str, &str, &str)] = &[("messages.ExportChatInvite", "peer", "chat")];
+const PARAM_ALIASES: &[(&str, &str, &str)] = &[
+    ("messages.ExportChatInvite", "peer", "chat"),
+    ("messages.GetHistory", "peer", "chat"),
+    ("messages.GetScheduledHistory", "peer", "chat"),
+    ("messages.Search", "peer", "chat"),
+    ("messages.GetMessagesViews", "peer", "chat"),
+    ("messages.ReadReactions", "peer", "chat"),
+    ("messages.ReadMentions", "peer", "chat"),
+];
 
 fn main() {
     println!("cargo:rerun-if-changed=tl/api.tl");
@@ -180,7 +208,11 @@ fn main() {
     writeln!(f, "        match p.get(arg.name) {{").unwrap();
     writeln!(f, "            None => {{").unwrap();
     writeln!(f, "                if !arg.optional {{").unwrap();
-    writeln!(f, "                    if arg.tl_type == \"int\" {{").unwrap();
+    writeln!(
+        f,
+        "                    if arg.tl_type == \"int\" || arg.tl_type == \"long\" {{"
+    )
+    .unwrap();
     writeln!(f, "                    }} else {{").unwrap();
     writeln!(
         f,
@@ -250,7 +282,7 @@ fn main() {
     .unwrap();
     writeln!(
         f,
-        "    matches!(method, \"account.UpdateProfile\" | \"messages.ExportChatInvite\")"
+        "    matches!(method, \"account.UpdateProfile\" | \"account.SetAuthorizationTTL\" | \"contacts.DeleteByPhones\" | \"messages.ExportChatInvite\")"
     )
     .unwrap();
     writeln!(f, "}}").unwrap();

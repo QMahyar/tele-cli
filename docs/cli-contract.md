@@ -561,16 +561,38 @@ boolean in `"finished"`.
 tele raw TL_NAME --args JSON
 ```
 
-`TL_NAME` is a **registry name** from `src/commands/raw.rs` (e.g.
-`messages.GetAllDrafts` with `--args '{}'`, `contacts.Search` with
-`--args '{"q":"alice"}'`, `messages.ExportChatInvite` with
-`--args '{"chat":"@mychat"}'`).
-Rust TL types are static, so the registry is a typed match: each supported method
-has a handler arm and documented `--args` shape. Unregistered names exit 1 with
-the message `raw method not in registry; add an arm in src/commands/raw.rs`.
+`TL_NAME` is a **registry name** from `src/commands/raw.rs`. Rust TL types are
+static, so the registry is a typed match: each supported method has a handler
+arm and documented `--args` shape. Unregistered names exit 1 with the message
+`raw method not in registry; add an arm in src/commands/raw.rs`.
 `--args` is a JSON object of constructor kwargs. Result goes in `results[].data`.
 Destructive raw calls still require `--account` and honor `--dry-run` (dry-run does
 not invoke).
+
+Registry names (18):
+
+- Read-only, no args: `messages.GetAllDrafts`, `account.GetAuthorizations`,
+  `messages.GetDialogUnreadMarks`.
+- Peer-targeted read-only (`--args` key `chat`, same target syntax as `--chat`;
+  `channels.GetFullChannel` uses key `channel`):
+  `channels.GetFullChannel`, `users.GetUsers` (`id`: array of targets),
+  `messages.GetHistory`, `messages.GetScheduledHistory`,
+  `messages.Search` (`q` required; `filter` one of `empty|photos|video|gif|documents|urls|audio|voice`;
+  optional `from_id`, `top_msg_id`),
+  `messages.GetMessagesViews` (`id`: array of message ids, `increment`: bool),
+  `messages.ReadReactions`, `messages.ReadMentions` (optional `top_msg_id`).
+- Mutating (explicit `--account` required, honors `--dry-run`):
+  `account.UpdateProfile`, `account.SetAuthorizationTTL`
+  (`authorization_ttl_days`: integer), `contacts.DeleteByPhones`
+  (`phones`: array of phone numbers), `messages.ExportChatInvite`.
+
+Shaping notes: history/search/scheduled results carry
+`count`/`messages[]`/`chats`/`users`; `NotModified` adds `"not_modified": true`.
+Read-reactions/read-mentions return `{pts, pts_count, offset}`;
+`GetAuthorizations` returns `{authorization_ttl_days, authorizations[]}` rows with
+no secrets; boolean results return `{"ok": true|false}`. Numeric `--args` fields
+(`int`/`long`) may be omitted and default to `0` at dispatch (limit defaults to
+10); omitted non-numeric required fields fail validation before connect.
 
 ## `tele completions`
 

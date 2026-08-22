@@ -24,12 +24,24 @@ pub struct RawArgs {
 }
 
 pub const REGISTERED: &[&str] = &[
+    "account.GetAuthorizations",
+    "account.SetAuthorizationTTL",
     "account.UpdateProfile",
+    "channels.GetFullChannel",
+    "contacts.DeleteByPhones",
     "contacts.Search",
     "messages.ExportChatInvite",
     "messages.GetAllDrafts",
+    "messages.GetDialogUnreadMarks",
+    "messages.GetHistory",
+    "messages.GetMessagesViews",
+    "messages.GetScheduledHistory",
+    "messages.ReadMentions",
+    "messages.ReadReactions",
+    "messages.Search",
     "stats.GetBroadcastStats",
     "stats.GetMegagroupStats",
+    "users.GetUsers",
 ];
 
 pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -300,6 +312,220 @@ async fn dispatch(
                 "username": username,
             }))
         }
+        "channels.GetFullChannel" => {
+            let chat =
+                crate::entities::resolve_peer(client, session, &str_field(p, "channel")?).await?;
+            let channel = crate::entities::input_channel(&chat)
+                .await
+                .map_err(tele_invocation)?;
+            let r: tl::enums::messages::ChatFull = client
+                .invoke(&tl::functions::channels::GetFullChannel { channel })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(full_channel_summary(&r))
+        }
+        "users.GetUsers" => {
+            let ids = peer_targets(p, "id")?;
+            let mut input_users: Vec<tl::enums::InputUser> = Vec::with_capacity(ids.len());
+            for target in &ids {
+                let chat = crate::entities::resolve_peer(client, session, target).await?;
+                input_users.push(
+                    crate::entities::input_user(&chat)
+                        .await
+                        .map_err(tele_invocation)?,
+                );
+            }
+            let users: Vec<tl::enums::User> = client
+                .invoke(&tl::functions::users::GetUsers { id: input_users })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(serde_json::json!({
+                "users": users.iter().map(user_summary).collect::<Vec<_>>(),
+            }))
+        }
+        "messages.GetHistory" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let r: tl::enums::messages::Messages = client
+                .invoke(&tl::functions::messages::GetHistory {
+                    peer,
+                    offset_id: opt_int_field(p, "offset_id")?.unwrap_or(0),
+                    offset_date: opt_int_field(p, "offset_date")?.unwrap_or(0),
+                    add_offset: opt_int_field(p, "add_offset")?.unwrap_or(0),
+                    limit: opt_int_field(p, "limit")?.unwrap_or(10),
+                    max_id: opt_int_field(p, "max_id")?.unwrap_or(0),
+                    min_id: opt_int_field(p, "min_id")?.unwrap_or(0),
+                    hash: long_field(p, "hash"),
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(messages_messages_summary(&r))
+        }
+        "messages.Search" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let from_id = match opt_str_field(p, "from_id")? {
+                Some(target) => {
+                    let chat = crate::entities::resolve_peer(client, session, &target).await?;
+                    Some(
+                        crate::entities::input_peer(&chat)
+                            .await
+                            .map_err(tele_invocation)?,
+                    )
+                }
+                None => None,
+            };
+            let filter = search_filter(&str_field(p, "filter")?)?;
+            let r: tl::enums::messages::Messages = client
+                .invoke(&tl::functions::messages::Search {
+                    peer,
+                    q: str_field(p, "q")?,
+                    from_id,
+                    saved_peer_id: None,
+                    saved_reaction: None,
+                    top_msg_id: opt_int_field(p, "top_msg_id")?,
+                    filter,
+                    min_date: opt_int_field(p, "min_date")?.unwrap_or(0),
+                    max_date: opt_int_field(p, "max_date")?.unwrap_or(0),
+                    offset_id: opt_int_field(p, "offset_id")?.unwrap_or(0),
+                    add_offset: opt_int_field(p, "add_offset")?.unwrap_or(0),
+                    limit: opt_int_field(p, "limit")?.unwrap_or(10),
+                    max_id: opt_int_field(p, "max_id")?.unwrap_or(0),
+                    min_id: opt_int_field(p, "min_id")?.unwrap_or(0),
+                    hash: long_field(p, "hash"),
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(messages_messages_summary(&r))
+        }
+        "messages.GetScheduledHistory" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let r: tl::enums::messages::Messages = client
+                .invoke(&tl::functions::messages::GetScheduledHistory {
+                    peer,
+                    hash: long_field(p, "hash"),
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(messages_messages_summary(&r))
+        }
+        "messages.GetMessagesViews" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let ids = int_list_field(p, "id")?;
+            if ids.is_empty() {
+                return Err(TeleError::Usage(
+                    "--args field \"id\" must be a non-empty array of message ids".to_string(),
+                ));
+            }
+            let increment = bool_field(p, "increment")?;
+            let r: tl::enums::messages::MessageViews = client
+                .invoke(&tl::functions::messages::GetMessagesViews {
+                    peer,
+                    id: ids,
+                    increment,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(match r {
+                tl::enums::messages::MessageViews::Views(v) => message_views_summary(&v.views),
+            })
+        }
+        "messages.ReadReactions" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let saved_peer_id = match opt_str_field(p, "saved_peer_id")? {
+                Some(target) => {
+                    let chat = crate::entities::resolve_peer(client, session, &target).await?;
+                    Some(
+                        crate::entities::input_peer(&chat)
+                            .await
+                            .map_err(tele_invocation)?,
+                    )
+                }
+                None => None,
+            };
+            let r: tl::enums::messages::AffectedHistory = client
+                .invoke(&tl::functions::messages::ReadReactions {
+                    peer,
+                    top_msg_id: opt_int_field(p, "top_msg_id")?,
+                    saved_peer_id,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(affected_history_summary(&r))
+        }
+        "messages.ReadMentions" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let r: tl::enums::messages::AffectedHistory = client
+                .invoke(&tl::functions::messages::ReadMentions {
+                    peer,
+                    top_msg_id: opt_int_field(p, "top_msg_id")?,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(affected_history_summary(&r))
+        }
+        "messages.GetDialogUnreadMarks" => {
+            let parent_peer = match opt_str_field(p, "parent_peer")? {
+                Some(target) => {
+                    let chat = crate::entities::resolve_peer(client, session, &target).await?;
+                    Some(
+                        crate::entities::input_peer(&chat)
+                            .await
+                            .map_err(tele_invocation)?,
+                    )
+                }
+                None => None,
+            };
+            let marks: Vec<tl::enums::DialogPeer> = client
+                .invoke(&tl::functions::messages::GetDialogUnreadMarks { parent_peer })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(dialog_unread_marks_summary(&marks))
+        }
+        "account.GetAuthorizations" => {
+            let r: tl::enums::account::Authorizations = client
+                .invoke(&tl::functions::account::GetAuthorizations {})
+                .await
+                .map_err(tele_invocation)?;
+            match r {
+                tl::enums::account::Authorizations::Authorizations(a) => Ok(serde_json::json!({
+                    "authorization_ttl_days": a.authorization_ttl_days,
+                    "authorizations": a.authorizations.iter().map(authorization_row).collect::<Vec<_>>(),
+                })),
+            }
+        }
+        "account.SetAuthorizationTTL" => {
+            let days = match p.get("authorization_ttl_days").and_then(|v| v.as_i64()) {
+                Some(d) => {
+                    i32::try_from(d).map_err(|_| invalid_int("authorization_ttl_days", d))?
+                }
+                None => {
+                    return Err(TeleError::Usage(
+                        "--args field \"authorization_ttl_days\" is required (integer days)"
+                            .to_string(),
+                    ))
+                }
+            };
+            let ok: bool = client
+                .invoke(&tl::functions::account::SetAuthorizationTtl {
+                    authorization_ttl_days: days,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(bool_result(ok))
+        }
+        "contacts.DeleteByPhones" => {
+            let phones = string_list_field(p, "phones")?;
+            if phones.is_empty() {
+                return Err(TeleError::Usage(
+                    "--args field \"phones\" must be a non-empty array of phone numbers"
+                        .to_string(),
+                ));
+            }
+            let ok: bool = client
+                .invoke(&tl::functions::contacts::DeleteByPhones { phones })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(bool_result(ok))
+        }
         _ => Err(crate::error::invocation_error(
             grammers_client::InvocationError::Rpc(grammers_client::sender::RpcError {
                 code: 400,
@@ -399,6 +625,270 @@ fn invalid_int(key: &str, v: i64) -> TeleError {
 
 fn bool_field(p: &serde_json::Value, key: &str) -> TeleResult<bool> {
     Ok(p.get(key).and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+async fn resolved_peer(
+    client: &grammers_client::Client,
+    session: &grammers_session::storages::SqliteSession,
+    p: &serde_json::Value,
+    key: &str,
+) -> TeleResult<tl::enums::InputPeer> {
+    let chat = crate::entities::resolve_peer(client, session, &str_field(p, key)?).await?;
+    crate::entities::input_peer(&chat)
+        .await
+        .map_err(tele_invocation)
+}
+
+fn json_target_string(v: &serde_json::Value) -> TeleResult<String> {
+    match v {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        _ => Err(TeleError::Usage(
+            "--args peer targets must be strings or numeric ids".to_string(),
+        )),
+    }
+}
+
+fn peer_targets(p: &serde_json::Value, key: &str) -> TeleResult<Vec<String>> {
+    match p.get(key) {
+        Some(serde_json::Value::Array(items)) if !items.is_empty() => items
+            .iter()
+            .map(json_target_string)
+            .collect::<TeleResult<Vec<_>>>(),
+        _ => Err(TeleError::Usage(format!(
+            "--args field {key:?} must be a non-empty array of peer targets"
+        ))),
+    }
+}
+
+fn int_list_field(p: &serde_json::Value, key: &str) -> TeleResult<Vec<i32>> {
+    match p.get(key) {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|v| match v.as_i64() {
+                Some(n) => i32::try_from(n).map_err(|_| invalid_int(key, n)),
+                None => Err(TeleError::Usage(format!(
+                    "--args field {key:?} must contain only integers"
+                ))),
+            })
+            .collect(),
+        _ => Err(TeleError::Usage(format!(
+            "--args field {key:?} must be an array of integers"
+        ))),
+    }
+}
+
+fn string_list_field(p: &serde_json::Value, key: &str) -> TeleResult<Vec<String>> {
+    match p.get(key) {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|v| match v.as_str() {
+                Some(s) => Ok(s.to_string()),
+                None => Err(TeleError::Usage(format!(
+                    "--args field {key:?} must contain only strings"
+                ))),
+            })
+            .collect(),
+        _ => Err(TeleError::Usage(format!(
+            "--args field {key:?} must be an array of strings"
+        ))),
+    }
+}
+
+fn long_field(p: &serde_json::Value, key: &str) -> i64 {
+    p.get(key).and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+fn search_filter(name: &str) -> TeleResult<tl::enums::MessagesFilter> {
+    let valid = [
+        "empty",
+        "photos",
+        "video",
+        "gif",
+        "documents",
+        "urls",
+        "audio",
+        "voice",
+    ];
+    let lowered = name.trim().to_ascii_lowercase();
+    match lowered.as_str() {
+        "" | "empty" => Ok(tl::enums::MessagesFilter::InputMessagesFilterEmpty),
+        "photos" => Ok(tl::enums::MessagesFilter::InputMessagesFilterPhotos),
+        "video" | "videos" => Ok(tl::enums::MessagesFilter::InputMessagesFilterVideo),
+        "gif" => Ok(tl::enums::MessagesFilter::InputMessagesFilterGif),
+        "documents" | "docs" => Ok(tl::enums::MessagesFilter::InputMessagesFilterDocument),
+        "url" | "urls" => Ok(tl::enums::MessagesFilter::InputMessagesFilterUrl),
+        "audio" | "music" => Ok(tl::enums::MessagesFilter::InputMessagesFilterMusic),
+        "voice" | "voicenotes" => Ok(tl::enums::MessagesFilter::InputMessagesFilterVoice),
+        other => Err(TeleError::Usage(format!(
+            "--args field \"filter\": unknown filter {other:?} (valid names: {valid:?})"
+        ))),
+    }
+}
+
+fn messages_messages_summary(r: &tl::enums::messages::Messages) -> serde_json::Value {
+    match r {
+        tl::enums::messages::Messages::Messages(m) => {
+            messages_collection_summary(None, &m.messages, m.chats.len(), m.users.len())
+        }
+        tl::enums::messages::Messages::Slice(s) => {
+            messages_collection_summary(Some(s.count), &s.messages, s.chats.len(), s.users.len())
+        }
+        tl::enums::messages::Messages::ChannelMessages(c) => {
+            messages_collection_summary(Some(c.count), &c.messages, c.chats.len(), c.users.len())
+        }
+        tl::enums::messages::Messages::NotModified(n) => {
+            serde_json::json!({
+                "count": n.count,
+                "not_modified": true,
+            })
+        }
+    }
+}
+
+fn messages_collection_summary(
+    count: Option<i32>,
+    messages: &[tl::enums::Message],
+    chats: usize,
+    users: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "count": count.unwrap_or(messages.len() as i32),
+        "messages": messages.iter().map(message_row).collect::<Vec<_>>(),
+        "chats": chats,
+        "users": users,
+    })
+}
+
+fn message_row(m: &tl::enums::Message) -> serde_json::Value {
+    match m {
+        tl::enums::Message::Message(msg) => serde_json::json!({
+            "id": msg.id,
+            "date": msg.date,
+            "out": msg.out,
+            "text": msg.message,
+            "peer_id": peer_id(&msg.peer_id),
+        }),
+        tl::enums::Message::Service(msg) => serde_json::json!({
+            "id": msg.id,
+            "date": msg.date,
+            "service": true,
+        }),
+        tl::enums::Message::Empty(msg) => serde_json::json!({
+            "id": msg.id,
+            "empty": true,
+        }),
+    }
+}
+
+fn affected_history_summary(r: &tl::enums::messages::AffectedHistory) -> serde_json::Value {
+    match r {
+        tl::enums::messages::AffectedHistory::History(h) => serde_json::json!({
+            "pts": h.pts,
+            "pts_count": h.pts_count,
+            "offset": h.offset,
+        }),
+    }
+}
+
+fn authorization_row(auth: &tl::enums::Authorization) -> serde_json::Value {
+    let tl::enums::Authorization::Authorization(a) = auth;
+    serde_json::json!({
+        "hash": a.hash,
+        "current": a.current,
+        "official_app": a.official_app,
+        "password_pending": a.password_pending,
+        "unconfirmed": a.unconfirmed,
+        "device_model": a.device_model,
+        "platform": a.platform,
+        "system_version": a.system_version,
+        "api_id": a.api_id,
+        "app_name": a.app_name,
+        "app_version": a.app_version,
+        "date_created": a.date_created,
+        "date_active": a.date_active,
+        "ip": a.ip,
+        "country": a.country,
+    })
+}
+
+fn full_channel_summary(r: &tl::enums::messages::ChatFull) -> serde_json::Value {
+    match r {
+        tl::enums::messages::ChatFull::Full(full) => match &full.full_chat {
+            tl::enums::ChatFull::ChannelFull(c) => serde_json::json!({
+                "id": c.id,
+                "about": c.about,
+                "participants_count": c.participants_count,
+                "admins_count": c.admins_count,
+                "kicked_count": c.kicked_count,
+                "banned_count": c.banned_count,
+                "online_count": c.online_count,
+                "slowmode_seconds": c.slowmode_seconds,
+                "linked_chat_id": c.linked_chat_id,
+                "pinned_msg_id": c.pinned_msg_id,
+                "can_view_stats": c.can_view_stats,
+                "hidden_prehistory": c.hidden_prehistory,
+                "has_scheduled": c.has_scheduled,
+            }),
+            tl::enums::ChatFull::Full(f) => serde_json::json!({
+                "id": f.id,
+                "about": f.about,
+                "participants_count": chat_participants_count(&f.participants),
+                "pinned_msg_id": f.pinned_msg_id,
+                "has_scheduled": f.has_scheduled,
+            }),
+        },
+    }
+}
+
+fn chat_participants_count(participants: &tl::enums::ChatParticipants) -> serde_json::Value {
+    match participants {
+        tl::enums::ChatParticipants::Participants(parts) => {
+            serde_json::json!(parts.participants.len())
+        }
+        tl::enums::ChatParticipants::Forbidden(_) => serde_json::Value::Null,
+    }
+}
+
+fn message_views_summary(views: &[tl::enums::MessageViews]) -> serde_json::Value {
+    let rows = views
+        .iter()
+        .map(|v| match v {
+            tl::enums::MessageViews::Views(mv) => serde_json::json!({
+                "views": mv.views,
+                "forwards": mv.forwards,
+            }),
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "views": rows })
+}
+
+fn dialog_unread_marks_summary(marks: &[tl::enums::DialogPeer]) -> serde_json::Value {
+    let mut peers = Vec::new();
+    let mut folders = Vec::new();
+    for mark in marks {
+        match mark {
+            tl::enums::DialogPeer::Peer(dp) => peers.push(peer_id(&dp.peer)),
+            tl::enums::DialogPeer::Folder(f) => folders.push(f.folder_id),
+        }
+    }
+    serde_json::json!({ "peers": peers, "folders": folders })
+}
+
+fn user_summary(u: &tl::enums::User) -> serde_json::Value {
+    match u {
+        tl::enums::User::User(u) => serde_json::json!({
+            "id": u.id,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "username": u.username,
+        }),
+        _ => serde_json::json!({}),
+    }
+}
+
+fn bool_result(ok: bool) -> serde_json::Value {
+    serde_json::json!({ "ok": ok })
 }
 
 #[cfg(test)]
@@ -605,17 +1095,459 @@ mod tests {
     #[test]
     fn mutating_methods_require_explicit_account() {
         assert!(requires_explicit_account("account.UpdateProfile"));
+        assert!(requires_explicit_account("account.SetAuthorizationTTL"));
+        assert!(requires_explicit_account("contacts.DeleteByPhones"));
         assert!(requires_explicit_account("messages.ExportChatInvite"));
         assert!(!requires_explicit_account("messages.GetAllDrafts"));
         assert!(!requires_explicit_account("contacts.Search"));
+        assert!(!requires_explicit_account("account.GetAuthorizations"));
     }
 
     #[test]
     fn registered_mutators_are_gated() {
         for name in REGISTERED {
-            let mutating = matches!(*name, "account.UpdateProfile" | "messages.ExportChatInvite");
+            let mutating = matches!(
+                *name,
+                "account.UpdateProfile"
+                    | "account.SetAuthorizationTTL"
+                    | "contacts.DeleteByPhones"
+                    | "messages.ExportChatInvite"
+            );
             assert_eq!(requires_explicit_account(name), mutating, "{name}");
         }
+    }
+
+    #[test]
+    fn new_registry_entries_have_validation_and_args_shapes() {
+        assert!(validate_params(
+            "channels.GetFullChannel",
+            &serde_json::json!({"channel": "@x"})
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_params("channels.GetFullChannel", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_params("users.GetUsers", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(
+            validate_params("users.GetUsers", &serde_json::json!({"id": ["me", 12345]})).is_ok()
+        );
+        assert!(matches!(
+            validate_params("messages.Search", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_params("messages.GetHistory", &serde_json::json!({"chat": "@x"})).is_ok());
+        assert!(validate_params(
+            "messages.GetScheduledHistory",
+            &serde_json::json!({"chat": "@x"})
+        )
+        .is_ok());
+        assert!(validate_params(
+            "messages.GetMessagesViews",
+            &serde_json::json!({"chat": "@x", "id": [1, 2], "increment": true})
+        )
+        .is_ok());
+        assert!(
+            validate_params("messages.ReadReactions", &serde_json::json!({"chat": "@x"})).is_ok()
+        );
+        assert!(validate_params(
+            "messages.ReadMentions",
+            &serde_json::json!({"chat": "@x", "top_msg_id": 5})
+        )
+        .is_ok());
+        assert!(validate_params("account.GetAuthorizations", &serde_json::json!({})).is_ok());
+        assert!(validate_params("account.SetAuthorizationTTL", &serde_json::json!({})).is_ok());
+        assert!(validate_params("messages.GetDialogUnreadMarks", &serde_json::json!({})).is_ok());
+        assert!(matches!(
+            validate_params("contacts.DeleteByPhones", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn search_filter_maps_known_names_and_rejects_unknown() {
+        assert!(search_filter("").is_ok());
+        assert!(search_filter(" photos ").is_ok());
+        assert!(search_filter("docs").is_ok());
+        assert!(search_filter("voice").is_ok());
+        let err = search_filter("stickers").unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("valid names"));
+    }
+
+    #[test]
+    fn list_field_helpers_validate_shapes() {
+        assert_eq!(
+            int_list_field(&serde_json::json!({"id": [1, 2]}), "id").unwrap(),
+            vec![1, 2]
+        );
+        assert!(int_list_field(&serde_json::json!({"id": ["a"]}), "id").is_err());
+        assert!(int_list_field(&serde_json::json!({}), "id").is_err());
+        assert_eq!(
+            string_list_field(&serde_json::json!({"phones": ["+1555"]}), "phones").unwrap(),
+            vec!["+1555"]
+        );
+        assert!(string_list_field(&serde_json::json!({"phones": [1]}), "phones").is_err());
+        assert_eq!(
+            peer_targets(&serde_json::json!({"id": ["@a", 42]}), "id").unwrap(),
+            vec!["@a".to_string(), "42".to_string()]
+        );
+        assert!(peer_targets(&serde_json::json!({"id": []}), "id").is_err());
+        assert!(peer_targets(&serde_json::json!({"id": [true]}), "id").is_err());
+        assert_eq!(long_field(&serde_json::json!({"hash": 7}), "hash"), 7);
+        assert_eq!(long_field(&serde_json::json!({}), "hash"), 0);
+    }
+
+    #[test]
+    fn messages_messages_summary_covers_all_variants_offline() {
+        use tl::enums::Message;
+        use tl::types::messages::MessagesSlice;
+        use tl::types::MessageEmpty;
+
+        let slice = tl::enums::messages::Messages::Slice(MessagesSlice {
+            inexact: false,
+            count: 2,
+            next_rate: None,
+            offset_id_offset: None,
+            search_flood: None,
+            messages: vec![Message::Empty(MessageEmpty {
+                id: 9,
+                peer_id: None,
+            })],
+            topics: Vec::new(),
+            chats: Vec::new(),
+            users: Vec::new(),
+        });
+        let v = messages_messages_summary(&slice);
+        assert_eq!(v["count"], serde_json::json!(2));
+        assert_eq!(v["chats"], serde_json::json!(0));
+        assert_eq!(v["users"], serde_json::json!(0));
+        assert_eq!(v["messages"][0]["id"], serde_json::json!(9));
+        assert_eq!(v["messages"][0]["empty"], serde_json::json!(true));
+
+        let not_modified =
+            tl::enums::messages::Messages::NotModified(tl::types::messages::MessagesNotModified {
+                count: 4,
+            });
+        let v = messages_messages_summary(&not_modified);
+        assert_eq!(v["not_modified"], serde_json::json!(true));
+        assert_eq!(v["count"], serde_json::json!(4));
+
+        let plain = tl::enums::messages::Messages::Messages(tl::types::messages::Messages {
+            messages: Vec::new(),
+            topics: Vec::new(),
+            chats: Vec::new(),
+            users: Vec::new(),
+        });
+        let v = messages_messages_summary(&plain);
+        assert_eq!(v["count"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn affected_history_summary_exposes_pts_fields() {
+        let r =
+            tl::enums::messages::AffectedHistory::History(tl::types::messages::AffectedHistory {
+                pts: 10,
+                pts_count: 2,
+                offset: 1,
+            });
+        let v = affected_history_summary(&r);
+        assert_eq!(v["pts"], serde_json::json!(10));
+        assert_eq!(v["pts_count"], serde_json::json!(2));
+        assert_eq!(v["offset"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn authorizations_summary_carries_ttl_and_rows_without_secrets() {
+        let auths = tl::enums::account::Authorizations::Authorizations(
+            tl::types::account::Authorizations {
+                authorization_ttl_days: 182,
+                authorizations: vec![tl::enums::Authorization::Authorization(
+                    tl::types::Authorization {
+                        current: true,
+                        official_app: false,
+                        password_pending: false,
+                        encrypted_requests_disabled: false,
+                        call_requests_disabled: false,
+                        unconfirmed: false,
+                        hash: 123456789,
+                        device_model: "PC".to_string(),
+                        platform: "Windows".to_string(),
+                        system_version: "11".to_string(),
+                        api_id: 42,
+                        app_name: "tele".to_string(),
+                        app_version: "1.0".to_string(),
+                        date_created: 1700000000,
+                        date_active: 1700000001,
+                        ip: "203.0.113.7".to_string(),
+                        country: "US".to_string(),
+                        region: String::new(),
+                    },
+                )],
+            },
+        );
+        match auths {
+            tl::enums::account::Authorizations::Authorizations(a) => {
+                let v = serde_json::json!({
+                    "authorization_ttl_days": a.authorization_ttl_days,
+                    "authorizations":
+                        a.authorizations.iter().map(authorization_row).collect::<Vec<_>>(),
+                });
+                assert_eq!(v["authorization_ttl_days"], serde_json::json!(182));
+                assert_eq!(
+                    v["authorizations"][0]["device_model"],
+                    serde_json::json!("PC")
+                );
+                assert_eq!(v["authorizations"][0]["current"], serde_json::json!(true));
+            }
+        }
+    }
+
+    #[test]
+    fn full_channel_summary_handles_channel_and_basic_group_variants() {
+        let channel = tl::enums::messages::ChatFull::Full(tl::types::messages::ChatFull {
+            full_chat: tl::enums::ChatFull::ChannelFull(tl::types::ChannelFull {
+                can_view_participants: false,
+                can_set_username: false,
+                can_set_stickers: false,
+                hidden_prehistory: false,
+                can_set_location: false,
+                has_scheduled: true,
+                can_view_stats: true,
+                blocked: false,
+                can_delete_channel: false,
+                antispam: false,
+                participants_hidden: false,
+                translations_disabled: false,
+                stories_pinned_available: false,
+                view_forum_as_messages: false,
+                restricted_sponsored: false,
+                can_view_revenue: false,
+                paid_media_allowed: false,
+                can_view_stars_revenue: false,
+                paid_reactions_available: false,
+                stargifts_available: false,
+                paid_messages_available: false,
+                id: 100,
+                about: "about text".to_string(),
+                participants_count: Some(500),
+                admins_count: None,
+                kicked_count: None,
+                banned_count: None,
+                online_count: Some(12),
+                read_inbox_max_id: 0,
+                read_outbox_max_id: 0,
+                unread_count: 0,
+                chat_photo: tl::enums::Photo::Empty(tl::types::PhotoEmpty { id: 0 }),
+                notify_settings: notify_settings_fixture(),
+                exported_invite: None,
+                bot_info: Vec::new(),
+                migrated_from_chat_id: None,
+                migrated_from_max_id: None,
+                pinned_msg_id: Some(77),
+                stickerset: None,
+                available_min_id: None,
+                folder_id: None,
+                linked_chat_id: Some(200),
+                location: None,
+                slowmode_seconds: Some(30),
+                slowmode_next_send_date: None,
+                stats_dc: None,
+                pts: 0,
+                call: None,
+                ttl_period: None,
+                pending_suggestions: None,
+                groupcall_default_join_as: None,
+                theme_emoticon: None,
+                requests_pending: None,
+                recent_requesters: None,
+                default_send_as: None,
+                available_reactions: None,
+                reactions_limit: None,
+                stories: None,
+                wallpaper: None,
+                boosts_applied: None,
+                boosts_unrestrict: None,
+                emojiset: None,
+                bot_verification: None,
+                stargifts_count: None,
+                send_paid_messages_stars: None,
+                main_tab: None,
+                guard_bot_id: None,
+            }),
+            chats: Vec::new(),
+            users: Vec::new(),
+        });
+        let v = full_channel_summary(&channel);
+        assert_eq!(v["participants_count"], serde_json::json!(500));
+        assert_eq!(v["slowmode_seconds"], serde_json::json!(30));
+        assert_eq!(v["linked_chat_id"], serde_json::json!(200));
+        assert_eq!(v["pinned_msg_id"], serde_json::json!(77));
+        assert_eq!(v["can_view_stats"], serde_json::json!(true));
+        assert_eq!(v["has_scheduled"], serde_json::json!(true));
+
+        let basic = tl::enums::messages::ChatFull::Full(tl::types::messages::ChatFull {
+            full_chat: tl::enums::ChatFull::Full(tl::types::ChatFull {
+                can_set_username: false,
+                has_scheduled: false,
+                translations_disabled: false,
+                id: 300,
+                about: "group".to_string(),
+                participants: tl::enums::ChatParticipants::Forbidden(
+                    tl::types::ChatParticipantsForbidden {
+                        chat_id: 300,
+                        self_participant: None,
+                    },
+                ),
+                chat_photo: Some(tl::enums::Photo::Empty(tl::types::PhotoEmpty { id: 0 })),
+                notify_settings: notify_settings_fixture(),
+                exported_invite: None,
+                bot_info: None,
+                pinned_msg_id: None,
+                folder_id: None,
+                call: None,
+                ttl_period: None,
+                groupcall_default_join_as: None,
+                theme_emoticon: None,
+                requests_pending: None,
+                recent_requesters: None,
+                available_reactions: None,
+                reactions_limit: None,
+            }),
+            chats: Vec::new(),
+            users: Vec::new(),
+        });
+        let v = full_channel_summary(&basic);
+        assert_eq!(v["about"], serde_json::json!("group"));
+        assert_eq!(v["participants_count"], serde_json::Value::Null);
+    }
+
+    #[cfg(test)]
+    fn notify_settings_fixture() -> tl::enums::PeerNotifySettings {
+        tl::enums::PeerNotifySettings::Settings(tl::types::PeerNotifySettings {
+            show_previews: None,
+            silent: None,
+            mute_until: None,
+            ios_sound: None,
+            android_sound: None,
+            other_sound: None,
+            stories_muted: None,
+            stories_hide_sender: None,
+            stories_ios_sound: None,
+            stories_android_sound: None,
+            stories_other_sound: None,
+        })
+    }
+
+    #[test]
+    fn message_views_summary_shapes_rows_offline() {
+        let views = vec![
+            tl::enums::MessageViews::Views(tl::types::MessageViews {
+                views: Some(120),
+                forwards: Some(3),
+                replies: None,
+            }),
+            tl::enums::MessageViews::Views(tl::types::MessageViews {
+                views: None,
+                forwards: None,
+                replies: None,
+            }),
+        ];
+        let v = message_views_summary(&views);
+        assert_eq!(v["views"].as_array().map(Vec::len), Some(2));
+        assert_eq!(v["views"][0]["views"], serde_json::json!(120));
+        assert_eq!(v["views"][0]["forwards"], serde_json::json!(3));
+        assert!(v["views"][1]["views"].is_null());
+
+        let empty = message_views_summary(&[]);
+        assert_eq!(empty["views"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn dialog_unread_marks_summary_splits_peers_and_folders() {
+        let marks = vec![
+            tl::enums::DialogPeer::Peer(tl::types::DialogPeer {
+                peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 55 }),
+            }),
+            tl::enums::DialogPeer::Folder(tl::types::DialogPeerFolder { folder_id: 1 }),
+        ];
+        let v = dialog_unread_marks_summary(&marks);
+        assert_eq!(v["peers"], serde_json::json!([55]));
+        assert_eq!(v["folders"], serde_json::json!([1]));
+
+        let empty = dialog_unread_marks_summary(&[]);
+        assert_eq!(empty["peers"], serde_json::json!([]));
+        assert_eq!(empty["folders"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn user_summary_and_bool_result_shape_verbatim_payloads() {
+        let named = tl::enums::User::User(tl::types::User {
+            is_self: false,
+            contact: false,
+            mutual_contact: false,
+            deleted: false,
+            bot: false,
+            bot_chat_history: false,
+            bot_nochats: false,
+            verified: false,
+            restricted: false,
+            min: false,
+            bot_inline_geo: false,
+            support: false,
+            scam: false,
+            apply_min_photo: true,
+            fake: false,
+            bot_attach_menu: false,
+            premium: false,
+            attach_menu_enabled: false,
+            bot_can_edit: false,
+            close_friend: false,
+            stories_hidden: false,
+            stories_unavailable: false,
+            contact_require_premium: false,
+            bot_business: false,
+            bot_has_main_app: false,
+            bot_forum_view: false,
+            bot_forum_can_manage_topics: false,
+            bot_can_manage_bots: false,
+            bot_guestchat: false,
+            bot_guard: false,
+            id: 7,
+            access_hash: None,
+            first_name: Some("Ada".to_string()),
+            last_name: None,
+            username: Some("ada".to_string()),
+            phone: None,
+            photo: None,
+            status: None,
+            bot_info_version: None,
+            restriction_reason: None,
+            bot_inline_placeholder: None,
+            lang_code: None,
+            emoji_status: None,
+            usernames: None,
+            stories_max_id: None,
+            color: None,
+            profile_color: None,
+            bot_active_users: None,
+            bot_verification_icon: None,
+            send_paid_messages_stars: None,
+        });
+        let v = user_summary(&named);
+        assert_eq!(v["id"], serde_json::json!(7));
+        assert_eq!(v["first_name"], serde_json::json!("Ada"));
+        assert_eq!(v["username"], serde_json::json!("ada"));
+
+        let empty = tl::enums::User::Empty(tl::types::UserEmpty { id: 3 });
+        let v = user_summary(&empty);
+        assert_eq!(v, serde_json::json!({}));
+
+        assert_eq!(bool_result(true), serde_json::json!({"ok": true}));
+        assert_eq!(bool_result(false), serde_json::json!({"ok": false}));
     }
 
     #[test]
