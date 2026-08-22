@@ -142,6 +142,158 @@ pub async fn resolve_peer(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTarget {
+    pub peer_ref: String,
+    pub msg_id: Option<i32>,
+}
+
+#[allow(dead_code)]
+pub fn parse_target(target: &str) -> crate::error::TeleResult<ResolvedTarget> {
+    let t = target.trim();
+    if let Some(digits) = t
+        .strip_prefix('+')
+        .map(|p| p.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
+    {
+        if digits.is_empty() {
+            return Err(invalid_target_error(target));
+        }
+        return Ok(ResolvedTarget {
+            peer_ref: format!("+{digits}"),
+            msg_id: None,
+        });
+    }
+    if let Ok(id) = t.parse::<i64>() {
+        if id == 0 {
+            return Err(invalid_target_error(target));
+        }
+        return Ok(ResolvedTarget {
+            peer_ref: t.to_string(),
+            msg_id: None,
+        });
+    }
+    match split_tme_link(t) {
+        TmeLink::NotLink => {}
+        TmeLink::Malformed => return Err(invalid_target_error(target)),
+        TmeLink::Valid(rt) => {
+            if rt.peer_ref.is_empty() {
+                return Err(invalid_target_error(target));
+            }
+            return Ok(rt);
+        }
+    }
+    let username = parse_username(t);
+    if username == "me" {
+        return Ok(ResolvedTarget {
+            peer_ref: "me".to_string(),
+            msg_id: None,
+        });
+    }
+    if username.is_empty() {
+        return Err(invalid_target_error(target));
+    }
+    Ok(ResolvedTarget {
+        peer_ref: username.to_string(),
+        msg_id: None,
+    })
+}
+
+fn invalid_target_error(raw: &str) -> crate::error::TeleError {
+    crate::error::TeleError::Usage(format!("invalid target: \"{raw}\""))
+}
+
+enum TmeLink {
+    NotLink,
+    Malformed,
+    Valid(ResolvedTarget),
+}
+
+fn split_tme_link(raw: &str) -> TmeLink {
+    let mut s = raw;
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            s = rest;
+        }
+    }
+    for host in ["t.me/", "telegram.me/"] {
+        if let Some(rest) = s.strip_prefix(host) {
+            return tme_from_path(rest);
+        }
+    }
+    TmeLink::NotLink
+}
+
+fn tme_from_path(path: &str) -> TmeLink {
+    let trimmed = path.split(['?', '#']).next().unwrap_or("");
+    let mut segments: Vec<&str> = trimmed.split('/').collect();
+    while segments.last() == Some(&"") {
+        segments.pop();
+    }
+    match segments.as_slice() {
+        [] => TmeLink::Valid(ResolvedTarget {
+            peer_ref: String::new(),
+            msg_id: None,
+        }),
+        ["c", id] => match internal_channel_ref(id) {
+            Some(peer_ref) => TmeLink::Valid(ResolvedTarget {
+                peer_ref,
+                msg_id: None,
+            }),
+            None => TmeLink::Malformed,
+        },
+        ["c", id, msg] => match (internal_channel_ref(id), parse_msg_id(msg)) {
+            (Some(peer_ref), Some(msg_id)) => TmeLink::Valid(ResolvedTarget {
+                peer_ref,
+                msg_id: Some(msg_id),
+            }),
+            _ => TmeLink::Malformed,
+        },
+        [one] => TmeLink::Valid(ResolvedTarget {
+            peer_ref: link_peer_name(one),
+            msg_id: None,
+        }),
+        [one, msg] => match parse_msg_id(msg) {
+            Some(msg_id) => TmeLink::Valid(ResolvedTarget {
+                peer_ref: link_peer_name(one),
+                msg_id: Some(msg_id),
+            }),
+            None => TmeLink::Malformed,
+        },
+        _ => TmeLink::Malformed,
+    }
+}
+
+fn link_peer_name(segment: &str) -> String {
+    let name = segment.strip_prefix('@').unwrap_or(segment);
+    if name == "me" {
+        "me".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+fn internal_channel_ref(segment: &str) -> Option<String> {
+    if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let raw = segment.parse::<i64>().ok()?;
+    if raw <= 0 {
+        return None;
+    }
+    let bot_api = 1_000_000_000_000i64.checked_add(raw)?;
+    Some(format!("-{bot_api}"))
+}
+
+fn parse_msg_id(segment: &str) -> Option<i32> {
+    if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    match segment.parse::<i32>() {
+        Ok(id) if id > 0 => Some(id),
+        _ => None,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Target {
     Phone(String),
@@ -163,27 +315,30 @@ fn classify_target(raw: &str) -> Target {
     if let Ok(id) = t.parse::<i64>() {
         return Target::Numeric(id);
     }
+    match split_tme_link(t) {
+        TmeLink::NotLink => {}
+        TmeLink::Malformed => return Target::Invalid,
+        TmeLink::Valid(rt) => {
+            return if rt.peer_ref == "me" {
+                Target::Me
+            } else if rt.peer_ref.is_empty() {
+                Target::Link(String::new())
+            } else {
+                match rt.peer_ref.parse::<i64>() {
+                    Ok(id) => Target::Numeric(id),
+                    Err(_) => Target::Link(rt.peer_ref.clone()),
+                }
+            };
+        }
+    }
     let username = parse_username(t);
     if username == "me" {
         return Target::Me;
-    }
-    if is_link(t) {
-        return Target::Link(username.to_string());
     }
     if username.is_empty() {
         return Target::Invalid;
     }
     Target::Username(username.to_string())
-}
-
-fn is_link(raw: &str) -> bool {
-    let mut s = raw;
-    for scheme in ["https://", "http://"] {
-        if let Some(rest) = s.strip_prefix(scheme) {
-            s = rest;
-        }
-    }
-    s.starts_with("t.me/") || s.starts_with("telegram.me/")
 }
 
 async fn cached_dialog_ref<S: Session>(session: &S, id: i64) -> Option<PeerRef> {
@@ -1153,6 +1308,279 @@ mod tests {
         assert_eq!(classify_target(" \t "), Target::Invalid);
     }
 
+    #[test]
+    fn classify_tme_c_form_link_is_numeric() {
+        assert_eq!(
+            classify_target("t.me/c/1234567890/42"),
+            Target::Numeric(-1001234567890)
+        );
+    }
+
+    #[test]
+    fn classify_tme_c_form_without_msg_is_numeric() {
+        assert_eq!(
+            classify_target("t.me/c/1234567890"),
+            Target::Numeric(-1001234567890)
+        );
+    }
+
+    #[test]
+    fn classify_tme_deep_link_bad_msg_id_is_invalid() {
+        assert_eq!(classify_target("t.me/durov/abc"), Target::Invalid);
+    }
+
+    #[test]
+    fn classify_tme_deep_link_zero_msg_id_is_invalid() {
+        assert_eq!(classify_target("https://t.me/durov/0"), Target::Invalid);
+    }
+
+    #[test]
+    fn classify_tme_deep_link_negative_msg_id_is_invalid() {
+        assert_eq!(classify_target("telegram.me/durov/-1"), Target::Invalid);
+    }
+
+    #[test]
+    fn classify_tme_deep_link_extra_segment_is_invalid() {
+        assert_eq!(classify_target("t.me/durov/42/43"), Target::Invalid);
+    }
+
+    #[test]
+    fn classify_tme_trailing_slash_keeps_link_with_msg() {
+        assert_eq!(
+            classify_target("t.me/durov/42/"),
+            Target::Link("durov".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_tme_me_with_msg_is_me() {
+        assert_eq!(classify_target("t.me/me/42"), Target::Me);
+    }
+
+    #[test]
+    fn classify_tme_invite_hash_single_segment_untouched() {
+        assert_eq!(
+            classify_target("t.me/+AbCdEf123"),
+            Target::Link("+AbCdEf123".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_tg_scheme_mention_form_untouched() {
+        assert_eq!(
+            classify_target("tg://user?id=123"),
+            Target::Username("tg:".to_string())
+        );
+    }
+
+    #[test]
+    fn classify_numeric_slash_text_still_username_head() {
+        assert_eq!(
+            classify_target("123/456"),
+            Target::Username("123".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_target_user_link_extracts_msg_id() {
+        let rt = parse_target("https://t.me/durov/42").unwrap();
+        assert_eq!(rt.peer_ref, "durov");
+        assert_eq!(rt.msg_id, Some(42));
+    }
+
+    #[test]
+    fn parse_target_bare_host_user_link_extracts_msg_id() {
+        let rt = parse_target("t.me/durov/7").unwrap();
+        assert_eq!(rt.peer_ref, "durov");
+        assert_eq!(rt.msg_id, Some(7));
+    }
+
+    #[test]
+    fn parse_target_telegram_me_host_extracts_msg_id() {
+        let rt = parse_target("http://telegram.me/durov/9").unwrap();
+        assert_eq!(rt.peer_ref, "durov");
+        assert_eq!(rt.msg_id, Some(9));
+    }
+
+    #[test]
+    fn parse_target_strips_trailing_slashes() {
+        let rt = parse_target("t.me/durov/42///").unwrap();
+        assert_eq!(rt.peer_ref, "durov");
+        assert_eq!(rt.msg_id, Some(42));
+    }
+
+    #[test]
+    fn parse_target_strips_query_and_fragment() {
+        let rt = parse_target("https://t.me/durov/42?x=1#f").unwrap();
+        assert_eq!(rt.peer_ref, "durov");
+        assert_eq!(rt.msg_id, Some(42));
+    }
+
+    #[test]
+    fn parse_target_msg_id_leading_zeros_parse() {
+        let rt = parse_target("t.me/durov/042").unwrap();
+        assert_eq!(rt.msg_id, Some(42));
+    }
+
+    #[test]
+    fn parse_target_msg_id_i32_max_accepted() {
+        let rt = parse_target("t.me/durov/2147483647").unwrap();
+        assert_eq!(rt.msg_id, Some(i32::MAX));
+    }
+
+    #[test]
+    fn parse_target_at_username_in_link_normalized() {
+        let rt = parse_target("t.me/@durov/42").unwrap();
+        assert_eq!(rt.peer_ref, "durov");
+        assert_eq!(rt.msg_id, Some(42));
+    }
+
+    #[test]
+    fn parse_target_c_form_maps_internal_id_to_bot_api() {
+        let rt = parse_target("https://t.me/c/1234567890/42").unwrap();
+        assert_eq!(rt.peer_ref, "-1001234567890");
+        assert_eq!(rt.msg_id, Some(42));
+    }
+
+    #[test]
+    fn parse_target_c_form_without_msg_has_none() {
+        let rt = parse_target("t.me/c/1234567890").unwrap();
+        assert_eq!(rt.peer_ref, "-1001234567890");
+        assert_eq!(rt.msg_id, None);
+    }
+
+    #[test]
+    fn parse_target_c_form_strips_query_and_trailing_slash() {
+        let rt = parse_target("t.me/c/1234567890/42/?single").unwrap();
+        assert_eq!(rt.peer_ref, "-1001234567890");
+        assert_eq!(rt.msg_id, Some(42));
+    }
+
+    #[test]
+    fn parse_target_c_form_low_boundary() {
+        let rt = parse_target("t.me/c/1/1").unwrap();
+        assert_eq!(rt.peer_ref, "-1000000000001");
+        assert_eq!(rt.msg_id, Some(1));
+    }
+
+    #[test]
+    fn parse_target_me_link() {
+        let rt = parse_target("t.me/me").unwrap();
+        assert_eq!(rt.peer_ref, "me");
+        assert_eq!(rt.msg_id, None);
+    }
+
+    #[test]
+    fn parse_target_me_link_with_msg() {
+        let rt = parse_target("t.me/me/5").unwrap();
+        assert_eq!(rt.peer_ref, "me");
+        assert_eq!(rt.msg_id, Some(5));
+    }
+
+    #[test]
+    fn parse_target_plain_username() {
+        let rt = parse_target("@durov").unwrap();
+        assert_eq!(rt.peer_ref, "durov");
+        assert_eq!(rt.msg_id, None);
+        let bare = parse_target("durov").unwrap();
+        assert_eq!(bare.peer_ref, "durov");
+    }
+
+    #[test]
+    fn parse_target_numeric_ids_roundtrip() {
+        let user = parse_target("8997636887").unwrap();
+        assert_eq!(user.peer_ref, "8997636887");
+        assert_eq!(user.msg_id, None);
+        let channel = parse_target("-1001234567890").unwrap();
+        assert_eq!(channel.peer_ref, "-1001234567890");
+    }
+
+    #[test]
+    fn parse_target_phone_normalizes_digits_keeps_plus() {
+        let rt = parse_target("+98 912 123 4567").unwrap();
+        assert_eq!(rt.peer_ref, "+989121234567");
+        assert_eq!(rt.msg_id, None);
+    }
+
+    #[test]
+    fn parse_target_phone_precedes_numeric_for_plus_forms() {
+        assert_eq!(parse_target("+123").unwrap().peer_ref, "+123");
+    }
+
+    #[test]
+    fn parse_target_rejects_empty_and_blank() {
+        assert!(parse_target("").is_err());
+        assert!(parse_target("   ").is_err());
+    }
+
+    #[test]
+    fn parse_target_rejects_zero_id() {
+        assert!(parse_target("0").is_err());
+    }
+
+    #[test]
+    fn parse_target_rejects_empty_phone_digits() {
+        assert!(parse_target("+abc").is_err());
+        assert!(parse_target("+").is_err());
+    }
+
+    #[test]
+    fn parse_target_rejects_bare_host_path() {
+        assert!(parse_target("t.me/").is_err());
+    }
+
+    #[test]
+    fn parse_target_rejects_non_numeric_msg_ids() {
+        for raw in [
+            "t.me/durov/abc",
+            "t.me/durov/+5",
+            "t.me/durov/ 5",
+            "t.me/durov/4.2",
+        ] {
+            assert!(parse_target(raw).is_err(), "must reject {raw}");
+        }
+    }
+
+    #[test]
+    fn parse_target_rejects_zero_and_negative_msg_ids() {
+        for raw in ["t.me/durov/0", "t.me/durov/-1", "t.me/durov/00"] {
+            assert!(parse_target(raw).is_err(), "must reject {raw}");
+        }
+    }
+
+    #[test]
+    fn parse_target_rejects_overflowing_msg_ids() {
+        for raw in ["t.me/durov/2147483648", "t.me/durov/99999999999"] {
+            assert!(parse_target(raw).is_err(), "must reject {raw}");
+        }
+    }
+
+    #[test]
+    fn parse_target_rejects_extra_segments() {
+        assert!(parse_target("t.me/durov/42/43").is_err());
+        assert!(parse_target("t.me/c/1/2/3").is_err());
+    }
+
+    #[test]
+    fn parse_target_rejects_bad_c_internal_ids() {
+        for raw in [
+            "t.me/c/abc/42",
+            "t.me/c/0/42",
+            "t.me/c/-5/42",
+            "t.me/c/+5/42",
+            "t.me/c//42",
+            "t.me/c/9223372036854775807/42",
+        ] {
+            assert!(parse_target(raw).is_err(), "must reject {raw}");
+        }
+    }
+
+    #[test]
+    fn parse_target_error_names_offender() {
+        let err = parse_target("t.me/durov/abc").unwrap_err();
+        assert!(err.message().contains("t.me/durov/abc"));
+    }
+
     use proptest::prelude::*;
 
     proptest! {
@@ -1165,6 +1593,43 @@ mod tests {
         #[test]
         fn plain_integers_always_classify_numeric(n in any::<i64>()) {
             assert!(matches!(classify_target(&n.to_string()), Target::Numeric(_)));
+        }
+
+        #[test]
+        fn tme_user_links_roundtrip_msg_id(user in "[a-z][a-z0-9_]{3,20}", mid in 1i32..) {
+            let raw = format!("t.me/{user}/{mid}");
+            let rt = parse_target(&raw).unwrap();
+            prop_assert_eq!(rt.peer_ref, user.clone());
+            prop_assert_eq!(rt.msg_id, Some(mid));
+            assert_eq!(classify_target(&raw), Target::Link(user));
+        }
+
+        #[test]
+        fn non_positive_or_non_numeric_msg_ids_invalidate(
+            bad in (any::<i64>().prop_filter("non-positive", |n| *n <= 0)),
+        ) {
+            let raw = format!("t.me/durov/{bad}");
+            assert_eq!(classify_target(&raw), Target::Invalid);
+            assert!(parse_target(&raw).is_err());
+        }
+
+        #[test]
+        fn link_decorations_do_not_change_classification(user in "[a-z][a-z0-9_]{3,20}", deco in 0usize..5) {
+            let decorations = ["", "/", "?x=1", "#frag", "/?x=1#frag"];
+            let raw = format!("t.me/{user}{}", decorations[deco]);
+            assert_eq!(classify_target(&raw), Target::Link(user));
+        }
+
+        #[test]
+        fn c_form_links_map_to_bot_api_channel_id(raw in 1i64..=9_000_000_000_000_000_000, mid in 1i32..) {
+            let link = format!("t.me/c/{raw}/{mid}");
+            let rt = parse_target(&link).unwrap();
+            prop_assert_eq!(rt.peer_ref.parse::<i64>().unwrap(), -(1_000_000_000_000i64 + raw));
+            prop_assert_eq!(rt.msg_id, Some(mid));
+            assert_eq!(
+                classify_target(&link),
+                Target::Numeric(-(1_000_000_000_000i64 + raw))
+            );
         }
     }
 }
