@@ -1,3 +1,4 @@
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 
 use crate::client::{self, ClientGuard};
@@ -20,7 +21,7 @@ pub struct ListenArgs {
         long,
         value_delimiter = ',',
         default_value = "NewMessage",
-        help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw"
+        help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap"
     )]
     events: Vec<String>,
     #[arg(
@@ -31,9 +32,237 @@ pub struct ListenArgs {
     #[arg(long, help = "only show events from this chat")]
     chat: Option<String>,
 }
-const VALID_EVENTS: &[&str] = &["NewMessage", "MessageEdited", "MessageDeleted", "Raw"];
+const VALID_EVENTS: &[&str] = &[
+    "NewMessage",
+    "MessageEdited",
+    "MessageDeleted",
+    "Raw",
+    "Album",
+    "Gap",
+];
 const MAX_RECONNECT_BACKOFF: u32 = 30;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+const ALBUM_FLUSH_MILLIS: u64 = 500;
+const OBSERVED_PEER_CAP: usize = 10_000;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum StateBoxKey {
+    Common,
+    Channel(i64),
+}
+
+struct PtsPoint {
+    box_key: StateBoxKey,
+    pts: i32,
+    pts_count: i32,
+}
+
+struct GapSignal {
+    box_key: StateBoxKey,
+    expected_pts: i32,
+    observed_pts: i32,
+}
+
+#[derive(Default)]
+struct GapTracker {
+    last: HashMap<StateBoxKey, (i32, i32)>,
+}
+
+impl GapTracker {
+    fn observe(&mut self, raw: &tl::enums::Update) -> Option<GapSignal> {
+        let point = pts_point(raw)?;
+        match self.last.get_mut(&point.box_key) {
+            None => {
+                self.last
+                    .insert(point.box_key, (point.pts, point.pts_count.max(0)));
+                None
+            }
+            Some(&mut (last_pts, last_count)) => {
+                let expected = last_pts.saturating_add(last_count);
+                let signal = (point.pts > expected).then_some(GapSignal {
+                    box_key: point.box_key,
+                    expected_pts: expected,
+                    observed_pts: point.pts,
+                });
+                if point.pts > last_pts {
+                    self.last
+                        .insert(point.box_key, (point.pts, point.pts_count.max(0)));
+                }
+                signal
+            }
+        }
+    }
+}
+
+fn pts_point(raw: &tl::enums::Update) -> Option<PtsPoint> {
+    let common = |pts: i32, pts_count: i32| {
+        Some(PtsPoint {
+            box_key: StateBoxKey::Common,
+            pts,
+            pts_count,
+        })
+    };
+    let channel_of_message = |message: &tl::enums::Message| -> Option<i64> {
+        match message {
+            tl::enums::Message::Message(m) => peer_channel_id(&m.peer_id),
+            tl::enums::Message::Service(s) => peer_channel_id(&s.peer_id),
+            tl::enums::Message::Empty(_) => None,
+        }
+    };
+    match raw {
+        tl::enums::Update::NewMessage(x) => common(x.pts, x.pts_count),
+        tl::enums::Update::EditMessage(x) => common(x.pts, x.pts_count),
+        tl::enums::Update::DeleteMessages(x) => common(x.pts, x.pts_count),
+        tl::enums::Update::NewChannelMessage(x) => {
+            channel_of_message(&x.message).map(|channel_id| PtsPoint {
+                box_key: StateBoxKey::Channel(channel_id),
+                pts: x.pts,
+                pts_count: x.pts_count,
+            })
+        }
+        tl::enums::Update::EditChannelMessage(x) => {
+            channel_of_message(&x.message).map(|channel_id| PtsPoint {
+                box_key: StateBoxKey::Channel(channel_id),
+                pts: x.pts,
+                pts_count: x.pts_count,
+            })
+        }
+        tl::enums::Update::DeleteChannelMessages(x) => Some(PtsPoint {
+            box_key: StateBoxKey::Channel(x.channel_id),
+            pts: x.pts,
+            pts_count: x.pts_count,
+        }),
+        _ => None,
+    }
+}
+
+fn peer_channel_id(peer: &tl::enums::Peer) -> Option<i64> {
+    match peer {
+        tl::enums::Peer::Channel(c) => Some(c.channel_id),
+        _ => None,
+    }
+}
+
+fn gap_row(account: &str, gap: &GapSignal, state: &State) -> serde_json::Value {
+    let mut row = event_row("Gap", account, None, None, None);
+    if let serde_json::Value::Object(map) = &mut row {
+        map.insert("reason".into(), serde_json::Value::from("pts_jump"));
+        map.insert("expected_pts".into(), serde_json::json!(gap.expected_pts));
+        map.insert("observed_pts".into(), serde_json::json!(gap.observed_pts));
+        if let StateBoxKey::Channel(channel_id) = gap.box_key {
+            map.insert("channel_id".into(), serde_json::json!(channel_id));
+        }
+        map.insert("state".into(), state_to_json(state));
+    }
+    row
+}
+
+fn album_member(row: &serde_json::Value) -> Option<(i64, i64)> {
+    let grouped_id = row.get("grouped_id")?.as_i64()?;
+    let chat_id = row.get("peer")?.get("id")?.as_i64()?;
+    Some((chat_id, grouped_id))
+}
+
+struct PendingAlbum {
+    chat_id: i64,
+    grouped_id: i64,
+    rows: Vec<serde_json::Value>,
+    deadline: tokio::time::Instant,
+}
+
+fn album_ingest(
+    account: &str,
+    buf: &mut Option<PendingAlbum>,
+    row: serde_json::Value,
+    chat_id: i64,
+    grouped_id: i64,
+    now: tokio::time::Instant,
+) -> Option<serde_json::Value> {
+    let flush = match buf {
+        None => None,
+        Some(pending) if pending.chat_id == chat_id && pending.grouped_id == grouped_id => None,
+        Some(pending) => Some(album_complete(account, pending)),
+    };
+    let deadline = now + std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS);
+    match buf {
+        Some(pending) if pending.chat_id == chat_id && pending.grouped_id == grouped_id => {
+            pending.rows.push(row);
+            pending.deadline = deadline;
+        }
+        _ => {
+            *buf = Some(PendingAlbum {
+                chat_id,
+                grouped_id,
+                rows: vec![row],
+                deadline,
+            });
+        }
+    }
+    flush
+}
+
+fn album_flush(account: &str, buf: &mut Option<PendingAlbum>) -> Option<serde_json::Value> {
+    buf.take().map(|pending| album_complete(account, &pending))
+}
+
+fn album_complete(account: &str, pending: &PendingAlbum) -> serde_json::Value {
+    let ids: Vec<i32> = pending
+        .rows
+        .iter()
+        .filter_map(|r| r.get("id").and_then(|v| v.as_i64()).map(|v| v as i32))
+        .collect();
+    let mut row = event_row("Album", account, Some(pending.chat_id), None, None);
+    if let serde_json::Value::Object(map) = &mut row {
+        map.insert("grouped_id".into(), serde_json::json!(pending.grouped_id));
+        map.insert("ids".into(), serde_json::json!(ids));
+        if let Some(first) = pending.rows.first().and_then(|r| r.get("date").cloned()) {
+            map.insert("date".into(), first);
+        }
+        map.insert(
+            "messages".into(),
+            serde_json::Value::Array(pending.rows.clone()),
+        );
+    }
+    row
+}
+
+struct ObservedPeers {
+    by_id: HashMap<i32, PeerId>,
+    order: VecDeque<i32>,
+}
+
+impl ObservedPeers {
+    fn new() -> Self {
+        ObservedPeers {
+            by_id: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn observe(&mut self, id: i32, peer: PeerId) {
+        if self.by_id.contains_key(&id) {
+            return;
+        }
+        if self.by_id.len() >= OBSERVED_PEER_CAP {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_id.remove(&oldest);
+            }
+        }
+        self.by_id.insert(id, peer);
+        self.order.push_back(id);
+    }
+
+    fn peer_of(&self, id: i32) -> Option<PeerId> {
+        self.by_id.get(&id).copied()
+    }
+}
+
+fn observed_deletion_ids(ids: &[i32], observed: &ObservedPeers, target: PeerId) -> Vec<i32> {
+    ids.iter()
+        .copied()
+        .filter(|id| observed.peer_of(*id) == Some(target))
+        .collect()
+}
+
 pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     use grammers_client::update::Update;
@@ -175,20 +404,50 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         }
                     };
                     failures = on_reconnect_success(failures);
+                    let mut gaps = GapTracker::default();
+                    let mut observed = ObservedPeers::new();
+                    let mut album: Option<PendingAlbum> = None;
+                    let gap_on = events.iter().any(|e| e == "Gap");
+                    let album_on = events.iter().any(|e| e == "Album");
+                    let new_message_on = events.iter().any(|e| e == "NewMessage");
                     loop {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
                                 break;
                             }
                         }
-                        let update = match tokio::time::timeout(
-                            poll_timeout(deadline, std::time::Instant::now()),
-                            stream.next(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(u)) => u,
-                            Ok(Err(e)) => {
+                        enum Tick {
+                            Update(Box<grammers_client::update::Update>),
+                            StreamError(grammers_client::InvocationError),
+                            Idle,
+                            AlbumDue,
+                        }
+                        let album_timer = async {
+                            match &album {
+                                Some(pending) => tokio::time::sleep_until(pending.deadline).await,
+                                None => std::future::pending::<()>().await,
+                            }
+                        };
+                        let tick = tokio::select! {
+                            _ = album_timer => Tick::AlbumDue,
+                            res = tokio::time::timeout(
+                                poll_timeout(deadline, std::time::Instant::now()),
+                                stream.next(),
+                            ) => match res {
+                                Ok(Ok(u)) => Tick::Update(Box::new(u)),
+                                Ok(Err(e)) => Tick::StreamError(e),
+                                Err(_) => Tick::Idle,
+                            },
+                        };
+                        let update = match tick {
+                            Tick::AlbumDue => {
+                                if let Some(done) = album_flush(&name, &mut album) {
+                                    emit_row(done).await?;
+                                }
+                                continue;
+                            }
+                            Tick::Idle => continue,
+                            Tick::StreamError(e) => {
                                 if crate::error::invocation_is_unauthorized(&e) {
                                     output::log_line(
                                         "error",
@@ -205,12 +464,17 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 .await?;
                                 break;
                             }
-                            Err(_) => continue,
+                            Tick::Update(u) => *u,
                         };
                         failures = on_reconnect_success(failures);
+                        if gap_on {
+                            if let Some(signal) = gaps.observe(update.raw()) {
+                                emit_row(gap_row(&name, &signal, update.state())).await?;
+                            }
+                        }
                         match &update {
                             Update::NewMessage(m) => {
-                                if !events.iter().any(|e| e == "NewMessage") {
+                                if !new_message_on && !album_on {
                                     continue;
                                 }
                                 let peer = update_peer(&m.raw);
@@ -220,15 +484,44 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if is_empty_update(&m.raw) {
                                     continue;
                                 }
+                                if resolved.is_some() {
+                                    if let Some(peer) = m.peer() {
+                                        observed.observe(m.id(), peer.id());
+                                    }
+                                }
+                                let chat_id = peer.and_then(|p| p.bare_id());
                                 let row = crate::serialize::message_to_json(m)?;
-                                emit_row(event_row(
-                                    "NewMessage",
-                                    &name,
-                                    peer.and_then(|p| p.bare_id()),
-                                    None,
-                                    Some(row),
-                                ))
-                                .await?;
+                                let grouped = if album_on { album_member(&row) } else { None };
+                                match (grouped, chat_id) {
+                                    (Some((member_chat, gid)), _) => {
+                                        if let Some(done) = album_ingest(
+                                            &name,
+                                            &mut album,
+                                            row,
+                                            member_chat,
+                                            gid,
+                                            tokio::time::Instant::now(),
+                                        ) {
+                                            emit_row(done).await?;
+                                        }
+                                    }
+                                    (None, _) => {
+                                        if !new_message_on {
+                                            continue;
+                                        }
+                                        if let Some(done) = album_flush(&name, &mut album) {
+                                            emit_row(done).await?;
+                                        }
+                                        emit_row(event_row(
+                                            "NewMessage",
+                                            &name,
+                                            chat_id,
+                                            None,
+                                            Some(row),
+                                        ))
+                                        .await?;
+                                    }
+                                }
                             }
                             Update::MessageEdited(m) => {
                                 if !events.iter().any(|e| e == "MessageEdited") {
@@ -240,6 +533,11 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 }
                                 if is_empty_update(&m.raw) {
                                     continue;
+                                }
+                                if resolved.is_some() {
+                                    if let Some(peer) = m.peer() {
+                                        observed.observe(m.id(), peer.id());
+                                    }
                                 }
                                 let row = crate::serialize::message_to_json(m)?;
                                 emit_row(event_row(
@@ -255,16 +553,27 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !events.iter().any(|e| e == "MessageDeleted") {
                                     continue;
                                 }
-                                if let Some(target) = &resolved {
-                                    if !deleted_matches(d.channel_id(), *target) {
-                                        continue;
+                                let matched: Option<Vec<i32>> = match resolved {
+                                    Some(target) if target.kind() == PeerKind::Channel => {
+                                        deleted_matches(d.channel_id(), target)
+                                            .then(|| d.messages().to_vec())
                                     }
-                                }
+                                    Some(target) => {
+                                        let hit =
+                                            observed_deletion_ids(d.messages(), &observed, target);
+                                        (!hit.is_empty()).then_some(hit)
+                                    }
+                                    None => Some(d.messages().to_vec()),
+                                };
+                                let Some(matched) = matched else {
+                                    continue;
+                                };
+                                let chat_id = resolved.as_ref().and_then(|target| target.bare_id());
                                 emit_row(event_row(
                                     "MessageDeleted",
                                     &name,
-                                    d.channel_id(),
-                                    Some(d.messages()),
+                                    chat_id,
+                                    Some(&matched),
                                     None,
                                 ))
                                 .await?;
@@ -1262,5 +1571,354 @@ mod tests {
         }
         assert_eq!(failures, MAX_RECONNECT_ATTEMPTS + 1);
         assert!(give_up(failures));
+    }
+
+    fn user_tl_peer() -> tl::enums::Peer {
+        tl::enums::Peer::User(tl::types::PeerUser { user_id: 7 })
+    }
+
+    fn pts_update(
+        peer: tl::enums::Peer,
+        id: i32,
+        pts: i32,
+        count: i32,
+        grouped_id: Option<i64>,
+    ) -> tl::enums::Update {
+        let mut msg = match tl_message(peer) {
+            tl::enums::Message::Message(m) => m,
+            _ => unreachable!("tl_message always builds a concrete message"),
+        };
+        msg.id = id;
+        msg.grouped_id = grouped_id;
+        tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: tl::enums::Message::Message(msg),
+            pts,
+            pts_count: count,
+        })
+    }
+
+    fn channel_pts_update(channel_id: i64, pts: i32, count: i32) -> tl::enums::Update {
+        tl::enums::Update::DeleteChannelMessages(tl::types::UpdateDeleteChannelMessages {
+            channel_id,
+            messages: vec![1],
+            pts,
+            pts_count: count,
+        })
+    }
+
+    #[test]
+    fn gap_tracker_first_sighting_records_baseline() {
+        let mut t = GapTracker::default();
+        let u = pts_update(user_tl_peer(), 1, 10, 2, None);
+        assert!(t.observe(&u).is_none());
+        let u = pts_update(user_tl_peer(), 2, 12, 1, None);
+        assert!(t.observe(&u).is_none(), "contiguous advance is not a gap");
+    }
+
+    #[test]
+    fn gap_tracker_reports_jump_with_expected_and_observed() {
+        let mut t = GapTracker::default();
+        assert!(t
+            .observe(&pts_update(user_tl_peer(), 1, 10, 1, None))
+            .is_none());
+        let signal = t
+            .observe(&pts_update(user_tl_peer(), 2, 15, 1, None))
+            .expect("jump must signal");
+        assert_eq!(signal.expected_pts, 11);
+        assert_eq!(signal.observed_pts, 15);
+        assert_eq!(signal.box_key, StateBoxKey::Common);
+    }
+
+    #[test]
+    fn gap_tracker_accepts_count_sized_advance_without_gap() {
+        let mut t = GapTracker::default();
+        assert!(t
+            .observe(&pts_update(user_tl_peer(), 1, 10, 3, None))
+            .is_none());
+        assert!(t
+            .observe(&pts_update(user_tl_peer(), 2, 13, 1, None))
+            .is_none());
+    }
+
+    #[test]
+    fn gap_tracker_ignores_stale_and_duplicate_pts() {
+        let mut t = GapTracker::default();
+        assert!(t
+            .observe(&pts_update(user_tl_peer(), 1, 10, 2, None))
+            .is_none());
+        assert!(t
+            .observe(&pts_update(user_tl_peer(), 1, 8, 1, None))
+            .is_none());
+        assert!(t
+            .observe(&pts_update(user_tl_peer(), 1, 10, 1, None))
+            .is_none());
+        let signal = t
+            .observe(&pts_update(user_tl_peer(), 3, 99, 1, None))
+            .expect("tracker still advances after stale input");
+        assert_eq!(signal.expected_pts, 12, "stale pts did not move baseline");
+    }
+
+    #[test]
+    fn gap_tracker_tracks_channels_independently_of_common_box() {
+        let mut t = GapTracker::default();
+        assert!(t.observe(&channel_pts_update(1000, 5, 1)).is_none());
+        assert!(
+            t.observe(&pts_update(user_tl_peer(), 1, 50, 1, None))
+                .is_none(),
+            "common box starts fresh even with channel state present"
+        );
+        let signal = t
+            .observe(&channel_pts_update(1000, 9, 1))
+            .expect("channel jump signals");
+        assert_eq!(signal.box_key, StateBoxKey::Channel(1000));
+        assert_eq!(signal.observed_pts, 9);
+        assert!(
+            t.observe(&channel_pts_update(2000, 4, 1)).is_none(),
+            "second channel has its own box"
+        );
+    }
+
+    #[test]
+    fn pts_point_reads_channel_from_message_peer_for_channel_updates() {
+        let raw = tl::enums::Update::NewChannelMessage(tl::types::UpdateNewChannelMessage {
+            message: tl_message(channel_peer()),
+            pts: 3,
+            pts_count: 1,
+        });
+        let point = pts_point(&raw).unwrap();
+        assert_eq!(point.box_key, StateBoxKey::Channel(1234567890));
+        let raw = tl::enums::Update::EditChannelMessage(tl::types::UpdateEditChannelMessage {
+            message: tl_message(channel_peer()),
+            pts: 4,
+            pts_count: 2,
+        });
+        let point = pts_point(&raw).unwrap();
+        assert_eq!(point.box_key, StateBoxKey::Channel(1234567890));
+        assert_eq!(point.pts_count, 2);
+    }
+
+    #[test]
+    fn pts_point_common_variants_cover_new_edit_delete() {
+        for raw in [
+            pts_update(user_tl_peer(), 1, 5, 1, None),
+            tl::enums::Update::EditMessage(tl::types::UpdateEditMessage {
+                message: tl_message(user_tl_peer()),
+                pts: 6,
+                pts_count: 1,
+            }),
+            tl::enums::Update::DeleteMessages(tl::types::UpdateDeleteMessages {
+                messages: vec![1],
+                pts: 7,
+                pts_count: 1,
+            }),
+        ] {
+            let point = pts_point(&raw).expect("message-bearing update carries pts");
+            assert_eq!(point.box_key, StateBoxKey::Common);
+        }
+    }
+
+    #[test]
+    fn pts_point_skips_updates_without_message_pts() {
+        assert!(pts_point(&tl::enums::Update::PtsChanged).is_none());
+        let empty_channel =
+            tl::enums::Update::NewChannelMessage(tl::types::UpdateNewChannelMessage {
+                message: empty_message(),
+                pts: 1,
+                pts_count: 1,
+            });
+        assert!(
+            pts_point(&empty_channel).is_none(),
+            "channel updates without a peer cannot be keyed"
+        );
+    }
+
+    #[test]
+    fn gap_row_shape_matches_raw_state_snapshot_convention() {
+        let mut t = GapTracker::default();
+        assert!(t.observe(&channel_pts_update(1000, 5, 1)).is_none());
+        let signal = t.observe(&channel_pts_update(1000, 20, 1)).expect("gap");
+        let state = State {
+            date: 77,
+            seq: 88,
+            message_box: Some(MessageBox::Channel {
+                channel_id: 1000,
+                pts: 20,
+            }),
+        };
+        let row = gap_row("work", &signal, &state);
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "Gap");
+        assert_eq!(obj["account"], "work");
+        assert_eq!(obj["reason"], "pts_jump");
+        assert_eq!(obj["expected_pts"], 6);
+        assert_eq!(obj["observed_pts"], 20);
+        assert_eq!(obj["channel_id"], 1000);
+        assert_eq!(obj["state"]["date"], 77);
+        assert_eq!(obj["state"]["seq"], 88);
+        assert_eq!(obj["state"]["channel_id"], 1000);
+        assert_eq!(obj["state"]["pts"], 20);
+    }
+
+    fn member_row(id: i32, chat: i64, grouped: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "date": format!("2026-08-13T12:00:{id:02}+00:00"),
+            "text": format!("m{id}"),
+            "peer": {"id": chat, "kind": "chat", "name": "g"},
+            "grouped_id": grouped,
+        })
+    }
+
+    #[test]
+    fn album_member_reads_chat_and_grouped_id() {
+        let (chat, gid) = album_member(&member_row(1, 456, 9001)).unwrap();
+        assert_eq!(chat, 456);
+        assert_eq!(gid, 9001);
+    }
+
+    #[test]
+    fn album_member_rejects_ungrouped_and_peerless_rows() {
+        let ungrouped = serde_json::json!({"id": 1, "peer": {"id": 5}});
+        assert!(album_member(&ungrouped).is_none());
+        let no_peer = serde_json::json!({"id": 1, "grouped_id": 3});
+        assert!(album_member(&no_peer).is_none());
+        let null_peer =
+            serde_json::json!({"id": 1, "grouped_id": 3, "peer": serde_json::Value::Null});
+        assert!(album_member(&null_peer).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn album_ingest_buffers_members_and_extends_deadline_to_quiescence() {
+        let mut buf = None;
+        let now = tokio::time::Instant::now();
+        assert!(album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now).is_none());
+        assert!(album_ingest("work", &mut buf, member_row(2, 456, 9001), 456, 9001, now).is_none());
+        tokio::time::advance(std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS - 1)).await;
+        let pending = buf.as_ref().expect("album still pending before deadline");
+        assert_eq!(pending.rows.len(), 2);
+        let deadline = pending.deadline;
+        tokio::time::sleep_until(deadline).await;
+        let done = album_flush("work", &mut buf).expect("flush after quiescence");
+        assert_eq!(done["event"], "Album");
+        assert_eq!(done["messages"].as_array().unwrap().len(), 2);
+        assert!(buf.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn album_ingest_group_switch_flushes_previous_album() {
+        let mut buf = None;
+        let now = tokio::time::Instant::now();
+        album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now);
+        album_ingest("work", &mut buf, member_row(2, 456, 9001), 456, 9001, now);
+        let done = album_ingest("home", &mut buf, member_row(9, 789, 42), 789, 42, now)
+            .expect("previous group flushed on key switch");
+        assert_eq!(done["chat_id"], 456);
+        assert_eq!(done["grouped_id"], serde_json::json!(9001));
+        assert_eq!(done["ids"], serde_json::json!([1, 2]));
+        let pending = buf.as_ref().unwrap();
+        assert_eq!((pending.chat_id, pending.grouped_id), (789, 42));
+        assert_eq!(pending.rows.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn album_flush_timer_fires_after_quiescence_window() {
+        let mut buf = None;
+        let now = tokio::time::Instant::now();
+        album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now);
+        let deadline = buf.as_ref().unwrap().deadline;
+        assert_eq!(
+            deadline - now,
+            std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS)
+        );
+        tokio::time::sleep_until(deadline).await;
+        assert!(tokio::time::Instant::now() >= deadline);
+    }
+
+    #[test]
+    fn album_flush_empty_buffer_is_none() {
+        let mut buf = None;
+        assert!(album_flush("work", &mut buf).is_none());
+    }
+
+    #[test]
+    fn album_complete_carries_shared_metadata_and_member_payloads() {
+        let pending = PendingAlbum {
+            chat_id: 456,
+            grouped_id: 9001,
+            rows: vec![member_row(1, 456, 9001), member_row(2, 456, 9001)],
+            deadline: tokio::time::Instant::now(),
+        };
+        let row = album_complete("work", &pending);
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "Album");
+        assert_eq!(obj["account"], "work");
+        assert_eq!(obj["chat_id"], 456);
+        assert_eq!(obj["grouped_id"], serde_json::json!(9001));
+        assert_eq!(obj["ids"], serde_json::json!([1, 2]));
+        assert_eq!(obj["date"], "2026-08-13T12:00:01+00:00");
+        let messages = obj["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["text"], "m1");
+        assert_eq!(messages[1]["text"], "m2");
+    }
+
+    fn observed_fixture() -> ObservedPeers {
+        let mut o = ObservedPeers::new();
+        o.observe(101, PeerId::user_unchecked(7));
+        o.observe(102, PeerId::user_unchecked(7));
+        o.observe(103, PeerId::chat_unchecked(42));
+        o
+    }
+
+    #[test]
+    fn observed_peers_round_trips_lookup() {
+        let o = observed_fixture();
+        assert_eq!(o.peer_of(101), Some(PeerId::user_unchecked(7)));
+        assert_eq!(o.peer_of(103), Some(PeerId::chat_unchecked(42)));
+        assert_eq!(o.peer_of(999), None);
+    }
+
+    #[test]
+    fn observed_peers_evicts_oldest_beyond_cap() {
+        let mut o = ObservedPeers::new();
+        for i in 0..(OBSERVED_PEER_CAP as i32) {
+            o.observe(i, PeerId::user_unchecked(1));
+        }
+        o.observe(OBSERVED_PEER_CAP as i32, PeerId::user_unchecked(2));
+        assert_eq!(o.peer_of(0), None, "oldest entry evicted");
+        assert_eq!(
+            o.peer_of(OBSERVED_PEER_CAP as i32),
+            Some(PeerId::user_unchecked(2))
+        );
+        assert_eq!(o.by_id.len(), OBSERVED_PEER_CAP);
+    }
+
+    #[test]
+    fn observed_peers_reinsert_keeps_first_mapping_without_double_queue_entry() {
+        let mut o = ObservedPeers::new();
+        o.observe(1, PeerId::user_unchecked(7));
+        o.observe(1, PeerId::user_unchecked(9));
+        assert_eq!(o.peer_of(1), Some(PeerId::user_unchecked(7)));
+        assert_eq!(o.order.len(), 1);
+    }
+
+    #[test]
+    fn observed_deletion_ids_filters_by_target_and_keeps_order() {
+        let o = observed_fixture();
+        let target = PeerId::user_unchecked(7);
+        assert_eq!(
+            observed_deletion_ids(&[999, 102, 103, 101], &o, target),
+            vec![102, 101]
+        );
+        assert!(observed_deletion_ids(&[999], &o, target).is_empty());
+    }
+
+    #[test]
+    fn observed_deletion_ids_distinguishes_peer_kind() {
+        let o = observed_fixture();
+        let chat = PeerId::chat_unchecked(42);
+        assert_eq!(observed_deletion_ids(&[103], &o, chat), vec![103]);
+        let impostor = PeerId::user_unchecked(42);
+        assert!(observed_deletion_ids(&[103], &o, impostor).is_empty());
     }
 }
