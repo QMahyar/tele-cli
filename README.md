@@ -65,16 +65,16 @@ That's it. Every command supports `--dry-run`, `--json`, and `--account` / `--ta
 | Group | Commands |
 |---|---|
 | **Accounts** | `account list`, `account add`, `account login`, `account logout`, `account remove`, `account status` |
-| **Messages** | `msg send`, `msg get`, `msg edit`, `msg delete`, `msg forward`, `msg search`, `msg react`, `msg download`, `msg read`, `msg pin` |
-| **Chats** | `chat join`, `chat create`, `chat leave`, `chat participants`, `chat kick`, `chat admin`, `chat admin-log`, `chat stats`, `chat invite` |
-| **Dialogs** | `dialog list`, `dialog drafts`, `dialog archive`, `dialog delete` |
-| **Topics** | `topic list`, `topic create` |
-| **Contacts** | `contact list`, `contact add`, `contact block` |
-| **Profile** | `profile get`, `profile set` |
-| **Privacy** | `privacy get`, `privacy set` |
-| **Takeout** | `takeout start`, `takeout export`, `takeout finish` |
-| **Listen** | `listen` — stream JSONL updates in real time |
-| **Raw** | `raw` — typed registry for any supported TL method |
+| **Messages** | `msg send` (albums, topics, TTL, URL upload, copy-media), `msg get`, `msg edit`, `msg delete`, `msg forward`, `msg search --global`, `msg react`, `msg download --chunk-size-kb`, `msg read --mentions`, `msg pin --show/--all/--notify` |
+| **Chats** | `chat join`, `chat create`, `chat leave`, `chat participants --role`, `chat kick --ban`, `chat admin`, `chat admin-log`, `chat stats`, `chat invite` (full link suite), `chat settings`, `chat edit`, `chat link` |
+| **Dialogs** | `dialog list`, `dialog drafts`, `dialog draft`, `dialog archive`, `dialog delete --revoke`, `dialog pin` |
+| **Topics** | `topic list`, `topic create`, `topic close`, `topic reopen`, `topic edit`, `topic delete`, `topic pin` |
+| **Contacts** | `contact list`, `contact add`, `contact remove`, `contact block`, `contact unblock` |
+| **Profile** | `profile get`, `profile set` (name/bio/username), `profile photo --remove`, `profile emoji-status` |
+| **Privacy** | `privacy get` (14 keys), `privacy set` (incl. chat-participant rules) |
+| **Takeout** | `takeout start`, `takeout export` (progress + resume), `takeout finish --abandon` |
+| **Listen** | `listen` - stream JSONL updates (`NewMessage`, `MessageEdited`, `MessageDeleted`, `Album`, `Gap`, `Raw`) |
+| **Raw** | `raw` - typed registry for 18 supported TL methods |
 | **Completions** | `completions bash`, `completions zsh`, `completions fish`, `completions powershell` |
 
 Run `tele --help` for the full reference, or `tele <command> --help` for a specific command.

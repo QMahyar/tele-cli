@@ -34,6 +34,7 @@ No Prometheus in v1. Two freeform stderr channels are enough for a local CLI.
   `TELE_LOG` and of the `-v` flags.
 - Shape: freeform `[level] message`. There are **no structured events and no
   `run_id`**; correlate by reading the whole stderr stream.
+- Takeout exports emit per-page progress on stderr in human mode only ([info] dialogs page 1: +21 dialogs, [info] dialog 3 Q msgs=3); machine output stays untouched.
 - Never: api_hash, session, phone, password, QR one-time login token, full `--args` for raw at INFO.
 
 ## What actually gets logged

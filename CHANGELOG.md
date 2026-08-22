@@ -4,15 +4,76 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-22
 
 ### Added
-- `tele raw` registry grows from 6 to 18 typed methods: `channels.GetFullChannel`, `users.GetUsers`, `messages.GetHistory`, `messages.Search`, `messages.GetScheduledHistory`, `messages.GetMessagesViews`, `messages.ReadReactions`, `messages.ReadMentions`, `messages.GetDialogUnreadMarks`, `account.GetAuthorizations`, `account.SetAuthorizationTTL` (requires explicit `--account`), `contacts.DeleteByPhones` (requires explicit `--account`). Each arm ships a hand-shaped JSON payload plus human-readable output; peer params accept the same target syntax as `--chat` under the `chat` key.
-- RPC errors in `--json` envelopes now carry additive `code` and `name` keys — scripts should match on these instead of parsing the human `message` string.
-- Message objects may carry additive `media_kind` and `media_label` fields alongside the legacy colon-joined `media` string.
+
+Messaging:
+- `msg send --file` is repeatable: 2-10 paths send as one album (`client.send_album`), returning `{"album": [...]}`.
+- `msg send --media-ttl <secs>` sets an auto-destruct timer on sent media.
+- `msg send --thumbnail <path>` attaches a custom thumbnail to single-document uploads (reuses upload path guards).
+- `msg send --url <url> --kind photo|document` uploads remote media by URL (`photo_url`/`document_url`).
+- `msg send --copy-from <chat> --copy-id <id>` re-sends an existing message's media without the forward header.
+- `msg send --schedule online` schedules delivery for when the peer comes online.
+- `msg send --topic <id>` posts into a forum topic.
+- `msg search --global` searches across all dialogs (`messages.searchGlobal`); `--chat` becomes optional with it.
+- `msg pin --show` prints the current pinned message; `--all` unpins all; `--notify` pins with notification.
+- `msg read --mentions` clears only the mention badge.
+- `msg download --chunk-size-kb <4-512>` streams via chunked `iter_download`.
+- Message JSON gains additive `grouped_id`, `views`, `forwards`, `edit_date`, `reply_to`, `via_bot` when present.
+
+Chats:
+- `chat participants --role admin|banned|kicked|recent` and `--search Q` (server-side filters).
+- Admin rights completed: `anonymous`, `other`, `manage_topics` join the `--rights` CSV and presets.
+- `chat kick --ban --duration <secs|forever> [--rights CSV]` builds full banned-rights restrictions.
+- `tele chat settings` reads slow-mode/signatures/pre-history/join-request/noforwards/linked-chat and applies toggles available in the API layer.
+- `tele chat edit [--title] [--about] [--photo PATH|remove]` edits existing chats; `tele chat link [--to CHANNEL|remove]` manages discussion-group links.
+- `tele chat invite` grows into a suite: export with options (`--title/--expire/--usage-limit/--request-approval`), `--list [--revoked|--importers LINK]`, `--edit LINK [+--revoke]`, `--delete-revoked`.
+- `chat admin-log` rows gain `actor {id,name}` and old/new value payloads across event kinds; new filters `--admin/--search/--events/--since/--until`.
+
+Topics:
+- `tele topic close|reopen|edit|delete|pin`; `topic list` rows gain `closed` + `pinned`.
+
+Dialogs:
+- `tele dialog draft --chat X [--text T|--clear]` sets or clears drafts.
+- `tele dialog pin --chat X [--unpin]` pins/unpins dialogs.
+- `dialog delete` reports honest per-kind `left`/`cleared` semantics and gains `--revoke`.
+- Dialog list rows gain `pinned`, `unread_mark`, `unread_mentions`, `unread_reactions`, `last_message_date`.
+
+Contacts/profile/privacy:
+- `tele contact remove --user X`; contact rows carry `username`.
+- `profile set --username <u|remove>`; `tele profile photo --remove`; `tele profile emoji-status [--emoji ID|--remove]`.
+- Privacy covers all 14 layer keys (adds PhoneP2P, Birthday, StarGiftsAutoSave, NoPaidMessages, SavedMusic); `--allow-chat`/`--deny-chat` target chat participant lists; allow/deny overlap is rejected pre-connect.
+
+Listen/takeout:
+- `listen --events Gap` emits a synthetic loss marker when update-state jumps are detected.
+- `listen --events Album` coalesces consecutive grouped messages into one Album row.
+- DM/basic-group deletions now match under `--chat` via a bounded observed-peer map.
+- `takeout export` prints human-mode progress lines and supports cursor-based resume after interruption; `takeout finish --abandon` ends the session as unsuccessful.
+
+Raw/auth:
+- `tele raw` registry grows from 6 to 18 methods (channels.GetFullChannel, users.GetUsers, messages.GetHistory/Search/GetScheduledHistory/GetMessagesViews/ReadReactions/ReadMentions/GetDialogUnreadMarks, account.GetAuthorizations/SetAuthorizationTTL, contacts.DeleteByPhones). Mutating entries require explicit `--account`.
 - `account login --show-token`: prints the raw `tg://login?token=…` URI to stderr even when stderr is redirected to a log. Without the flag the URI is printed only on an interactive terminal.
+- RPC errors in `--json` envelopes carry additive `code` and `name` keys — scripts should match on these instead of parsing the human `message` string.
+- Message objects may carry additive `media_kind` and `media_label` fields alongside the legacy colon-joined `media` string.
+- `account login`: `TELE_PHONE` env var supplies the phone for code login; invalid codes and wrong 2FA passwords retry in-process (3 attempts) instead of forcing a fresh login; QR login gained `--qr-timeout-secs` (default 300) and tolerates transient stream errors.
+- Failed logins clean up phantom session files so `account list` stays truthful.
+
+### Fixed
+- A zero or negative `rpc_per_minute` budget no longer stalls every command for that account (treated as unlimited).
+- Paginated iterations (dialog list, msg get, privacy get) consume rate-limiter tokens per fetched page, honoring ADR-008 for large limits.
+- `contact add` parses the RPC result: additive `contact`/`mutual` fields, honest failure when privacy blocks the add, warn on silent rename-overwrite (was always `"added": true`).
+- Aborted logins no longer leave phantom sessions that fanout then fails on.
+- Unknown keys inside `[accounts.X]` TOML tables survive config rewrites; an empty per-account `[accounts.X.proxy]` table falls back to the global proxy instead of erroring.
+- Stale cached access hashes fall through to uncached resolution and append the peer-cache hint on final failure; corrupt cache rows log a warning instead of failing silently.
+- Upload-time FLOOD_WAIT now carries `code`/`name` JSON keys like the send path (the old mapping was dead code — `io::Error::source()` never exposed the wrapped RPC error).
+- `profile set --name "John"` no longer wipes an existing last name; first/last names are capped at 64 chars and bio at 140 client-side.
+- Peer-resolution failures misreported as "request error: dropped (cancelled)" are translated to an actionable hint about the peer cache.
+- Oversized numeric values in `raw --args` and `--chat` targets fail with a usage error instead of a silent i32 wraparound.
+- `listen --raw` help text corrected: raw TL updates are emitted *in addition to* the parsed event allowlist, not instead of it.
 
 ### Changed
+- `msg send --file` is repeatable (was single-value).
 - Broken stdout pipes exit 0 silently (`tele chat stats | head` no longer panics with exit code 101); stderr write failures are ignored.
 - Ctrl+C structurally aborts pending per-account tasks instead of waiting for in-flight RPCs to finish.
 - Mixed usage errors + Telegram failures now exit 1 uniformly across fanout commands and `tele listen` (previously `listen` could exit 2).
@@ -21,16 +82,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `dialog archive` / `dialog delete` validate `--chat` before connecting, so missing targets exit 1 (usage) instead of 3.
 - Config-related errors show the leaf filename only, not the full app-data path.
 
-### Fixed
-- The 2FA password prompt no longer echoes typed characters on Windows terminals (other platforms warn that input may echo).
-- Peer-resolution failures misreported as "request error: dropped (cancelled)" are translated to an actionable hint about the peer cache.
-- SQLite sidecar files (`*.session-journal`, `-wal`, `-shm`) are created permission-restricted like the session itself and re-checked after close.
-- Security: Windows app-data directories and session files now carry explicit owner-only DACLs (protected from inheritance) instead of relying on profile defaults.
-- Security: upload guard refuses private-key material (`id_rsa` family basenames, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `.netrc`, `.git-credentials`, bare `credentials`).
-- Security: a failed config-file write can no longer clobber the previous config (tmp file is written and verified first).
-- Security: a restrictive-ACL failure on `%APPDATA%\telecli\.env` is now warned about at startup.
-- `listen --raw` help text corrected: raw TL updates are emitted *in addition to* the parsed event allowlist, not instead of it.
-- Oversized numeric values in `raw --args` and `--chat` targets fail with a usage error instead of a silent i32 wraparound.
+### Security
+- Windows app-data directories and session files carry explicit owner-only DACLs (protected from inheritance) instead of relying on profile defaults.
+- Upload guard refuses private-key material (`id_rsa` family basenames, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `.netrc`, `.git-credentials`, bare `credentials`).
+- A failed config-file write can no longer clobber the previous config (tmp file is written and verified first).
+- A failed `.env` restriction is warned about at startup; SQLite sidecars are permission-restricted like sessions.
+- The 2FA password prompt no longer echoes typed characters on Windows terminals.
 
 ### Removed
 - Never-wired flood-cooldown API in the per-account rate limiter; FloodWait/SlowModeWait handling is unchanged (grammers AutoSleep retry policy).

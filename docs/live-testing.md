@@ -340,6 +340,40 @@ passwords. All examples use placeholder values. Do not commit real credentials.
 
 ---
 
+
+## 8. Executed Live Verification — 2026-08-22 (v0.4.0 wave)
+
+Real sessions 1 and 2, sequential cadence, self-targeted writes plus a private
+test supergroup/channel created for the purpose. All checks passed unless noted.
+
+| Surface | Result |
+|---|---|
+| account status/list (4 sessions; 2 authorized) | PASS |
+| msg send/get/edit/delete roundtrip on Saved Messages | PASS |
+| album send (3 files) via repeatable --file | PASS |
+| listen --events Album cross-account coalescing (incl. catch-up replay) | PASS |
+| msg send --copy-from/--copy-id (media re-send without forward header) | PASS |
+| msg download --chunk-size-kb 64 streaming | PASS |
+| msg search per-chat and --global | PASS |
+| chat create (supergroup / forum / channel) | PASS |
+| topic create/list/send --topic/pin/close/reopen (delete unexercised live) | PASS |
+| chat settings read-back + slow-mode toggle; noforwards = honest layer error | PASS |
+| chat edit title/about; invite export with options; join via link | PASS |
+| participants + role filters; promote incl. manage_topics; kick --ban --duration | PASS |
+| dialog draft set/clear/list; pin/unpin; delete left/cleared semantics | PASS |
+| profile username set/restore; emoji-status remove (set needs a real owned emoji id -> DOCUMENT_INVALID surfaced honestly) | PASS |
+| privacy get all 14 keys; allow/deny overlap rejection | PASS |
+| msg read --mark-unread / --mentions | PASS |
+| takeout progress lines, checkpointed export, finish --abandon | PASS |
+| raw: channels.GetFullChannel, account.GetAuthorizations, messages.Search (top_msg_id), SetAuthorizationTTL gating + dry-run | PASS |
+
+Environment limitations observed (not bugs): reactions in Saved Messages are
+premium-gated (PREMIUM_ACCOUNT_REQUIRED); the layer has no noforwards toggle
+method; owned-channel deletion is not a CLI capability.
+
+Two bugs found by this pass were fixed before ship: the CAP-3 flag rename
+(--files) that broke --file compatibility, and search --global still
+requiring --chat.
 ## Sources
 
 | Source | Type | Citation |
