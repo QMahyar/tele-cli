@@ -49,6 +49,27 @@ pub fn message_to_json(
         };
         out.insert("media_label".into(), label);
     }
+    if let Some(grouped_id) = msg.grouped_id() {
+        out.insert("grouped_id".into(), serde_json::json!(grouped_id));
+    }
+    if let Some(views) = msg.view_count() {
+        out.insert("views".into(), serde_json::json!(views));
+    }
+    if let Some(forwards) = msg.forward_count() {
+        out.insert("forwards".into(), serde_json::json!(forwards));
+    }
+    if let Some(edit_date) = msg.edit_date() {
+        out.insert(
+            "edit_date".into(),
+            serde_json::json!(edit_date.to_rfc3339()),
+        );
+    }
+    if let Some(reply_to) = msg.reply_to_message_id() {
+        out.insert("reply_to".into(), serde_json::json!(reply_to));
+    }
+    if let Some(via_bot) = msg.via_bot_id() {
+        out.insert("via_bot".into(), serde_json::json!(via_bot));
+    }
     Ok(serde_json::Value::Object(out))
 }
 
@@ -219,6 +240,42 @@ mod tests {
                 .unwrap()
                 .to_ambient_ref(),
         )
+    }
+
+    fn set_enrichment(
+        msg: &mut grammers_client::message::Message,
+        grouped_id: Option<i64>,
+        views: Option<i32>,
+        forwards: Option<i32>,
+        edit_date: Option<i32>,
+        reply_to_msg_id: Option<i32>,
+        via_bot_id: Option<i64>,
+    ) {
+        if let tl::enums::Message::Message(m) = &mut msg.raw {
+            m.grouped_id = grouped_id;
+            m.views = views;
+            m.forwards = forwards;
+            m.edit_date = edit_date;
+            m.via_bot_id = via_bot_id;
+            m.reply_to = reply_to_msg_id.map(|id| {
+                tl::enums::MessageReplyHeader::Header(tl::types::MessageReplyHeader {
+                    reply_to_scheduled: false,
+                    forum_topic: false,
+                    quote: false,
+                    reply_to_ephemeral: false,
+                    reply_to_msg_id: Some(id),
+                    reply_to_peer_id: None,
+                    reply_from: None,
+                    reply_media: None,
+                    reply_to_top_id: None,
+                    quote_text: None,
+                    quote_entities: None,
+                    quote_offset: None,
+                    todo_item_id: None,
+                    poll_option: None,
+                })
+            });
+        }
     }
 
     fn photo_media() -> tl::enums::MessageMedia {
@@ -429,6 +486,58 @@ mod tests {
     }
 
     #[test]
+    fn message_to_json_enriched_fields_present_when_set() {
+        let client = offline_client();
+        let mut msg = make_message(&client, 7, true, "hello", None);
+        set_enrichment(
+            &mut msg,
+            Some(9001),
+            Some(12),
+            Some(3),
+            Some(1700000100),
+            Some(55),
+            Some(424242),
+        );
+        let value = message_to_json(&msg).unwrap();
+        for key in [
+            "grouped_id",
+            "views",
+            "forwards",
+            "edit_date",
+            "reply_to",
+            "via_bot",
+        ] {
+            assert!(value.get(key).is_some(), "missing enriched key {key}");
+        }
+        assert_eq!(value["grouped_id"], 9001);
+        assert_eq!(value["views"], 12);
+        assert_eq!(value["forwards"], 3);
+        assert_eq!(value["edit_date"], "2023-11-14T22:15:00+00:00");
+        assert_eq!(value["reply_to"], 55);
+        assert_eq!(value["via_bot"], 424242);
+    }
+
+    #[test]
+    fn message_to_json_omits_absent_enrichment_fields() {
+        let client = offline_client();
+        let msg = make_message(&client, 7, false, "hello", None);
+        let value = message_to_json(&msg).unwrap();
+        for key in [
+            "grouped_id",
+            "views",
+            "forwards",
+            "edit_date",
+            "reply_to",
+            "via_bot",
+        ] {
+            assert!(
+                value.get(key).is_none(),
+                "{key} must be omitted when absent"
+            );
+        }
+    }
+
+    #[test]
     fn message_to_json_photo_media_key_is_photo() {
         let client = offline_client();
         let msg = make_message(&client, 1, false, "", Some(photo_media()));
@@ -620,6 +729,37 @@ mod tests {
             let value = message_to_json(&msg).unwrap();
             serde_json::to_string(&value).unwrap();
             assert_eq!(value["text"], text);
+        }
+
+        #[test]
+        fn message_to_json_never_panics_on_enrichment_fields(
+            text in "\\PC{0,200}",
+            grouped_id in proptest::option::of(any::<i64>()),
+            views in proptest::option::of(any::<i32>()),
+            forwards in proptest::option::of(any::<i32>()),
+            edit_date in proptest::option::of(any::<i32>()),
+            reply_to in proptest::option::of(1..i32::MAX),
+            via_bot in proptest::option::of(any::<i64>()),
+        ) {
+            let client = offline_client();
+            let mut msg = make_message(&client, 1, false, &text, None);
+            set_enrichment(
+                &mut msg,
+                grouped_id,
+                views,
+                forwards,
+                edit_date,
+                reply_to,
+                via_bot,
+            );
+            let value = message_to_json(&msg).unwrap();
+            serde_json::to_string(&value).unwrap();
+            prop_assert_eq!(value.get("grouped_id").is_some(), grouped_id.is_some());
+            prop_assert_eq!(value.get("views").is_some(), views.is_some());
+            prop_assert_eq!(value.get("forwards").is_some(), forwards.is_some());
+            prop_assert_eq!(value.get("edit_date").is_some(), edit_date.is_some());
+            prop_assert_eq!(value.get("reply_to").is_some(), reply_to.is_some());
+            prop_assert_eq!(value.get("via_bot").is_some(), via_bot.is_some());
         }
 
         #[test]

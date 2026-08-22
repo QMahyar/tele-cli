@@ -3,6 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -13,6 +14,11 @@ use crate::output;
 pub enum TopicCmd {
     Create(CreateArgs),
     List(ListArgs),
+    Close(LifecycleArgs),
+    Reopen(LifecycleArgs),
+    Edit(EditArgs),
+    Delete(LifecycleArgs),
+    Pin(LifecycleArgs),
 }
 
 #[derive(Args)]
@@ -36,10 +42,54 @@ pub struct ListArgs {
     limit: u32,
 }
 
+#[derive(Args)]
+pub struct LifecycleArgs {
+    #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
+    chat: String,
+    #[arg(long, help = "topic id (root message id; see tele topic list)")]
+    topic: String,
+}
+
+#[derive(Args)]
+pub struct EditArgs {
+    #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
+    chat: String,
+    #[arg(long, help = "topic id (root message id; see tele topic list)")]
+    topic: String,
+    #[arg(long, help = "new topic title")]
+    title: Option<String>,
+    #[arg(long, help = "closed state: true or false")]
+    closed: Option<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActionKind {
+    Close,
+    Reopen,
+    Delete,
+    Pin,
+}
+
+impl ActionKind {
+    fn name(self) -> &'static str {
+        match self {
+            ActionKind::Close => "close",
+            ActionKind::Reopen => "reopen",
+            ActionKind::Delete => "delete",
+            ActionKind::Pin => "pin",
+        }
+    }
+}
+
 pub async fn run(cmd: TopicCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         TopicCmd::Create(a) => create(a, flags).await,
         TopicCmd::List(a) => list(a, flags).await,
+        TopicCmd::Close(a) => simple_action(a, flags, ActionKind::Close).await,
+        TopicCmd::Reopen(a) => simple_action(a, flags, ActionKind::Reopen).await,
+        TopicCmd::Edit(a) => edit(a, flags).await,
+        TopicCmd::Delete(a) => simple_action(a, flags, ActionKind::Delete).await,
+        TopicCmd::Pin(a) => simple_action(a, flags, ActionKind::Pin).await,
     }
 }
 
@@ -85,6 +135,129 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 "title": title,
                 "ok": true,
             }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn simple_action(
+    args: LifecycleArgs,
+    flags: &GlobalFlags,
+    kind: ActionKind,
+) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
+    let topic_id = parse_topic_id(&args.topic)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let chat_target = args.chat.clone();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let chat_target = chat_target.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(lifecycle_dry_run_payload(
+                    &chat_target,
+                    topic_id,
+                    kind.name(),
+                ));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            match kind {
+                ActionKind::Close | ActionKind::Reopen => {
+                    let _: tl::enums::Updates = guard
+                        .client
+                        .invoke(&tl::functions::messages::EditForumTopic {
+                            peer,
+                            topic_id,
+                            title: None,
+                            icon_emoji_id: None,
+                            closed: Some(kind == ActionKind::Close),
+                            hidden: None,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                ActionKind::Delete => {
+                    let _: tl::enums::messages::AffectedHistory = guard
+                        .client
+                        .invoke(&tl::functions::messages::DeleteTopicHistory {
+                            peer,
+                            top_msg_id: topic_id,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                ActionKind::Pin => {
+                    let _: tl::enums::Updates = guard
+                        .client
+                        .invoke(&tl::functions::messages::UpdatePinnedForumTopic {
+                            peer,
+                            topic_id,
+                            pinned: true,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+            }
+            Ok(serde_json::json!({
+                "chat": chat_target,
+                "topic": topic_id,
+                "ok": true,
+            }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
+    let topic_id = parse_topic_id(&args.topic)?;
+    validate_edit(args.title.as_deref(), args.closed)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let chat_target = args.chat.clone();
+    let title = args.title.clone();
+    let closed = args.closed;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let chat_target = chat_target.clone();
+        let title = title.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(edit_dry_run_payload(
+                    &chat_target,
+                    topic_id,
+                    title.as_deref(),
+                    closed,
+                ));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let request = build_edit_request(peer, topic_id, title.as_deref(), closed);
+            let _: tl::enums::Updates = guard
+                .client
+                .invoke(&request)
+                .await
+                .map_err(tele_invocation)?;
+            Ok(edit_report(
+                &chat_target,
+                topic_id,
+                title.as_deref(),
+                closed,
+            ))
         })
     })
     .await?;
@@ -138,13 +311,8 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             .await?;
             let mut rows = Vec::new();
             for topic in topics {
-                match topic {
-                    tl::enums::ForumTopic::Topic(t) => rows.push(serde_json::json!({
-                        "id": t.id,
-                        "title": t.title,
-                        "icon_emoji_id": t.icon_emoji_id,
-                    })),
-                    tl::enums::ForumTopic::Deleted(_) => {}
+                if let Some(row) = topic_row(&topic) {
+                    rows.push(row);
                 }
             }
             if !output::machine_mode(json, jsonl) {
@@ -155,13 +323,15 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             r["id"].to_string(),
                             r["title"].as_str().unwrap_or_default().to_string(),
                             r["icon_emoji_id"].to_string(),
+                            r["closed"].to_string(),
+                            r["pinned"].to_string(),
                         ]
                     })
                     .collect();
                 output::print_account_table(
                     &name,
                     multi,
-                    &["id", "title", "icon_emoji_id"],
+                    &["id", "title", "icon_emoji_id", "closed", "pinned"],
                     &table_rows,
                 )?;
             }
@@ -291,6 +461,106 @@ fn list_dry_run_payload(target: &str) -> serde_json::Value {
     })
 }
 
+fn parse_topic_id(raw: &str) -> TeleResult<i32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(TeleError::Usage("--topic must not be empty".to_string()));
+    }
+    let id = trimmed
+        .parse::<i32>()
+        .map_err(|_| TeleError::Usage(format!("--topic \"{raw}\" must be an integer topic id")))?;
+    if id <= 0 {
+        return Err(TeleError::Usage(format!(
+            "--topic {id} must be a positive topic id (see tele topic list)"
+        )));
+    }
+    Ok(id)
+}
+
+fn validate_edit(title: Option<&str>, closed: Option<bool>) -> TeleResult<()> {
+    if title.is_none() && closed.is_none() {
+        return Err(TeleError::Usage(
+            "nothing to change: pass --title and/or --closed".to_string(),
+        ));
+    }
+    if let Some(t) = title {
+        if t.trim().is_empty() {
+            return Err(TeleError::Usage("--title must not be empty".to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn build_edit_request(
+    peer: tl::enums::InputPeer,
+    topic_id: i32,
+    title: Option<&str>,
+    closed: Option<bool>,
+) -> tl::functions::messages::EditForumTopic {
+    tl::functions::messages::EditForumTopic {
+        peer,
+        topic_id,
+        title: title.map(str::to_string),
+        icon_emoji_id: None,
+        closed,
+        hidden: None,
+    }
+}
+
+fn lifecycle_dry_run_payload(chat: &str, topic_id: i32, action: &str) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "topic": topic_id,
+        "would": format!("{action} topic {topic_id} in chat {chat}")
+    })
+}
+
+fn edit_dry_run_payload(
+    chat: &str,
+    topic_id: i32,
+    title: Option<&str>,
+    closed: Option<bool>,
+) -> serde_json::Value {
+    let mut value = lifecycle_dry_run_payload(chat, topic_id, "edit");
+    if let Some(t) = title {
+        value["title"] = serde_json::json!(t);
+    }
+    if let Some(c) = closed {
+        value["closed"] = serde_json::json!(c);
+    }
+    value
+}
+
+fn edit_report(
+    chat: &str,
+    topic_id: i32,
+    title: Option<&str>,
+    closed: Option<bool>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({"chat": chat, "topic": topic_id, "ok": true});
+    if let Some(t) = title {
+        value["title"] = serde_json::json!(t);
+    }
+    if let Some(c) = closed {
+        value["closed"] = serde_json::json!(c);
+    }
+    value
+}
+
+fn topic_row(topic: &tl::enums::ForumTopic) -> Option<serde_json::Value> {
+    match topic {
+        tl::enums::ForumTopic::Topic(t) => Some(serde_json::json!({
+            "id": t.id,
+            "title": t.title,
+            "icon_emoji_id": t.icon_emoji_id,
+            "closed": t.closed,
+            "pinned": t.pinned,
+        })),
+        tl::enums::ForumTopic::Deleted(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +571,143 @@ mod tests {
         let v = list_dry_run_payload("work");
         assert_eq!(v["dry_run"], serde_json::json!(true));
         assert_eq!(v["chat"], serde_json::json!("work"));
+    }
+
+    #[test]
+    fn parse_topic_id_accepts_positive_integer() {
+        assert_eq!(parse_topic_id(" 42 ").unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_topic_id_rejects_empty_and_non_numeric() {
+        for bad in ["", "  ", "abc", "12x", "9223372036854775808"] {
+            let err = parse_topic_id(bad).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {bad}");
+            assert_eq!(err.exit_code(), EXIT_USAGE);
+        }
+    }
+
+    #[test]
+    fn parse_topic_id_rejects_zero_and_negative() {
+        for bad in ["0", "-1"] {
+            let err = parse_topic_id(bad).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {bad}");
+            assert!(err.message().contains("positive"), "for {bad}");
+        }
+    }
+
+    #[test]
+    fn edit_requires_title_or_closed() {
+        let err = validate_edit(None, None).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.message().contains("nothing to change"));
+    }
+
+    #[test]
+    fn edit_rejects_blank_title_but_accepts_valid_combos() {
+        assert!(matches!(
+            validate_edit(Some("   "), None),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_edit(Some("new"), None).is_ok());
+        assert!(validate_edit(None, Some(true)).is_ok());
+        assert!(validate_edit(Some("new"), Some(false)).is_ok());
+    }
+
+    fn empty_peer() -> tl::enums::InputPeer {
+        tl::enums::InputPeer::Empty
+    }
+
+    #[test]
+    fn edit_request_maps_title_and_closed_only() {
+        let req = build_edit_request(empty_peer(), 7, Some("renamed"), Some(false));
+        assert_eq!(req.peer, empty_peer());
+        assert_eq!(req.topic_id, 7);
+        assert_eq!(req.title.as_deref(), Some("renamed"));
+        assert_eq!(req.closed, Some(false));
+        assert_eq!(req.icon_emoji_id, None);
+        assert_eq!(req.hidden, None);
+    }
+
+    #[test]
+    fn close_and_reopen_shape_only_the_closed_flag() {
+        let close_req = build_edit_request(empty_peer(), 9, None, Some(true));
+        assert_eq!(close_req.topic_id, 9);
+        assert_eq!(close_req.title, None);
+        assert_eq!(close_req.closed, Some(true));
+        assert_eq!(close_req.hidden, None);
+
+        let reopen_req = build_edit_request(empty_peer(), 9, None, Some(false));
+        assert_eq!(reopen_req.title, None);
+        assert_eq!(reopen_req.closed, Some(false));
+    }
+
+    #[test]
+    fn action_kind_names_match_subcommands() {
+        assert_eq!(ActionKind::Close.name(), "close");
+        assert_eq!(ActionKind::Reopen.name(), "reopen");
+        assert_eq!(ActionKind::Delete.name(), "delete");
+        assert_eq!(ActionKind::Pin.name(), "pin");
+    }
+
+    #[test]
+    fn lifecycle_dry_run_names_the_action() {
+        let v = lifecycle_dry_run_payload("work", 5, "close");
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["chat"], serde_json::json!("work"));
+        assert_eq!(v["topic"], serde_json::json!(5));
+        assert_eq!(v["would"], serde_json::json!("close topic 5 in chat work"));
+    }
+
+    #[test]
+    fn edit_dry_run_and_report_carry_requested_changes_only() {
+        let v = edit_dry_run_payload("work", 5, None, None);
+        assert_eq!(v["would"], serde_json::json!("edit topic 5 in chat work"));
+        assert!(v.get("title").is_none());
+        assert!(v.get("closed").is_none());
+
+        let v = edit_dry_run_payload("work", 5, Some("t"), Some(true));
+        assert_eq!(v["title"], serde_json::json!("t"));
+        assert_eq!(v["closed"], serde_json::json!(true));
+
+        let v = edit_report("work", 5, None, Some(false));
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["topic"], serde_json::json!(5));
+        assert_eq!(v["closed"], serde_json::json!(false));
+        assert!(v.get("title").is_none());
+
+        let v = edit_report("work", 6, Some("x"), None);
+        assert_eq!(v["title"], serde_json::json!("x"));
+        assert!(v.get("closed").is_none());
+    }
+
+    fn topic_with_flags(id: i32, closed: bool, pinned: bool) -> tl::enums::ForumTopic {
+        match fake_topic(id) {
+            tl::enums::ForumTopic::Topic(mut t) => {
+                t.closed = closed;
+                t.pinned = pinned;
+                tl::enums::ForumTopic::Topic(t)
+            }
+            other => other,
+        }
+    }
+
+    #[test]
+    fn topic_row_adds_closed_and_pinned_fields() {
+        let row = topic_row(&topic_with_flags(3, true, true)).unwrap();
+        assert_eq!(row["id"], serde_json::json!(3));
+        assert_eq!(row["closed"], serde_json::json!(true));
+        assert_eq!(row["pinned"], serde_json::json!(true));
+
+        let row = topic_row(&fake_topic(4)).unwrap();
+        assert_eq!(row["closed"], serde_json::json!(false));
+        assert_eq!(row["pinned"], serde_json::json!(false));
+
+        assert!(topic_row(&tl::enums::ForumTopic::Deleted(
+            tl::types::ForumTopicDeleted { id: 5 }
+        ))
+        .is_none());
     }
 
     #[test]

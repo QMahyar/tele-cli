@@ -16,7 +16,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | auth.2fa | 2FA password | `auth.checkPassword` | `check_password` | `tele account login` (interactive 2FA prompt; no-echo input on Windows) | done |
 | auth.qr | QR login | `auth.exportLoginToken` | raw flow (no friendly helper) | `tele account login --method qr` (raw `tg://login` URI printed only on TTY stderr or `--show-token`) | done |
 | auth.logout | Logout + delete session | `auth.logOut` | `sign_out` | `tele account logout` | done |
-| auth.session-ttl | Session TTL / auth settings | `account.setAuthorizationTTL` | raw | `tele raw` registry | later |
+| auth.session-ttl | Session TTL / auth settings | `account.setAuthorizationTTL` | raw | `tele raw` account.SetAuthorizationTTL | done |
 | auth.passkey | Passkeys | `/api/passkeys` | none friendly | — | later |
 | auth.bot-token | Bot token login | `auth.importBotAuthorization` | `bot_sign_in` | not a product path | never |
 
@@ -51,27 +51,33 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 |---|---|---|---|---|---|
 | chat.join | Join public / invite | `channels.joinChannel`, `messages.importChatInvite` | `join_chat`, `accept_invite_link` | `tele chat join` | done |
 | chat.leave | Leave / delete dialog | `channels.leaveChannel`, `messages.deleteChatUser` | `delete_dialog` | `tele chat leave` | done |
-| chat.invite | Export / edit invites | `/api/invites` | raw | `tele chat invite` adds users (channels.InviteToChannel); export a link via `tele raw messages.ExportChatInvite` | done |
-| chat.participants | List members | `channels.getParticipants` | `iter_participants` (channels/supergroups); basic groups via raw `messages.GetFullChat` — members whose user data is missing are skipped, never a panic | `tele chat participants` | done |
-| chat.kick | Kick / ban | `channels.editBanned` | `kick_participant`, `set_banned_rights` | `tele chat kick` | done |
-| chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` | `tele chat admin` | done |
-| chat.adminlog | Admin log | `channels.getAdminLog` | raw | `tele chat admin-log` | done |
+| chat.invite | Export / edit invites | `messages.{exportChatInvite,getExportedChatInvites,editExportedChatInvite,deleteRevokedExportedChatInvites,getChatInviteImporters}`, `channels.InviteToChannel` / `messages.AddChatUser` | raw (friendly command wraps the raw family; raw registry entry stays) | `tele chat invite`: adds users (`--user`); exports links (+`--title/--expire/--usage-limit/--request-approval`); `--list [--revoked or --importers LINK]`; `--edit LINK (+--revoke +options)`; `--delete-revoked` | done |
+| chat.participants | List members | `channels.getParticipants` | `iter_participants` (channels/supergroups; `--role admin/banned/kicked/recent` + `--search` pass the TL filter param); basic groups via raw `messages.GetFullChat` — members whose user data is missing are skipped, never a panic | `tele chat participants` | done |
+| chat.kick | Kick / ban / restrict | `channels.editBanned` | `kick_participant`, `set_banned_rights` | `tele chat kick` (`--ban`, `--duration secs-or-forever`, `--rights CSV`) | done |
+| chat.admin | Edit admin | `channels.editAdmin` | `set_admin_rights` (+ raw `channels.EditAdmin` when `other`/`manage_topics` requested) | `tele chat admin` (`--rights` incl. anonymous, other, manage_topics) | done |
+| chat.adminlog | Admin log | `channels.getAdminLog` (+`AdminLogEventsFilter` flags) | raw | `tele chat admin-log` (`--admin USER`, `--search Q`, `--events CSV` server-side; `--since/--until` client-side; rows carry additive `actor` and old/new action payloads) | done |
 | chat.stats | Channel / group stats | `/api/stats` | raw | `tele chat stats` | done |
-| chat.forum | Forums / topics | `/api/forum` | raw | `tele topic *` (`topic create --emoji` single-codepoint only, see note) | done |
+| chat.settings | Slow mode, signatures, join-request, pre-history | `channels.{toggleSlowMode,toggleSignatures,togglePreHistoryHidden,toggleJoinRequest}`, read-back via `channels.getFullChannel` | raw | `tele chat settings` (`--noforwards` rejected: no toggle method in this TL layer; value still reported by read-back) | done |
+| chat.forum | Forums / topics | `/api/forum` | raw | `tele topic *` incl. lifecycle close / reopen / edit / delete / pin (`topic create --emoji` single-codepoint only, see note) | done |
 | chat.folders | Folders / archive | `/api/folders` | raw | `tele dialog archive` | done |
 | chat.create | Create channel / group | `channels.createChannel` | raw | `tele chat create` | done |
+| chat.edit | Edit title / about / photo | `channels.{editTitle,editPhoto}`, `messages.{editChatTitle,editChatPhoto,editChatAbout}`, `photos.deletePhotos` | raw | `tele chat edit` (`--title`, `--about`, `--photo path-or-remove`) | done |
+| chat.link | Discussion group linkage | `channels.{getFullChannel,setDiscussionGroup}` | raw | `tele chat link` (`--to CHANNEL` set; unlink has no API method — honest error) | done |
 
-Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (open item M7, tracked in `tasks/todo.md`).
+Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (open item M7, tracked in `tasks/todo.md`). Topic lifecycle (`close`, `reopen`, `edit`, `delete`, `pin`) ships via raw TL: `messages.editForumTopic` (closed flag / title), `messages.updatePinnedForumTopic` (pin), and `messages.deleteTopicHistory` (whole-topic history removal; not `messages.deleteHistory`). `topic list` rows carry additive `closed` + `pinned`.
 
 ## Dialogs & users
 
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
 | dialog.list | Dialog list | `messages.getDialogs` | `iter_dialogs` | `tele dialog list` | done |
-| contact.* | Contacts / block | `/api/contacts`, `/api/block` | raw | `tele contact *` | done |
-| profile.* | Profile, colors, emoji status | `/api/profile`, `/api/colors` | `get_me` + raw | `tele profile` | done |
-| privacy.* | Privacy rules | `/api/privacy` | raw | `tele privacy` | done |
-| takeout | Data export | `/api/takeout` | raw | `tele takeout` (requires explicit `--account`/`--tag`; `all` allowed) | done |
+| dialog.draft | Set / clear draft | `messages.saveDraft` | raw | `tele dialog draft` (`--text` saves, `--clear` removes) | done |
+| dialog.pin | Pin / unpin dialog | `messages.toggleDialogPin` | raw | `tele dialog pin` (`--unpin`; `reorderPinnedDialogs` deferred) | done |
+| dialog.delete | Remove dialog (honest semantics) | `channels.leaveChannel`, `messages.deleteChatUser`, `messages.deleteHistory` | `delete_dialog` + raw | `tele dialog delete` (JSON `left`/`cleared`; `--revoke` deletes history on both sides for user chats) | done |
+| contact.* | Contacts add/remove/list, block/unblock | `contacts.{GetContacts,AddContact,DeleteContacts}`, `contacts.{Block,Unblock}` | raw | `tele contact *` (`list` rows carry `username`; `remove --user` via DeleteContacts) | done |
+| profile.* | Profile get/set (name, bio, photo, username), photo remove, emoji status | `get_me`, `account.{UpdateProfile,UpdateUsername}`, `users.getFullUser`, `photos.{UploadProfilePhoto,UpdateProfilePhoto,DeletePhotos}`, `account.updateEmojiStatus` | `get_me` + raw | `tele profile *` (`get`; `set` incl. `--username <u or remove>` with USERNAME errors mapped to Usage; `photo --remove`; `emoji-status --emoji <id>` or `--remove`; no colors commands exist) | done |
+| privacy.* | Privacy rules (14 keys, user plus chat-participant rules) | `account.{GetPrivacy,SetPrivacy}` | raw | `tele privacy *` (keys incl. phone_p2p, birthday, star_gifts_auto_save, no_paid_messages, saved_music; `--allow-chat` / `--deny-chat`; same target on both sides rejected) | done |
+| takeout | Data export | `/api/takeout` | raw | `tele takeout` (requires explicit `--account`/`--tag`; `all` allowed; stderr progress in human mode; per-dialog checkpoint resume appends instead of truncating; `finish --abandon` = success:false) | done |
 
 ## Updates
 
@@ -79,10 +85,11 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 |---|---|---|---|---|---|
 | listen.new | NewMessage | updates | `Update::NewMessage` | `tele listen` (default; requires explicit `--account`/`--tag`) | done |
 | listen.edit | MessageEdited | updates | `Update::EditMessage` | `--events MessageEdited` | done |
-| listen.delete | MessageDeleted | updates | `Update::DeleteMessages` | `--events MessageDeleted` | done |
+| listen.delete | MessageDeleted | updates | `Update::DeleteMessages` | `--events MessageDeleted` (DM/basic-group deletions match under `--chat` via bounded observed-id map) | done |
 | listen.action | ChatAction | updates | `Update::UserStatus`/raw | `--events ChatAction` | later |
 | listen.user | UserUpdate | updates | `Update::*` | `--events UserUpdate` | later |
-| listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` | later |
+| listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` (coalesce by grouped_id, ~500 ms quiescence flush) | done |
+| listen.gap | Gap (update-loss marker) | updates | pts tracking per message box | `--events Gap` (synthetic row when updates were dropped/difference ended early) | done |
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
 | listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
@@ -115,6 +122,6 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | kernel.output | Broken stdout pipes exit 0 silently; stderr write failures ignored; tables use dynamic width arrangement | `src/output.rs`, `src/main.rs` | done |
 | kernel.proxy | Global + per-account SOCKS5 (grammers 0.10 proxy feature is socks5-only) | `src/client.rs` | done |
 | kernel.json | Serialize results | `src/serialize.rs` | done |
-| kernel.raw | Build-time TL registry | `tele raw` (`src/commands/raw.rs` + `build.rs` + vendored `tl/api.tl`) — validation, registry, and help generated from TL schema at build time via `grammers-tl-parser`; dispatch arms hand-written for response shaping; human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `messages.ExportChatInvite`) require an explicit `--account` and honor `--dry-run` | done |
+| kernel.raw | Build-time TL registry | `tele raw` (`src/commands/raw.rs` + `build.rs` + vendored `tl/api.tl`) — validation, registry, and help generated from TL schema at build time via `grammers-tl-parser`; dispatch arms hand-written for response shaping; human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `account.SetAuthorizationTTL`, `contacts.DeleteByPhones`, `messages.ExportChatInvite`) require an explicit `--account` and honor `--dry-run`; 18 registry names incl. read-only `channels.GetFullChannel`, `users.GetUsers`, `messages.{GetHistory,Search,GetScheduledHistory,GetMessagesViews,ReadReactions,ReadMentions,GetDialogUnreadMarks}`, `account.GetAuthorizations` | done |
 | kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after; `-100…` bot-API dialog ids via `PeerId::from_bot_api_dialog_id`), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path; the temporary import is deleted immediately after resolution — no contact side effect, and privacy settings may hide the account) | `src/entities.rs` | done |
 | kernel.completions | Shell completions (bash, zsh, fish, powershell), printed to stdout, exit 0 | `tele completions` (`src/commands/completions.rs`) | done |

@@ -204,6 +204,24 @@ fn raw_registered_name_reaches_fanout() {
 }
 
 #[test]
+fn raw_new_mutators_require_explicit_account_offline() {
+    for (name, args) in [
+        (
+            "account.SetAuthorizationTTL",
+            "{\"authorization_ttl_days\":30}",
+        ),
+        ("contacts.DeleteByPhones", "{\"phones\":[\"+15550100\"]}"),
+    ] {
+        let (code, _out, err) = run_isolated("rawgate2", &["raw", name, "--args", args]);
+        assert_eq!(code, 1, "raw {name}");
+        assert!(
+            err.contains("mutates account data"),
+            "raw {name}: stderr: {err}"
+        );
+    }
+}
+
+#[test]
 fn listen_unknown_event_exits_1_before_connect() {
     for name in ["Bogus", "Nope"] {
         let (code, _out, err) = run_isolated("lsev", &["listen", "--events", name]);
@@ -763,7 +781,7 @@ fn msg_send_format_allowlist() {
 fn privacy_set_requires_allow_or_deny() {
     let (code, _out, err) = run_isolated("privnone", &["privacy", "set", "--key", "status"]);
     assert_eq!(code, 1);
-    assert!(err.contains("requires --allow or --deny"), "stderr: {err}");
+    assert!(err.contains("requires --allow"), "stderr: {err}");
     let dir = isolated_appdir("privok");
     write_session(&dir, "work");
     let (code, _out, err) = run_in(
@@ -848,6 +866,152 @@ fn chat_admin_promote_demote_conflict() {
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
+}
+
+#[test]
+fn chat_invite_dry_run_covers_all_link_modes() {
+    let dir = isolated_appdir("chatchinv");
+    write_session(&dir, "work");
+    let run = |args: &[&str]| {
+        let mut full = vec![
+            "chat",
+            "invite",
+            "--chat",
+            "@c",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ];
+        full.extend_from_slice(args);
+        let (code, out, err) = run_in(&dir, &full);
+        assert_eq!(code, 0, "stderr: {err}; args: {full:?}");
+        parse_json(&out)["results"][0]["data"].clone()
+    };
+    let export = run(&["--title", "Weekly", "--expire", "24h", "--usage-limit", "5"]);
+    assert_eq!(export["mode"], serde_json::json!("export"));
+    assert_eq!(export["title"], serde_json::json!("Weekly"));
+    assert_eq!(export["usage_limit"], serde_json::json!(5));
+    assert!(export["expire_date"].as_i64().unwrap() > 0);
+
+    let list = run(&["--list"]);
+    assert_eq!(list["mode"], serde_json::json!("list"));
+    assert_eq!(list["revoked"], serde_json::json!(false));
+
+    let importers = run(&["--list", "--importers", "t.me/+abc123"]);
+    assert_eq!(
+        importers["importers"],
+        serde_json::json!("https://t.me/+abc123")
+    );
+
+    let edit = run(&["--edit", "+abc123", "--revoke"]);
+    assert_eq!(edit["mode"], serde_json::json!("edit"));
+    assert_eq!(edit["revoke"], serde_json::json!(true));
+
+    let purge = run(&["--delete-revoked"]);
+    assert_eq!(purge["mode"], serde_json::json!("delete_revoked"));
+
+    let user = run(&["--user", "@bob"]);
+    assert_eq!(
+        user["would"],
+        serde_json::json!("invite user @bob to chat @c")
+    );
+}
+
+#[test]
+fn chat_invite_rejects_bad_flag_combinations_before_connect() {
+    let bad = |tag: &str, args: &[&str]| {
+        let (code, _out, err) = run_isolated(tag, args);
+        assert_eq!(code, 1, "expected usage exit, stderr: {err}");
+    };
+    bad("invrev", &["chat", "invite", "--chat", "@c", "--revoke"]);
+    bad(
+        "invimp",
+        &["chat", "invite", "--chat", "@c", "--importers", "+abc"],
+    );
+    bad(
+        "inveditnone",
+        &["chat", "invite", "--chat", "@c", "--edit", "+abc123"],
+    );
+    bad(
+        "invbadexp",
+        &["chat", "invite", "--chat", "@c", "--expire", "next tuesday"],
+    );
+    bad(
+        "invbadbool",
+        &[
+            "chat",
+            "invite",
+            "--chat",
+            "@c",
+            "--request-approval",
+            "maybe",
+        ],
+    );
+}
+
+#[test]
+fn chat_admin_log_dry_run_echoes_filters() {
+    let dir = isolated_appdir("chatadml");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "chat",
+            "admin-log",
+            "--chat",
+            "@c",
+            "--search",
+            "spam",
+            "--events",
+            "ban,promote",
+            "--admin",
+            "@boss",
+            "--since",
+            "1000000000",
+            "--until",
+            "2000000000",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["search"], serde_json::json!("spam"));
+    assert_eq!(d["events_filter"], serde_json::json!(true));
+    assert_eq!(d["admins"], serde_json::json!(true));
+}
+
+#[test]
+fn chat_admin_log_rejects_bad_filters_before_connect() {
+    for (tag, flag, value) in [
+        ("admbadev", "--events", "fly"),
+        ("admcase", "--events", "Ban"),
+        ("admbadsince", "--since", "yesterday"),
+        ("admbaduntil", "--until", "not-a-date"),
+    ] {
+        let (code, _out, err) =
+            run_isolated(tag, &["chat", "admin-log", "--chat", "@c", flag, value]);
+        assert_eq!(code, 1, "{flag}={value}: stderr: {err}");
+    }
+    let (code, _out, err) = run_isolated(
+        "admrange",
+        &[
+            "chat",
+            "admin-log",
+            "--chat",
+            "@c",
+            "--since",
+            "2000000000",
+            "--until",
+            "1000000000",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("--since"), "stderr: {err}");
 }
 
 #[test]
@@ -1045,11 +1209,144 @@ fn done_rows_have_cli_surface() {
 }
 
 #[test]
+fn dialog_help_lists_draft_pin_delete() {
+    let ghelp = help(&["dialog"]);
+    for sub in ["draft", "pin", "delete"] {
+        assert!(
+            ghelp.lines().any(|l| {
+                let word = l.split_whitespace().next().unwrap_or("");
+                word.replace('-', "") == sub
+            }),
+            "subcommand {sub} missing from `tele dialog --help`"
+        );
+    }
+}
+
+#[test]
+fn dialog_draft_requires_text_or_clear_offline() {
+    let (code, _out, err) = run_isolated("dlgdr1", &["dialog", "draft", "--chat", "me"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--text"), "stderr: {err}");
+    assert!(err.contains("--clear"), "stderr: {err}");
+}
+
+#[test]
+fn dialog_draft_rejects_text_and_clear_together_offline() {
+    let (code, _out, err) = run_isolated(
+        "dlgdr2",
+        &["dialog", "draft", "--chat", "me", "--text", "a", "--clear"],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("mutually exclusive"), "stderr: {err}");
+}
+
+#[test]
+fn dialog_draft_dry_run_json_reports_cleared_flag() {
+    let dir = isolated_appdir("dlgdr3");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "draft",
+            "--chat",
+            "@x",
+            "--text",
+            "hello",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["cleared"], serde_json::json!(false));
+    assert_eq!(d["would"], serde_json::json!("save draft for chat @x"));
+
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "draft",
+            "--chat",
+            "@x",
+            "--clear",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["cleared"], serde_json::json!(true));
+    assert_eq!(d["would"], serde_json::json!("clear draft for chat @x"));
+}
+
+#[test]
+fn dialog_pin_dry_run_json_reports_pinned_flag() {
+    let dir = isolated_appdir("dlgpin");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "pin",
+            "--chat",
+            "@x",
+            "--unpin",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["pinned"], serde_json::json!(false));
+    assert_eq!(d["would"], serde_json::json!("unpin dialog with chat @x"));
+}
+
+#[test]
+fn dialog_delete_dry_run_json_describes_leave_and_clear_semantics() {
+    let dir = isolated_appdir("dlgdel");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "delete",
+            "--chat",
+            "@x",
+            "--revoke",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["revoke"], serde_json::json!(true));
+    let would = d["would"].as_str().unwrap_or_default();
+    assert!(would.contains("leaves channels/groups"), "would: {would}");
+    assert!(
+        would.contains("clears private-chat history"),
+        "would: {would}"
+    );
+    assert!(would.contains("both sides"), "would: {would}");
+}
+
+#[test]
 fn raw_registry_names_are_offline_usable() {
     let src =
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/raw.rs")).unwrap();
     let names = raw_registry_names();
-    assert!(names.len() >= 6, "registry should hold all raw arms");
+    assert!(names.len() >= 18, "registry should hold all raw arms");
     for name in &names {
         assert!(
             src.contains(&format!("\"{name}\" =>")),
@@ -1060,6 +1357,13 @@ fn raw_registry_names_are_offline_usable() {
         "contacts.Search" => "{\"q\":\"x\"}",
         "messages.ExportChatInvite" => "{\"chat\":\"me\"}",
         "stats.GetBroadcastStats" | "stats.GetMegagroupStats" => "{\"channel\":\"me\"}",
+        "channels.GetFullChannel" => "{\"channel\":\"me\"}",
+        "users.GetUsers" => "{\"id\":[\"me\"]}",
+        "messages.GetHistory" | "messages.GetScheduledHistory" => "{\"chat\":\"me\"}",
+        "messages.Search" => "{\"chat\":\"me\",\"q\":\"x\",\"filter\":\"empty\"}",
+        "messages.GetMessagesViews" => "{\"chat\":\"me\",\"id\":[1],\"increment\":false}",
+        "messages.ReadReactions" | "messages.ReadMentions" => "{\"chat\":\"me\"}",
+        "contacts.DeleteByPhones" => "{\"phones\":[\"+15550100\"]}",
         _ => "{}",
     };
     let dir = isolated_appdir("rawreg2");

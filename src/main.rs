@@ -87,16 +87,16 @@ enum Command {
     /// Chats: join, leave, invite, participants, kick, admin, admin-log, stats, create
     #[command(subcommand)]
     Chat(chat::ChatCmd),
-    /// Dialogs: list, drafts, archive, delete
+    /// Dialogs: list, drafts, draft, archive, pin, delete
     #[command(subcommand)]
     Dialog(dialog::DialogCmd),
     /// Forum topics
     #[command(subcommand)]
     Topic(topic::TopicCmd),
-    /// Contacts: list, add, block, unblock
+    /// Contacts: list, add, remove, block, unblock
     #[command(subcommand)]
     Contact(contact::ContactCmd),
-    /// Profile: get, set
+    /// Profile: get, set, photo, emoji-status
     #[command(subcommand)]
     Profile(profile::ProfileCmd),
     /// Privacy rules

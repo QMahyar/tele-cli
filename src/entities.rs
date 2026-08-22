@@ -76,17 +76,23 @@ pub async fn resolve_peer(
                 )));
             }
             if let Some(pref) = cached_dialog_ref(session, id).await {
-                return client
-                    .resolve_peer(pref)
-                    .await
-                    .map_err(crate::error::invocation_error);
+                match client.resolve_peer(pref).await {
+                    Ok(peer) => return Ok(peer),
+                    Err(e) if is_stale_cache_error(&e) => {
+                        log_stale_cache_retry(id, &e);
+                    }
+                    Err(e) => return Err(crate::error::invocation_error(e)),
+                }
             }
             let raw = if id < 0 { negative_id_raw(id) } else { id };
             if let Some(pref) = cached_ref(session, id, raw).await {
-                return client
-                    .resolve_peer(pref)
-                    .await
-                    .map_err(crate::error::invocation_error);
+                match client.resolve_peer(pref).await {
+                    Ok(peer) => return Ok(peer),
+                    Err(e) if is_stale_cache_error(&e) => {
+                        log_stale_cache_retry(id, &e);
+                    }
+                    Err(e) => return Err(crate::error::invocation_error(e)),
+                }
             }
             if let Some(pref) = checked_fallback_ref(id) {
                 if id > 0 {
@@ -107,10 +113,7 @@ pub async fn resolve_peer(
                     .await
                     .map_err(crate::error::invocation_error);
             }
-            Err(crate::error::invocation_error(rpc_error(
-                400,
-                "INVALID_PEER_ID",
-            )))
+            Err(stale_or_invalid_peer_error())
         }
         Target::Me => {
             let user = client
@@ -184,8 +187,18 @@ fn is_link(raw: &str) -> bool {
 }
 
 async fn cached_dialog_ref<S: Session>(session: &S, id: i64) -> Option<PeerRef> {
-    let pid = PeerId::from_bot_api_dialog_id(id)?;
-    session.peer_ref(pid).await.ok().flatten()
+    let pid = match PeerId::from_bot_api_dialog_id(id) {
+        Some(pid) => pid,
+        None => return None,
+    };
+    match session.peer_ref(pid).await {
+        Ok(Some(pref)) => Some(pref),
+        Ok(None) => None,
+        Err(_) => {
+            log::warn!("peer cache read failed (dialog id {id}); treating as cache miss");
+            None
+        }
+    }
 }
 
 const CHANNEL_STYLE_BOUNDARY: i64 = -1000000000000;
@@ -229,8 +242,10 @@ async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRe
             .collect()
     };
     for pid in ids {
-        if let Ok(Some(pref)) = session.peer_ref(pid).await {
-            return Some(pref);
+        match session.peer_ref(pid).await {
+            Ok(Some(pref)) => return Some(pref),
+            Ok(None) => {}
+            Err(_) => log::warn!("peer cache read failed for raw {raw}; treating as cache miss"),
         }
     }
     None
@@ -290,6 +305,24 @@ fn rpc_error(code: i32, name: &str) -> InvocationError {
         value: None,
         caused_by: None,
     })
+}
+
+fn is_stale_cache_error(e: &InvocationError) -> bool {
+    e.is("PEER_ID_INVALID") || e.is("CHANNEL_INVALID")
+}
+
+fn log_stale_cache_retry(id: i64, e: &InvocationError) {
+    log::warn!(
+        "cached peer data for {id} rejected by server ({}); retrying uncached resolution",
+        crate::error::invocation_message(e)
+    );
+}
+
+fn stale_or_invalid_peer_error() -> crate::error::TeleError {
+    crate::error::TeleError::Invocation(
+        format!("PEER_ID_INVALID ({})", crate::error::PEER_UNKNOWN_HINT),
+        None,
+    )
 }
 
 fn phone_not_found_message() -> String {
@@ -383,6 +416,26 @@ mod tests {
     use super::*;
     use grammers_session::storages::MemorySession;
     use grammers_session::types::{PeerAuth, PeerId, PeerInfo, PeerKind};
+
+    #[test]
+    fn stale_cache_error_matches_peer_and_channel_invalid() {
+        assert!(is_stale_cache_error(&rpc_error(400, "PEER_ID_INVALID")));
+        assert!(is_stale_cache_error(&rpc_error(400, "CHANNEL_INVALID")));
+        assert!(!is_stale_cache_error(&rpc_error(400, "CHANNEL_PRIVATE")));
+        assert!(!is_stale_cache_error(&rpc_error(400, "USERNAME_NOT_FOUND")));
+        assert!(!is_stale_cache_error(&InvocationError::Dropped));
+    }
+
+    #[test]
+    fn stale_or_invalid_peer_error_carries_dialog_list_hint() {
+        let err = stale_or_invalid_peer_error();
+        let msg = err.message();
+        assert!(msg.contains("PEER_ID_INVALID"), "msg: {msg}");
+        assert!(
+            msg.contains(crate::error::PEER_UNKNOWN_HINT),
+            "hint missing: {msg}"
+        );
+    }
 
     #[tokio::test]
     async fn cache_chat_stores_channel_access_hash() {

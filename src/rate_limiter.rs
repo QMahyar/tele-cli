@@ -4,6 +4,12 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
+pub const PAGE_ITEMS: usize = 100;
+
+pub fn needs_page_token(served: usize) -> bool {
+    served > 0 && served.is_multiple_of(PAGE_ITEMS)
+}
+
 pub struct RateLimiter {
     tokens: AtomicU64,
     capacity: u64,
@@ -15,7 +21,10 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(rpc_per_minute: Option<f64>) -> Arc<Self> {
-        let budget = rpc_per_minute.unwrap_or(f64::INFINITY);
+        let budget = match rpc_per_minute {
+            Some(rate) if rate > 0.0 => rate,
+            _ => f64::INFINITY,
+        };
         let capacity = budget.ceil() as u64;
         Arc::new(Self {
             tokens: AtomicU64::new(capacity),
@@ -50,6 +59,12 @@ impl RateLimiter {
             let mut notified = Box::pin(self.notify.notified());
             notified.as_mut().enable();
             let _ = tokio::time::timeout(Duration::from_millis(100), notified).await;
+        }
+    }
+
+    pub async fn acquire_for_items(&self, served: usize) {
+        if needs_page_token(served) {
+            self.acquire().await;
         }
     }
 
@@ -164,9 +179,47 @@ mod tests {
     }
 
     #[test]
+    fn needs_page_token_fires_on_page_boundaries_only() {
+        assert!(!needs_page_token(0));
+        assert!(!needs_page_token(1));
+        assert!(!needs_page_token(99));
+        assert!(needs_page_token(100));
+        assert!(!needs_page_token(101));
+        assert!(needs_page_token(200));
+    }
+
+    #[tokio::test]
+    async fn acquire_for_items_never_stalls_on_unlimited() {
+        let rl = RateLimiter::new(None);
+        for served in 1..=250 {
+            rl.acquire_for_items(served).await;
+        }
+    }
+
+    #[test]
     fn unlimited_capacity_is_max() {
         let rl = RateLimiter::new(None);
         assert_eq!(rl.capacity, u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn zero_budget_acts_as_unlimited() {
+        let rl = RateLimiter::new(Some(0.0));
+        assert_eq!(rl.capacity, u64::MAX);
+        let start = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_millis(500), rl.acquire())
+            .await
+            .expect("zero budget must not stall acquire");
+        assert!(start.elapsed() < Duration::from_millis(400));
+    }
+
+    #[tokio::test]
+    async fn negative_budget_acts_as_unlimited() {
+        let rl = RateLimiter::new(Some(-5.0));
+        assert_eq!(rl.capacity, u64::MAX);
+        tokio::time::timeout(Duration::from_millis(500), rl.acquire())
+            .await
+            .expect("negative budget must not stall acquire");
     }
 
     #[test]

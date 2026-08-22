@@ -12,7 +12,7 @@ use crate::output;
 
 #[derive(Subcommand)]
 pub enum MsgCmd {
-    Send(SendArgs),
+    Send(Box<SendArgs>),
     Edit(EditArgs),
     Delete(DeleteArgs),
     Forward(ForwardArgs),
@@ -38,12 +38,59 @@ pub struct SendArgs {
         help = "send time: Unix timestamp or RFC3339 datetime (must be in the future)"
     )]
     schedule: Option<String>,
-    #[arg(long, help = "file path to upload (mutually exclusive with --text)")]
-    file: Option<String>,
-    #[arg(long, help = "caption for uploaded file (requires --file)")]
+    #[arg(
+        long,
+        help = "file path(s) to upload; 2-10 paths send as an album (mutually exclusive with --text)",
+        value_name = "PATH"
+    )]
+    files: Vec<String>,
+    #[arg(long, help = "caption for uploaded file(s) (requires --file)")]
     caption: Option<String>,
     #[arg(long, help = "message ID to reply to")]
     reply: Option<i32>,
+    #[arg(
+        long,
+        help = "forum topic ID to post into (conflicts with --reply)",
+        conflicts_with = "reply"
+    )]
+    topic: Option<i32>,
+    #[arg(
+        long,
+        help = "auto-destruct media after N seconds",
+        value_name = "SECS"
+    )]
+    media_ttl: Option<i32>,
+    #[arg(
+        long,
+        help = "custom thumbnail path for document uploads",
+        value_name = "PATH"
+    )]
+    thumbnail: Option<String>,
+    #[arg(
+        long,
+        help = "upload a remote URL as media (with --kind photo|document)",
+        value_name = "URL"
+    )]
+    url: Option<String>,
+    #[arg(
+        long,
+        help = "media kind for --url: photo or document",
+        requires = "url"
+    )]
+    kind: Option<String>,
+    #[arg(
+        long,
+        help = "re-send media from this chat's message without forward header (requires --copy-id)",
+        value_name = "CHAT"
+    )]
+    copy_from: Option<String>,
+    #[arg(
+        long,
+        help = "message ID whose media is re-sent (requires --copy-from)",
+        requires = "copy_from",
+        value_name = "ID"
+    )]
+    copy_id: Option<i32>,
     #[arg(long, default_value_t = true, help = "show link preview")]
     preview: bool,
     #[arg(long, action = clap::ArgAction::SetTrue, help = "disable link preview")]
@@ -111,9 +158,27 @@ pub struct PinArgs {
     )]
     chat: String,
     #[arg(long, help = "message ID to pin or unpin")]
-    id: i32,
+    id: Option<i32>,
     #[arg(long, help = "remove pin instead of adding")]
     unpin: bool,
+    #[arg(
+        long,
+        help = "notify chat members when pinning",
+        conflicts_with_all = &["unpin", "show", "all"]
+    )]
+    notify: bool,
+    #[arg(
+        long,
+        help = "show the currently pinned message",
+        conflicts_with_all = &["id", "unpin", "all", "notify"]
+    )]
+    show: bool,
+    #[arg(
+        long,
+        help = "unpin all pinned messages",
+        conflicts_with_all = &["id", "unpin", "show", "notify"]
+    )]
+    all: bool,
 }
 
 #[derive(Args)]
@@ -140,6 +205,12 @@ pub struct ReadArgs {
     chat: String,
     #[arg(long, help = "mark as unread instead of read")]
     mark_unread: bool,
+    #[arg(
+        long,
+        help = "clear the mention badge only",
+        conflicts_with = "mark_unread"
+    )]
+    mentions: bool,
 }
 
 #[derive(Args)]
@@ -168,6 +239,12 @@ pub struct SearchArgs {
     query: String,
     #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     limit: u32,
+    #[arg(
+        long,
+        help = "search across all dialogs instead of one chat",
+        requires = "query"
+    )]
+    global: bool,
 }
 
 #[derive(Args)]
@@ -183,11 +260,13 @@ pub struct DownloadArgs {
     dir: String,
     #[arg(long, help = "overwrite existing files")]
     force: bool,
+    #[arg(long, help = "streaming chunk size in KB (4-512, multiple of 4)")]
+    chunk_size_kb: Option<usize>,
 }
 
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
-        MsgCmd::Send(a) => send(a, flags).await,
+        MsgCmd::Send(a) => send(*a, flags).await,
         MsgCmd::Edit(a) => edit(a, flags).await,
         MsgCmd::Delete(a) => delete(a, flags).await,
         MsgCmd::Forward(a) => forward(a, flags).await,
@@ -206,40 +285,97 @@ fn effective_preview(args: &SendArgs) -> bool {
 
 fn validate_send(args: &SendArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    if let Some(topic) = args.topic {
+        if topic <= 0 {
+            return Err(TeleError::Usage(
+                "--topic must be a positive topic ID".to_string(),
+            ));
+        }
+    }
     match args.format.as_str() {
         "plain" | "markdown" => Ok(()),
         other => Err(TeleError::Usage(format!(
             "unknown --format {other} (use plain or markdown)"
         ))),
     }?;
-    match (&args.text, &args.file) {
-        (None, None) => {
+    match (
+        &args.text,
+        args.files.is_empty(),
+        &args.url,
+        &args.copy_from,
+    ) {
+        (None, true, None, None) => {
             return Err(TeleError::Usage(
-                "msg send requires --text or --file".to_string(),
+                "msg send requires --text, --file, --url, or --copy-from".to_string(),
             ))
         }
-        (Some(_), Some(_)) => {
+        (Some(_), false, _, _) | (Some(_), _, Some(_), _) => {
             return Err(TeleError::Usage(
-                "--text and --file are mutually exclusive".to_string(),
+                "--text is mutually exclusive with --file/--url/--copy-from".to_string(),
+            ))
+        }
+        (_, false, Some(_), _) => {
+            return Err(TeleError::Usage(
+                "--file and --url are mutually exclusive".to_string(),
             ))
         }
         _ => {}
+    }
+    if !args.files.is_empty() && args.files.len() > 10 {
+        return Err(TeleError::Usage(
+            "albums support at most 10 files; send larger sets in batches".to_string(),
+        ));
+    }
+    if let Some(ttl) = args.media_ttl {
+        if ttl <= 0 {
+            return Err(TeleError::Usage("--media-ttl must be positive".to_string()));
+        }
     }
     if let Some(text) = &args.text {
         if text.trim().is_empty() {
             return Err(TeleError::Usage("--text must not be empty".to_string()));
         }
     }
-    if args.caption.is_some() && args.file.is_none() {
+    if let Some(kind) = &args.kind {
+        if kind != "photo" && kind != "document" {
+            return Err(TeleError::Usage(
+                "--kind must be photo or document".to_string(),
+            ));
+        }
+    }
+    if args.url.is_some() && args.kind.is_none() {
+        return Err(TeleError::Usage(
+            "--url requires --kind photo|document".to_string(),
+        ));
+    }
+    if args.caption.as_ref().is_some_and(|c| c.trim().is_empty()) {
+        return Err(TeleError::Usage("--caption must not be empty".to_string()));
+    }
+    if args.caption.is_some() && args.files.is_empty() {
         return Err(TeleError::Usage("--caption requires --file".to_string()));
     }
-    if let Some(path) = &args.file {
+    if !args.files.is_empty() {
         if !effective_preview(args) {
             return Err(TeleError::Usage(
                 "--no-preview is not supported with --file".to_string(),
             ));
         }
-        validate_upload_path(path)?;
+        for path in &args.files {
+            validate_upload_path(path)?;
+        }
+    }
+    if let Some(thumb) = &args.thumbnail {
+        validate_upload_path(thumb)?;
+        if args.files.len() > 1 {
+            return Err(TeleError::Usage(
+                "--thumbnail applies to a single document upload".to_string(),
+            ));
+        }
+    }
+    if args.schedule.as_deref() == Some("online") && !args.files.is_empty() {
+        return Err(TeleError::Usage(
+            "--schedule online is not supported with albums".to_string(),
+        ));
     }
     if args.format == "markdown" {
         if let Some(text) = &args.text {
@@ -412,10 +548,15 @@ fn canonical_guard_path(path: &str) -> std::path::PathBuf {
     resolve_for_guard(std::path::Path::new(path))
 }
 
+const SCHEDULE_ONLINE_SENTINEL: i32 = 0;
+
 fn parse_schedule(value: Option<&str>) -> TeleResult<Option<i32>> {
     let Some(value) = value else {
         return Ok(None);
     };
+    if value.eq_ignore_ascii_case("online") {
+        return Ok(Some(SCHEDULE_ONLINE_SENTINEL));
+    }
     let dt = crate::commands::parse_unixtime(value)?;
     let ts = dt.timestamp();
     if ts <= chrono::Utc::now().timestamp() {
@@ -436,11 +577,18 @@ fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::V
         "dry_run": true,
         "chat": args.chat,
         "text": args.text,
-        "file": args.file,
+        "files": args.files,
+        "url": args.url,
+        "kind": args.kind,
+        "copy_from": args.copy_from,
+        "copy_id": args.copy_id,
+        "media_ttl": args.media_ttl,
+        "thumbnail": args.thumbnail,
         "caption": args.caption,
         "format": args.format,
         "schedule": schedule,
         "reply": args.reply,
+        "topic": args.topic,
         "preview": effective_preview(args),
         "silent": args.silent,
         "would": would,
@@ -458,12 +606,18 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_target = args.chat.clone();
         let text = args.text.clone();
         let caption = args.caption.clone();
-        let file = args.file.clone();
+        let files = args.files.clone();
         let format = args.format.clone();
         let schedule = schedule.map(|s| s as u64);
-        let reply = args.reply;
+        let reply = args.reply.or(args.topic);
         let preview = effective_preview(&args);
         let silent = args.silent;
+        let media_ttl = args.media_ttl;
+        let thumbnail = args.thumbnail.clone();
+        let url = args.url.clone();
+        let kind = args.kind.clone();
+        let copy_from = args.copy_from.clone();
+        let copy_id = args.copy_id;
         Box::pin(async move {
             if dry_run {
                 return Ok(send_dry_run_payload(&args, schedule));
@@ -475,21 +629,109 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let mut msg = if let Some(path) = &file {
-                let uploaded = guard.client.upload_file(path).await.map_err(|e| {
-                    match std::error::Error::source(&e)
-                        .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>())
-                    {
-                        Some(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 420 => {
-                            TeleError::Invocation(rpc.to_string(), rpc.value)
-                        }
-                        _ => TeleError::Other(e.to_string()),
-                    }
+            let apply_common = |msg: InputMessage| -> InputMessage {
+                let mut msg = msg.reply_to(reply);
+                if silent {
+                    msg = msg.silent(true);
+                }
+                if let Some(ttl) = media_ttl {
+                    msg = msg.media_ttl(ttl);
+                }
+                msg
+            };
+            if let Some(src_chat) = &copy_from {
+                let id = copy_id.expect("validated: copy-id required with copy-from");
+                let src =
+                    entities::resolve_peer(&guard.client, guard.session.as_ref(), src_chat).await?;
+                let src_ref = entities::peer_ref(&src).await.map_err(tele_invocation)?;
+                let found = guard
+                    .client
+                    .get_messages_by_id(src_ref, &[id])
+                    .await
+                    .map_err(tele_invocation)?;
+                let source_msg = found
+                    .into_iter()
+                    .flatten()
+                    .next()
+                    .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+                let media = source_msg.media().ok_or_else(|| {
+                    TeleError::Usage(format!("message {id} has no media to copy"))
                 })?;
                 let base = match format.as_str() {
+                    "markdown" => InputMessage::new()
+                        .copy_media(&media)
+                        .markdown(caption.unwrap_or_default()),
+                    _ => InputMessage::new().copy_media(&media),
+                };
+                let base = base.link_preview(preview);
+                let sent = guard
+                    .client
+                    .send_message(chat_ref, apply_common(base))
+                    .await
+                    .map_err(tele_invocation)?;
+                return crate::serialize::message_to_json(&sent);
+            }
+            if let Some(link) = &url {
+                let base = match kind.as_deref() {
+                    Some("document") => InputMessage::new().document_url(link),
+                    _ => InputMessage::new().photo_url(link),
+                };
+                let base = if let Some(cap) = &caption {
+                    match format.as_str() {
+                        "markdown" => base.markdown(cap.clone()),
+                        _ => base.text(cap.clone()),
+                    }
+                } else {
+                    base
+                };
+                let base = base.link_preview(preview);
+                let sent = guard
+                    .client
+                    .send_message(chat_ref, apply_common(base))
+                    .await
+                    .map_err(tele_invocation)?;
+                return crate::serialize::message_to_json(&sent);
+            }
+            if files.len() > 1 {
+                let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
+                for path in &files {
+                    let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+                    let mut media = match looks_like_image(path) {
+                        true => grammers_client::media::InputMedia::new().photo(uploaded),
+                        false => grammers_client::media::InputMedia::new().document(uploaded),
+                    };
+                    media = match format.as_str() {
+                        "markdown" => media.markdown(caption.clone().unwrap_or_default()),
+                        _ => media.caption(caption.clone().unwrap_or_default()),
+                    };
+                    media = media.reply_to(reply);
+                    medias.push(media);
+                }
+                let sent_album = guard
+                    .client
+                    .send_album(chat_ref, medias)
+                    .await
+                    .map_err(tele_invocation)?;
+                let mut rows = Vec::new();
+                for m in sent_album.into_iter().flatten() {
+                    rows.push(crate::serialize::message_to_json(&m)?);
+                }
+                return Ok(serde_json::json!({"album": rows}));
+            }
+            let mut msg = if let Some(path) = files.first() {
+                let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+                let mut base = match format.as_str() {
                     "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
                     _ => InputMessage::new().text(caption.unwrap_or_default()),
                 };
+                if let Some(thumb_path) = &thumbnail {
+                    let thumb_uploaded = guard
+                        .client
+                        .upload_file(thumb_path)
+                        .await
+                        .map_err(upload_error)?;
+                    base = base.thumbnail(thumb_uploaded);
+                }
                 if looks_like_image(path) {
                     base.photo(uploaded)
                 } else {
@@ -504,13 +746,14 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 base.link_preview(preview)
             };
             if let Some(s) = schedule {
-                let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
-                msg = msg.schedule_date(Some(ts));
+                if s == 0 {
+                    msg = msg.schedule_once_online();
+                } else {
+                    let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
+                    msg = msg.schedule_date(Some(ts));
+                }
             }
-            msg = msg.reply_to(reply);
-            if silent {
-                msg = msg.silent(true);
-            }
+            msg = apply_common(msg);
             let sent = guard
                 .client
                 .send_message(chat_ref, msg)
@@ -831,20 +1074,37 @@ fn forward_report(
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
+    validate_pin(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
     let unpin = args.unpin;
+    let notify = args.notify;
+    let show = args.show;
+    let all = args.all;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
         Box::pin(async move {
             if dry_run {
+                let would = if show {
+                    "show pinned message".to_string()
+                } else if all {
+                    "unpin all messages".to_string()
+                } else {
+                    format!(
+                        "{} message {}",
+                        if unpin { "unpin" } else { "pin" },
+                        id.unwrap_or_default()
+                    )
+                };
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "id": id,
                     "unpin": unpin,
-                    "would": format!("{} message {id}", if unpin { "unpin" } else { "pin" })
+                    "show": show,
+                    "all": all,
+                    "would": would
                 }));
             }
             let guard =
@@ -854,8 +1114,44 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let result = if unpin {
+            if show {
+                let pinned = guard
+                    .client
+                    .get_pinned_message(chat_ref)
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({
+                    "pinned_message": match &pinned {
+                        Some(m) => crate::serialize::message_to_json(m)?,
+                        None => serde_json::Value::Null,
+                    }
+                }));
+            }
+            if all {
+                guard
+                    .client
+                    .unpin_all_messages(chat_ref)
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({"unpinned_all": true}));
+            }
+            let id = id.expect("validated: id required outside show/all modes");
+            use grammers_client::tl;
+            let result: std::result::Result<(), grammers_client::InvocationError> = if unpin {
                 guard.client.unpin_message(chat_ref, id).await
+            } else if notify {
+                let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                guard
+                    .client
+                    .invoke(&tl::functions::messages::UpdatePinnedMessage {
+                        silent: false,
+                        unpin: false,
+                        pm_oneside: false,
+                        peer: input_peer,
+                        id,
+                    })
+                    .await
+                    .map(drop)
             } else {
                 guard.client.pin_message(chat_ref, id).await
             };
@@ -867,6 +1163,18 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_pin(args: &PinArgs) -> TeleResult<()> {
+    if args.show || args.all {
+        return Ok(());
+    }
+    if args.id.is_none() {
+        return Err(TeleError::Usage(
+            "--id required (or use --show / --all)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_get(args: &GetArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.last && args.offset_id.is_some() {
@@ -875,6 +1183,18 @@ fn validate_get(args: &GetArgs) -> TeleResult<()> {
         ));
     }
     Ok(())
+}
+
+fn upload_error(e: std::io::Error) -> TeleError {
+    let invocation = e
+        .get_ref()
+        .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
+    match invocation {
+        Some(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 420 => {
+            TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name.clone(), rpc.value)
+        }
+        _ => TeleError::Other(e.to_string()),
+    }
 }
 
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -919,7 +1239,10 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 iter = iter.limit(limit);
             }
             let mut rows: Vec<serde_json::Value> = Vec::new();
+            let mut served = 0usize;
             while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                served += 1;
+                guard.rate_limiter.acquire_for_items(served).await;
                 rows.push(crate::serialize::message_to_json(&msg)?);
             }
             if !output::machine_mode(json, jsonl) {
@@ -963,6 +1286,7 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let mark_unread = args.mark_unread;
+    let mentions = args.mentions;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -971,9 +1295,16 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "unread": mark_unread,
+                    "mentions": mentions,
                     "would": format!(
                         "mark chat {chat_target} as {}",
-                        if mark_unread { "unread" } else { "read" }
+                        if mentions {
+                            "mentions-cleared"
+                        } else if mark_unread {
+                            "unread"
+                        } else {
+                            "read"
+                        }
                     ),
                 }));
             }
@@ -983,7 +1314,15 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            if mark_unread {
+            if mentions {
+                let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+                guard
+                    .client
+                    .clear_mentions(chat_ref)
+                    .await
+                    .map_err(tele_invocation)?;
+                return Ok(serde_json::json!({"mentions_cleared": true}));
+            } else if mark_unread {
                 let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
                 let dialog = grammers_client::tl::enums::InputDialogPeer::Peer(
                     grammers_client::tl::types::InputDialogPeer { peer },
@@ -1080,7 +1419,10 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    let global = args.global;
+    if !global {
+        require_chat_target(&args.chat, "chat")?;
+    }
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
@@ -1096,27 +1438,52 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if dry_run {
                 return Ok(serde_json::json!({
                     "dry_run": true,
-                    "chat": chat_target,
+                    "chat": if global { serde_json::Value::Null } else { serde_json::json!(chat_target) },
+                    "global": global,
                     "query": query,
                     "limit": limit,
-                    "would": format!("search messages in chat {chat_target}"),
+                    "would": if global {
+                        format!("search all dialogs for \"{query}\"")
+                    } else {
+                        format!("search messages in chat {chat_target}")
+                    },
                 }));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let mut iter = guard
-                .client
-                .search_messages(chat_ref)
-                .query(&query)
-                .limit(limit);
             let mut rows: Vec<serde_json::Value> = Vec::new();
-            while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-                rows.push(crate::serialize::message_to_json(&msg)?);
+            let mut served = 0usize;
+            if global {
+                let mut iter = guard
+                    .client
+                    .search_all_messages()
+                    .query(&query)
+                    .limit(limit);
+                while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                    served += 1;
+                    guard.rate_limiter.acquire_for_items(served).await;
+                    rows.push(crate::serialize::message_to_json(&msg)?);
+                }
+            } else {
+                let chat = entities::resolve_peer(
+                    &guard.client,
+                    guard.session.as_ref(),
+                    &chat_target,
+                )
+                .await?;
+                let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+                let mut iter = guard
+                    .client
+                    .search_messages(chat_ref)
+                    .query(&query)
+                    .limit(limit);
+                while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                    served += 1;
+                    guard.rate_limiter.acquire_for_items(served).await;
+                    rows.push(crate::serialize::message_to_json(&msg)?);
+                }
             }
             if !output::machine_mode(json, jsonl) {
                 let table_rows: Vec<Vec<String>> = rows
@@ -1147,9 +1514,13 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
     validate_download_dir(&args.dir)?;
+    if let Some(kb) = args.chunk_size_kb {
+        validate_chunk_size_kb(kb)?;
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let id = args.id;
+    let chunk_size_kb = args.chunk_size_kb;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let chat_target = args.chat.clone();
@@ -1198,10 +1569,45 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             })
             .await
             .map_err(|e| TeleError::Other(e.to_string()))??;
-            let ok = msg.download_media(&temp).await.map_err(|e| {
-                let _ = std::fs::remove_file(&temp);
-                tele_invocation(e)
-            })?;
+            if msg.media().is_none() {
+                return Err(TeleError::Usage("message has no media".to_string()));
+            }
+            let ok = match chunk_size_kb {
+                Some(kb) => {
+                    let media = msg.media().expect("media checked above");
+                    let mut iter = guard
+                        .client
+                        .iter_download(&media)
+                        .chunk_size((kb * 1024) as i32);
+                    let mut file = tokio::fs::File::create(&temp)
+                        .await
+                        .map_err(|e| TeleError::Other(e.to_string()))?;
+                    use tokio::io::AsyncWriteExt;
+                    loop {
+                        match iter.next().await {
+                            Ok(Some(bytes)) => {
+                                file.write_all(&bytes).await.map_err(|err| {
+                                    let _ = std::fs::remove_file(&temp);
+                                    TeleError::Other(err.to_string())
+                                })?;
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                let _ = std::fs::remove_file(&temp);
+                                return Err(tele_invocation(e));
+                            }
+                        }
+                    }
+                    file.sync_all()
+                        .await
+                        .map_err(|e| TeleError::Other(e.to_string()))?;
+                    true
+                }
+                None => msg.download_media(&temp).await.map_err(|e| {
+                    let _ = std::fs::remove_file(&temp);
+                    tele_invocation(e)
+                })?,
+            };
             if !ok {
                 let _ = std::fs::remove_file(&temp);
                 return Err(TeleError::Usage("message has no media".to_string()));
@@ -1218,6 +1624,15 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn validate_chunk_size_kb(kb: usize) -> TeleResult<()> {
+    if !(4..=512).contains(&kb) || !kb.is_multiple_of(4) {
+        return Err(TeleError::Usage(
+            "--chunk-size-kb must be 4-512 and a multiple of 4".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn download_name(msg: &grammers_client::message::Message) -> String {
@@ -1304,14 +1719,41 @@ mod tests {
     use super::*;
     use grammers_session::types::PeerKind;
 
+    #[test]
+    fn upload_flood_wait_carries_rpc_keys_like_send_path() {
+        let rpc = grammers_client::sender::RpcError {
+            code: 420,
+            name: "FLOOD_WAIT".to_string(),
+            value: Some(17),
+            caused_by: None,
+        };
+        let e = std::io::Error::other(grammers_client::InvocationError::Rpc(rpc));
+        let err = upload_error(e);
+        assert!(matches!(err, TeleError::Rpc(_, 420, _, Some(17))));
+        assert_eq!(err.message(), "rpc error 420: FLOOD_WAIT (value: 17)");
+    }
+
+    #[test]
+    fn upload_non_flood_error_maps_to_other() {
+        let e = std::io::Error::other(grammers_client::InvocationError::Dropped);
+        assert!(matches!(upload_error(e), TeleError::Other(_)));
+    }
+
     fn send_args(format: &str) -> SendArgs {
         SendArgs {
             chat: "me".to_string(),
             text: Some("hi".to_string()),
             schedule: None,
-            file: None,
+            files: vec![],
+            media_ttl: None,
+            thumbnail: None,
+            url: None,
+            kind: None,
+            copy_from: None,
+            copy_id: None,
             caption: None,
             reply: None,
+            topic: None,
             preview: true,
             no_preview: false,
             format: format.to_string(),
@@ -1495,7 +1937,7 @@ mod tests {
     #[test]
     fn send_rejects_text_with_file() {
         let mut args = send_args("plain");
-        args.file = Some("C:/tmp/a.pdf".to_string());
+        args.files = vec!["C:/tmp/a.pdf".to_string()];
         assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
     }
 
@@ -1511,7 +1953,7 @@ mod tests {
         let dir = upload_fixture("caption", &["a.pdf"]);
         let mut args = send_args("plain");
         args.text = None;
-        args.file = Some(dir.join("a.pdf").to_string_lossy().into_owned());
+        args.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
         args.caption = Some("cap".to_string());
         assert!(validate_send(&args).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1912,8 +2354,11 @@ mod tests {
         let err = pin(
             PinArgs {
                 chat: String::new(),
-                id: 1,
+                id: Some(1),
                 unpin: false,
+                notify: false,
+                show: false,
+                all: false,
             },
             &dryrun_flags("msg pin", true),
         )
@@ -1924,6 +2369,7 @@ mod tests {
             ReadArgs {
                 chat: "   ".to_string(),
                 mark_unread: false,
+                mentions: false,
             },
             &dryrun_flags("msg read", true),
         )
@@ -1935,6 +2381,7 @@ mod tests {
                 chat: String::new(),
                 query: "x".to_string(),
                 limit: 10,
+                global: false,
             },
             &dryrun_flags("msg search", true),
         )
@@ -1949,11 +2396,62 @@ mod tests {
                 id: 1,
                 dir: out.to_string_lossy().into_owned(),
                 force: false,
+                chunk_size_kb: None,
             },
             &dryrun_flags("msg download", true),
         )
         .await;
         assert!(matches!(err, Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn validate_pin_requires_mode() {
+        let no_mode = PinArgs {
+            chat: "me".to_string(),
+            id: None,
+            unpin: false,
+            notify: false,
+            show: false,
+            all: false,
+        };
+        assert!(matches!(validate_pin(&no_mode), Err(TeleError::Usage(_))));
+        let with_id = PinArgs {
+            chat: "me".to_string(),
+            id: Some(7),
+            unpin: false,
+            notify: false,
+            show: false,
+            all: false,
+        };
+        assert!(validate_pin(&with_id).is_ok());
+        let show = PinArgs {
+            chat: "me".to_string(),
+            id: None,
+            unpin: false,
+            notify: false,
+            show: true,
+            all: false,
+        };
+        assert!(validate_pin(&show).is_ok());
+    }
+
+    #[test]
+    fn validate_chunk_size_kb_bounds_and_alignment() {
+        assert!(validate_chunk_size_kb(4).is_ok());
+        assert!(validate_chunk_size_kb(512).is_ok());
+        assert!(validate_chunk_size_kb(128).is_ok());
+        assert!(matches!(
+            validate_chunk_size_kb(0),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_chunk_size_kb(5),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_chunk_size_kb(600),
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]
@@ -2557,6 +3055,28 @@ mod tests {
                 chat: "me".to_string(),
                 query: "hello".to_string(),
                 limit: 10,
+                global: false,
+            },
+            &dryrun_flags("msg search", true),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn search_global_dry_run_skips_chat_requirement() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = search(
+            SearchArgs {
+                chat: String::new(),
+                query: "hello".to_string(),
+                limit: 10,
+                global: true,
             },
             &dryrun_flags("msg search", true),
         )
@@ -2577,6 +3097,7 @@ mod tests {
                 chat: "me".to_string(),
                 query: "hello".to_string(),
                 limit: 10,
+                global: false,
             },
             &dryrun_flags("msg search", false),
         )
@@ -2600,6 +3121,7 @@ mod tests {
                 id: 1,
                 dir: out.to_string_lossy().to_string(),
                 force: false,
+                chunk_size_kb: None,
             },
             &dryrun_flags("msg download", true),
         )
@@ -2639,11 +3161,91 @@ mod tests {
     }
 
     #[test]
+    fn validate_send_rejects_nonpositive_topic() {
+        let mut args = send_args("plain");
+        args.topic = Some(0);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.topic = Some(-5);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.topic = Some(7);
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
+    fn validate_send_album_bounds_and_conflicts() {
+        let dir = upload_fixture("album-bounds", &["a.pdf"]);
+        let mut args = send_args("plain");
+        args.text = None;
+        let p = dir.join("a.pdf").to_string_lossy().into_owned();
+        args.files = vec![p.clone()];
+        assert!(validate_send(&args).is_ok());
+        args.files = (0..10)
+            .map(|i| dir.join(format!("f{i}.jpg")).to_string_lossy().into_owned())
+            .collect();
+        for i in 0..10 {
+            std::fs::write(dir.join(format!("f{i}.jpg")), b"x").unwrap();
+        }
+        assert!(validate_send(&args).is_ok());
+        let missing = dir.join("nope.jpg").to_string_lossy().into_owned();
+        args.files.push(missing);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_send_url_requires_kind_and_conflicts_with_text() {
+        let url_only = SendArgs {
+            chat: "me".to_string(),
+            text: Some("hi".to_string()),
+            schedule: None,
+            files: vec![],
+            media_ttl: None,
+            thumbnail: None,
+            url: Some("https://example.com/cat.jpg".to_string()),
+            kind: Some("photo".to_string()),
+            copy_from: None,
+            copy_id: None,
+            caption: None,
+            reply: None,
+            topic: None,
+            preview: true,
+            no_preview: false,
+            format: "plain".to_string(),
+            silent: false,
+        };
+        assert!(matches!(validate_send(&url_only), Err(TeleError::Usage(_))));
+        let with_kind = SendArgs {
+            kind: Some("document".to_string()),
+            ..clone_without_text_for_tests(&url_only)
+        };
+        assert!(validate_send(&with_kind).is_ok());
+    }
+
+    fn clone_without_text_for_tests(args: &SendArgs) -> SendArgs {
+        let mut c = args.clone();
+        c.text = None;
+        c
+    }
+
+    #[test]
+    fn validate_send_rejects_bad_media_ttl_and_kind() {
+        let mut args = clone_without_text_for_tests(&send_args("plain"));
+        args.url = Some("https://example.com/x.jpg".to_string());
+        args.kind = Some("sticker".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.kind = Some("photo".to_string());
+        args.media_ttl = Some(0);
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.media_ttl = Some(60);
+        assert!(validate_send(&args).is_ok());
+    }
+
+    #[test]
     fn send_rejects_no_preview_with_file() {
         let dir = upload_fixture("nopreview", &["a.pdf"]);
         let mut args = send_args("plain");
         args.text = None;
-        args.file = Some(dir.join("a.pdf").to_string_lossy().into_owned());
+        args.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
         args.no_preview = true;
         let err = validate_send(&args).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
