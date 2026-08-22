@@ -204,6 +204,31 @@ pub struct AdminLogArgs {
     chat: String,
     #[arg(long, default_value_t = 20, help = "max events to return (1-10000)")]
     limit: u32,
+    #[arg(
+        long,
+        help = "only events by this admin: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    admin: Option<String>,
+    #[arg(long, help = "server-side string search over events")]
+    search: Option<String>,
+    #[arg(
+        long,
+        value_name = "TS|RFC3339",
+        help = "only events at or after this unix ts or RFC3339 date (client-side)"
+    )]
+    since: Option<String>,
+    #[arg(
+        long,
+        value_name = "TS|RFC3339",
+        help = "only events at or before this unix ts or RFC3339 date (client-side)"
+    )]
+    until: Option<String>,
+    #[arg(
+        long,
+        value_name = "CSV",
+        help = "comma-separated event flags mapped to AdminLogEventsFilter: join,leave,invite,ban,unban,kick,unkick,promote,demote,info,settings,pinned,edit,delete,group_call,invites,send,forums,sub_extend,edit_rank"
+    )]
+    events: Option<String>,
 }
 
 #[derive(Args)]
@@ -2274,6 +2299,26 @@ async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    let since = args
+        .since
+        .as_deref()
+        .map(crate::commands::parse_unixtime)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(crate::commands::parse_unixtime)
+        .transpose()?;
+    if let (Some(s), Some(u)) = (&since, &until) {
+        if s > u {
+            return Err(TeleError::Usage(
+                "--since must not be after --until".to_string(),
+            ));
+        }
+    }
+    let events_filter = parse_admin_events_filter(args.events.as_deref())?;
+    let search_q = args.search.clone().unwrap_or_default();
+    let admin_target = args.admin.clone();
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
@@ -2283,13 +2328,17 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
+        let search_q = search_q.clone();
+        let events_filter = events_filter.clone();
+        let admin_target = admin_target.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": target,
-                    "would": format!("list admin log of chat {target}")
-                }));
+                return Ok(admin_log_dry_run_payload(
+                    &target,
+                    &search_q,
+                    events_filter.is_some(),
+                    admin_target.is_some(),
+                ));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -2308,41 +2357,60 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let channel = entities::input_channel(&chat)
                 .await
                 .map_err(tele_invocation)?;
-            let events = {
+            let admins = match admin_target.as_deref() {
+                None => None,
+                Some("me") => Some(vec![tl::enums::InputUser::from(
+                    tl::types::InputUserSelf {},
+                )]),
+                Some(user) => {
+                    let peer =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), user).await?;
+                    Some(vec![entities::input_user(&peer)
+                        .await
+                        .map_err(tele_invocation)?])
+                }
+            };
+            let collected = {
                 let guard_ref = &guard;
                 let channel_ref = &channel;
-                collect_admin_log(limit, move |max_id, page_limit| async move {
-                    let raw: tl::enums::channels::AdminLogResults = guard_ref
-                        .client
-                        .invoke(&tl::functions::channels::GetAdminLog {
-                            channel: (*channel_ref).clone(),
-                            q: String::new(),
-                            events_filter: None,
-                            admins: None,
-                            max_id,
-                            min_id: 0,
-                            limit: page_limit as i32,
+                collect_admin_log(limit, move |max_id, page_limit| {
+                    let q = search_q.clone();
+                    let filter = events_filter.clone();
+                    let admins = admins.clone();
+                    async move {
+                        let raw: tl::enums::channels::AdminLogResults = guard_ref
+                            .client
+                            .invoke(&tl::functions::channels::GetAdminLog {
+                                channel: (*channel_ref).clone(),
+                                q,
+                                events_filter: filter,
+                                admins,
+                                max_id,
+                                min_id: 0,
+                                limit: page_limit as i32,
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                        let tl::enums::channels::AdminLogResults::Results(results) = raw;
+                        let next_max_id = results
+                            .events
+                            .iter()
+                            .last()
+                            .map(|e| match e {
+                                tl::enums::ChannelAdminLogEvent::Event(e) => e.id,
+                            })
+                            .unwrap_or_default();
+                        Ok(AdminLogPage {
+                            events: results.events,
+                            users: results.users,
+                            max_id: next_max_id,
                         })
-                        .await
-                        .map_err(tele_invocation)?;
-                    let tl::enums::channels::AdminLogResults::Results(results) = raw;
-                    let next_max_id = results
-                        .events
-                        .iter()
-                        .last()
-                        .map(|e| match e {
-                            tl::enums::ChannelAdminLogEvent::Event(e) => e.id,
-                        })
-                        .unwrap_or_default();
-                    Ok(AdminLogPage {
-                        events: results.events,
-                        max_id: next_max_id,
-                    })
+                    }
                 })
             }
             .await?;
             let mut rows = Vec::new();
-            for event in events {
+            for event in collected.events {
                 let tl::enums::ChannelAdminLogEvent::Event(event) = event;
                 let date = chrono::DateTime::from_timestamp(event.date as i64, 0)
                     .map(|d| d.to_rfc3339())
@@ -2350,9 +2418,11 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 rows.push(serde_json::json!({
                     "id": event.id,
                     "date": date,
+                    "actor": actor_value(&guard.client, &collected.users, event.user_id),
                     "action": admin_action_summary(&event.action, own_id),
                 }));
             }
+            let rows = filter_events_by_range(rows, since, until);
             if !output::machine_mode(json, jsonl) {
                 let table_rows: Vec<Vec<String>> = rows
                     .iter()
@@ -2360,11 +2430,17 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         vec![
                             r["id"].to_string(),
                             r["date"].as_str().unwrap_or_default().to_string(),
+                            r["actor"]["name"].as_str().unwrap_or_default().to_string(),
                             admin_action_display(&r["action"]),
                         ]
                     })
                     .collect();
-                output::print_account_table(&name, multi, &["id", "date", "action"], &table_rows)?;
+                output::print_account_table(
+                    &name,
+                    multi,
+                    &["id", "date", "actor", "action"],
+                    &table_rows,
+                )?;
             }
             Ok(serde_json::json!({"events": rows}))
         })
@@ -2373,20 +2449,166 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn admin_log_dry_run_payload(
+    chat: &str,
+    q: &str,
+    has_events_filter: bool,
+    has_admins: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "search": if q.is_empty() { None::<&str> } else { Some(q) },
+        "events_filter": has_events_filter,
+        "admins": has_admins,
+        "would": format!("list admin log of chat {chat}"),
+    })
+}
+
+fn actor_value(
+    client: &grammers_client::Client,
+    users: &HashMap<i64, tl::enums::User>,
+    user_id: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": user_id,
+        "name": user_display_name(client, users, user_id),
+    })
+}
+
+fn filter_events_by_range(
+    rows: Vec<serde_json::Value>,
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+) -> Vec<serde_json::Value> {
+    if since.is_none() && until.is_none() {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|r| {
+            r["date"]
+                .as_str()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|d| d.with_timezone(&chrono::Utc))
+                .map(|d| since.is_none_or(|s| d >= s) && until.is_none_or(|u| d <= u))
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
+const ADMIN_LOG_EVENT_FLAGS: &[&str] = &[
+    "join",
+    "leave",
+    "invite",
+    "ban",
+    "unban",
+    "kick",
+    "unkick",
+    "promote",
+    "demote",
+    "info",
+    "settings",
+    "pinned",
+    "edit",
+    "delete",
+    "group_call",
+    "invites",
+    "send",
+    "forums",
+    "sub_extend",
+    "edit_rank",
+];
+
+fn parse_admin_events_filter(
+    csv: Option<&str>,
+) -> TeleResult<Option<tl::enums::ChannelAdminLogEventsFilter>> {
+    let Some(csv) = csv else {
+        return Ok(None);
+    };
+    let names: Vec<&str> = csv
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Err(TeleError::Usage(format!(
+            "--events must name at least one flag: {}",
+            ADMIN_LOG_EVENT_FLAGS.join(",")
+        )));
+    }
+    let mut f = tl::types::ChannelAdminLogEventsFilter {
+        join: false,
+        leave: false,
+        invite: false,
+        ban: false,
+        unban: false,
+        kick: false,
+        unkick: false,
+        promote: false,
+        demote: false,
+        info: false,
+        settings: false,
+        pinned: false,
+        edit: false,
+        delete: false,
+        group_call: false,
+        invites: false,
+        send: false,
+        forums: false,
+        sub_extend: false,
+        edit_rank: false,
+    };
+    for name in &names {
+        match *name {
+            "join" => f.join = true,
+            "leave" => f.leave = true,
+            "invite" => f.invite = true,
+            "ban" => f.ban = true,
+            "unban" => f.unban = true,
+            "kick" => f.kick = true,
+            "unkick" => f.unkick = true,
+            "promote" => f.promote = true,
+            "demote" => f.demote = true,
+            "info" => f.info = true,
+            "settings" => f.settings = true,
+            "pinned" => f.pinned = true,
+            "edit" => f.edit = true,
+            "delete" => f.delete = true,
+            "group_call" => f.group_call = true,
+            "invites" => f.invites = true,
+            "send" => f.send = true,
+            "forums" => f.forums = true,
+            "sub_extend" => f.sub_extend = true,
+            "edit_rank" => f.edit_rank = true,
+            other => {
+                return Err(TeleError::Usage(format!(
+                    "unknown --events flag '{other}': valid flags are {}",
+                    ADMIN_LOG_EVENT_FLAGS.join(",")
+                )))
+            }
+        }
+    }
+    Ok(Some(tl::enums::ChannelAdminLogEventsFilter::Filter(f)))
+}
+
 struct AdminLogPage {
     events: Vec<tl::enums::ChannelAdminLogEvent>,
+    users: Vec<tl::enums::User>,
     max_id: i64,
 }
 
-async fn collect_admin_log<F, Fut>(
-    limit: u32,
-    mut fetch: F,
-) -> TeleResult<Vec<tl::enums::ChannelAdminLogEvent>>
+struct CollectedAdminLog {
+    events: Vec<tl::enums::ChannelAdminLogEvent>,
+    users: HashMap<i64, tl::enums::User>,
+}
+
+async fn collect_admin_log<F, Fut>(limit: u32, mut fetch: F) -> TeleResult<CollectedAdminLog>
 where
     F: FnMut(i64, u32) -> Fut,
     Fut: std::future::Future<Output = TeleResult<AdminLogPage>>,
 {
     let mut events = Vec::new();
+    let mut users: HashMap<i64, tl::enums::User> = HashMap::new();
     let mut max_id = 0i64;
     loop {
         let remaining = limit.saturating_sub(events.len() as u32);
@@ -2396,12 +2618,17 @@ where
         let page = fetch(max_id, remaining.min(100)).await?;
         max_id = page.max_id;
         let page_len = page.events.len();
+        for u in page.users {
+            if let tl::enums::User::User(uu) = &u {
+                users.insert(uu.id, u);
+            }
+        }
         events.extend(page.events);
         if page_len == 0 {
             break;
         }
     }
-    Ok(events)
+    Ok(CollectedAdminLog { events, users })
 }
 
 fn stats_dry_run_payload(chat: &str, broadcast: bool) -> serde_json::Value {
@@ -2678,20 +2905,35 @@ fn admin_action_summary(
 ) -> serde_json::Value {
     match a {
         tl::enums::ChannelAdminLogEventAction::ChangeTitle(v) => {
-            serde_json::json!({"kind": "change_title", "title": v.new_value})
+            serde_json::json!({
+                "kind": "change_title",
+                "title": v.new_value,
+                "prev_title": v.prev_value,
+            })
         }
         tl::enums::ChannelAdminLogEventAction::ChangeAbout(v) => {
-            serde_json::json!({"kind": "change_about", "text": v.new_value})
+            serde_json::json!({
+                "kind": "change_about",
+                "text": v.new_value,
+                "prev_text": v.prev_value,
+            })
         }
         tl::enums::ChannelAdminLogEventAction::ChangeUsername(v) => {
-            serde_json::json!({"kind": "change_username", "username": v.new_value})
+            serde_json::json!({
+                "kind": "change_username",
+                "username": v.new_value,
+                "prev_username": v.prev_value,
+            })
         }
         tl::enums::ChannelAdminLogEventAction::SendMessage(v) => {
             message_action_summary("send_message", &v.message)
         }
-        tl::enums::ChannelAdminLogEventAction::EditMessage(v) => {
-            message_action_summary("edit_message", &v.new_message)
-        }
+        tl::enums::ChannelAdminLogEventAction::EditMessage(v) => serde_json::json!({
+            "kind": "edit_message",
+            "id": message_id(&v.new_message),
+            "text": message_text(&v.new_message),
+            "prev_text": message_text(&v.prev_message),
+        }),
         tl::enums::ChannelAdminLogEventAction::DeleteMessage(v) => match &v.message {
             tl::enums::Message::Message(m) => {
                 serde_json::json!({"kind": "delete_message", "id": m.id})
@@ -2711,19 +2953,37 @@ fn admin_action_summary(
             })
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantToggleBan(v) => {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "kind": "toggle_ban",
                 "user_id": participant_user_id(&v.new_participant, own_id),
-            })
+            });
+            if let Some(ban) = participant_ban_summary(&v.new_participant) {
+                value["ban"] = ban;
+            }
+            if let Some(prev) = participant_ban_summary(&v.prev_participant) {
+                value["prev_ban"] = prev;
+            }
+            value
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantToggleAdmin(v) => {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "kind": "toggle_admin",
                 "user_id": participant_user_id(&v.new_participant, own_id),
-            })
+            });
+            if let Some(admin) = participant_admin_summary(&v.new_participant) {
+                value["admin"] = admin;
+            }
+            if let Some(prev) = participant_admin_summary(&v.prev_participant) {
+                value["prev_admin"] = prev;
+            }
+            value
         }
-        tl::enums::ChannelAdminLogEventAction::ChangePhoto(_) => {
-            serde_json::json!({"kind": "change_photo"})
+        tl::enums::ChannelAdminLogEventAction::ChangePhoto(v) => {
+            serde_json::json!({
+                "kind": "change_photo",
+                "photo": photo_summary(&v.new_photo),
+                "prev_photo": photo_summary(&v.prev_photo),
+            })
         }
         tl::enums::ChannelAdminLogEventAction::ToggleInvites(v) => {
             serde_json::json!({"kind": "toggle_invites", "enabled": v.new_value})
@@ -2731,17 +2991,220 @@ fn admin_action_summary(
         tl::enums::ChannelAdminLogEventAction::ToggleSignatures(v) => {
             serde_json::json!({"kind": "toggle_signatures", "enabled": v.new_value})
         }
-        tl::enums::ChannelAdminLogEventAction::UpdatePinned(_) => {
-            serde_json::json!({"kind": "update_pinned"})
+        tl::enums::ChannelAdminLogEventAction::UpdatePinned(v) => {
+            serde_json::json!({"kind": "update_pinned", "id": message_id(&v.message)})
         }
-        tl::enums::ChannelAdminLogEventAction::ParticipantJoinByInvite(_) => {
-            serde_json::json!({"kind": "join_by_invite"})
+        tl::enums::ChannelAdminLogEventAction::ParticipantJoinByInvite(v) => {
+            serde_json::json!({
+                "kind": "join_by_invite",
+                "invite_link": invite_link(&v.invite),
+                "via_chatlist": v.via_chatlist,
+            })
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantJoinByRequest(v) => {
-            serde_json::json!({"kind": "join_by_request", "approved_by": v.approved_by})
+            serde_json::json!({
+                "kind": "join_by_request",
+                "approved_by": v.approved_by,
+                "invite_link": invite_link(&v.invite),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::TogglePreHistoryHidden(v) => {
+            serde_json::json!({"kind": "toggle_pre_history_hidden", "enabled": v.new_value})
+        }
+        tl::enums::ChannelAdminLogEventAction::ToggleSlowMode(v) => {
+            serde_json::json!({
+                "kind": "toggle_slow_mode",
+                "seconds": v.new_value,
+                "prev_seconds": v.prev_value,
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ToggleNoForwards(v) => {
+            serde_json::json!({"kind": "toggle_noforwards", "enabled": v.new_value})
+        }
+        tl::enums::ChannelAdminLogEventAction::DefaultBannedRights(v) => {
+            serde_json::json!({
+                "kind": "default_banned_rights",
+                "rights": banned_rights_denied(&v.new_banned_rights),
+                "until_date": banned_rights_until(&v.new_banned_rights),
+                "prev_rights": banned_rights_denied(&v.prev_banned_rights),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ChangeLinkedChat(v) => {
+            serde_json::json!({
+                "kind": "change_linked_chat",
+                "linked_chat_id": v.new_value,
+                "prev_linked_chat_id": v.prev_value,
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ExportedInviteDelete(v) => {
+            serde_json::json!({
+                "kind": "exported_invite_delete",
+                "invite_link": invite_link_from_exported(&v.invite),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ExportedInviteRevoke(v) => {
+            serde_json::json!({
+                "kind": "exported_invite_revoke",
+                "invite_link": invite_link_from_exported(&v.invite),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ExportedInviteEdit(v) => {
+            serde_json::json!({
+                "kind": "exported_invite_edit",
+                "invite_link": invite_link_from_exported(&v.new_invite),
+                "prev_invite_link": invite_link_from_exported(&v.prev_invite),
+            })
+        }
+        tl::enums::ChannelAdminLogEventAction::ParticipantEditRank(v) => {
+            serde_json::json!({
+                "kind": "edit_rank",
+                "user_id": v.user_id,
+                "rank": v.new_rank,
+                "prev_rank": v.prev_rank,
+            })
         }
         _ => serde_json::json!({"kind": "other"}),
     }
+}
+
+fn message_id(message: &tl::enums::Message) -> Option<i32> {
+    match message {
+        tl::enums::Message::Message(m) => Some(m.id),
+        _ => None,
+    }
+}
+
+fn message_text(message: &tl::enums::Message) -> String {
+    match message {
+        tl::enums::Message::Message(m) => m.message.clone(),
+        _ => String::new(),
+    }
+}
+
+fn invite_link(invite: &tl::enums::ExportedChatInvite) -> serde_json::Value {
+    match invite {
+        tl::enums::ExportedChatInvite::ChatInviteExported(i) => serde_json::json!(i.link),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn invite_link_from_exported(invite: &tl::enums::ExportedChatInvite) -> serde_json::Value {
+    invite_link(invite)
+}
+
+fn photo_summary(photo: &tl::enums::Photo) -> serde_json::Value {
+    match photo {
+        tl::enums::Photo::Empty(p) => serde_json::json!({"empty": true, "id": p.id}),
+        tl::enums::Photo::Photo(p) => serde_json::json!({
+            "id": p.id,
+            "date": rfc3339_or_empty(Some(p.date)),
+            "sizes": p.sizes.len(),
+        }),
+    }
+}
+
+fn participant_ban_summary(
+    participant: &tl::enums::ChannelParticipant,
+) -> Option<serde_json::Value> {
+    match participant {
+        tl::enums::ChannelParticipant::Banned(p) => {
+            let mut value = serde_json::json!({
+                "left": p.left,
+                "denied": banned_rights_denied(&p.banned_rights),
+                "until_date": banned_rights_until(&p.banned_rights),
+            });
+            if p.rank.as_deref().is_some_and(|r| !r.is_empty()) {
+                value["rank"] = serde_json::json!(p.rank);
+            }
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
+fn participant_admin_summary(
+    participant: &tl::enums::ChannelParticipant,
+) -> Option<serde_json::Value> {
+    let (rights, rank) = match participant {
+        tl::enums::ChannelParticipant::Creator(p) => (&p.admin_rights, p.rank.clone()),
+        tl::enums::ChannelParticipant::Admin(p) => (&p.admin_rights, p.rank.clone()),
+        _ => return None,
+    };
+    let mut value = serde_json::json!({"granted": admin_rights_granted(rights)});
+    let tl::enums::ChatAdminRights::Rights(r) = rights;
+    value["anonymous"] = serde_json::json!(r.anonymous);
+    if let Some(rank) = rank.as_deref().filter(|r| !r.is_empty()) {
+        value["rank"] = serde_json::json!(rank);
+    }
+    Some(value)
+}
+
+fn admin_rights_granted(rights: &tl::enums::ChatAdminRights) -> Vec<&'static str> {
+    let tl::enums::ChatAdminRights::Rights(r) = rights;
+    let mut granted = Vec::new();
+    for (flag, name) in [
+        (r.change_info, "change_info"),
+        (r.post_messages, "post"),
+        (r.edit_messages, "edit"),
+        (r.delete_messages, "delete"),
+        (r.ban_users, "ban"),
+        (r.invite_users, "invite"),
+        (r.pin_messages, "pin"),
+        (r.add_admins, "add_admins"),
+        (r.anonymous, "anonymous"),
+        (r.manage_call, "manage_call"),
+        (r.other, "other"),
+        (r.manage_topics, "manage_topics"),
+        (r.post_stories, "post_stories"),
+        (r.edit_stories, "edit_stories"),
+        (r.delete_stories, "delete_stories"),
+        (r.manage_direct_messages, "manage_direct_messages"),
+        (r.manage_ranks, "manage_ranks"),
+    ] {
+        if flag {
+            granted.push(name);
+        }
+    }
+    granted
+}
+
+fn banned_rights_denied(rights: &tl::enums::ChatBannedRights) -> Vec<&'static str> {
+    let tl::enums::ChatBannedRights::Rights(r) = rights;
+    let mut denied = Vec::new();
+    for (flag, name) in [
+        (r.view_messages, "view_messages"),
+        (r.send_messages, "send_messages"),
+        (r.send_media, "send_media"),
+        (r.send_stickers, "send_stickers"),
+        (r.send_gifs, "send_gifs"),
+        (r.send_games, "send_games"),
+        (r.send_inline, "send_inline"),
+        (r.embed_links, "embed_links"),
+        (r.send_polls, "send_polls"),
+        (r.change_info, "change_info"),
+        (r.invite_users, "invite_users"),
+        (r.pin_messages, "pin_messages"),
+        (r.manage_topics, "manage_topics"),
+        (r.send_photos, "send_photos"),
+        (r.send_videos, "send_videos"),
+        (r.send_roundvideos, "send_roundvideos"),
+        (r.send_audios, "send_audios"),
+        (r.send_voices, "send_voices"),
+        (r.send_docs, "send_docs"),
+        (r.send_plain, "send_plain"),
+        (r.edit_rank, "edit_rank"),
+        (r.send_reactions, "send_reactions"),
+    ] {
+        if flag {
+            denied.push(name);
+        }
+    }
+    denied
+}
+
+fn banned_rights_until(rights: &tl::enums::ChatBannedRights) -> Option<i32> {
+    let tl::enums::ChatBannedRights::Rights(r) = rights;
+    (r.until_date > 0).then_some(r.until_date)
 }
 
 fn message_action_summary(kind: &str, message: &tl::enums::Message) -> serde_json::Value {
@@ -2759,6 +3222,7 @@ fn admin_action_display(action: &serde_json::Value) -> String {
         .get("title")
         .or_else(|| action.get("text"))
         .or_else(|| action.get("username"))
+        .or_else(|| action.get("invite_link"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     let text = if detail.is_empty() {
@@ -2931,21 +3395,385 @@ mod tests {
         })
     }
 
+    #[test]
+    fn event_rows_carry_actor_names_from_response_users() {
+        let client = offline_client();
+        let mut users = HashMap::new();
+        users.insert(11, test_user(11, "alice"));
+        users.insert(22, test_user(22, "bob"));
+        let actor = actor_value(&client, &users, 11);
+        assert_eq!(actor["id"], 11);
+        assert_eq!(actor["name"], "alice");
+        assert_eq!(actor_value(&client, &users, 99)["name"], "99");
+    }
+
+    #[tokio::test]
+    async fn collect_admin_log_accumulates_users_across_pages() {
+        let pages: [(i64, u32, Vec<i64>, Vec<i64>); 2] =
+            [(0, 2, vec![9], vec![11]), (9, 1, vec![8], Vec::new())];
+        let mut next = 0usize;
+        let collected = collect_admin_log(2, |_max_id, _limit| {
+            let (_want_max, _want_limit, ids, user_ids) = pages[next].clone();
+            next += 1;
+            let new_max = *ids.last().unwrap_or(&0);
+            async move {
+                Ok(AdminLogPage {
+                    events: ids.into_iter().map(fake_event).collect(),
+                    users: user_ids.into_iter().map(test_user_id).collect(),
+                    max_id: new_max,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(collected.events.len(), 2);
+        assert!(collected.users.contains_key(&11));
+    }
+
+    fn test_user_id(id: i64) -> tl::enums::User {
+        test_user(id, "u")
+    }
+
+    fn admin_log_args(chat: &str) -> AdminLogArgs {
+        AdminLogArgs {
+            chat: chat.to_string(),
+            limit: 20,
+            admin: None,
+            search: None,
+            since: None,
+            until: None,
+            events: None,
+        }
+    }
+
+    #[test]
+    fn admin_events_filter_maps_csv_to_flags() {
+        let filter = parse_admin_events_filter(Some("ban, promote, edit_rank"))
+            .unwrap()
+            .expect("filter");
+        let tl::enums::ChannelAdminLogEventsFilter::Filter(f) = &filter;
+        assert!(f.ban && f.promote && f.edit_rank);
+        assert!(!f.join && !f.delete && !f.send);
+    }
+
+    #[test]
+    fn admin_events_filter_rejects_unknown_empty_and_none() {
+        assert!(parse_admin_events_filter(None).unwrap().is_none());
+        for bad in ["", "  ", "fly", "ban,fly", "Ban"] {
+            assert!(
+                matches!(
+                    parse_admin_events_filter(Some(bad)),
+                    Err(TeleError::Usage(_))
+                ),
+                "events '{bad}' should be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_log_validates_since_until_and_flags_offline() {
+        let mut a = admin_log_args("@c");
+        a.since = Some("not-a-date".to_string());
+        assert!(matches!(
+            admin_log(a, &dryrun_flags("chat admin-log")).await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let mut a = admin_log_args("@c");
+        a.events = Some("nope".to_string());
+        assert!(matches!(
+            admin_log(a, &dryrun_flags("chat admin-log")).await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let mut a = admin_log_args("@c");
+        a.since = Some("200".into());
+        a.until = Some("100".into());
+        assert!(matches!(
+            admin_log(a, &dryrun_flags("chat admin-log")).await,
+            Err(TeleError::Usage(_))
+        ));
+
+        let mut a = admin_log_args("@c");
+        a.since = Some("1000000000".into());
+        a.until = Some("2000000000".into());
+        a.search = Some("spam".into());
+        a.admin = Some("me".into());
+        a.events = Some("join,leave".into());
+        assert!(admin_log(a, &dryrun_flags("chat admin-log")).await.is_ok());
+    }
+
+    #[test]
+    fn admin_log_dry_run_payload_echoes_filters() {
+        let v = admin_log_dry_run_payload("@c", "q", true, true);
+        assert_eq!(v["search"], serde_json::json!("q"));
+        assert_eq!(v["events_filter"], serde_json::json!(true));
+        assert_eq!(v["admins"], serde_json::json!(true));
+        assert_eq!(v["chat"], serde_json::json!("@c"));
+        let none = admin_log_dry_run_payload("@c", "", false, false);
+        assert_eq!(none["search"], serde_json::Value::Null);
+        assert_eq!(none["events_filter"], serde_json::json!(false));
+        assert_eq!(none["admins"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn event_rows_filter_by_since_until_range() {
+        let row_at = |ts: &str| serde_json::json!({"id": 1, "date": ts});
+        let since = crate::commands::parse_unixtime("150").ok();
+        let until = crate::commands::parse_unixtime("250").ok();
+        let rows = vec![
+            row_at("1970-01-01T00:02:30+00:00"),
+            row_at("1970-01-01T00:04:10+00:00"),
+        ];
+        let kept = filter_events_by_range(rows, since, until);
+        assert_eq!(kept.len(), 2);
+
+        let strict_since = crate::commands::parse_unixtime("160").ok();
+        let rows = vec![row_at("1970-01-01T00:02:30+00:00")];
+        assert!(filter_events_by_range(rows, strict_since, None).is_empty());
+
+        let rows = vec![row_at("bogus")];
+        assert_eq!(filter_events_by_range(rows, strict_since, None).len(), 1);
+    }
+
+    #[test]
+    fn admin_action_summary_reports_old_and_new_values() {
+        let action = admin_action_summary(
+            &tl::enums::ChannelAdminLogEventAction::ChangeTitle(
+                tl::types::ChannelAdminLogEventActionChangeTitle {
+                    prev_value: "Old".into(),
+                    new_value: "New".into(),
+                },
+            ),
+            0,
+        );
+        assert_eq!(action["kind"], "change_title");
+        assert_eq!(action["title"], "New");
+        assert_eq!(action["prev_title"], "Old");
+
+        let action = admin_action_summary(
+            &tl::enums::ChannelAdminLogEventAction::ChangeAbout(
+                tl::types::ChannelAdminLogEventActionChangeAbout {
+                    prev_value: String::new(),
+                    new_value: "about".into(),
+                },
+            ),
+            0,
+        );
+        assert_eq!(action["prev_text"], "");
+        assert_eq!(action["text"], "about");
+
+        let action = admin_action_summary(
+            &tl::enums::ChannelAdminLogEventAction::ChangeUsername(
+                tl::types::ChannelAdminLogEventActionChangeUsername {
+                    prev_value: "old_handle".into(),
+                    new_value: "new_handle".into(),
+                },
+            ),
+            0,
+        );
+        assert_eq!(action["prev_username"], "old_handle");
+        assert_eq!(action["username"], "new_handle");
+    }
+
+    #[test]
+    fn admin_action_summary_reports_ban_until_and_rights() {
+        let tl::enums::ChatBannedRights::Rights(mut r) = banned_rights();
+        r.view_messages = true;
+        r.send_messages = true;
+        r.until_date = 12345;
+        let rights = tl::enums::ChatBannedRights::Rights(r);
+        let banned = tl::enums::ChannelParticipant::Banned(tl::types::ChannelParticipantBanned {
+            left: false,
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 404 }),
+            kicked_by: 1,
+            date: 0,
+            banned_rights: rights.clone(),
+            rank: Some("spam".into()),
+        });
+        let action = admin_action_summary(
+            &tl::enums::ChannelAdminLogEventAction::ParticipantToggleBan(
+                tl::types::ChannelAdminLogEventActionParticipantToggleBan {
+                    prev_participant: banned_rights_fixture_participant(),
+                    new_participant: banned,
+                },
+            ),
+            0,
+        );
+        assert_eq!(action["kind"], "toggle_ban");
+        assert_eq!(action["user_id"], 404);
+        assert_eq!(
+            action["ban"]["denied"],
+            serde_json::json!(["view_messages", "send_messages"])
+        );
+        assert_eq!(action["ban"]["until_date"], 12345);
+        assert_eq!(action["ban"]["rank"], "spam");
+        assert_eq!(action["prev_ban"]["denied"], serde_json::json!([]));
+    }
+
+    fn banned_rights_fixture_participant() -> tl::enums::ChannelParticipant {
+        tl::enums::ChannelParticipant::Banned(tl::types::ChannelParticipantBanned {
+            left: true,
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 404 }),
+            kicked_by: 1,
+            date: 0,
+            banned_rights: banned_rights(),
+            rank: None,
+        })
+    }
+
+    #[test]
+    fn admin_action_summary_reports_admin_rights_detail() {
+        let tl::enums::ChatAdminRights::Rights(mut r) = admin_rights();
+        r.ban_users = true;
+        r.pin_messages = true;
+        let rights = tl::enums::ChatAdminRights::Rights(r);
+        let admin = tl::enums::ChannelParticipant::Admin(tl::types::ChannelParticipantAdmin {
+            can_edit: false,
+            is_self: false,
+            user_id: 303,
+            inviter_id: None,
+            promoted_by: 1,
+            date: 0,
+            admin_rights: rights,
+            rank: Some("Mod".into()),
+        });
+        let action = admin_action_summary(
+            &tl::enums::ChannelAdminLogEventAction::ParticipantToggleAdmin(
+                tl::types::ChannelAdminLogEventActionParticipantToggleAdmin {
+                    prev_participant: banned_rights_fixture_participant(),
+                    new_participant: admin,
+                },
+            ),
+            0,
+        );
+        assert_eq!(action["kind"], "toggle_admin");
+        assert_eq!(
+            action["admin"]["granted"],
+            serde_json::json!(["ban", "pin"])
+        );
+        assert_eq!(action["admin"]["anonymous"], false);
+        assert_eq!(action["admin"]["rank"], "Mod");
+    }
+
+    #[test]
+    fn admin_action_summary_reports_photo_pinned_and_invite_link() {
+        let photo = tl::enums::Photo::Photo(tl::types::Photo {
+            id: 555,
+            access_hash: -7,
+            file_reference: vec![1],
+            has_stickers: false,
+            date: 0,
+            sizes: Vec::new(),
+            video_sizes: None,
+            dc_id: 1,
+        });
+        let action = admin_action_summary(
+            &tl::enums::ChannelAdminLogEventAction::ChangePhoto(
+                tl::types::ChannelAdminLogEventActionChangePhoto {
+                    prev_photo: tl::enums::Photo::Empty(tl::types::PhotoEmpty { id: 0 }),
+                    new_photo: photo,
+                },
+            ),
+            0,
+        );
+        assert_eq!(action["photo"]["id"], 555);
+        assert_eq!(action["photo"]["sizes"], 0);
+        assert_eq!(action["prev_photo"]["empty"], true);
+
+        let pinned_msg = test_tl_message(77);
+        let action = admin_action_summary(
+            &tl::enums::ChannelAdminLogEventAction::UpdatePinned(
+                tl::types::ChannelAdminLogEventActionUpdatePinned {
+                    message: pinned_msg,
+                },
+            ),
+            0,
+        );
+        assert_eq!(action["kind"], "update_pinned");
+        assert_eq!(action["id"], 77);
+
+        let join_invite = tl::enums::ChannelAdminLogEventAction::ParticipantJoinByInvite(
+            tl::types::ChannelAdminLogEventActionParticipantJoinByInvite {
+                via_chatlist: false,
+                invite: tl::enums::ExportedChatInvite::ChatInviteExported(exported_link_fixture()),
+            },
+        );
+        let action = admin_action_summary(&join_invite, 0);
+        assert_eq!(action["kind"], "join_by_invite");
+        assert_eq!(action["invite_link"], "https://t.me/+abcdef");
+    }
+
+    fn test_tl_message(id: i32) -> tl::enums::Message {
+        tl::enums::Message::Message(tl::types::Message {
+            out: false,
+            mentioned: false,
+            media_unread: false,
+            silent: false,
+            post: false,
+            from_scheduled: false,
+            legacy: false,
+            edit_hide: false,
+            pinned: false,
+            noforwards: false,
+            invert_media: false,
+            offline: false,
+            video_processing_pending: false,
+            paid_suggested_post_stars: false,
+            paid_suggested_post_ton: false,
+            id,
+            from_id: None,
+            from_boosts_applied: None,
+            from_rank: None,
+            peer_id: tl::enums::Peer::Channel(tl::types::PeerChannel { channel_id: 1 }),
+            saved_peer_id: None,
+            fwd_from: None,
+            via_bot_id: None,
+            via_business_bot_id: None,
+            guestchat_via_from: None,
+            reply_to: None,
+            date: 0,
+            message: String::new(),
+            media: None,
+            reply_markup: None,
+            entities: None,
+            views: None,
+            forwards: None,
+            replies: None,
+            edit_date: None,
+            post_author: None,
+            grouped_id: None,
+            reactions: None,
+            restriction_reason: None,
+            ttl_period: None,
+            quick_reply_shortcut_id: None,
+            effect: None,
+            factcheck: None,
+            report_delivery_until_date: None,
+            paid_message_stars: None,
+            suggested_post: None,
+            schedule_repeat_period: None,
+            summary_from_language: None,
+            rich_message: None,
+        })
+    }
+
     #[tokio::test]
     async fn collect_admin_log_stops_on_empty_page() {
         let mut calls = Vec::new();
-        let events = collect_admin_log(10, |max_id, page_limit| {
+        let collected = collect_admin_log(10, |max_id, page_limit| {
             calls.push((max_id, page_limit));
             async move {
                 Ok(AdminLogPage {
                     events: Vec::new(),
+                    users: Vec::new(),
                     max_id: 0,
                 })
             }
         })
         .await
         .unwrap();
-        assert!(events.is_empty());
+        assert!(collected.events.is_empty());
         assert_eq!(calls, vec![(0, 10)]);
     }
 
@@ -2954,7 +3782,7 @@ mod tests {
         let pages: [(i64, u32, Vec<i64>, i64); 2] = [(0, 5, vec![10, 9], 9), (9, 3, Vec::new(), 0)];
         let mut next = 0usize;
         let mut calls = Vec::new();
-        let events = collect_admin_log(5, |max_id, page_limit| {
+        let collected = collect_admin_log(5, |max_id, page_limit| {
             let (want_max, want_limit, ids, new_max) = pages[next].clone();
             next += 1;
             calls.push((max_id, page_limit));
@@ -2963,13 +3791,14 @@ mod tests {
                 assert_eq!(page_limit, want_limit);
                 Ok(AdminLogPage {
                     events: ids.into_iter().map(fake_event).collect(),
+                    users: Vec::new(),
                     max_id: new_max,
                 })
             }
         })
         .await
         .unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(collected.events.len(), 2);
         assert_eq!(calls, vec![(0, 5), (9, 3)]);
     }
 
@@ -2979,7 +3808,7 @@ mod tests {
             [(0, 5, vec![10, 9, 8], 8), (8, 2, vec![7, 6], 6)];
         let mut next = 0usize;
         let mut calls = Vec::new();
-        let events = collect_admin_log(5, |max_id, page_limit| {
+        let collected = collect_admin_log(5, |max_id, page_limit| {
             let (want_max, want_limit, ids, new_max) = pages[next].clone();
             next += 1;
             calls.push((max_id, page_limit));
@@ -2988,31 +3817,33 @@ mod tests {
                 assert_eq!(page_limit, want_limit);
                 Ok(AdminLogPage {
                     events: ids.into_iter().map(fake_event).collect(),
+                    users: Vec::new(),
                     max_id: new_max,
                 })
             }
         })
         .await
         .unwrap();
-        assert_eq!(events.len(), 5);
+        assert_eq!(collected.events.len(), 5);
         assert_eq!(calls, vec![(0, 5), (8, 2)]);
     }
 
     #[tokio::test]
     async fn collect_admin_log_stops_when_limit_reached_exactly() {
         let mut calls = Vec::new();
-        let events = collect_admin_log(3, |max_id, page_limit| {
+        let collected = collect_admin_log(3, |max_id, page_limit| {
             calls.push((max_id, page_limit));
             async move {
                 Ok(AdminLogPage {
                     events: vec![fake_event(7), fake_event(6), fake_event(5)],
+                    users: Vec::new(),
                     max_id: 5,
                 })
             }
         })
         .await
         .unwrap();
-        assert_eq!(events.len(), 3);
+        assert_eq!(collected.events.len(), 3);
         assert_eq!(calls, vec![(0, 3)]);
     }
 
@@ -3020,7 +3851,7 @@ mod tests {
     async fn collect_admin_log_page_size_capped_at_100() {
         let mut next = 0usize;
         let mut calls = Vec::new();
-        let events = collect_admin_log(250, |max_id, page_limit| {
+        let collected = collect_admin_log(250, |max_id, page_limit| {
             let ids: Vec<i64> = (0..page_limit)
                 .map(|i| 1000 - next as i64 * 100 - i as i64)
                 .collect();
@@ -3030,13 +3861,14 @@ mod tests {
             async move {
                 Ok(AdminLogPage {
                     events: ids.into_iter().map(fake_event).collect(),
+                    users: Vec::new(),
                     max_id: new_max,
                 })
             }
         })
         .await
         .unwrap();
-        assert_eq!(events.len(), 250);
+        assert_eq!(collected.events.len(), 250);
         assert_eq!(calls, vec![(0, 100), (901, 100), (801, 50)]);
     }
 
@@ -3237,6 +4069,11 @@ mod tests {
                 AdminLogArgs {
                     chat: "   ".to_string(),
                     limit: 10,
+                    admin: None,
+                    search: None,
+                    since: None,
+                    until: None,
+                    events: None,
                 },
                 &flags,
             )
