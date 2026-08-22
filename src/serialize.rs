@@ -70,6 +70,9 @@ pub fn message_to_json(
     if let Some(via_bot) = msg.via_bot_id() {
         out.insert("via_bot".into(), serde_json::json!(via_bot));
     }
+    if let Some(markup) = msg.reply_markup() {
+        out.insert("reply_markup".into(), reply_markup_to_json(&markup));
+    }
     Ok(serde_json::Value::Object(out))
 }
 
@@ -134,6 +137,140 @@ fn media_parts(media: &Media) -> (&'static str, Option<String>) {
         Media::Venue(_) => ("venue", None),
         Media::WebPage(_) => ("webpage", None),
         _ => ("media", None),
+    }
+}
+
+pub fn reply_markup_to_json(markup: &tl::enums::ReplyMarkup) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    let rows = match markup {
+        tl::enums::ReplyMarkup::ReplyInlineMarkup(m) => {
+            out.insert("kind".into(), serde_json::json!("inline"));
+            Some(&m.rows)
+        }
+        tl::enums::ReplyMarkup::ReplyKeyboardMarkup(m) => {
+            out.insert("kind".into(), serde_json::json!("reply"));
+            Some(&m.rows)
+        }
+        tl::enums::ReplyMarkup::ReplyKeyboardHide(_) => {
+            out.insert("kind".into(), serde_json::json!("hide"));
+            None
+        }
+        tl::enums::ReplyMarkup::ReplyKeyboardForceReply(_) => {
+            out.insert("kind".into(), serde_json::json!("force_reply"));
+            None
+        }
+    };
+    let rows = rows
+        .map(|rows| {
+            serde_json::Value::Array(
+                rows.iter()
+                    .map(|row| match row {
+                        tl::enums::KeyboardButtonRow::Row(row) => serde_json::Value::Array(
+                            row.buttons.iter().map(keyboard_button_to_json).collect(),
+                        ),
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    out.insert("rows".into(), rows);
+    serde_json::Value::Object(out)
+}
+
+fn keyboard_button_to_json(button: &tl::enums::KeyboardButton) -> serde_json::Value {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    let mut out = serde_json::Map::new();
+    match button {
+        tl::enums::KeyboardButton::Button(b) => {
+            out.insert("text".into(), serde_json::json!(b.text));
+        }
+        tl::enums::KeyboardButton::Url(b) => {
+            out.insert("text".into(), serde_json::json!(b.text));
+            out.insert("url".into(), serde_json::json!(b.url));
+        }
+        tl::enums::KeyboardButton::Callback(b) => {
+            out.insert("text".into(), serde_json::json!(b.text));
+            out.insert(
+                "callback_data".into(),
+                serde_json::json!(STANDARD.encode(&b.data)),
+            );
+        }
+        tl::enums::KeyboardButton::SwitchInline(b) => {
+            out.insert("text".into(), serde_json::json!(b.text));
+            let key = if b.same_peer {
+                "switch_inline_query_current_chat"
+            } else {
+                "switch_inline_query"
+            };
+            out.insert(key.into(), serde_json::json!(b.query));
+        }
+        tl::enums::KeyboardButton::Buy(b) => {
+            out.insert("text".into(), serde_json::json!(b.text));
+            out.insert("buy".into(), serde_json::Value::Bool(true));
+        }
+        other => {
+            out.insert(
+                "text".into(),
+                serde_json::json!(keyboard_button_text(other)),
+            );
+            out.insert(
+                "raw_kind".into(),
+                serde_json::json!(keyboard_button_raw_kind(other)),
+            );
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+fn keyboard_button_text(button: &tl::enums::KeyboardButton) -> &str {
+    match button {
+        tl::enums::KeyboardButton::Button(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::Url(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::Callback(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::RequestPhone(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::RequestGeoLocation(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::SwitchInline(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::Game(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::Buy(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::UrlAuth(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::InputKeyboardButtonUrlAuth(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::InputKeyboardButtonUserProfile(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::InputKeyboardButtonRequestPeer(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::RequestPoll(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::UserProfile(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::WebView(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::SimpleWebView(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::RequestPeer(b) => b.text.as_str(),
+        tl::enums::KeyboardButton::Copy(b) => b.text.as_str(),
+    }
+}
+
+fn keyboard_button_raw_kind(button: &tl::enums::KeyboardButton) -> &'static str {
+    match button {
+        tl::enums::KeyboardButton::Button(_) => "Button",
+        tl::enums::KeyboardButton::Url(_) => "Url",
+        tl::enums::KeyboardButton::Callback(_) => "Callback",
+        tl::enums::KeyboardButton::RequestPhone(_) => "RequestPhone",
+        tl::enums::KeyboardButton::RequestGeoLocation(_) => "RequestGeoLocation",
+        tl::enums::KeyboardButton::SwitchInline(_) => "SwitchInline",
+        tl::enums::KeyboardButton::Game(_) => "Game",
+        tl::enums::KeyboardButton::Buy(_) => "Buy",
+        tl::enums::KeyboardButton::UrlAuth(_) => "UrlAuth",
+        tl::enums::KeyboardButton::InputKeyboardButtonUrlAuth(_) => "InputKeyboardButtonUrlAuth",
+        tl::enums::KeyboardButton::InputKeyboardButtonUserProfile(_) => {
+            "InputKeyboardButtonUserProfile"
+        }
+        tl::enums::KeyboardButton::InputKeyboardButtonRequestPeer(_) => {
+            "InputKeyboardButtonRequestPeer"
+        }
+        tl::enums::KeyboardButton::RequestPoll(_) => "RequestPoll",
+        tl::enums::KeyboardButton::UserProfile(_) => "UserProfile",
+        tl::enums::KeyboardButton::WebView(_) => "WebView",
+        tl::enums::KeyboardButton::SimpleWebView(_) => "SimpleWebView",
+        tl::enums::KeyboardButton::RequestPeer(_) => "RequestPeer",
+        tl::enums::KeyboardButton::Copy(_) => "Copy",
     }
 }
 
@@ -276,6 +413,103 @@ mod tests {
                 })
             });
         }
+    }
+
+    fn set_reply_markup(
+        msg: &mut grammers_client::message::Message,
+        markup: Option<tl::enums::ReplyMarkup>,
+    ) {
+        if let tl::enums::Message::Message(m) = &mut msg.raw {
+            m.reply_markup = markup;
+        }
+    }
+
+    fn text_button(text: &str) -> tl::enums::KeyboardButton {
+        tl::enums::KeyboardButton::Button(tl::types::KeyboardButton {
+            style: None,
+            text: text.into(),
+        })
+    }
+
+    fn url_button(text: &str, url: &str) -> tl::enums::KeyboardButton {
+        tl::enums::KeyboardButton::Url(tl::types::KeyboardButtonUrl {
+            style: None,
+            text: text.into(),
+            url: url.into(),
+        })
+    }
+
+    fn callback_button(text: &str, data: &[u8]) -> tl::enums::KeyboardButton {
+        tl::enums::KeyboardButton::Callback(tl::types::KeyboardButtonCallback {
+            requires_password: false,
+            style: None,
+            text: text.into(),
+            data: data.to_vec(),
+        })
+    }
+
+    fn switch_inline_button(same_peer: bool, query: &str) -> tl::enums::KeyboardButton {
+        tl::enums::KeyboardButton::SwitchInline(tl::types::KeyboardButtonSwitchInline {
+            same_peer,
+            style: None,
+            text: "switch".into(),
+            query: query.into(),
+            peer_types: None,
+        })
+    }
+
+    fn buy_button() -> tl::enums::KeyboardButton {
+        tl::enums::KeyboardButton::Buy(tl::types::KeyboardButtonBuy {
+            style: None,
+            text: "buy".into(),
+        })
+    }
+
+    fn request_phone_button() -> tl::enums::KeyboardButton {
+        tl::enums::KeyboardButton::RequestPhone(tl::types::KeyboardButtonRequestPhone {
+            style: None,
+            text: "phone".into(),
+        })
+    }
+
+    fn inline_markup(rows: Vec<Vec<tl::enums::KeyboardButton>>) -> tl::enums::ReplyMarkup {
+        tl::enums::ReplyMarkup::ReplyInlineMarkup(tl::types::ReplyInlineMarkup {
+            rows: rows
+                .into_iter()
+                .map(|buttons| {
+                    tl::enums::KeyboardButtonRow::Row(tl::types::KeyboardButtonRow { buttons })
+                })
+                .collect(),
+        })
+    }
+
+    fn keyboard_markup(rows: Vec<Vec<tl::enums::KeyboardButton>>) -> tl::enums::ReplyMarkup {
+        tl::enums::ReplyMarkup::ReplyKeyboardMarkup(tl::types::ReplyKeyboardMarkup {
+            resize: false,
+            single_use: false,
+            selective: false,
+            persistent: false,
+            rows: rows
+                .into_iter()
+                .map(|buttons| {
+                    tl::enums::KeyboardButtonRow::Row(tl::types::KeyboardButtonRow { buttons })
+                })
+                .collect(),
+            placeholder: None,
+        })
+    }
+
+    fn action_keys(button: &serde_json::Value) -> usize {
+        [
+            "callback_data",
+            "url",
+            "switch_inline_query",
+            "switch_inline_query_current_chat",
+            "buy",
+        ]
+        .iter()
+        .filter(|key| button.get(*key).is_some())
+        .count()
     }
 
     fn photo_media() -> tl::enums::MessageMedia {
@@ -538,6 +772,138 @@ mod tests {
     }
 
     #[test]
+    fn message_to_json_reply_markup_absent_key_omitted() {
+        let client = offline_client();
+        let msg = make_message(&client, 9, false, "plain", None);
+        let value = message_to_json(&msg).unwrap();
+        assert!(
+            value.get("reply_markup").is_none(),
+            "reply_markup must be omitted when absent"
+        );
+    }
+
+    #[test]
+    fn message_to_json_inline_markup_kind_rows_and_button_actions() {
+        let client = offline_client();
+        let markup = inline_markup(vec![
+            vec![
+                callback_button("Hit", b"\x00\x01\xfe\xff"),
+                url_button("Go", "https://example.com"),
+            ],
+            vec![text_button("Plain")],
+        ]);
+        let mut msg = make_message(&client, 10, false, "pick", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        let rm = &value["reply_markup"];
+        assert_eq!(rm["kind"], "inline");
+        let rows = rm["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].as_array().unwrap().len(), 2);
+        assert_eq!(rows[0][0]["text"], "Hit");
+        assert_eq!(rows[0][0]["callback_data"], "AAH+/w==");
+        assert_eq!(action_keys(&rows[0][0]), 1);
+        assert_eq!(rows[0][1]["text"], "Go");
+        assert_eq!(rows[0][1]["url"], "https://example.com");
+        assert_eq!(action_keys(&rows[0][1]), 1);
+        assert_eq!(rows[1][0], serde_json::json!({"text": "Plain"}));
+    }
+
+    #[test]
+    fn message_to_json_reply_keyboard_kind_is_reply() {
+        let client = offline_client();
+        let markup = keyboard_markup(vec![
+            vec![text_button("Yes"), text_button("No")],
+            vec![text_button("Cancel")],
+        ]);
+        let mut msg = make_message(&client, 11, false, "choose", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        let rm = &value["reply_markup"];
+        assert_eq!(rm["kind"], "reply");
+        assert_eq!(rm["rows"][0][0]["text"], "Yes");
+        assert_eq!(rm["rows"][1].as_array().unwrap().len(), 1);
+        assert_eq!(action_keys(&rm["rows"][0][0]), 0);
+    }
+
+    #[test]
+    fn message_to_json_hide_markup_has_empty_rows() {
+        let client = offline_client();
+        let markup = tl::enums::ReplyMarkup::ReplyKeyboardHide(tl::types::ReplyKeyboardHide {
+            selective: false,
+        });
+        let mut msg = make_message(&client, 12, false, "done", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        assert_eq!(value["reply_markup"]["kind"], "hide");
+        assert_eq!(value["reply_markup"]["rows"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn message_to_json_force_reply_kind() {
+        let client = offline_client();
+        let markup =
+            tl::enums::ReplyMarkup::ReplyKeyboardForceReply(tl::types::ReplyKeyboardForceReply {
+                single_use: true,
+                selective: false,
+                placeholder: None,
+            });
+        let mut msg = make_message(&client, 13, false, "answer", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        assert_eq!(value["reply_markup"]["kind"], "force_reply");
+        assert_eq!(value["reply_markup"]["rows"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn message_to_json_switch_inline_same_peer_selects_current_chat_key() {
+        let client = offline_client();
+        let global = inline_markup(vec![vec![switch_inline_button(false, "search q")]]);
+        let local = inline_markup(vec![vec![switch_inline_button(true, "search here")]]);
+        let mut msg = make_message(&client, 14, false, "sw", None);
+        set_reply_markup(&mut msg, Some(global));
+        let value = message_to_json(&msg).unwrap();
+        assert_eq!(
+            value["reply_markup"]["rows"][0][0]["switch_inline_query"],
+            "search q"
+        );
+        assert_eq!(action_keys(&value["reply_markup"]["rows"][0][0]), 1);
+        set_reply_markup(&mut msg, Some(local));
+        let value = message_to_json(&msg).unwrap();
+        assert_eq!(
+            value["reply_markup"]["rows"][0][0]["switch_inline_query_current_chat"],
+            "search here"
+        );
+        assert_eq!(action_keys(&value["reply_markup"]["rows"][0][0]), 1);
+    }
+
+    #[test]
+    fn message_to_json_buy_button_emits_buy_flag() {
+        let client = offline_client();
+        let markup = inline_markup(vec![vec![buy_button()]]);
+        let mut msg = make_message(&client, 15, false, "shop", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        let button = &value["reply_markup"]["rows"][0][0];
+        assert_eq!(button["buy"], true);
+        assert_eq!(button["text"], "buy");
+        assert_eq!(action_keys(button), 1);
+    }
+
+    #[test]
+    fn message_to_json_unmapped_button_variant_falls_back_to_raw_kind() {
+        let client = offline_client();
+        let markup = inline_markup(vec![vec![request_phone_button()]]);
+        let mut msg = make_message(&client, 16, false, "contact", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        let button = &value["reply_markup"]["rows"][0][0];
+        assert_eq!(button["raw_kind"], "RequestPhone");
+        assert_eq!(button["text"], "phone");
+        assert_eq!(action_keys(button), 0);
+    }
+
+    #[test]
     fn message_to_json_photo_media_key_is_photo() {
         let client = offline_client();
         let msg = make_message(&client, 1, false, "", Some(photo_media()));
@@ -770,6 +1136,40 @@ mod tests {
             assert_eq!(value["id"], id);
             assert_eq!(value["kind"], "user");
             assert!(value["name"].is_string());
+        }
+
+        #[test]
+        fn message_to_json_never_panics_on_reply_markup(
+            text in "\\PC{0,200}",
+            query in "\\PC{0,200}",
+            data in proptest::collection::vec(any::<u8>(), 0..64),
+            same_peer in proptest::bool::ANY,
+            variant in 0u8..5,
+        ) {
+            let client = offline_client();
+            let markup = match variant {
+                0 => inline_markup(vec![vec![
+                    callback_button(&text, &data),
+                    switch_inline_button(same_peer, &query),
+                ]]),
+                1 => inline_markup(vec![vec![url_button(&text, "https://example.com")], vec![buy_button(), text_button(&text)]]),
+                2 => keyboard_markup(vec![vec![text_button(&text)]]),
+                3 => tl::enums::ReplyMarkup::ReplyKeyboardHide(tl::types::ReplyKeyboardHide {
+                    selective: false,
+                }),
+                _ => tl::enums::ReplyMarkup::ReplyKeyboardForceReply(
+                    tl::types::ReplyKeyboardForceReply {
+                        single_use: false,
+                        selective: false,
+                        placeholder: None,
+                    },
+                ),
+            };
+            let mut msg = make_message(&client, 1, false, &text, None);
+            set_reply_markup(&mut msg, Some(markup));
+            let value = message_to_json(&msg).unwrap();
+            serde_json::to_string(&value).unwrap();
+            prop_assert!(value.get("reply_markup").is_some());
         }
     }
 }
