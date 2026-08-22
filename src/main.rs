@@ -93,10 +93,10 @@ enum Command {
     /// Forum topics
     #[command(subcommand)]
     Topic(topic::TopicCmd),
-    /// Contacts: list, add, block, unblock
+    /// Contacts: list, add, remove, block, unblock
     #[command(subcommand)]
     Contact(contact::ContactCmd),
-    /// Profile: get, set
+    /// Profile: get, set, photo, emoji-status
     #[command(subcommand)]
     Profile(profile::ProfileCmd),
     /// Privacy rules

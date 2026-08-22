@@ -74,9 +74,9 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | dialog.draft | Set / clear draft | `messages.saveDraft` | raw | `tele dialog draft` (`--text` saves, `--clear` removes) | done |
 | dialog.pin | Pin / unpin dialog | `messages.toggleDialogPin` | raw | `tele dialog pin` (`--unpin`; `reorderPinnedDialogs` deferred) | done |
 | dialog.delete | Remove dialog (honest semantics) | `channels.leaveChannel`, `messages.deleteChatUser`, `messages.deleteHistory` | `delete_dialog` + raw | `tele dialog delete` (JSON `left`/`cleared`; `--revoke` deletes history on both sides for user chats) | done |
-| contact.* | Contacts / block | `/api/contacts`, `/api/block` | raw | `tele contact *` | done |
-| profile.* | Profile, colors, emoji status | `/api/profile`, `/api/colors` | `get_me` + raw | `tele profile` | done |
-| privacy.* | Privacy rules | `/api/privacy` | raw | `tele privacy` | done |
+| contact.* | Contacts add/remove/list, block/unblock | `contacts.{GetContacts,AddContact,DeleteContacts}`, `contacts.{Block,Unblock}` | raw | `tele contact *` (`list` rows carry `username`; `remove --user` via DeleteContacts) | done |
+| profile.* | Profile get/set (name, bio, photo, username), photo remove, emoji status | `get_me`, `account.{UpdateProfile,UpdateUsername}`, `users.getFullUser`, `photos.{UploadProfilePhoto,UpdateProfilePhoto,DeletePhotos}`, `account.updateEmojiStatus` | `get_me` + raw | `tele profile *` (`get`; `set` incl. `--username <u or remove>` with USERNAME errors mapped to Usage; `photo --remove`; `emoji-status --emoji <id>` or `--remove`; no colors commands exist) | done |
+| privacy.* | Privacy rules (14 keys, user plus chat-participant rules) | `account.{GetPrivacy,SetPrivacy}` | raw | `tele privacy *` (keys incl. phone_p2p, birthday, star_gifts_auto_save, no_paid_messages, saved_music; `--allow-chat` / `--deny-chat`; same target on both sides rejected) | done |
 | takeout | Data export | `/api/takeout` | raw | `tele takeout` (requires explicit `--account`/`--tag`; `all` allowed) | done |
 
 ## Updates

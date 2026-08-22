@@ -1999,7 +1999,7 @@ fn validate_link(args: &LinkArgs) -> TeleResult<()> {
     Ok(())
 }
 
-fn chat_photo_input_photo(photo: &tl::enums::Photo) -> Option<tl::enums::InputPhoto> {
+pub(crate) fn chat_photo_input_photo(photo: &tl::enums::Photo) -> Option<tl::enums::InputPhoto> {
     if let tl::enums::Photo::Photo(p) = photo {
         return Some(tl::enums::InputPhoto::Photo(tl::types::InputPhoto {
             id: p.id,

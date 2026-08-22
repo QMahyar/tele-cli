@@ -327,6 +327,17 @@ privacy settings prevent saving the contact, the account row fails with a
 clear error instead of a false `"added": true`. A warn is logged when the add
 updated the display name of an existing contact.
 
+## `contact remove`
+
+`tele contact remove --user X` removes X from the account's contact list via
+raw `contacts.DeleteContacts`; success rows carry `{"user", "removed": true}`.
+Targets a user — chat/channel peers are rejected with a Usage error.
+
+## `contact list`
+
+Rows gain additive `"username"` (string, empty when none). The human table
+appends a matching `username` column; existing column order is unchanged.
+
 ## `msg send`
 
 - `--file` is repeatable: one path sends a single media, 2-10 paths send an
@@ -354,6 +365,52 @@ ids, others' messages, no permission) the row also carries `"partial": true` and
 the process exits 2. `--self-only` deletes only for yourself (private chats and
 basic groups; rejected for channels) via `messages.deleteMessages { revoke: false }`.
 Mutually exclusive with `--all`.
+
+## `profile set --username`
+
+- `--username <value|remove>` sets or clears the account username via raw
+  `account.updateUsername`. Values accept `@name`, bare `name`, or a
+  `t.me/…` / `telegram.me/…` link; the literal value `remove` (any case)
+  clears the username. Client-side shape validation (5-32 chars, letters,
+  digits, underscore, must contain a letter, no leading digit or trailing
+  underscore) runs before connect.
+- Success rows carry additive `"username"`: the applied name, or
+  `"removed"` after a clear.
+- Server RPC errors map to Usage: `USERNAME_NOT_ALLOWED`,
+  `USERNAME_INVALID` / `USERNAME_BAD_SYNTAX`, `USERNAME_OCCUPIED`.
+
+## `profile photo --remove`
+
+Removes the current profile photo: reads the photo id from
+`users.getFullUser` (`full_user.profile_photo`) and calls raw
+`photos.deletePhotos`. Fails honestly when no photo is set. Setting a photo
+remains `profile set --photo <path>`.
+
+## `profile emoji-status`
+
+`tele profile emoji-status [--emoji <document-id> | --remove]` sets or clears
+the emoji status via raw `account.updateEmojiStatus` (the TL request takes an
+`EmojiStatus`: `emojiStatus{document_id}` to set, `emojiStatusEmpty` to
+clear — there is no separate Input constructor in this layer). `--emoji` and
+`--remove` are mutually exclusive and one of them is required. Success rows
+carry `{"emoji_status": <id>|null, "removed": bool}`.
+
+## `privacy set` keys and chat rules
+
+- Key list grows additively to 14: `status profile_photo phone_number calls
+  forwards chat_invite added_by_phone voice_messages about phone_p2p
+  birthday star_gifts_auto_save no_paid_messages saved_music` (mapped both
+  directions in get/set). Unknown keys still exit with a Usage error listing
+  all valid keys.
+- `--allow-chat <id,id>` / `--deny-chat <id,id>` add chat-participant rules
+  (`InputPrivacyValueAllowChatParticipants` /
+  `InputPrivacyValueDisallowChatParticipants`); ids must be positive.
+  Existing base chat rules are replaced only when matching chat flags are
+  given, preserved otherwise (same semantics as user rules).
+- The same target on both sides is rejected before connect with a Usage
+  error. Matching is normalized: case-insensitive, `@` / `t.me` prefixes
+  stripped, numeric ids compared numerically across `--allow/--allow-chat`
+  vs `--deny/--deny-chat`.
 
 ## `topic close|reopen|edit|delete|pin`
 
