@@ -29,8 +29,27 @@ pub struct ListenArgs {
         help = "also emit raw TL updates alongside the parsed event allowlist"
     )]
     raw: bool,
-    #[arg(long, help = "only show events from this chat")]
-    chat: Option<String>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "CHAT",
+        help = "only show events from these chats (repeatable or comma-separated)"
+    )]
+    chat: Vec<String>,
+    #[arg(
+        long,
+        value_name = "USER",
+        help = "only show events sent by these users (repeatable)"
+    )]
+    from: Vec<String>,
+    #[arg(
+        long,
+        conflicts_with = "out",
+        help = "only incoming messages (message events only)"
+    )]
+    r#in: bool,
+    #[arg(long, help = "only outgoing messages (message events only)")]
+    out: bool,
 }
 const VALID_EVENTS: &[&str] = &[
     "NewMessage",
@@ -44,6 +63,177 @@ const MAX_RECONNECT_BACKOFF: u32 = 30;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const ALBUM_FLUSH_MILLIS: u64 = 500;
 const OBSERVED_PEER_CAP: usize = 10_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    In,
+    Out,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EventFilter {
+    chats: Vec<PeerId>,
+    senders: Vec<PeerId>,
+    direction: Option<Direction>,
+}
+
+impl EventFilter {
+    fn chat_allows(&self, peer: Option<PeerId>) -> bool {
+        match self.chats.as_slice() {
+            [] => true,
+            targets => peer.is_some_and(|p| targets.contains(&p)),
+        }
+    }
+
+    fn message_allows(&self, sender: Option<PeerId>, out: Option<bool>) -> bool {
+        if !self.sender_allows(sender) {
+            return false;
+        }
+        self.direction_allows(out)
+    }
+
+    fn sender_allows(&self, sender: Option<PeerId>) -> bool {
+        match self.senders.as_slice() {
+            [] => true,
+            targets => sender.is_some_and(|s| targets.contains(&s)),
+        }
+    }
+
+    fn direction_allows(&self, out: Option<bool>) -> bool {
+        match self.direction {
+            None => true,
+            Some(Direction::In) => out == Some(false),
+            Some(Direction::Out) => out == Some(true),
+        }
+    }
+
+    fn raw_allows(&self, peer: Option<PeerId>) -> bool {
+        self.senders.is_empty() && self.direction.is_none() && self.chat_allows(peer)
+    }
+
+    fn deletions_pass(&self) -> bool {
+        self.senders.is_empty() && self.direction.is_none()
+    }
+}
+
+fn deletion_match_set(
+    messages: &[i32],
+    channel_id: Option<i64>,
+    observed: &ObservedPeers,
+    targets: &[PeerId],
+) -> Option<Vec<i32>> {
+    if targets.is_empty() {
+        return Some(messages.to_vec());
+    }
+    let mut matched: Vec<i32> = Vec::new();
+    for target in targets {
+        let hits: Vec<i32> = if target.kind() == PeerKind::Channel {
+            if deleted_matches(channel_id, *target) {
+                messages.to_vec()
+            } else {
+                Vec::new()
+            }
+        } else {
+            observed_deletion_ids(messages, observed, *target)
+        };
+        for id in hits {
+            if !matched.contains(&id) {
+                matched.push(id);
+            }
+        }
+    }
+    (!matched.is_empty()).then_some(matched)
+}
+
+fn sole_chat_label(targets: &[PeerId]) -> Option<i64> {
+    match targets {
+        [only] => only.bare_id(),
+        _ => None,
+    }
+}
+
+fn message_sender(msg: &tl::enums::Message) -> Option<PeerId> {
+    match msg {
+        tl::enums::Message::Message(m) => m.from_id.as_ref().map(PeerId::from),
+        tl::enums::Message::Service(m) => m.from_id.as_ref().map(PeerId::from),
+        tl::enums::Message::Empty(_) => None,
+    }
+}
+
+fn message_outgoing(msg: &tl::enums::Message) -> Option<bool> {
+    match msg {
+        tl::enums::Message::Message(m) => Some(m.out),
+        tl::enums::Message::Service(m) => Some(m.out),
+        tl::enums::Message::Empty(_) => None,
+    }
+}
+
+fn update_sender(u: &tl::enums::Update) -> Option<PeerId> {
+    match u {
+        tl::enums::Update::NewMessage(x) => message_sender(&x.message),
+        tl::enums::Update::NewChannelMessage(x) => message_sender(&x.message),
+        tl::enums::Update::EditMessage(x) => message_sender(&x.message),
+        tl::enums::Update::EditChannelMessage(x) => message_sender(&x.message),
+        _ => None,
+    }
+}
+
+fn update_outgoing(u: &tl::enums::Update) -> Option<bool> {
+    match u {
+        tl::enums::Update::NewMessage(x) => message_outgoing(&x.message),
+        tl::enums::Update::NewChannelMessage(x) => message_outgoing(&x.message),
+        tl::enums::Update::EditMessage(x) => message_outgoing(&x.message),
+        tl::enums::Update::EditChannelMessage(x) => message_outgoing(&x.message),
+        _ => None,
+    }
+}
+
+fn resolution_usage_error(flag: &str, target: &str, cause: &TeleError) -> TeleError {
+    TeleError::Usage(format!(
+        "cannot resolve {flag} {target}: {}",
+        cause.message()
+    ))
+}
+
+fn validate_listen_inputs(chats: &[String], senders: &[String]) -> TeleResult<()> {
+    for target in chats.iter().chain(senders.iter()) {
+        if target.trim().is_empty() {
+            return Err(TeleError::Usage(format!(
+                "empty --chat/--from target: {target:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_filter(
+    client: &grammers_client::Client,
+    session: &grammers_session::storages::SqliteSession,
+    chats: &[String],
+    senders: &[String],
+    direction: Option<Direction>,
+) -> TeleResult<EventFilter> {
+    let mut resolved_chats = Vec::with_capacity(chats.len());
+    for target in chats {
+        let peer = crate::entities::resolve_peer(client, session, target)
+            .await
+            .map_err(|e| resolution_usage_error("--chat", target, &e))?;
+        resolved_chats.push(peer.id());
+    }
+    let mut resolved_senders = Vec::with_capacity(senders.len());
+    for target in senders {
+        let peer = crate::entities::resolve_peer(client, session, target)
+            .await
+            .map_err(|e| resolution_usage_error("--from", target, &e))?;
+        resolved_senders.push(peer.id());
+    }
+    Ok(EventFilter {
+        chats: resolved_chats,
+        senders: resolved_senders,
+        direction,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum StateBoxKey {
     Common,
@@ -296,13 +486,23 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         output::log_line("info", "listen streams JSONL events on stdout");
     }
     let timeout_secs = args.timeout_secs;
-    let chat_filter = args.chat.clone();
+    let direction = if args.out {
+        Some(Direction::Out)
+    } else if args.r#in {
+        Some(Direction::In)
+    } else {
+        None
+    };
+    let chat_targets = args.chat.clone();
+    let from_targets = args.from.clone();
+    validate_listen_inputs(&chat_targets, &from_targets)?;
     let cfg = crate::config::load_config(flags.config_path.as_deref())?;
     let _parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
     let mut tasks = tokio::task::JoinSet::new();
     for name in names {
         let config_path = config_path.clone();
-        let chat_filter = chat_filter.clone();
+        let chat_targets = chat_targets.clone();
+        let from_targets = from_targets.clone();
         let events = events.clone();
         tasks.spawn(async move {
             let result: TeleResult<()> = async {
@@ -313,7 +513,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 } else {
                     None
                 };
-                let mut resolved: Option<PeerId> = None;
+                let mut filter = EventFilter::default();
+                let mut targets_resolved = false;
                 let mut failures: u32 = 0;
                 loop {
                     if let Some(d) = deadline {
@@ -341,24 +542,16 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         handle_stream_failure(&name, e, &mut failures, deadline).await?;
                         continue;
                     }
-                    if resolved.is_none() {
-                        resolved = match &chat_filter {
-                            Some(target) => match crate::entities::resolve_peer(
-                                &guard.client,
-                                &guard.session,
-                                target,
-                            )
-                            .await
-                            {
-                                Ok(peer) => Some(peer.id()),
-                                Err(e) => {
-                                    handle_stream_failure(&name, e, &mut failures, deadline)
-                                        .await?;
-                                    continue;
-                                }
-                            },
-                            None => None,
-                        };
+                    if !targets_resolved {
+                        filter = resolve_filter(
+                            &guard.client,
+                            &guard.session,
+                            &chat_targets,
+                            &from_targets,
+                            direction,
+                        )
+                        .await?;
+                        targets_resolved = true;
                     }
                     if let Err(e) = guard
                         .client
@@ -478,13 +671,18 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     continue;
                                 }
                                 let peer = update_peer(&m.raw);
-                                if !raw_should_stream(peer, resolved) {
+                                if !filter.chat_allows(peer) {
                                     continue;
                                 }
                                 if is_empty_update(&m.raw) {
                                     continue;
                                 }
-                                if resolved.is_some() {
+                                if !filter
+                                    .message_allows(update_sender(&m.raw), update_outgoing(&m.raw))
+                                {
+                                    continue;
+                                }
+                                if !filter.chats.is_empty() {
                                     if let Some(peer) = m.peer() {
                                         observed.observe(m.id(), peer.id());
                                     }
@@ -528,13 +726,18 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     continue;
                                 }
                                 let peer = update_peer(&m.raw);
-                                if !raw_should_stream(peer, resolved) {
+                                if !filter.chat_allows(peer) {
                                     continue;
                                 }
                                 if is_empty_update(&m.raw) {
                                     continue;
                                 }
-                                if resolved.is_some() {
+                                if !filter
+                                    .message_allows(update_sender(&m.raw), update_outgoing(&m.raw))
+                                {
+                                    continue;
+                                }
+                                if !filter.chats.is_empty() {
                                     if let Some(peer) = m.peer() {
                                         observed.observe(m.id(), peer.id());
                                     }
@@ -553,26 +756,25 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !events.iter().any(|e| e == "MessageDeleted") {
                                     continue;
                                 }
-                                let matched: Option<Vec<i32>> = match resolved {
-                                    Some(target) if target.kind() == PeerKind::Channel => {
-                                        deleted_matches(d.channel_id(), target)
-                                            .then(|| d.messages().to_vec())
-                                    }
-                                    Some(target) => {
-                                        let hit =
-                                            observed_deletion_ids(d.messages(), &observed, target);
-                                        (!hit.is_empty()).then_some(hit)
-                                    }
-                                    None => Some(d.messages().to_vec()),
+                                if !filter.deletions_pass() {
+                                    continue;
+                                }
+                                let matched = match filter.chats.as_slice() {
+                                    [] => Some(d.messages().to_vec()),
+                                    targets => deletion_match_set(
+                                        d.messages(),
+                                        d.channel_id(),
+                                        &observed,
+                                        targets,
+                                    ),
                                 };
                                 let Some(matched) = matched else {
                                     continue;
                                 };
-                                let chat_id = resolved.as_ref().and_then(|target| target.bare_id());
                                 emit_row(event_row(
                                     "MessageDeleted",
                                     &name,
-                                    chat_id,
+                                    sole_chat_label(&filter.chats),
                                     Some(&matched),
                                     None,
                                 ))
@@ -582,7 +784,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !events.iter().any(|e| e == "Raw") {
                                     continue;
                                 }
-                                if !raw_should_stream(update_peer(update.raw()), resolved) {
+                                if !filter.raw_allows(update_peer(update.raw())) {
                                     continue;
                                 }
                                 emit_row(raw_row(&name, update.raw(), update.state())).await?;
@@ -706,13 +908,6 @@ pub(crate) fn is_empty_update(u: &tl::enums::Update) -> bool {
         tl::enums::Update::EditMessage(x) => is_empty_message(&x.message),
         tl::enums::Update::EditChannelMessage(x) => is_empty_message(&x.message),
         _ => false,
-    }
-}
-
-fn raw_should_stream(peer: Option<PeerId>, chat: Option<PeerId>) -> bool {
-    match chat {
-        None => true,
-        Some(target) => peer == Some(target),
     }
 }
 
@@ -1073,25 +1268,48 @@ mod tests {
     }
 
     #[test]
-    fn deleted_matches_bare_channel_id() {
-        let resolved = PeerId::channel_unchecked(1234567890);
-        assert!(deleted_matches(Some(1234567890), resolved));
-        assert!(!deleted_matches(Some(999), resolved));
-        assert!(!deleted_matches(None, resolved));
+    fn deletion_match_set_channel_target_takes_full_list_with_label() {
+        let targets = vec![PeerId::channel_unchecked(1234567890)];
+        let matched =
+            deletion_match_set(&[4, 5], Some(1234567890), &ObservedPeers::new(), &targets)
+                .expect("channel hit");
+        assert_eq!(matched, vec![4, 5]);
+        assert!(deletion_match_set(&[4], Some(999), &ObservedPeers::new(), &targets).is_none());
+        assert!(
+            deletion_match_set(&[4], None, &ObservedPeers::new(), &targets).is_none(),
+            "channel target cannot match a deletion without channel_id"
+        );
     }
 
     #[test]
-    fn deleted_matches_chat_target_by_bare_id() {
-        let resolved = PeerId::chat_unchecked(123);
-        assert!(deleted_matches(Some(123), resolved));
-        assert!(!deleted_matches(Some(999), resolved));
-        assert!(!deleted_matches(None, resolved));
+    fn deletion_match_set_observed_subset_for_user_target() {
+        let observed = observed_fixture();
+        let targets = vec![PeerId::user_unchecked(7)];
+        let matched =
+            deletion_match_set(&[999, 102, 101], None, &observed, &targets).expect("observed hit");
+        assert_eq!(matched, vec![102, 101]);
+        assert!(deletion_match_set(&[999], None, &observed, &targets).is_none());
     }
 
     #[test]
-    fn deleted_matches_never_matches_a_user() {
-        let resolved = PeerId::user_unchecked(7);
-        assert!(!deleted_matches(Some(7), resolved));
+    fn deletion_match_set_unions_targets_deduped_in_order() {
+        let mut observed = ObservedPeers::new();
+        observed.observe(10, PeerId::chat_unchecked(42));
+        observed.observe(11, PeerId::user_unchecked(7));
+        let targets = vec![PeerId::chat_unchecked(42), PeerId::user_unchecked(7)];
+        let matched =
+            deletion_match_set(&[11, 10, 11], None, &observed, &targets).expect("union hit");
+        assert_eq!(matched, vec![10, 11]);
+    }
+
+    #[test]
+    fn sole_chat_label_labels_only_single_target() {
+        assert_eq!(sole_chat_label(&[PeerId::channel_unchecked(5)]), Some(5));
+        assert_eq!(sole_chat_label(&[]), None);
+        assert_eq!(
+            sole_chat_label(&[PeerId::channel_unchecked(5), PeerId::user_unchecked(6)]),
+            None
+        );
     }
 
     fn tl_message(peer: tl::enums::Peer) -> tl::enums::Message {
@@ -1303,20 +1521,32 @@ mod tests {
     }
 
     #[test]
-    fn raw_should_stream_streams_everything_without_filter() {
-        assert!(raw_should_stream(Some(PeerId::channel_unchecked(1)), None));
-        assert!(raw_should_stream(None, None));
+    fn chat_allows_everything_when_no_targets() {
+        let f = EventFilter::default();
+        assert!(f.chat_allows(Some(PeerId::channel_unchecked(1))));
+        assert!(f.chat_allows(None));
     }
 
     #[test]
-    fn raw_should_stream_requires_matching_peer_with_filter() {
-        let chat = PeerId::channel_unchecked(1234567890);
-        assert!(raw_should_stream(Some(chat), Some(chat)));
-        assert!(!raw_should_stream(
-            Some(PeerId::channel_unchecked(42)),
-            Some(chat)
-        ));
-        assert!(!raw_should_stream(None, Some(chat)));
+    fn chat_allows_any_target_in_union() {
+        let f = EventFilter {
+            chats: vec![PeerId::channel_unchecked(7), PeerId::user_unchecked(9)],
+            ..Default::default()
+        };
+        assert!(f.chat_allows(Some(PeerId::user_unchecked(9))));
+        assert!(f.chat_allows(Some(PeerId::channel_unchecked(7))));
+        assert!(!f.chat_allows(Some(PeerId::channel_unchecked(42))));
+        assert!(!f.chat_allows(None));
+    }
+
+    #[test]
+    fn chat_allows_distinguishes_peer_kind_on_same_bare_id() {
+        let f = EventFilter {
+            chats: vec![PeerId::chat_unchecked(7)],
+            ..Default::default()
+        };
+        assert!(f.chat_allows(Some(PeerId::chat_unchecked(7))));
+        assert!(!f.chat_allows(Some(PeerId::user_unchecked(7))));
     }
 
     #[test]
@@ -1920,5 +2150,295 @@ mod tests {
         assert_eq!(observed_deletion_ids(&[103], &o, chat), vec![103]);
         let impostor = PeerId::user_unchecked(42);
         assert!(observed_deletion_ids(&[103], &o, impostor).is_empty());
+    }
+
+    fn filter_message(
+        f: &EventFilter,
+        peer: Option<PeerId>,
+        sender: Option<PeerId>,
+        out: Option<bool>,
+    ) -> bool {
+        f.chat_allows(peer) && f.message_allows(sender, out)
+    }
+
+    #[test]
+    fn sender_filter_matches_any_target_in_union() {
+        let f = EventFilter {
+            senders: vec![PeerId::user_unchecked(7), PeerId::channel_unchecked(8)],
+            ..Default::default()
+        };
+        assert!(f.message_allows(Some(PeerId::user_unchecked(7)), Some(false)));
+        assert!(f.message_allows(Some(PeerId::channel_unchecked(8)), None));
+        assert!(!f.message_allows(Some(PeerId::user_unchecked(9)), Some(true)));
+    }
+
+    #[test]
+    fn sender_filter_drops_messages_without_sender() {
+        let f = EventFilter {
+            senders: vec![PeerId::user_unchecked(7)],
+            ..Default::default()
+        };
+        assert!(!f.message_allows(None, Some(false)));
+        assert!(EventFilter::default().message_allows(None, Some(false)));
+    }
+
+    #[test]
+    fn direction_out_keeps_only_outgoing_rows() {
+        let f = EventFilter {
+            direction: Some(Direction::Out),
+            ..Default::default()
+        };
+        assert!(f.message_allows(None, Some(true)));
+        assert!(!f.message_allows(None, Some(false)));
+    }
+
+    #[test]
+    fn direction_in_keeps_only_incoming_rows() {
+        let f = EventFilter {
+            direction: Some(Direction::In),
+            ..Default::default()
+        };
+        assert!(f.message_allows(None, Some(false)));
+        assert!(!f.message_allows(None, Some(true)));
+    }
+
+    #[test]
+    fn direction_drops_events_without_out_flag() {
+        let fin = EventFilter {
+            direction: Some(Direction::In),
+            ..Default::default()
+        };
+        let fout = EventFilter {
+            direction: Some(Direction::Out),
+            ..Default::default()
+        };
+        let sender = Some(PeerId::user_unchecked(1));
+        assert!(!fin.message_allows(sender, None));
+        assert!(!fout.message_allows(sender, None));
+        assert!(
+            EventFilter::default().message_allows(sender, None),
+            "unset filters pass rows regardless of shape"
+        );
+    }
+
+    #[test]
+    fn filter_dimensions_compose_and_wise() {
+        let f = EventFilter {
+            chats: vec![PeerId::chat_unchecked(1)],
+            senders: vec![PeerId::user_unchecked(2)],
+            direction: Some(Direction::In),
+        };
+        let peer_ok = Some(PeerId::chat_unchecked(1));
+        let sender_ok = Some(PeerId::user_unchecked(2));
+        assert!(filter_message(&f, peer_ok, sender_ok, Some(false)));
+        assert!(!filter_message(
+            &f,
+            Some(PeerId::chat_unchecked(5)),
+            sender_ok,
+            Some(false)
+        ));
+        assert!(!filter_message(
+            &f,
+            peer_ok,
+            Some(PeerId::user_unchecked(3)),
+            Some(false)
+        ));
+        assert!(!filter_message(&f, peer_ok, sender_ok, Some(true)));
+    }
+
+    #[test]
+    fn sender_dimension_is_or_wise_within_itself() {
+        let f = EventFilter {
+            chats: vec![PeerId::chat_unchecked(1)],
+            senders: vec![PeerId::user_unchecked(2), PeerId::user_unchecked(3)],
+            direction: None,
+        };
+        let peer_ok = Some(PeerId::chat_unchecked(1));
+        assert!(filter_message(
+            &f,
+            peer_ok,
+            Some(PeerId::user_unchecked(2)),
+            Some(false)
+        ));
+        assert!(filter_message(
+            &f,
+            peer_ok,
+            Some(PeerId::user_unchecked(3)),
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn raw_events_blocked_when_sender_or_direction_filters_set() {
+        let peer = Some(PeerId::channel_unchecked(4));
+        assert!(EventFilter::default().raw_allows(peer));
+        let f_chat = EventFilter {
+            chats: vec![PeerId::channel_unchecked(4)],
+            ..Default::default()
+        };
+        assert!(f_chat.raw_allows(peer));
+        assert!(!f_chat.raw_allows(Some(PeerId::channel_unchecked(5))));
+        let f_from = EventFilter {
+            senders: vec![PeerId::user_unchecked(7)],
+            ..Default::default()
+        };
+        assert!(!f_from.raw_allows(peer), "raw has no sender to check");
+        let f_dir = EventFilter {
+            direction: Some(Direction::In),
+            ..Default::default()
+        };
+        assert!(!f_dir.raw_allows(peer), "raw has no out flag");
+    }
+
+    #[test]
+    fn deletions_blocked_when_sender_or_direction_filters_set() {
+        assert!(EventFilter::default().deletions_pass());
+        assert!(EventFilter {
+            chats: vec![PeerId::channel_unchecked(4)],
+            ..Default::default()
+        }
+        .deletions_pass());
+        let f_from = EventFilter {
+            senders: vec![PeerId::user_unchecked(7)],
+            ..Default::default()
+        };
+        assert!(!f_from.deletions_pass());
+        let f_dir = EventFilter {
+            direction: Some(Direction::Out),
+            ..Default::default()
+        };
+        assert!(!f_dir.deletions_pass());
+    }
+
+    #[test]
+    fn message_sender_reads_from_id_and_distinguishes_kinds() {
+        let msg = tl_message_with_from(Some(tl::enums::Peer::User(tl::types::PeerUser {
+            user_id: 7,
+        })));
+        assert_eq!(message_sender(&msg), Some(PeerId::user_unchecked(7)));
+        let chat_msg = tl_message_with_from(Some(tl::enums::Peer::Chat(tl::types::PeerChat {
+            chat_id: 9,
+        })));
+        assert_eq!(message_sender(&chat_msg), Some(PeerId::chat_unchecked(9)));
+    }
+
+    #[test]
+    fn message_sender_none_when_absent_or_empty() {
+        let no_from = tl_message_with_from(None);
+        assert_eq!(message_sender(&no_from), None);
+        assert_eq!(message_sender(&empty_message()), None);
+    }
+
+    #[test]
+    fn message_outgoing_reads_flag_for_real_service_but_not_empty() {
+        assert_eq!(message_outgoing(&tl_message(channel_peer())), Some(false));
+        let mut outgoing = match tl_message(channel_peer()) {
+            tl::enums::Message::Message(m) => m,
+            _ => unreachable!("tl_message always builds a concrete message"),
+        };
+        outgoing.out = true;
+        assert_eq!(
+            message_outgoing(&tl::enums::Message::Message(outgoing)),
+            Some(true)
+        );
+        let service = tl::enums::Message::Service(tl::types::MessageService {
+            out: true,
+            mentioned: false,
+            media_unread: false,
+            reactions_are_possible: false,
+            silent: false,
+            post: false,
+            legacy: false,
+            id: 1,
+            from_id: None,
+            peer_id: channel_peer(),
+            saved_peer_id: None,
+            reply_to: None,
+            date: 0,
+            action: tl::enums::MessageAction::Empty,
+            reactions: None,
+            ttl_period: None,
+        });
+        assert_eq!(message_outgoing(&service), Some(true));
+        assert_eq!(message_outgoing(&empty_message()), None);
+    }
+
+    fn tl_message_with_from(from_id: Option<tl::enums::Peer>) -> tl::enums::Message {
+        let mut inner = match tl_message(channel_peer()) {
+            tl::enums::Message::Message(m) => m,
+            _ => unreachable!("tl_message always builds a concrete message"),
+        };
+        inner.from_id = from_id;
+        tl::enums::Message::Message(inner)
+    }
+
+    #[test]
+    fn resolution_usage_error_wraps_cause_as_usage_exit_one() {
+        let cause = TeleError::Invocation("rpc error 400: USERNAME_NOT_OCCUPIED".to_string(), None);
+        let err = resolution_usage_error("--from", "@ghost", &cause);
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(
+            err.message().contains("cannot resolve --from @ghost"),
+            "err: {err}"
+        );
+        assert!(
+            err.message().contains("USERNAME_NOT_OCCUPIED"),
+            "err: {err}"
+        );
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+    }
+
+    #[test]
+    fn validate_listen_inputs_rejects_empty_targets_before_connecting() {
+        let err = validate_listen_inputs(&["@ok".to_string(), "   ".to_string()], &[])
+            .expect_err("blank --chat must be rejected");
+        assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+        let err = validate_listen_inputs(&[], &["".to_string()])
+            .expect_err("empty --from must be rejected");
+        assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+        assert!(validate_listen_inputs(&["@a".to_string()], &["+15550001111".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn listen_accepts_repeated_chat_and_from_flags() {
+        use crate::Command;
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "tele",
+            "listen",
+            "--account",
+            "a",
+            "--chat",
+            "@one,@two",
+            "--chat",
+            "1234567890",
+            "--from",
+            "@alice",
+            "--from",
+            "@bob",
+        ])
+        .expect("repeatable flags must parse");
+        match cli.command {
+            Command::Listen(args) => {
+                assert_eq!(args.chat, vec!["@one", "@two", "1234567890"]);
+                assert_eq!(args.from, vec!["@alice", "@bob"]);
+                assert!(!args.r#in && !args.out);
+            }
+            _ => panic!("expected listen subcommand"),
+        }
+    }
+
+    #[test]
+    fn listen_in_conflicts_with_out() {
+        use clap::Parser;
+        let parsed = crate::Cli::try_parse_from(["tele", "listen", "--in", "--out"]);
+        match parsed {
+            Err(err) => {
+                assert!(err.to_string().contains("cannot be used with"), "{err}");
+            }
+            Ok(_) => panic!("--in and --out must conflict"),
+        }
+        assert!(crate::Cli::try_parse_from(["tele", "listen", "--in"]).is_ok());
+        assert!(crate::Cli::try_parse_from(["tele", "listen", "--out"]).is_ok());
     }
 }
