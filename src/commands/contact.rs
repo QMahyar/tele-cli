@@ -14,6 +14,7 @@ use crate::output;
 pub enum ContactCmd {
     List(ListArgs),
     Add(AddArgs),
+    Remove(RemoveArgs),
     Block(BlockArgs),
     Unblock(BlockArgs),
 }
@@ -37,6 +38,15 @@ pub struct AddArgs {
 }
 
 #[derive(Args)]
+pub struct RemoveArgs {
+    #[arg(
+        long,
+        help = "user to remove from contacts: @username, numeric ID, +phone, or me"
+    )]
+    user: String,
+}
+
+#[derive(Args)]
 pub struct BlockArgs {
     #[arg(
         long,
@@ -49,6 +59,7 @@ pub async fn run(cmd: ContactCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         ContactCmd::List(a) => list(a, flags).await,
         ContactCmd::Add(a) => add(a, flags).await,
+        ContactCmd::Remove(a) => remove(a, flags).await,
         ContactCmd::Block(a) => block(a, flags).await,
         ContactCmd::Unblock(a) => unblock(a, flags).await,
     }
@@ -93,6 +104,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             user.last_name.clone().unwrap_or_default()
                         ).trim().to_string(),
                         "phone": user.phone.as_deref().unwrap_or_default(),
+                        "username": user.username.as_deref().unwrap_or_default(),
                     }));
                 }
             }
@@ -104,10 +116,16 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             r["id"].to_string(),
                             r["name"].as_str().unwrap_or_default().to_string(),
                             r["phone"].as_str().unwrap_or_default().to_string(),
+                            r["username"].as_str().unwrap_or_default().to_string(),
                         ]
                     })
                     .collect();
-                output::print_account_table(&name, multi, &["id", "name", "phone"], &table_rows)?;
+                output::print_account_table(
+                    &name,
+                    multi,
+                    &["id", "name", "phone", "username"],
+                    &table_rows,
+                )?;
             }
             Ok(serde_json::json!({"contacts": rows}))
         })
@@ -182,6 +200,45 @@ async fn add(args: AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 "contact": contact,
                 "mutual": mutual,
             }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn remove(args: RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let user_target = args.user.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(dry_run_payload("remove from contacts", Some(&user_target)));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let peer =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &user_target).await?;
+            if matches!(
+                peer,
+                grammers_client::peer::Peer::Group(_) | grammers_client::peer::Peer::Channel(_)
+            ) {
+                return Err(TeleError::Usage(
+                    "contact remove targets a user; got a chat or channel".to_string(),
+                ));
+            }
+            let user_input = entities::input_user(&peer).await.map_err(tele_invocation)?;
+            let _: tl::enums::Updates = guard
+                .client
+                .invoke(&tl::functions::contacts::DeleteContacts {
+                    id: vec![user_input],
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(serde_json::json!({"user": user_target, "removed": true}))
         })
     })
     .await?;
@@ -414,5 +471,31 @@ mod tests {
         assert_eq!(v["dry_run"], serde_json::json!(true));
         assert_eq!(v["user"], serde_json::json!("alice"));
         assert_eq!(v["would"], serde_json::json!("block user alice"));
+    }
+
+    #[test]
+    fn cli_parses_remove_subcommand() {
+        use clap::Parser;
+        let parsed = crate::Cli::try_parse_from(["tele", "contact", "remove", "--user", "@alice"]);
+        match parsed {
+            Ok(cli) => {
+                let crate::Command::Contact(ContactCmd::Remove(args)) = cli.command else {
+                    panic!("expected contact remove");
+                };
+                assert_eq!(args.user, "@alice");
+            }
+            Err(e) => panic!("contact remove failed to parse: {e}"),
+        }
+    }
+
+    #[test]
+    fn dry_run_remove_carries_user() {
+        let v = dry_run_payload("remove from contacts", Some("@alice"));
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["user"], serde_json::json!("@alice"));
+        assert_eq!(
+            v["would"],
+            serde_json::json!("remove from contacts user @alice")
+        );
     }
 }

@@ -19,7 +19,7 @@ pub enum PrivacyCmd {
 pub struct GetArgs {
     #[arg(
         long,
-        help = "privacy key: status, profile_photo, phone_number, calls, forwards, chat_invite, added_by_phone, voice_messages, about"
+        help = "privacy key: status, profile_photo, phone_number, calls, forwards, chat_invite, added_by_phone, voice_messages, about, phone_p2p, birthday, star_gifts_auto_save, no_paid_messages, saved_music"
     )]
     key: Option<String>,
 }
@@ -37,9 +37,21 @@ pub struct SetArgs {
     #[arg(
         long,
         value_delimiter = ',',
+        help = "chat/group/channel member IDs to allow: comma-separated positive IDs"
+    )]
+    allow_chat: Option<Vec<i64>>,
+    #[arg(
+        long,
+        value_delimiter = ',',
         help = "users to deny: comma-separated @username, ID, or me"
     )]
     deny: Option<Vec<String>>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "chat/group/channel member IDs to deny: comma-separated positive IDs"
+    )]
+    deny_chat: Option<Vec<i64>>,
 }
 
 pub async fn run(cmd: PrivacyCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -60,6 +72,11 @@ fn keys() -> Vec<&'static str> {
         "added_by_phone",
         "voice_messages",
         "about",
+        "phone_p2p",
+        "birthday",
+        "star_gifts_auto_save",
+        "no_paid_messages",
+        "saved_music",
     ]
 }
 
@@ -75,6 +92,11 @@ fn key_to_tl(key: &str) -> Option<tl::enums::InputPrivacyKey> {
         "added_by_phone" => Some(K::AddedByPhone),
         "voice_messages" => Some(K::VoiceMessages),
         "about" => Some(K::About),
+        "phone_p2p" => Some(K::PhoneP2P),
+        "birthday" => Some(K::Birthday),
+        "star_gifts_auto_save" => Some(K::StarGiftsAutoSave),
+        "no_paid_messages" => Some(K::NoPaidMessages),
+        "saved_music" => Some(K::SavedMusic),
         _ => None,
     }
 }
@@ -179,9 +201,13 @@ fn dry_run_get_data(key: Option<String>) -> serde_json::Value {
 
 fn validate_set(args: &SetArgs) -> TeleResult<tl::enums::InputPrivacyKey> {
     let key = set_key(&args.key)?;
-    if args.allow.is_none() && args.deny.is_none() {
+    if args.allow.is_none()
+        && args.allow_chat.is_none()
+        && args.deny.is_none()
+        && args.deny_chat.is_none()
+    {
         return Err(TeleError::Usage(
-            "privacy set requires --allow or --deny".to_string(),
+            "privacy set requires --allow, --allow-chat, --deny or --deny-chat".to_string(),
         ));
     }
     for (name, values) in [
@@ -196,7 +222,69 @@ fn validate_set(args: &SetArgs) -> TeleResult<tl::enums::InputPrivacyKey> {
             }
         }
     }
+    for (name, values) in [
+        ("--allow-chat", args.allow_chat.as_ref()),
+        ("--deny-chat", args.deny_chat.as_ref()),
+    ] {
+        if let Some(values) = values {
+            if values.is_empty() {
+                return Err(TeleError::Usage(format!(
+                    "privacy set {name} must name at least one positive chat ID"
+                )));
+            }
+            if let Some(bad) = values.iter().find(|id| **id <= 0) {
+                return Err(TeleError::Usage(format!(
+                    "privacy set {name} takes positive chat IDs; got {bad}"
+                )));
+            }
+        }
+    }
+    reject_allow_deny_overlap(args)?;
     Ok(key)
+}
+
+fn normalize_target(raw: &str) -> String {
+    let mut s = raw.trim();
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            s = rest;
+        }
+    }
+    for prefix in ["t.me/", "telegram.me/"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+        }
+    }
+    let s = s.strip_prefix('@').unwrap_or(s);
+    match s.parse::<i64>() {
+        Ok(n) => n.to_string(),
+        Err(_) => s.to_ascii_lowercase(),
+    }
+}
+
+fn reject_allow_deny_overlap(args: &SetArgs) -> TeleResult<()> {
+    let mut allow_keys: Vec<String> = args
+        .allow
+        .iter()
+        .flatten()
+        .map(|t| normalize_target(t))
+        .collect();
+    allow_keys.extend(args.allow_chat.iter().flatten().map(|id| id.to_string()));
+    let deny_labels: Vec<String> = args
+        .deny
+        .iter()
+        .flatten()
+        .cloned()
+        .chain(args.deny_chat.iter().flatten().map(|id| id.to_string()))
+        .collect();
+    for target in &deny_labels {
+        if allow_keys.contains(&normalize_target(target)) {
+            return Err(TeleError::Usage(format!(
+                "privacy set cannot place target {target} on both the allow side (--allow/--allow-chat) and the deny side (--deny/--deny-chat)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -207,14 +295,22 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
         let key_name = args.key.clone();
         let allow = args.allow.clone().unwrap_or_default();
+        let allow_chat = args.allow_chat.clone().unwrap_or_default();
         let deny = args.deny.clone().unwrap_or_default();
+        let deny_chat = args.deny_chat.clone().unwrap_or_default();
         let tl_key = tl_key.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({
                     "dry_run": true,
                     "key": key_name,
-                    "would": format!("set privacy rules for key {key_name}")
+                    "would": format!(
+                        "set privacy rules for key {key_name} (allow {} users + {} chats, deny {} users + {} chats)",
+                        allow.len(),
+                        allow_chat.len(),
+                        deny.len(),
+                        deny_chat.len()
+                    )
                 }));
             }
             let guard =
@@ -234,13 +330,25 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 disallow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
             }
             let base = fetch_privacy_rules(&guard.client, &tl_key).await?;
-            let rules = merge_privacy_rules(&base, &allow_users, &disallow_users);
+            let targets = PrivacyTargets {
+                allow_users,
+                allow_chats: allow_chat,
+                disallow_users,
+                disallow_chats: deny_chat,
+            };
+            let rules = merge_privacy_rules(&base, &targets);
             let _: tl::enums::account::PrivacyRules = guard
                 .client
                 .invoke(&tl::functions::account::SetPrivacy { key: tl_key, rules })
                 .await
                 .map_err(tele_invocation)?;
-            Ok(serde_json::json!({"key": key_name, "allow": allow, "deny": deny}))
+            Ok(serde_json::json!({
+                "key": key_name,
+                "allow": allow,
+                "allow_chats": targets.allow_chats,
+                "deny": deny,
+                "deny_chats": targets.disallow_chats,
+            }))
         })
     })
     .await?;
@@ -285,28 +393,55 @@ fn input_user_from_id(user_id: i64) -> tl::enums::InputUser {
     })
 }
 
+struct PrivacyTargets {
+    allow_users: Vec<tl::enums::InputUser>,
+    allow_chats: Vec<i64>,
+    disallow_users: Vec<tl::enums::InputUser>,
+    disallow_chats: Vec<i64>,
+}
+
 fn merge_privacy_rules(
     base: &[tl::enums::PrivacyRule],
-    allow_users: &[tl::enums::InputUser],
-    disallow_users: &[tl::enums::InputUser],
+    targets: &PrivacyTargets,
 ) -> Vec<tl::enums::InputPrivacyRule> {
-    let mut merged = Vec::with_capacity(base.len() + 2);
-    if !allow_users.is_empty() {
+    let mut merged = Vec::with_capacity(base.len() + 4);
+    if !targets.allow_users.is_empty() {
         merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
             tl::types::InputPrivacyValueAllowUsers {
-                users: allow_users.to_vec(),
+                users: targets.allow_users.clone(),
             },
         ));
     }
+    if !targets.allow_chats.is_empty() {
+        merged.push(
+            tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
+                tl::types::InputPrivacyValueAllowChatParticipants {
+                    chats: targets.allow_chats.clone(),
+                },
+            ),
+        );
+    }
     for rule in base {
         match rule {
-            tl::enums::PrivacyRule::PrivacyValueAllowUsers(_) if !allow_users.is_empty() => {}
+            tl::enums::PrivacyRule::PrivacyValueAllowUsers(_)
+                if !targets.allow_users.is_empty() => {}
             tl::enums::PrivacyRule::PrivacyValueAllowUsers(v) => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
                     tl::types::InputPrivacyValueAllowUsers {
                         users: v.users.iter().map(|id| input_user_from_id(*id)).collect(),
                     },
                 ));
+            }
+            tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(_)
+                if !targets.allow_chats.is_empty() => {}
+            tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(v) => {
+                merged.push(
+                    tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
+                        tl::types::InputPrivacyValueAllowChatParticipants {
+                            chats: v.chats.clone(),
+                        },
+                    ),
+                );
             }
             tl::enums::PrivacyRule::PrivacyValueAllowContacts => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts);
@@ -320,28 +455,29 @@ fn merge_privacy_rules(
             tl::enums::PrivacyRule::PrivacyValueAllowBots => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowBots);
             }
-            tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(v) => {
-                merged.push(
-                    tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
-                        tl::types::InputPrivacyValueAllowChatParticipants {
-                            chats: v.chats.clone(),
-                        },
-                    ),
-                );
-            }
             _ => {}
         }
     }
-    if !disallow_users.is_empty() {
+    if !targets.disallow_users.is_empty() {
         merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
             tl::types::InputPrivacyValueDisallowUsers {
-                users: disallow_users.to_vec(),
+                users: targets.disallow_users.clone(),
             },
         ));
     }
+    if !targets.disallow_chats.is_empty() {
+        merged.push(
+            tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
+                tl::types::InputPrivacyValueDisallowChatParticipants {
+                    chats: targets.disallow_chats.clone(),
+                },
+            ),
+        );
+    }
     for rule in base {
         match rule {
-            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(_) if !disallow_users.is_empty() => {}
+            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(_)
+                if !targets.disallow_users.is_empty() => {}
             tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => {
                 merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
                     tl::types::InputPrivacyValueDisallowUsers {
@@ -349,12 +485,8 @@ fn merge_privacy_rules(
                     },
                 ));
             }
-            tl::enums::PrivacyRule::PrivacyValueDisallowContacts => {
-                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowContacts);
-            }
-            tl::enums::PrivacyRule::PrivacyValueDisallowBots => {
-                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowBots);
-            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(_)
+                if !targets.disallow_chats.is_empty() => {}
             tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(v) => {
                 merged.push(
                     tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
@@ -363,6 +495,12 @@ fn merge_privacy_rules(
                         },
                     ),
                 );
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowContacts => {
+                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowContacts);
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowBots => {
+                merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowBots);
             }
             _ => {}
         }
@@ -477,6 +615,8 @@ mod tests {
                 key: "status".to_string(),
                 allow,
                 deny: None,
+                allow_chat: None,
+                deny_chat: None,
             };
             assert!(
                 matches!(validate_set(&args), Err(TeleError::Usage(_))),
@@ -498,7 +638,9 @@ mod tests {
             let args = SetArgs {
                 key: "status".to_string(),
                 allow: None,
+                allow_chat: None,
                 deny,
+                deny_chat: None,
             };
             assert!(
                 matches!(validate_set(&args), Err(TeleError::Usage(_))),
@@ -513,6 +655,8 @@ mod tests {
             key: "status".to_string(),
             allow: Some(vec!["  ".to_string(), "\t".to_string(), "".to_string()]),
             deny: None,
+            allow_chat: None,
+            deny_chat: None,
         };
         assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
     }
@@ -523,6 +667,8 @@ mod tests {
             key: "status".to_string(),
             allow: None,
             deny: Some(vec!["  ".to_string(), "\t".to_string()]),
+            allow_chat: None,
+            deny_chat: None,
         };
         assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
     }
@@ -533,6 +679,8 @@ mod tests {
             key: "status".to_string(),
             allow: Some(vec!["@alice".to_string()]),
             deny: Some(vec!["@bob".to_string()]),
+            allow_chat: None,
+            deny_chat: None,
         };
         assert!(validate_set(&args).is_ok());
     }
@@ -543,12 +691,16 @@ mod tests {
             key: "calls".to_string(),
             allow: None,
             deny: Some(vec!["@x".to_string()]),
+            allow_chat: None,
+            deny_chat: None,
         };
         assert!(validate_set(&with_deny).is_ok());
         let neither = SetArgs {
             key: "calls".to_string(),
             allow: None,
             deny: None,
+            allow_chat: None,
+            deny_chat: None,
         };
         assert!(matches!(validate_set(&neither), Err(TeleError::Usage(_))));
     }
@@ -649,6 +801,18 @@ mod tests {
         input_user_from_id(user_id)
     }
 
+    fn targets(
+        allow: &[tl::enums::InputUser],
+        disallow: &[tl::enums::InputUser],
+    ) -> PrivacyTargets {
+        PrivacyTargets {
+            allow_users: allow.to_vec(),
+            allow_chats: Vec::new(),
+            disallow_users: disallow.to_vec(),
+            disallow_chats: Vec::new(),
+        }
+    }
+
     fn base_with_contacts_and_user_rules() -> Vec<tl::enums::PrivacyRule> {
         vec![
             tl::enums::PrivacyRule::PrivacyValueAllowContacts,
@@ -664,7 +828,7 @@ mod tests {
     #[test]
     fn merge_keeps_non_user_rules_and_replaces_only_allow() {
         let base = base_with_contacts_and_user_rules();
-        let merged = merge_privacy_rules(&base, &[iu(5)], &[]);
+        let merged = merge_privacy_rules(&base, &targets(&[iu(5)], &[]));
         assert_eq!(
             merged,
             vec![
@@ -690,7 +854,7 @@ mod tests {
                 tl::types::PrivacyValueDisallowUsers { users: vec![2] },
             ),
         ];
-        let merged = merge_privacy_rules(&base, &[], &[iu(4)]);
+        let merged = merge_privacy_rules(&base, &targets(&[], &[iu(4)]));
         assert_eq!(
             merged,
             vec![
@@ -708,7 +872,7 @@ mod tests {
     #[test]
     fn merge_replaces_both_user_rules_when_both_given() {
         let base = base_with_contacts_and_user_rules();
-        let merged = merge_privacy_rules(&base, &[iu(5)], &[iu(6)]);
+        let merged = merge_privacy_rules(&base, &targets(&[iu(5)], &[iu(6)]));
         assert_eq!(
             merged,
             vec![
@@ -728,7 +892,7 @@ mod tests {
         let base = vec![tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(
             tl::types::PrivacyValueAllowChatParticipants { chats: vec![777] },
         )];
-        let merged = merge_privacy_rules(&base, &[iu(5)], &[]);
+        let merged = merge_privacy_rules(&base, &targets(&[iu(5)], &[]));
         assert_eq!(
             merged,
             vec![
@@ -745,7 +909,7 @@ mod tests {
     #[test]
     fn merge_orders_deny_before_allow_all() {
         let base = vec![tl::enums::PrivacyRule::PrivacyValueAllowAll];
-        let merged = merge_privacy_rules(&base, &[], &[iu(4)]);
+        let merged = merge_privacy_rules(&base, &targets(&[], &[iu(4)]));
         assert_eq!(
             merged,
             vec![
@@ -760,7 +924,7 @@ mod tests {
     #[test]
     fn merge_orders_allow_before_disallow_all() {
         let base = vec![tl::enums::PrivacyRule::PrivacyValueDisallowAll];
-        let merged = merge_privacy_rules(&base, &[iu(5)], &[]);
+        let merged = merge_privacy_rules(&base, &targets(&[iu(5)], &[]));
         assert_eq!(
             merged,
             vec![
@@ -778,7 +942,7 @@ mod tests {
             tl::enums::PrivacyRule::PrivacyValueAllowContacts,
             tl::enums::PrivacyRule::PrivacyValueDisallowAll,
         ];
-        let merged = merge_privacy_rules(&base, &[], &[iu(4)]);
+        let merged = merge_privacy_rules(&base, &targets(&[], &[iu(4)]));
         assert_eq!(
             merged,
             vec![
@@ -802,7 +966,7 @@ mod tests {
             ),
             tl::enums::PrivacyRule::PrivacyValueDisallowAll,
         ];
-        let merged = merge_privacy_rules(&base, &[iu(5)], &[]);
+        let merged = merge_privacy_rules(&base, &targets(&[iu(5)], &[]));
         assert_eq!(
             merged,
             vec![
@@ -822,7 +986,7 @@ mod tests {
 
     #[test]
     fn merge_empty_base_yields_only_new_rules() {
-        let merged = merge_privacy_rules(&[], &[iu(5)], &[iu(6)]);
+        let merged = merge_privacy_rules(&[], &targets(&[iu(5)], &[iu(6)]));
         assert_eq!(
             merged,
             vec![
@@ -834,7 +998,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(merge_privacy_rules(&[], &[], &[]).is_empty());
+        assert!(merge_privacy_rules(&[], &targets(&[], &[])).is_empty());
     }
 
     #[test]
@@ -854,5 +1018,246 @@ mod tests {
         );
         assert_eq!(kind, "disallow_chats");
         assert_eq!(peers, "9");
+    }
+
+    #[test]
+    fn key_mapping_covers_full_table_both_directions() {
+        use tl::enums::InputPrivacyKey as K;
+        let table: Vec<(&str, K)> = vec![
+            ("status", K::StatusTimestamp),
+            ("profile_photo", K::ProfilePhoto),
+            ("phone_number", K::PhoneNumber),
+            ("calls", K::PhoneCall),
+            ("forwards", K::Forwards),
+            ("chat_invite", K::ChatInvite),
+            ("added_by_phone", K::AddedByPhone),
+            ("voice_messages", K::VoiceMessages),
+            ("about", K::About),
+            ("phone_p2p", K::PhoneP2P),
+            ("birthday", K::Birthday),
+            ("star_gifts_auto_save", K::StarGiftsAutoSave),
+            ("no_paid_messages", K::NoPaidMessages),
+            ("saved_music", K::SavedMusic),
+        ];
+        for (key, want) in &table {
+            let got = key_to_tl(key).unwrap_or_else(|| panic!("{key} missing mapping"));
+            assert_eq!(
+                std::mem::discriminant(&got),
+                std::mem::discriminant(want),
+                "{key} maps to the wrong variant"
+            );
+        }
+        assert_eq!(keys(), table.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+        assert!(key_to_tl("no_such_key").is_none());
+    }
+
+    fn overlap_args(
+        allow: Option<Vec<String>>,
+        allow_chat: Option<Vec<i64>>,
+        deny: Option<Vec<String>>,
+        deny_chat: Option<Vec<i64>>,
+    ) -> SetArgs {
+        SetArgs {
+            key: "status".to_string(),
+            allow,
+            allow_chat,
+            deny,
+            deny_chat,
+        }
+    }
+
+    #[test]
+    fn set_rejects_same_username_on_allow_and_deny() {
+        let args = overlap_args(
+            Some(vec!["@alice".to_string()]),
+            None,
+            Some(vec!["alice".to_string()]),
+            None,
+        );
+        assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn set_rejects_overlap_across_case_and_link_forms() {
+        let cases = [
+            (
+                Some(vec!["@Alice".to_string()]),
+                Some(vec!["https://t.me/alice".to_string()]),
+            ),
+            (
+                Some(vec!["t.me/Bob".to_string()]),
+                Some(vec!["@bob".to_string()]),
+            ),
+            (
+                Some(vec!["12345".to_string()]),
+                Some(vec!["12345".to_string()]),
+            ),
+        ];
+        for (allow, deny) in cases {
+            let args = overlap_args(allow, None, deny, None);
+            assert!(
+                matches!(validate_set(&args), Err(TeleError::Usage(_))),
+                "expected overlap rejection"
+            );
+        }
+    }
+
+    #[test]
+    fn set_rejects_same_chat_id_on_allow_and_deny() {
+        let args = overlap_args(None, Some(vec![777]), None, Some(vec![777]));
+        assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
+        let cross = overlap_args(
+            Some(vec!["@alice".to_string()]),
+            Some(vec![777]),
+            None,
+            Some(vec![777, 888]),
+        );
+        assert!(matches!(validate_set(&cross), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn set_allows_disjoint_targets_on_each_side() {
+        let args = overlap_args(
+            Some(vec!["@alice".to_string(), "999".to_string()]),
+            Some(vec![777]),
+            Some(vec!["@bob".to_string()]),
+            Some(vec![555]),
+        );
+        assert!(validate_set(&args).is_ok());
+    }
+
+    #[test]
+    fn set_accepts_chat_only_rules() {
+        let allow_only = overlap_args(None, Some(vec![777]), None, None);
+        assert!(validate_set(&allow_only).is_ok());
+        let deny_only = overlap_args(None, None, None, Some(vec![777]));
+        assert!(validate_set(&deny_only).is_ok());
+    }
+
+    #[test]
+    fn set_rejects_nonpositive_chat_ids() {
+        let bad_allow = overlap_args(None, Some(vec![0]), None, None);
+        assert!(matches!(validate_set(&bad_allow), Err(TeleError::Usage(_))));
+        let bad_deny = overlap_args(None, None, None, Some(vec![-5]));
+        assert!(matches!(validate_set(&bad_deny), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn normalize_target_canonicalizes_equivalent_spellings() {
+        assert_eq!(normalize_target("@Alice"), "alice");
+        assert_eq!(normalize_target("https://t.me/alice"), "alice");
+        assert_eq!(normalize_target("telegram.me/@alice"), "alice");
+        assert_eq!(normalize_target(" http://t.me/Alice "), "alice");
+        assert_eq!(normalize_target("12345"), "12345");
+        assert_eq!(normalize_target("+989121234567"), "989121234567");
+    }
+
+    #[test]
+    fn merge_adds_chat_participant_rules_from_cli() {
+        let base = vec![tl::enums::PrivacyRule::PrivacyValueAllowAll];
+        let t = PrivacyTargets {
+            allow_users: Vec::new(),
+            allow_chats: vec![10],
+            disallow_users: Vec::new(),
+            disallow_chats: vec![20],
+        };
+        let merged = merge_privacy_rules(&base, &t);
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
+                    tl::types::InputPrivacyValueAllowChatParticipants { chats: vec![10] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
+                    tl::types::InputPrivacyValueDisallowChatParticipants { chats: vec![20] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowAll,
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_replaces_base_chat_rules_when_cli_chat_rules_given() {
+        let base = vec![
+            tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(
+                tl::types::PrivacyValueAllowChatParticipants { chats: vec![1] },
+            ),
+            tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(
+                tl::types::PrivacyValueDisallowChatParticipants { chats: vec![2] },
+            ),
+        ];
+        let t = PrivacyTargets {
+            allow_users: Vec::new(),
+            allow_chats: vec![3],
+            disallow_users: Vec::new(),
+            disallow_chats: Vec::new(),
+        };
+        let merged = merge_privacy_rules(&base, &t);
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
+                    tl::types::InputPrivacyValueAllowChatParticipants { chats: vec![3] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
+                    tl::types::InputPrivacyValueDisallowChatParticipants { chats: vec![2] },
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_keeps_base_chat_rules_when_no_chat_flags_given() {
+        let base = vec![
+            tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(
+                tl::types::PrivacyValueAllowChatParticipants { chats: vec![1] },
+            ),
+            tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(
+                tl::types::PrivacyValueDisallowChatParticipants { chats: vec![2] },
+            ),
+        ];
+        let merged = merge_privacy_rules(&base, &targets(&[iu(5)], &[iu(6)]));
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
+                    tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
+                    tl::types::InputPrivacyValueAllowChatParticipants { chats: vec![1] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
+                    tl::types::InputPrivacyValueDisallowUsers { users: vec![iu(6)] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
+                    tl::types::InputPrivacyValueDisallowChatParticipants { chats: vec![2] },
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn cli_parses_new_privacy_flags() {
+        let parsed = crate::Cli::try_parse_from([
+            "tele",
+            "privacy",
+            "set",
+            "--key",
+            "birthday",
+            "--allow-chat",
+            "100,200",
+            "--deny-chat",
+            "300",
+        ]);
+        if let Ok(cli) = parsed {
+            let crate::Command::Privacy(PrivacyCmd::Set(args)) = cli.command else {
+                panic!("expected privacy set");
+            };
+            assert_eq!(args.allow_chat, Some(vec![100, 200]));
+            assert_eq!(args.deny_chat, Some(vec![300]));
+            assert!(validate_set(&args).is_ok());
+        } else {
+            panic!("parse failed");
+        }
     }
 }

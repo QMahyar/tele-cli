@@ -763,7 +763,7 @@ fn msg_send_format_allowlist() {
 fn privacy_set_requires_allow_or_deny() {
     let (code, _out, err) = run_isolated("privnone", &["privacy", "set", "--key", "status"]);
     assert_eq!(code, 1);
-    assert!(err.contains("requires --allow or --deny"), "stderr: {err}");
+    assert!(err.contains("requires --allow"), "stderr: {err}");
     let dir = isolated_appdir("privok");
     write_session(&dir, "work");
     let (code, _out, err) = run_in(

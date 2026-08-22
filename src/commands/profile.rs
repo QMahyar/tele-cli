@@ -14,6 +14,8 @@ use crate::output;
 pub enum ProfileCmd {
     Get(GetArgs),
     Set(SetArgs),
+    Photo(PhotoArgs),
+    EmojiStatus(EmojiStatusArgs),
 }
 
 #[derive(Args)]
@@ -32,12 +34,30 @@ pub struct SetArgs {
     bio: Option<String>,
     #[arg(long, help = "path to new profile photo")]
     photo: Option<String>,
+    #[arg(long, help = "new username (5-32 chars) or 'remove' to clear it")]
+    username: Option<String>,
+}
+
+#[derive(Args)]
+pub struct PhotoArgs {
+    #[arg(long, help = "remove the current profile photo")]
+    remove: bool,
+}
+
+#[derive(Args)]
+pub struct EmojiStatusArgs {
+    #[arg(long, help = "custom emoji document ID to set as emoji status")]
+    emoji: Option<i64>,
+    #[arg(long, help = "clear the emoji status")]
+    remove: bool,
 }
 
 pub async fn run(cmd: ProfileCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         ProfileCmd::Get(a) => get(a, flags).await,
         ProfileCmd::Set(a) => set(a, flags).await,
+        ProfileCmd::Photo(a) => photo(a, flags).await,
+        ProfileCmd::EmojiStatus(a) => emoji_status(a, flags).await,
     }
 }
 
@@ -125,9 +145,10 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_set(args: &SetArgs) -> TeleResult<()> {
-    if args.name.is_none() && args.bio.is_none() && args.photo.is_none() {
+    if args.name.is_none() && args.bio.is_none() && args.photo.is_none() && args.username.is_none()
+    {
         return Err(TeleError::Usage(
-            "at least one of --name, --bio, --photo required".to_string(),
+            "at least one of --name, --bio, --photo, --username required".to_string(),
         ));
     }
     if let Some(name) = &args.name {
@@ -158,11 +179,69 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
     if let Some(path) = &args.photo {
         validate_upload_path(path)?;
     }
+    validate_username_arg(args.username.as_deref())?;
+    Ok(())
+}
+
+fn validate_username_arg(raw: Option<&str>) -> TeleResult<()> {
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    if raw.trim().eq_ignore_ascii_case("remove") {
+        return Ok(());
+    }
+    validate_username(strip_username_prefixes(raw.trim()))
+}
+
+fn strip_username_prefixes(raw: &str) -> &str {
+    let mut s = raw;
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            s = rest;
+        }
+    }
+    for prefix in ["t.me/", "telegram.me/"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+        }
+    }
+    s.strip_prefix('@').unwrap_or(s)
+}
+
+fn validate_username(username: &str) -> TeleResult<()> {
+    let err = |why: String| TeleError::Usage(format!("invalid --username {username}: {why}"));
+    if username.is_empty() {
+        return Err(err("must not be empty".to_string()));
+    }
+    if !(MIN_USERNAME_CHARS..=MAX_USERNAME_CHARS).contains(&username.chars().count()) {
+        return Err(err(format!(
+            "length must be {MIN_USERNAME_CHARS}-{MAX_USERNAME_CHARS} characters"
+        )));
+    }
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(err(
+            "only letters, digits and underscores are allowed".to_string()
+        ));
+    }
+    if username.starts_with(|c: char| c.is_ascii_digit()) {
+        return Err(err("must not start with a digit".to_string()));
+    }
+    if username.ends_with('_') {
+        return Err(err("must not end with an underscore".to_string()));
+    }
+    if !username.chars().any(char::is_alphabetic) {
+        return Err(err("must contain at least one letter".to_string()));
+    }
     Ok(())
 }
 
 const MAX_NAME_CHARS: usize = 64;
 const MAX_BIO_CHARS: usize = 140;
+const MIN_USERNAME_CHARS: usize = 5;
+const MAX_USERNAME_CHARS: usize = 32;
 
 fn split_full_name(raw: &str) -> (Option<String>, Option<String>) {
     let trimmed = raw.trim();
@@ -204,6 +283,32 @@ fn get_dry_run_payload(target: Option<&str>) -> serde_json::Value {
     }
 }
 
+fn username_rpc_error(e: grammers_client::InvocationError) -> TeleError {
+    if let grammers_client::InvocationError::Rpc(rpc) = &e {
+        match rpc.name.as_str() {
+            "USERNAME_NOT_ALLOWED" => {
+                return TeleError::Usage(
+                    "username rejected: USERNAME_NOT_ALLOWED (this account cannot claim usernames; \
+                     Telegram may require an active account or premium)"
+                        .to_string(),
+                );
+            }
+            "USERNAME_INVALID" | "USERNAME_BAD_SYNTAX" => {
+                return TeleError::Usage(
+                    "username rejected: USERNAME_INVALID (bad characters or shape)".to_string(),
+                );
+            }
+            "USERNAME_OCCUPIED" => {
+                return TeleError::Usage(
+                    "username rejected: USERNAME_OCCUPIED (already taken)".to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+    tele_invocation(e)
+}
+
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_set(&args)?;
     let config_path = flags.config_path.clone();
@@ -213,6 +318,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let new_name = args.name.clone();
         let new_bio = args.bio.clone();
         let photo = args.photo.clone();
+        let username_raw = args.username.clone();
         Box::pin(async move {
             if dry_run {
                 let mut fields = Vec::new();
@@ -224,6 +330,9 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 }
                 if photo.is_some() {
                     fields.push("photo");
+                }
+                if username_raw.is_some() {
+                    fields.push("username");
                 }
                 return Ok(serde_json::json!({
                     "dry_run": true,
@@ -248,6 +357,13 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     })
                     .await
                     .map_err(tele_invocation)?;
+            }
+            if new_name.is_some() || new_bio.is_some() || photo.is_some() {
+                guard.rate_limiter.acquire().await;
+            }
+            let mut applied_username: Option<String> = None;
+            if let Some(raw) = &username_raw {
+                applied_username = Some(apply_username(&guard, raw).await?);
             }
             if let Some(p) = &photo {
                 let uploaded = guard
@@ -291,7 +407,160 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 "name": new_name,
                 "bio": new_bio,
                 "photo": photo,
+                "username": applied_username,
             }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn apply_username(guard: &ClientGuard, raw: &str) -> TeleResult<String> {
+    let trimmed = raw.trim();
+    let removing = trimmed.eq_ignore_ascii_case("remove");
+    let value = if removing {
+        String::new()
+    } else {
+        strip_username_prefixes(trimmed).to_string()
+    };
+    guard.rate_limiter.acquire().await;
+    let _: tl::enums::User = guard
+        .client
+        .invoke(&tl::functions::account::UpdateUsername {
+            username: value.clone(),
+        })
+        .await
+        .map_err(username_rpc_error)?;
+    if removing {
+        Ok("removed".to_string())
+    } else {
+        Ok(value)
+    }
+}
+
+async fn photo(args: PhotoArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if !args.remove {
+        return Err(TeleError::Usage(
+            "profile photo requires --remove (setting a photo is profile set --photo <path>)"
+                .to_string(),
+        ));
+    }
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "would": "remove current profile photo"
+                }));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            remove_profile_photo(&guard).await?;
+            Ok(serde_json::json!({"removed": true}))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn current_photo_input_photo(guard: &ClientGuard) -> TeleResult<tl::enums::InputPhoto> {
+    let me = guard.client.get_me().await.map_err(tele_invocation)?;
+    let input = entities::input_user(&grammers_client::peer::Peer::User(me.clone()))
+        .await
+        .map_err(tele_invocation)?;
+    let full: tl::enums::users::UserFull = guard
+        .client
+        .invoke(&tl::functions::users::GetFullUser { id: input })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::users::UserFull::Full(full) = full;
+    let tl::enums::UserFull::Full(full_user) = full.full_user;
+    let Some(photo) = &full_user.profile_photo else {
+        return Err(TeleError::Other(
+            "profile has no photo to remove".to_string(),
+        ));
+    };
+    crate::commands::chat::chat_photo_input_photo(photo)
+        .ok_or_else(|| TeleError::Other("profile has no removable photo to remove".to_string()))
+}
+
+async fn remove_profile_photo(guard: &ClientGuard) -> TeleResult<()> {
+    let input = current_photo_input_photo(guard).await?;
+    guard.rate_limiter.acquire().await;
+    let _: Vec<i64> = guard
+        .client
+        .invoke(&tl::functions::photos::DeletePhotos { id: vec![input] })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(())
+}
+
+fn validate_emoji_status(args: &EmojiStatusArgs) -> TeleResult<Option<i64>> {
+    match (args.emoji, args.remove) {
+        (Some(id), false) => {
+            if id <= 0 {
+                return Err(TeleError::Usage(format!(
+                    "--emoji must be a positive document ID; got {id}"
+                )));
+            }
+            Ok(Some(id))
+        }
+        (None, true) => Ok(None),
+        (Some(_), true) => Err(TeleError::Usage(
+            "--emoji and --remove are mutually exclusive".to_string(),
+        )),
+        (None, false) => Err(TeleError::Usage(
+            "emoji-status requires --emoji <document-id> or --remove".to_string(),
+        )),
+    }
+}
+
+async fn emoji_status(args: EmojiStatusArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let document_id = validate_emoji_status(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(match document_id {
+                    Some(id) => serde_json::json!({
+                        "dry_run": true,
+                        "would": format!("set emoji status to emoji document {id}")
+                    }),
+                    None => serde_json::json!({
+                        "dry_run": true,
+                        "would": "clear emoji status"
+                    }),
+                });
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let status = match document_id {
+                Some(id) => tl::enums::EmojiStatus::Status(tl::types::EmojiStatus {
+                    document_id: id,
+                    until: None,
+                }),
+                None => tl::enums::EmojiStatus::Empty,
+            };
+            let _: bool = guard
+                .client
+                .invoke(&tl::functions::account::UpdateEmojiStatus {
+                    emoji_status: status,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(match document_id {
+                Some(id) => serde_json::json!({"emoji_status": id, "removed": false}),
+                None => serde_json::json!({"emoji_status": null, "removed": true}),
+            })
         })
     })
     .await?;
@@ -301,6 +570,7 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn set_requires_at_least_one_flag() {
@@ -308,18 +578,21 @@ mod tests {
             name: None,
             bio: None,
             photo: None,
+            username: None,
         };
         assert!(matches!(validate_set(&none), Err(TeleError::Usage(_))));
         let with_bio = SetArgs {
             name: None,
             bio: Some("b".to_string()),
             photo: None,
+            username: None,
         };
         assert!(validate_set(&with_bio).is_ok());
         let with_name = SetArgs {
             name: Some("n".to_string()),
             bio: None,
             photo: None,
+            username: None,
         };
         assert!(validate_set(&with_name).is_ok());
     }
@@ -348,6 +621,7 @@ mod tests {
             name: Some("x".repeat(65)),
             bio: None,
             photo: None,
+            username: None,
         };
         assert!(matches!(
             validate_set(&long_first),
@@ -357,18 +631,21 @@ mod tests {
             name: Some(format!("ok {}", "y".repeat(65))),
             bio: None,
             photo: None,
+            username: None,
         };
         assert!(matches!(validate_set(&long_last), Err(TeleError::Usage(_))));
         let long_bio = SetArgs {
             name: None,
             bio: Some("z".repeat(141)),
             photo: None,
+            username: None,
         };
         assert!(matches!(validate_set(&long_bio), Err(TeleError::Usage(_))));
         let at_cap = SetArgs {
             name: Some(format!("{} Wat", "a".repeat(60))),
             bio: Some("b".repeat(140)),
             photo: None,
+            username: None,
         };
         assert!(validate_set(&at_cap).is_ok());
     }
@@ -379,6 +656,7 @@ mod tests {
             name: Some(String::new()),
             bio: None,
             photo: None,
+            username: None,
         };
         assert!(matches!(validate_set(&empty), Err(TeleError::Usage(_))));
     }
@@ -389,6 +667,7 @@ mod tests {
             name: Some("   ".to_string()),
             bio: None,
             photo: None,
+            username: None,
         };
         assert!(matches!(validate_set(&blank), Err(TeleError::Usage(_))));
     }
@@ -399,6 +678,7 @@ mod tests {
             name: Some("John Doe".to_string()),
             bio: None,
             photo: None,
+            username: None,
         };
         assert!(validate_set(&valid).is_ok());
     }
@@ -409,8 +689,152 @@ mod tests {
             name: Some("John".to_string()),
             bio: Some(String::new()),
             photo: None,
+            username: None,
         };
         assert!(validate_set(&clear_bio).is_ok());
+    }
+
+    #[test]
+    fn validate_username_accepts_valid_shapes() {
+        for ok in [
+            "johny",
+            "john_doe",
+            "JohnDoe1",
+            "a1b2c",
+            &"x".repeat(MIN_USERNAME_CHARS),
+            &"z".repeat(MAX_USERNAME_CHARS),
+        ] {
+            assert!(validate_username(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn validate_username_rejects_bad_shapes() {
+        let cases = [
+            ("", "empty"),
+            ("abc", "too short"),
+            (&"y".repeat(MAX_USERNAME_CHARS + 1), "too long"),
+            ("12345", "digits only, also leading digit"),
+            ("1john", "leading digit"),
+            ("john_", "trailing underscore"),
+            ("john-doe", "dash"),
+            ("john doe", "space"),
+            ("jöhn", "non-ascii"),
+            ("jo.hn", "dot"),
+        ];
+        for (bad, why) in cases {
+            assert!(
+                matches!(validate_username(bad), Err(TeleError::Usage(_))),
+                "{why}: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_username_arg_strips_prefixes_and_at() {
+        for raw in ["@john_doe", "t.me/john_doe", "https://t.me/john_doe"] {
+            assert!(validate_username_arg(Some(raw)).is_ok(), "{raw}");
+        }
+        assert!(validate_username_arg(Some("REMOVE")).is_ok());
+        assert!(validate_username_arg(Some("remove")).is_ok());
+        assert!(validate_username_arg(None).is_ok());
+    }
+
+    #[test]
+    fn set_with_only_username_is_valid() {
+        let only_username = SetArgs {
+            name: None,
+            bio: None,
+            photo: None,
+            username: Some("@john_doe".to_string()),
+        };
+        assert!(validate_set(&only_username).is_ok());
+        let bad_username = SetArgs {
+            name: None,
+            bio: None,
+            photo: None,
+            username: Some("1bad!".to_string()),
+        };
+        assert!(matches!(
+            validate_set(&bad_username),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn validate_emoji_status_matrix() {
+        let set_ok = EmojiStatusArgs {
+            emoji: Some(5312345678),
+            remove: false,
+        };
+        assert_eq!(validate_emoji_status(&set_ok).unwrap(), Some(5312345678));
+        let clear_ok = EmojiStatusArgs {
+            emoji: None,
+            remove: true,
+        };
+        assert_eq!(validate_emoji_status(&clear_ok).unwrap(), None);
+        let both = EmojiStatusArgs {
+            emoji: Some(1),
+            remove: true,
+        };
+        assert!(matches!(
+            validate_emoji_status(&both),
+            Err(TeleError::Usage(_))
+        ));
+        let neither = EmojiStatusArgs {
+            emoji: None,
+            remove: false,
+        };
+        assert!(matches!(
+            validate_emoji_status(&neither),
+            Err(TeleError::Usage(_))
+        ));
+        let negative = EmojiStatusArgs {
+            emoji: Some(-1),
+            remove: false,
+        };
+        assert!(matches!(
+            validate_emoji_status(&negative),
+            Err(TeleError::Usage(_))
+        ));
+        let zero = EmojiStatusArgs {
+            emoji: Some(0),
+            remove: false,
+        };
+        assert!(matches!(
+            validate_emoji_status(&zero),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn cli_parses_new_profile_subcommands() {
+        let photo_remove = crate::Cli::try_parse_from(["tele", "profile", "photo", "--remove"]);
+        match photo_remove {
+            Ok(cli) => {
+                assert!(matches!(
+                    cli.command,
+                    crate::Command::Profile(ProfileCmd::Photo(PhotoArgs { remove: true }))
+                ));
+            }
+            Err(e) => panic!("profile photo --remove failed to parse: {e}"),
+        }
+        let emoji_set = crate::Cli::try_parse_from([
+            "tele",
+            "profile",
+            "emoji-status",
+            "--emoji",
+            "5312345678",
+        ]);
+        match emoji_set {
+            Ok(cli) => {
+                let crate::Command::Profile(ProfileCmd::EmojiStatus(args)) = cli.command else {
+                    panic!("expected emoji-status");
+                };
+                assert_eq!(args.emoji, Some(5312345678));
+            }
+            Err(e) => panic!("profile emoji-status failed to parse: {e}"),
+        }
     }
 
     #[test]
@@ -452,6 +876,7 @@ mod tests {
             name: None,
             bio: None,
             photo: photo.map(str::to_string),
+            username: None,
         }
     }
 
