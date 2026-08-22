@@ -2,7 +2,7 @@ use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds;
 use crate::config;
 use crate::error::{tele_invocation, TeleError, TeleResult};
-use crate::executor::{run_fanout, select_sessions, GlobalFlags};
+use crate::executor::{require_explicit_selection, run_fanout, select_sessions, GlobalFlags};
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
@@ -31,6 +31,8 @@ pub enum AccountCmd {
     Login(LoginArgs),
     Logout(LogoutArgs),
     Remove(RemoveArgs),
+    Sessions(SessionsArgs),
+    Password(PasswordArgs),
 }
 #[derive(Args)]
 pub struct AddArgs {
@@ -58,6 +60,42 @@ const TELE_PHONE_ENV: &str = "TELE_PHONE";
 const MAX_CODE_ATTEMPTS: usize = 3;
 const MAX_PASSWORD_ATTEMPTS: usize = 3;
 #[derive(Args)]
+pub struct SessionsArgs {
+    #[arg(long, help = "terminate the device session with this hash")]
+    terminate: Option<i64>,
+}
+#[derive(Args)]
+pub struct PasswordArgs {
+    #[arg(long, help = "set a new cloud password")]
+    set: bool,
+    #[arg(long, help = "change the existing cloud password")]
+    change: bool,
+    #[arg(long, help = "remove the cloud password")]
+    remove: bool,
+    #[arg(long, help = "password hint (only with --set or --change)")]
+    hint: Option<String>,
+    #[arg(long, help = "recovery email (only with --set or --change)")]
+    recovery_email: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordMode {
+    Set,
+    Change,
+    Remove,
+}
+
+impl PasswordMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            PasswordMode::Set => "set",
+            PasswordMode::Change => "change",
+            PasswordMode::Remove => "remove",
+        }
+    }
+}
+
+#[derive(Args)]
 pub struct LogoutArgs {
     #[arg(long)]
     name: String,
@@ -75,6 +113,8 @@ pub async fn run(cmd: AccountCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         AccountCmd::Login(args) => login(&args, flags).await,
         AccountCmd::Logout(args) => logout(&args, flags).await,
         AccountCmd::Remove(args) => remove(&args, flags).await,
+        AccountCmd::Sessions(args) => sessions(&args, flags).await,
+        AccountCmd::Password(args) => password(&args, flags).await,
     }
 }
 async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
@@ -542,6 +582,155 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 const SESSION_REMOVE_RETRIES: usize = 20;
 const SESSION_REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
 
+async fn fetch_authorizations(
+    client: &grammers_client::Client,
+) -> TeleResult<Vec<grammers_client::tl::types::Authorization>> {
+    use grammers_client::tl::{self, enums};
+    let response = client
+        .invoke(&tl::functions::account::GetAuthorizations {})
+        .await
+        .map_err(tele_invocation)?;
+    let enums::account::Authorizations::Authorizations(listed) = response;
+    Ok(listed
+        .authorizations
+        .into_iter()
+        .map(|auth| match auth {
+            enums::Authorization::Authorization(auth) => auth,
+        })
+        .collect())
+}
+
+async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if args.terminate.is_some() {
+        require_explicit_selection("account sessions", flags)?;
+    }
+    let credentials = creds()?;
+    let terminate = args.terminate;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let credentials = credentials.clone();
+        Box::pin(async move {
+            if dry_run {
+                if let Some(hash) = terminate {
+                    return Ok(serde_json::json!({
+                        "dry_run": true,
+                        "hash": hash,
+                        "would": format!("terminate authorization {hash}"),
+                    }));
+                }
+            }
+            let guard =
+                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
+            guard.rate_limiter.acquire().await;
+            let authorizations = fetch_authorizations(&guard.client).await?;
+            if let Some(hash) = terminate {
+                guard.rate_limiter.acquire().await;
+                terminate_decision(hash, &authorizations)?;
+                let result = guard
+                    .client
+                    .invoke(&grammers_client::tl::functions::account::ResetAuthorization { hash })
+                    .await;
+                drop(guard);
+                match result {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Err(TeleError::Other(format!(
+                            "server refused to terminate authorization {hash}"
+                        )));
+                    }
+                    Err(e) => return Err(tele_invocation(e)),
+                }
+                return Ok(serde_json::json!({ "terminated": true, "hash": hash }));
+            }
+            drop(guard);
+            let rows: Vec<serde_json::Value> =
+                authorizations.iter().map(authorization_row).collect();
+            Ok(serde_json::json!({"count": rows.len(), "authorizations": rows}))
+        })
+    })
+    .await?;
+    if terminate.is_none() && !output::machine_mode(flags.json, flags.jsonl) {
+        let table_rows: Vec<Vec<String>> = envelope
+            .accounts
+            .iter()
+            .filter(|o| o.ok)
+            .flat_map(|o| {
+                o.data
+                    .as_ref()
+                    .and_then(|d| d["authorizations"].as_array())
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|row| sessions_table_cells(&o.account, row))
+                            .collect::<Vec<Vec<String>>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        if table_rows.is_empty() {
+            output::print_line("no active authorizations")?;
+        } else {
+            output::print_table(
+                &[
+                    "account", "hash", "device", "app", "ip", "country", "date", "current",
+                ],
+                &table_rows,
+            )?;
+        }
+    }
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let mode = validate_password_modes(
+        args.set,
+        args.change,
+        args.remove,
+        args.hint.as_deref(),
+        args.recovery_email.as_deref(),
+    )?;
+    require_explicit_selection("account password", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let hint_present = args.hint.is_some();
+    let email_present = args.recovery_email.is_some();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "mode": mode.as_str(),
+                    "would": format!("{} cloud password", mode.as_str()),
+                    "hint": hint_present,
+                    "recovery_email": email_present,
+                }));
+            }
+            let credentials = creds()?;
+            let guard =
+                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
+            guard.rate_limiter.acquire().await;
+            let has_password = fetch_has_password(&guard.client).await?;
+            drop(guard);
+            plan_password_step(mode, has_password)?;
+            Ok(serde_json::json!({"updated": true, "mode": mode.as_str()}))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn fetch_has_password(client: &grammers_client::Client) -> TeleResult<bool> {
+    use grammers_client::tl::{self, enums};
+    let response = client
+        .invoke(&tl::functions::account::GetPassword {})
+        .await
+        .map_err(tele_invocation)?;
+    let enums::account::Password::Password(password) = response;
+    Ok(password.has_password)
+}
+
 async fn remove_session_file_retry(path: &std::path::Path) -> TeleResult<()> {
     let mut last_error: Option<std::io::Error> = None;
     for _ in 0..SESSION_REMOVE_RETRIES {
@@ -658,6 +847,138 @@ fn prompt_line(
 
 fn strip_line_ending(line: &str) -> &str {
     line.trim_end_matches(['\r', '\n'])
+}
+
+fn authorization_row(auth: &grammers_client::tl::types::Authorization) -> serde_json::Value {
+    let date = |ts: i32| {
+        chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_default()
+    };
+    let app = if auth.app_name.is_empty() {
+        format!("api_id {}", auth.api_id)
+    } else if auth.app_version.is_empty() {
+        auth.app_name.clone()
+    } else {
+        format!("{} {}", auth.app_name, auth.app_version)
+    };
+    serde_json::json!({
+        "hash": auth.hash,
+        "device_model": auth.device_model,
+        "platform": auth.platform,
+        "system_version": auth.system_version,
+        "app": app,
+        "ip": auth.ip,
+        "country": auth.country,
+        "region": auth.region,
+        "date_created": date(auth.date_created),
+        "date_active": date(auth.date_active),
+        "current": auth.current,
+        "official_app": auth.official_app,
+        "password_pending": auth.password_pending,
+        "unconfirmed": auth.unconfirmed,
+    })
+}
+
+fn sessions_table_cells(account: &str, row: &serde_json::Value) -> Vec<String> {
+    vec![
+        account.to_string(),
+        row["hash"].to_string(),
+        row["device_model"].as_str().unwrap_or_default().to_string(),
+        row["app"].as_str().unwrap_or_default().to_string(),
+        row["ip"].as_str().unwrap_or_default().to_string(),
+        row["country"].as_str().unwrap_or_default().to_string(),
+        row["date_created"].as_str().unwrap_or_default().to_string(),
+        if row["current"].as_bool() == Some(true) {
+            "yes"
+        } else {
+            ""
+        }
+        .to_string(),
+    ]
+}
+
+fn terminate_decision(
+    hash: i64,
+    authorizations: &[grammers_client::tl::types::Authorization],
+) -> TeleResult<()> {
+    match authorizations.iter().find(|a| a.hash == hash) {
+        Some(auth) if auth.current => Err(TeleError::Usage(format!(
+            "refusing to terminate the current session (hash {hash}); pick the hash of another device session from tele account sessions"
+        ))),
+        Some(_) => Ok(()),
+        None => Err(TeleError::Usage(format!(
+            "no active authorization with hash {hash}; run tele account sessions to list valid hashes"
+        ))),
+    }
+}
+
+fn validate_password_modes(
+    set: bool,
+    change: bool,
+    remove: bool,
+    hint: Option<&str>,
+    recovery_email: Option<&str>,
+) -> TeleResult<PasswordMode> {
+    let chosen = usize::from(set) + usize::from(change) + usize::from(remove);
+    if chosen == 0 {
+        return Err(TeleError::Usage(
+            "choose exactly one of --set, --change or --remove".to_string(),
+        ));
+    }
+    if chosen > 1 {
+        return Err(TeleError::Usage(
+            "--set, --change and --remove are mutually exclusive".to_string(),
+        ));
+    }
+    if hint.is_some_and(|h| h.trim().is_empty()) {
+        return Err(TeleError::Usage("--hint must not be empty".to_string()));
+    }
+    if recovery_email.is_some_and(|e| e.trim().is_empty()) {
+        return Err(TeleError::Usage(
+            "--recovery-email must not be empty".to_string(),
+        ));
+    }
+    if remove {
+        if hint.is_some() {
+            return Err(TeleError::Usage(
+                "--hint only applies to --set or --change".to_string(),
+            ));
+        }
+        if recovery_email.is_some() {
+            return Err(TeleError::Usage(
+                "--recovery-email only applies to --set or --change".to_string(),
+            ));
+        }
+    }
+    Ok(if set {
+        PasswordMode::Set
+    } else if change {
+        PasswordMode::Change
+    } else {
+        PasswordMode::Remove
+    })
+}
+
+const SRP_PROOF_BLOCKER: &str =
+    "cannot build InputCheckPasswordSRP: the SRP proof needs grammers-crypto's two_factor_auth::calculate_2fa, which grammers-client 0.10 does not re-export";
+const NEW_HASH_BLOCKER: &str =
+    "cannot compute new_password_hash: the PH2 KDF (pbkdf2-hmac-sha512 x100000 plus salt wrapping) is private inside grammers-crypto 0.10 and exposed nowhere reachable";
+
+fn plan_password_step(mode: PasswordMode, has_password: bool) -> TeleResult<()> {
+    match (mode, has_password) {
+        (PasswordMode::Set, true) => Err(TeleError::Usage(
+            "a cloud password is already set on this account; use --change".to_string(),
+        )),
+        (PasswordMode::Set, false) => Err(TeleError::Other(NEW_HASH_BLOCKER.to_string())),
+        (PasswordMode::Change, false) | (PasswordMode::Remove, false) => Err(TeleError::Usage(
+            "no cloud password is set on this account; use --set".to_string(),
+        )),
+        (PasswordMode::Change, true) => Err(TeleError::Other(format!(
+            "{SRP_PROOF_BLOCKER}; additionally, {NEW_HASH_BLOCKER}"
+        ))),
+        (PasswordMode::Remove, true) => Err(TeleError::Other(SRP_PROOF_BLOCKER.to_string())),
+    }
 }
 
 #[cfg(windows)]
@@ -1283,5 +1604,204 @@ mod tests {
         let cfg = config::load_config(Some(&path)).unwrap();
         assert_eq!(cfg.accounts["work"].tags, vec!["a".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fixture_auth(hash: i64, current: bool) -> grammers_client::tl::types::Authorization {
+        grammers_client::tl::types::Authorization {
+            current,
+            official_app: true,
+            password_pending: false,
+            encrypted_requests_disabled: false,
+            call_requests_disabled: false,
+            unconfirmed: false,
+            hash,
+            device_model: "Desktop".to_string(),
+            platform: "Windows".to_string(),
+            system_version: "10".to_string(),
+            api_id: 6,
+            app_name: "Telegram Desktop".to_string(),
+            app_version: "5.2.3".to_string(),
+            date_created: 1_700_000_000,
+            date_active: 1_750_000_000,
+            ip: "203.0.113.7".to_string(),
+            country: "NL".to_string(),
+            region: "".to_string(),
+        }
+    }
+
+    #[test]
+    fn sessions_row_fixture_shapes_expected_keys() {
+        let row = authorization_row(&fixture_auth(1_234_567_890_123, true));
+        assert_eq!(row["hash"], serde_json::json!(1_234_567_890_123_i64));
+        assert_eq!(row["device_model"], serde_json::json!("Desktop"));
+        assert_eq!(row["platform"], serde_json::json!("Windows"));
+        assert_eq!(row["system_version"], serde_json::json!("10"));
+        assert_eq!(row["app"], serde_json::json!("Telegram Desktop 5.2.3"));
+        assert_eq!(row["ip"], serde_json::json!("203.0.113.7"));
+        assert_eq!(row["country"], serde_json::json!("NL"));
+        let expected_date = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(row["date_created"], serde_json::json!(expected_date));
+        let expected_active = chrono::DateTime::from_timestamp(1_750_000_000, 0)
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(row["date_active"], serde_json::json!(expected_active));
+        assert_eq!(row["current"], serde_json::json!(true));
+        assert_eq!(row["official_app"], serde_json::json!(true));
+        assert_eq!(row["password_pending"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn sessions_row_marks_non_current_without_current_key_truth() {
+        let row = authorization_row(&fixture_auth(42, false));
+        assert_eq!(row["current"], serde_json::json!(false));
+        assert_ne!(row["hash"], serde_json::json!(42_i64 + 1));
+    }
+
+    #[test]
+    fn sessions_table_row_flattens_specified_columns() {
+        let row = authorization_row(&fixture_auth(7, true));
+        let cells = sessions_table_cells("work", &row);
+        assert_eq!(
+            cells,
+            vec![
+                "work".to_string(),
+                "7".to_string(),
+                "Desktop".to_string(),
+                "Telegram Desktop 5.2.3".to_string(),
+                "203.0.113.7".to_string(),
+                "NL".to_string(),
+                chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                    .unwrap()
+                    .to_rfc3339(),
+                "yes".to_string(),
+            ]
+        );
+        let non_current_row = authorization_row(&fixture_auth(8, false));
+        let cells = sessions_table_cells("home", &non_current_row);
+        assert_eq!(cells.last().unwrap(), "");
+    }
+
+    #[test]
+    fn terminate_decision_refuses_current_session_hash() {
+        let rows = vec![fixture_auth(111, true), fixture_auth(222, false)];
+        let err = terminate_decision(111, &rows).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("current session"), "{err}");
+        assert!(err.message().contains("111"), "{err}");
+    }
+
+    #[test]
+    fn terminate_decision_allows_other_session_hash() {
+        let rows = vec![fixture_auth(111, true), fixture_auth(222, false)];
+        terminate_decision(222, &rows).unwrap();
+    }
+
+    #[test]
+    fn terminate_decision_rejects_unknown_hash() {
+        let rows = vec![fixture_auth(111, true)];
+        let err = terminate_decision(999, &rows).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("999"), "{err}");
+    }
+
+    fn usage<T>(result: TeleResult<T>) -> bool {
+        matches!(result, Err(TeleError::Usage(_)))
+    }
+
+    #[test]
+    fn password_mode_requires_exactly_one_flag() {
+        assert!(usage(validate_password_modes(
+            false, false, false, None, None
+        )));
+        assert!(usage(validate_password_modes(
+            true, true, false, None, None
+        )));
+        assert!(usage(validate_password_modes(
+            true, false, true, None, None
+        )));
+        assert!(usage(validate_password_modes(
+            false, true, true, None, None
+        )));
+        assert!(usage(validate_password_modes(true, true, true, None, None)));
+        assert_eq!(
+            validate_password_modes(true, false, false, None, None).unwrap(),
+            PasswordMode::Set
+        );
+        assert_eq!(
+            validate_password_modes(false, true, false, None, None).unwrap(),
+            PasswordMode::Change
+        );
+        assert_eq!(
+            validate_password_modes(false, false, true, None, None).unwrap(),
+            PasswordMode::Remove
+        );
+    }
+
+    #[test]
+    fn password_hint_and_email_conflict_rules() {
+        assert!(usage(validate_password_modes(
+            false,
+            false,
+            true,
+            Some("hint"),
+            None
+        )));
+        assert!(usage(validate_password_modes(
+            false,
+            false,
+            true,
+            None,
+            Some("me@example.com")
+        )));
+        assert!(usage(validate_password_modes(
+            true,
+            false,
+            false,
+            Some("   "),
+            None
+        )));
+        assert!(usage(validate_password_modes(
+            false,
+            true,
+            false,
+            None,
+            Some("")
+        )));
+        assert!(
+            validate_password_modes(true, false, false, Some("hint"), Some("me@example.com"))
+                .is_ok()
+        );
+        assert!(validate_password_modes(false, true, false, Some("hint"), None).is_ok());
+    }
+
+    #[test]
+    fn password_state_matrix_reports_honest_blockers() {
+        let err = plan_password_step(PasswordMode::Set, true).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{err}");
+        assert!(err.message().contains("--change"), "{err}");
+
+        let err = plan_password_step(PasswordMode::Set, false).unwrap_err();
+        assert!(!matches!(err, TeleError::Usage(_)), "{err}");
+        assert!(err.message().contains("new_password_hash"), "{err}");
+
+        let err = plan_password_step(PasswordMode::Change, false).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{err}");
+        assert!(err.message().contains("no cloud password"), "{err}");
+
+        let err = plan_password_step(PasswordMode::Change, true).unwrap_err();
+        assert!(!matches!(err, TeleError::Usage(_)), "{err}");
+        assert!(err.message().contains("calculate_2fa"), "{err}");
+        assert!(err.message().contains("new_password_hash"), "{err}");
+
+        let err = plan_password_step(PasswordMode::Remove, false).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{err}");
+        assert!(err.message().contains("no cloud password"), "{err}");
+
+        let err = plan_password_step(PasswordMode::Remove, true).unwrap_err();
+        assert!(!matches!(err, TeleError::Usage(_)), "{err}");
+        assert!(err.message().contains("InputCheckPasswordSRP"), "{err}");
+        assert!(err.message().contains("calculate_2fa"), "{err}");
     }
 }
