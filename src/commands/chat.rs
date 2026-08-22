@@ -48,9 +48,54 @@ pub struct InviteArgs {
     chat: String,
     #[arg(
         long,
-        help = "user to invite: @username, t.me link, numeric ID, +phone, or me"
+        help = "user to invite (default mode): @username, t.me link, numeric ID, +phone, or me"
     )]
-    user: String,
+    user: Option<String>,
+    #[arg(
+        long,
+        value_name = "TS|RFC3339|DURATION",
+        help = "export/edit: link expiry as unix ts, RFC3339 date, or duration (90s/30m/24h/7d/2w)"
+    )]
+    expire: Option<String>,
+    #[arg(long, help = "export/edit: link title shown to joiners")]
+    title: Option<String>,
+    #[arg(long, help = "export/edit: max number of link uses")]
+    usage_limit: Option<u32>,
+    #[arg(
+        long,
+        value_name = "true|false",
+        help = "export/edit: require admin approval to join via the link"
+    )]
+    request_approval: Option<String>,
+    #[arg(long, help = "list invite links exported by this account (admin only)")]
+    list: bool,
+    #[arg(long, help = "with --list: list revoked links instead of active ones")]
+    revoked: bool,
+    #[arg(
+        long,
+        value_name = "LINK",
+        help = "with --list: show who joined LINK instead of listing links"
+    )]
+    importers: Option<String>,
+    #[arg(
+        long,
+        value_name = "LINK",
+        help = "edit an exported link (options below apply); add --revoke to revoke it"
+    )]
+    edit: Option<String>,
+    #[arg(long, help = "with --edit: revoke the link")]
+    revoke: bool,
+    #[arg(long, help = "delete every revoked link exported by this account")]
+    delete_revoked: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InviteMode {
+    User,
+    Export,
+    List,
+    Edit,
+    DeleteRevoked,
 }
 
 #[derive(Args)]
@@ -426,83 +471,629 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+const INVITE_LIST_LIMIT: i32 = 100;
+
+#[derive(Debug, Clone)]
+pub struct ValidatedInvite {
+    mode: InviteMode,
+    user: Option<String>,
+    link: Option<String>,
+    title: Option<String>,
+    expire_date: Option<i32>,
+    usage_limit: Option<i32>,
+    request_needed: Option<bool>,
+    revoked: bool,
+}
+
+impl Default for ValidatedInvite {
+    fn default() -> Self {
+        Self {
+            mode: InviteMode::Export,
+            user: None,
+            link: None,
+            title: None,
+            expire_date: None,
+            usage_limit: None,
+            request_needed: None,
+            revoked: false,
+        }
+    }
+}
+
 async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    let plan = validate_invite(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
-        let user = args.user.clone();
+        let plan = plan.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": target,
-                    "user": user,
-                    "would": format!("invite user {user} to chat {target}")
-                }));
+                return Ok(invite_dry_run_payload(&target, &plan));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
-            let user_peer =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &user).await?;
-            let user_input = entities::input_user(&user_peer)
-                .await
-                .map_err(tele_invocation)?;
-            match &chat {
-                grammers_client::peer::Peer::Channel(_) => {
-                    let channel = entities::input_channel(&chat)
+            match plan.mode {
+                InviteMode::User => {
+                    let user = plan.user.clone().unwrap_or_default();
+                    let chat =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
+                            .await?;
+                    let user_peer =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), &user)
+                            .await?;
+                    let user_input = entities::input_user(&user_peer)
                         .await
                         .map_err(tele_invocation)?;
-                    guard
+                    match &chat {
+                        grammers_client::peer::Peer::Channel(_) => {
+                            let channel = entities::input_channel(&chat)
+                                .await
+                                .map_err(tele_invocation)?;
+                            guard
+                                .client
+                                .invoke(&tl::functions::channels::InviteToChannel {
+                                    channel,
+                                    users: vec![user_input],
+                                })
+                                .await
+                                .map_err(tele_invocation)?;
+                        }
+                        grammers_client::peer::Peer::Group(_) if entities::is_channel(&chat) => {
+                            let channel = entities::input_channel(&chat)
+                                .await
+                                .map_err(tele_invocation)?;
+                            guard
+                                .client
+                                .invoke(&tl::functions::channels::InviteToChannel {
+                                    channel,
+                                    users: vec![user_input],
+                                })
+                                .await
+                                .map_err(tele_invocation)?;
+                        }
+                        grammers_client::peer::Peer::Group(_) => {
+                            guard
+                                .client
+                                .invoke(&tl::functions::messages::AddChatUser {
+                                    chat_id: chat.id().bare_id().unwrap_or_default(),
+                                    user_id: user_input,
+                                    fwd_limit: 0,
+                                })
+                                .await
+                                .map_err(tele_invocation)?;
+                        }
+                        grammers_client::peer::Peer::User(_) => {
+                            return Err(TeleError::Usage(
+                                "cannot invite into a private chat".to_string(),
+                            ));
+                        }
+                    }
+                    Ok(serde_json::json!({"chat": target, "user": user, "invited": true}))
+                }
+                InviteMode::Export | InviteMode::Edit => {
+                    let chat =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
+                            .await?;
+                    ensure_chat_peer(&chat, "chat invite")?;
+                    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                    let rows = if plan.mode == InviteMode::Export {
+                        let r: tl::enums::ExportedChatInvite = guard
+                            .client
+                            .invoke(&tl::functions::messages::ExportChatInvite {
+                                legacy_revoke_permanent: false,
+                                request_needed: plan.request_needed.unwrap_or(false),
+                                peer,
+                                expire_date: plan.expire_date,
+                                usage_limit: plan.usage_limit,
+                                title: plan.title.clone(),
+                                subscription_pricing: None,
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                        vec![exported_invite_row(&r)]
+                    } else {
+                        let link = plan.link.clone().unwrap_or_default();
+                        let r: tl::enums::messages::ExportedChatInvite = guard
+                            .client
+                            .invoke(&tl::functions::messages::EditExportedChatInvite {
+                                revoked: plan.revoked,
+                                peer,
+                                link,
+                                expire_date: plan.expire_date,
+                                usage_limit: plan.usage_limit,
+                                request_needed: plan.request_needed,
+                                title: plan.title.clone(),
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                        exported_invite_result_rows(&r)
+                    };
+                    if !output::machine_mode(json, jsonl) {
+                        print_invite_link_table(&name, multi, &rows)?;
+                    }
+                    Ok(serde_json::json!({"links": rows}))
+                }
+                InviteMode::List => {
+                    let chat =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
+                            .await?;
+                    ensure_chat_peer(&chat, "chat invite")?;
+                    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                    let admin_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
+                    match plan.link.clone() {
+                        Some(link) => {
+                            let r: tl::enums::messages::ChatInviteImporters = guard
+                                .client
+                                .invoke(&tl::functions::messages::GetChatInviteImporters {
+                                    requested: false,
+                                    subscription_expired: false,
+                                    peer,
+                                    link: Some(link),
+                                    q: None,
+                                    offset_date: 0,
+                                    offset_user: tl::types::InputUserEmpty {}.into(),
+                                    limit: INVITE_LIST_LIMIT,
+                                })
+                                .await
+                                .map_err(tele_invocation)?;
+                            let rows = chat_invite_importers_rows(&guard.client, &r);
+                            if !output::machine_mode(json, jsonl) {
+                                print_importer_table(&name, multi, &rows)?;
+                            }
+                            Ok(serde_json::json!({"importers": rows}))
+                        }
+                        None => {
+                            let r: tl::enums::messages::ExportedChatInvites = guard
+                                .client
+                                .invoke(&tl::functions::messages::GetExportedChatInvites {
+                                    revoked: plan.revoked,
+                                    peer,
+                                    admin_id,
+                                    offset_date: None,
+                                    offset_link: None,
+                                    limit: INVITE_LIST_LIMIT,
+                                })
+                                .await
+                                .map_err(tele_invocation)?;
+                            let rows = exported_chat_invites_rows(&r);
+                            if !output::machine_mode(json, jsonl) {
+                                print_invite_link_table(&name, multi, &rows)?;
+                            }
+                            Ok(serde_json::json!({"links": rows}))
+                        }
+                    }
+                }
+                InviteMode::DeleteRevoked => {
+                    let chat =
+                        entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
+                            .await?;
+                    ensure_chat_peer(&chat, "chat invite")?;
+                    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                    let admin_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
+                    let deleted: bool = guard
                         .client
-                        .invoke(&tl::functions::channels::InviteToChannel {
-                            channel,
-                            users: vec![user_input],
+                        .invoke(&tl::functions::messages::DeleteRevokedExportedChatInvites {
+                            peer,
+                            admin_id,
                         })
                         .await
                         .map_err(tele_invocation)?;
-                }
-                grammers_client::peer::Peer::Group(_) if entities::is_channel(&chat) => {
-                    let channel = entities::input_channel(&chat)
-                        .await
-                        .map_err(tele_invocation)?;
-                    guard
-                        .client
-                        .invoke(&tl::functions::channels::InviteToChannel {
-                            channel,
-                            users: vec![user_input],
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                }
-                grammers_client::peer::Peer::Group(_) => {
-                    guard
-                        .client
-                        .invoke(&tl::functions::messages::AddChatUser {
-                            chat_id: chat.id().bare_id().unwrap_or_default(),
-                            user_id: user_input,
-                            fwd_limit: 0,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                }
-                grammers_client::peer::Peer::User(_) => {
-                    return Err(TeleError::Usage(
-                        "cannot invite into a private chat".to_string(),
-                    ));
+                    if !output::machine_mode(json, jsonl) {
+                        output::print_account_table(
+                            &name,
+                            multi,
+                            &["deleted_revoked"],
+                            &[vec![deleted.to_string()]],
+                        )?;
+                    }
+                    Ok(serde_json::json!({"deleted_revoked": deleted}))
                 }
             }
-            Ok(serde_json::json!({"chat": target, "user": user, "invited": true}))
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn invite_dry_run_payload(chat: &str, plan: &ValidatedInvite) -> serde_json::Value {
+    match plan.mode {
+        InviteMode::User => {
+            let user = plan.user.clone().unwrap_or_default();
+            serde_json::json!({
+                "dry_run": true,
+                "chat": chat,
+                "user": user,
+                "would": format!("invite user {user} to chat {chat}")
+            })
+        }
+        InviteMode::Export => {
+            let mut v = serde_json::json!({
+                "dry_run": true,
+                "chat": chat,
+                "mode": "export",
+                "would": format!("export invite link of chat {chat}"),
+            });
+            invite_echo_options(&mut v, plan);
+            v
+        }
+        InviteMode::List => {
+            let would = match &plan.link {
+                Some(link) => format!("list who joined link {link} in chat {chat}"),
+                None => format!(
+                    "list {} invite links of chat {chat}",
+                    if plan.revoked { "revoked" } else { "active" }
+                ),
+            };
+            serde_json::json!({
+                "dry_run": true,
+                "chat": chat,
+                "mode": "list",
+                "revoked": plan.revoked,
+                "importers": plan.link,
+                "would": would,
+            })
+        }
+        InviteMode::Edit => {
+            let link = plan.link.clone().unwrap_or_default();
+            let action = if plan.revoked { "revoke" } else { "edit" };
+            let mut v = serde_json::json!({
+                "dry_run": true,
+                "chat": chat,
+                "mode": "edit",
+                "link": link,
+                "revoke": plan.revoked,
+                "would": format!("{action} invite link {link} in chat {chat}"),
+            });
+            invite_echo_options(&mut v, plan);
+            v
+        }
+        InviteMode::DeleteRevoked => {
+            serde_json::json!({
+                "dry_run": true,
+                "chat": chat,
+                "mode": "delete_revoked",
+                "would": format!("delete revoked invite links exported from chat {chat}"),
+            })
+        }
+    }
+}
+
+fn invite_echo_options(v: &mut serde_json::Value, plan: &ValidatedInvite) {
+    if plan.title.is_some() {
+        v["title"] = serde_json::json!(plan.title);
+    }
+    if plan.expire_date.is_some() {
+        v["expire_date"] = serde_json::json!(plan.expire_date);
+    }
+    if plan.usage_limit.is_some() {
+        v["usage_limit"] = serde_json::json!(plan.usage_limit);
+    }
+    if plan.request_needed.is_some() {
+        v["request_approval"] = serde_json::json!(plan.request_needed);
+    }
+}
+
+fn has_any_option(args: &InviteArgs) -> bool {
+    args.title.is_some()
+        || args.expire.is_some()
+        || args.usage_limit.is_some()
+        || args.request_approval.is_some()
+}
+
+fn validate_invite(args: &InviteArgs) -> TeleResult<ValidatedInvite> {
+    require_chat_target(&args.chat, "chat")?;
+    let requested_modes = [
+        args.user.is_some(),
+        args.list,
+        args.edit.is_some(),
+        args.delete_revoked,
+    ]
+    .iter()
+    .filter(|b| **b)
+    .count();
+    if requested_modes > 1 {
+        return Err(TeleError::Usage(
+            "--user, --list, --edit, and --delete-revoked are mutually exclusive".to_string(),
+        ));
+    }
+    if args.revoke && args.edit.is_none() {
+        return Err(TeleError::Usage(
+            "--revoke requires --edit <link>".to_string(),
+        ));
+    }
+    if args.revoked && !args.list {
+        return Err(TeleError::Usage("--revoked requires --list".to_string()));
+    }
+    if args.importers.is_some() && !args.list {
+        return Err(TeleError::Usage("--importers requires --list".to_string()));
+    }
+    if args.importers.is_some() && args.revoked {
+        return Err(TeleError::Usage(
+            "--revoked cannot be combined with --importers".to_string(),
+        ));
+    }
+    let mut plan = ValidatedInvite::default();
+    if let Some(user) = &args.user {
+        if has_any_option(args) {
+            return Err(TeleError::Usage(
+                "--title/--expire/--usage-limit/--request-approval configure invite links, not user invites".to_string(),
+            ));
+        }
+        if user.trim().is_empty() {
+            return Err(TeleError::Usage("--user must not be empty".to_string()));
+        }
+        plan.mode = InviteMode::User;
+        plan.user = Some(user.trim().to_string());
+        return Ok(plan);
+    }
+    if args.delete_revoked {
+        if has_any_option(args) {
+            return Err(TeleError::Usage(
+                "--title/--expire/--usage-limit/--request-approval apply to link export/edit, not --delete-revoked".to_string(),
+            ));
+        }
+        plan.mode = InviteMode::DeleteRevoked;
+        return Ok(plan);
+    }
+    if let Some(link) = &args.edit {
+        if !args.revoke && !has_any_option(args) {
+            return Err(TeleError::Usage(
+                "--edit needs at least one of --title/--expire/--usage-limit/--request-approval/--revoke".to_string(),
+            ));
+        }
+        plan.mode = InviteMode::Edit;
+        plan.link = Some(normalized_validated_link(link, "--edit")?);
+        plan.revoked = args.revoke;
+    } else if args.list {
+        if let Some(link) = &args.importers {
+            plan.link = Some(normalized_validated_link(link, "--importers")?);
+        }
+        if has_any_option(args) {
+            return Err(TeleError::Usage(
+                "--title/--expire/--usage-limit/--request-approval apply to link export/edit, not --list".to_string(),
+            ));
+        }
+        plan.mode = InviteMode::List;
+        plan.revoked = args.revoked;
+    } else {
+        plan.mode = InviteMode::Export;
+    }
+    if let Some(title) = &args.title {
+        let t = title.trim();
+        if t.is_empty() {
+            return Err(TeleError::Usage("--title must not be empty".to_string()));
+        }
+        plan.title = Some(t.to_string());
+    }
+    if let Some(expire) = &args.expire {
+        plan.expire_date = Some(parse_invite_expire(expire)?);
+    }
+    if let Some(limit) = args.usage_limit {
+        if limit == 0 {
+            return Err(TeleError::Usage(
+                "--usage-limit must be greater than zero".to_string(),
+            ));
+        }
+        plan.usage_limit = Some(limit as i32);
+    }
+    if let Some(flag) = &args.request_approval {
+        plan.request_needed = Some(parse_invite_bool(flag)?);
+    }
+    Ok(plan)
+}
+
+fn normalized_validated_link(input: &str, flag: &str) -> TeleResult<String> {
+    let normalized = normalize_invite_link(input);
+    validate_invite_link(&normalized)
+        .map_err(|e| TeleError::Usage(format!("{flag}: {}", e.message())))?;
+    Ok(normalized)
+}
+
+fn parse_invite_bool(value: &str) -> TeleResult<bool> {
+    match value.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(TeleError::Usage(format!(
+            "--request-approval must be true or false, got \"{other}\""
+        ))),
+    }
+}
+
+fn invite_duration_seconds(value: &str) -> Option<i64> {
+    let v = value.trim();
+    let (digits, unit_secs) = match v.chars().last()? {
+        's' => (&v[..v.len() - 1], 1i64),
+        'm' => (&v[..v.len() - 1], 60),
+        'h' => (&v[..v.len() - 1], 3600),
+        'd' => (&v[..v.len() - 1], 86_400),
+        'w' => (&v[..v.len() - 1], 604_800),
+        _ => return None,
+    };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<i64>().ok()?.checked_mul(unit_secs)
+}
+
+fn parse_invite_expire_at(now_ts: i64, value: &str) -> TeleResult<i32> {
+    let v = value.trim();
+    if v.is_empty() {
+        return Err(TeleError::Usage("--expire must not be empty".to_string()));
+    }
+    let ts = if let Some(secs) = invite_duration_seconds(v) {
+        now_ts
+            .checked_add(secs)
+            .ok_or_else(|| TeleError::Usage(format!("--expire out of range: {value}")))?
+    } else {
+        crate::commands::parse_unixtime(v)?.timestamp()
+    };
+    if ts <= now_ts {
+        return Err(TeleError::Usage(format!(
+            "--expire must be in the future: {value}"
+        )));
+    }
+    i32::try_from(ts).map_err(|_| TeleError::Usage(format!("--expire out of range: {value}")))
+}
+
+fn parse_invite_expire(value: &str) -> TeleResult<i32> {
+    parse_invite_expire_at(chrono::Utc::now().timestamp(), value)
+}
+
+fn exported_invite_row(invite: &tl::enums::ExportedChatInvite) -> serde_json::Value {
+    match invite {
+        tl::enums::ExportedChatInvite::ChatInviteExported(i) => {
+            serde_json::json!({
+                "link": i.link,
+                "title": i.title,
+                "revoked": i.revoked,
+                "permanent": i.permanent,
+                "request_needed": i.request_needed,
+                "start_date": i.start_date,
+                "expire_date": i.expire_date,
+                "usage_limit": i.usage_limit,
+                "usage": i.usage,
+                "requested": i.requested,
+                "admin_id": i.admin_id,
+                "date": rfc3339_or_empty(Some(i.date)),
+            })
+        }
+        tl::enums::ExportedChatInvite::ChatInvitePublicJoinRequests => {
+            serde_json::json!({"public_join_requests": true})
+        }
+    }
+}
+
+fn exported_invite_result_rows(
+    result: &tl::enums::messages::ExportedChatInvite,
+) -> Vec<serde_json::Value> {
+    match result {
+        tl::enums::messages::ExportedChatInvite::Invite(wrapped) => {
+            vec![exported_invite_row(&wrapped.invite)]
+        }
+        tl::enums::messages::ExportedChatInvite::Replaced(replaced) => {
+            vec![
+                exported_invite_row(&replaced.invite),
+                exported_invite_row(&replaced.new_invite),
+            ]
+        }
+    }
+}
+
+fn exported_chat_invites_rows(
+    result: &tl::enums::messages::ExportedChatInvites,
+) -> Vec<serde_json::Value> {
+    match result {
+        tl::enums::messages::ExportedChatInvites::Invites(list) => {
+            list.invites.iter().map(exported_invite_row).collect()
+        }
+    }
+}
+
+fn chat_invite_importers_rows(
+    client: &grammers_client::Client,
+    result: &tl::enums::messages::ChatInviteImporters,
+) -> Vec<serde_json::Value> {
+    let tl::enums::messages::ChatInviteImporters::Importers(list) = result;
+    let mut users: HashMap<i64, tl::enums::User> = HashMap::new();
+    for u in &list.users {
+        if let tl::enums::User::User(uu) = u {
+            users.insert(uu.id, u.clone());
+        }
+    }
+    list.importers
+        .iter()
+        .map(|importer| {
+            let tl::enums::ChatInviteImporter::Importer(imp) = importer;
+            serde_json::json!({
+                "id": imp.user_id,
+                "name": user_display_name(client, &users, imp.user_id),
+                "date": rfc3339_or_empty(Some(imp.date)),
+                "requested": imp.requested,
+                "approved_by": imp.approved_by,
+            })
+        })
+        .collect()
+}
+
+fn user_display_name(
+    client: &grammers_client::Client,
+    users: &HashMap<i64, tl::enums::User>,
+    id: i64,
+) -> String {
+    match users.get(&id) {
+        Some(u) => crate::serialize::peer_name(&grammers_client::peer::Peer::User(
+            grammers_client::peer::User::from_raw(client, u.clone()),
+        )),
+        None => id.to_string(),
+    }
+}
+
+fn rfc3339_or_empty(ts: Option<i32>) -> String {
+    ts.and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+fn print_invite_link_table(
+    account: &str,
+    multi: bool,
+    rows: &[serde_json::Value],
+) -> TeleResult<()> {
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            vec![
+                r["link"].as_str().unwrap_or_default().to_string(),
+                r["title"].as_str().unwrap_or_default().to_string(),
+                truncate_cell(r["expire_date"].as_i64()),
+                r["usage"].to_string(),
+                r["usage_limit"].to_string(),
+            ]
+        })
+        .collect();
+    output::print_account_table(
+        account,
+        multi,
+        &["link", "title", "expires", "uses", "limit"],
+        &table_rows,
+    )
+}
+
+fn truncate_cell(expire_date: Option<i64>) -> String {
+    match expire_date {
+        Some(0) | None => String::new(),
+        Some(ts) => chrono::DateTime::from_timestamp(ts, 0)
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_else(|| ts.to_string()),
+    }
+}
+
+fn print_importer_table(account: &str, multi: bool, rows: &[serde_json::Value]) -> TeleResult<()> {
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            vec![
+                r["id"].to_string(),
+                r["name"].as_str().unwrap_or_default().to_string(),
+                r["date"].as_str().unwrap_or_default().to_string(),
+                r["requested"].to_string(),
+                r["approved_by"].to_string(),
+            ]
+        })
+        .collect();
+    output::print_account_table(
+        account,
+        multi,
+        &["id", "name", "date", "requested", "approved_by"],
+        &table_rows,
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2591,7 +3182,17 @@ mod tests {
             invite(
                 InviteArgs {
                     chat: String::new(),
-                    user: "u".to_string(),
+                    user: Some("u".to_string()),
+                    expire: None,
+                    usage_limit: None,
+                    request_approval: None,
+                    title: None,
+                    list: false,
+                    revoked: false,
+                    importers: None,
+                    edit: None,
+                    revoke: false,
+                    delete_revoked: false,
                 },
                 &flags,
             )
@@ -2703,6 +3304,358 @@ mod tests {
             rights: None,
         };
         assert!(matches!(validate_admin(&neither), Err(TeleError::Usage(_))));
+    }
+
+    fn invite_args(chat: &str) -> InviteArgs {
+        InviteArgs {
+            chat: chat.to_string(),
+            user: None,
+            expire: None,
+            usage_limit: None,
+            request_approval: None,
+            title: None,
+            list: false,
+            revoked: false,
+            importers: None,
+            edit: None,
+            revoke: false,
+            delete_revoked: false,
+        }
+    }
+
+    #[test]
+    fn invite_mode_matrix_routes_each_flag_combination() {
+        let mut a = invite_args("@c");
+        assert_eq!(validate_invite(&a).unwrap().mode, InviteMode::Export);
+
+        a.user = Some("@bob".to_string());
+        assert_eq!(validate_invite(&a).unwrap().mode, InviteMode::User);
+
+        a = invite_args("@c");
+        a.list = true;
+        assert_eq!(validate_invite(&a).unwrap().mode, InviteMode::List);
+
+        a.revoked = true;
+        let plan = validate_invite(&a).unwrap();
+        assert_eq!(plan.mode, InviteMode::List);
+        assert!(plan.revoked);
+
+        a = invite_args("@c");
+        a.list = true;
+        a.importers = Some("t.me/+abc123".to_string());
+        let plan = validate_invite(&a).unwrap();
+        assert_eq!(plan.mode, InviteMode::List);
+        assert_eq!(plan.link.as_deref(), Some("https://t.me/+abc123"));
+
+        a = invite_args("@c");
+        a.edit = Some("+abc123".to_string());
+        a.revoke = true;
+        let plan = validate_invite(&a).unwrap();
+        assert_eq!(plan.mode, InviteMode::Edit);
+        assert!(plan.revoked);
+
+        a = invite_args("@c");
+        a.delete_revoked = true;
+        assert_eq!(validate_invite(&a).unwrap().mode, InviteMode::DeleteRevoked);
+    }
+
+    #[test]
+    fn invite_rejects_conflicting_modes_and_misplaced_options() {
+        let conflict = |mutate: &dyn Fn(&mut InviteArgs)| {
+            let mut a = invite_args("@c");
+            mutate(&mut a);
+            assert!(
+                matches!(validate_invite(&a), Err(TeleError::Usage(_))),
+                "expected Usage error"
+            );
+        };
+        conflict(&|a| {
+            a.user = Some("u".into());
+            a.list = true;
+        });
+        conflict(&|a| {
+            a.user = Some("u".into());
+            a.edit = Some("+abc".into());
+        });
+        conflict(&|a| {
+            a.list = true;
+            a.edit = Some("+abc".into());
+        });
+        conflict(&|a| {
+            a.list = true;
+            a.delete_revoked = true;
+        });
+        conflict(&|a| {
+            a.revoke = true;
+        });
+        conflict(&|a| {
+            a.importers = Some("+abc".into());
+        });
+        conflict(&|a| {
+            a.revoked = true;
+        });
+        conflict(&|a| {
+            a.importers = Some("+abc".into());
+            a.list = true;
+            a.revoked = true;
+        });
+        conflict(&|a| {
+            a.title = Some("t".into());
+            a.user = Some("u".into());
+        });
+        conflict(&|a| {
+            a.expire = Some("1h".into());
+            a.delete_revoked = true;
+        });
+        conflict(&|a| {
+            a.usage_limit = Some(5);
+            a.list = true;
+        });
+    }
+
+    #[test]
+    fn invite_edit_requires_a_change() {
+        let mut a = invite_args("@c");
+        a.edit = Some("+abc123".to_string());
+        assert!(matches!(validate_invite(&a), Err(TeleError::Usage(_))));
+        a.request_approval = Some("true".to_string());
+        assert!(validate_invite(&a).is_ok());
+    }
+
+    #[test]
+    fn invite_option_values_validate_offline() {
+        let bad = |mutate: &dyn Fn(&mut InviteArgs)| {
+            let mut a = invite_args("@c");
+            mutate(&mut a);
+            assert!(
+                matches!(validate_invite(&a), Err(TeleError::Usage(_))),
+                "expected Usage error"
+            );
+        };
+        bad(&|a| a.title = Some("   ".into()));
+        bad(&|a| a.usage_limit = Some(0));
+        bad(&|a| a.request_approval = Some("yes".into()));
+        bad(&|a| a.expire = Some("next tuesday".into()));
+        bad(&|a| a.edit = Some("@notalink".into()));
+
+        let mut a = invite_args("@c");
+        a.title = Some("  Weekly link ".to_string());
+        a.usage_limit = Some(7);
+        a.request_approval = Some("false".to_string());
+        a.expire = Some("2100000000".to_string());
+        let plan = validate_invite(&a).unwrap();
+        assert_eq!(plan.title.as_deref(), Some("Weekly link"));
+        assert_eq!(plan.usage_limit, Some(7));
+        assert_eq!(plan.request_needed, Some(false));
+        assert_eq!(plan.expire_date, Some(2_100_000_000));
+    }
+
+    #[test]
+    fn invite_expire_parses_ts_rfc3339_and_durations() {
+        let now: i64 = 1_700_000_000;
+        assert_eq!(
+            parse_invite_expire_at(now, "1750000000").unwrap(),
+            1_750_000_000
+        );
+        assert_eq!(
+            parse_invite_expire_at(now, "2035-01-01T00:00:00Z").unwrap(),
+            2_051_222_400
+        );
+        assert_eq!(
+            parse_invite_expire_at(now, "90s").unwrap(),
+            (now + 90) as i32
+        );
+        assert_eq!(
+            parse_invite_expire_at(now, "30m").unwrap(),
+            (now + 1800) as i32
+        );
+        assert_eq!(
+            parse_invite_expire_at(now, "24h").unwrap(),
+            (now + 86_400) as i32
+        );
+        assert_eq!(
+            parse_invite_expire_at(now, "7d").unwrap(),
+            (now + 604_800) as i32
+        );
+        assert_eq!(
+            parse_invite_expire_at(now, "2w").unwrap(),
+            (now + 1_209_600) as i32
+        );
+        for bad in ["", "abc", "5x", "-3h", "1.5h", "99999999999999999999w"] {
+            assert!(
+                matches!(parse_invite_expire_at(now, bad), Err(TeleError::Usage(_))),
+                "expire '{bad}' should be rejected"
+            );
+        }
+        for past in ["1690000000", "2020-01-01T00:00:00Z", "0s"] {
+            assert!(
+                matches!(parse_invite_expire_at(now, past), Err(TeleError::Usage(_))),
+                "past expire '{past}' should be rejected"
+            );
+        }
+    }
+
+    fn exported_link_fixture() -> tl::types::ChatInviteExported {
+        tl::types::ChatInviteExported {
+            revoked: false,
+            permanent: false,
+            request_needed: true,
+            link: "https://t.me/+abcdef".to_string(),
+            admin_id: 5,
+            date: 1_700_000_000,
+            start_date: None,
+            expire_date: Some(1_790_000_000),
+            usage_limit: Some(10),
+            usage: Some(3),
+            requested: Some(1),
+            subscription_expired: None,
+            title: Some("Team".to_string()),
+            subscription_pricing: None,
+        }
+    }
+
+    #[test]
+    fn invite_link_row_carries_full_shape() {
+        let row = exported_invite_row(&tl::enums::ExportedChatInvite::ChatInviteExported(
+            exported_link_fixture(),
+        ));
+        assert_eq!(row["link"], "https://t.me/+abcdef");
+        assert_eq!(row["title"], "Team");
+        assert_eq!(row["revoked"], false);
+        assert_eq!(row["request_needed"], true);
+        assert_eq!(row["usage_limit"], 10);
+        assert_eq!(row["usage"], 3);
+        assert_eq!(row["requested"], 1);
+        assert_eq!(row["expire_date"], 1790000000);
+        assert_eq!(row["date"], "2023-11-14T22:13:20+00:00");
+        let revoked_row =
+            exported_invite_row(&tl::enums::ExportedChatInvite::ChatInvitePublicJoinRequests);
+        assert_eq!(revoked_row["public_join_requests"], true);
+    }
+
+    #[test]
+    fn exported_invite_result_rows_handles_replacement() {
+        let replaced = tl::enums::messages::ExportedChatInvite::Replaced(
+            tl::types::messages::ExportedChatInviteReplaced {
+                invite: tl::enums::ExportedChatInvite::ChatInviteExported(exported_link_fixture()),
+                new_invite: tl::enums::ExportedChatInvite::ChatInvitePublicJoinRequests,
+                users: Vec::new(),
+            },
+        );
+        let rows = exported_invite_result_rows(&replaced);
+        assert_eq!(rows.len(), 2);
+        let single = tl::enums::messages::ExportedChatInvite::Invite(
+            tl::types::messages::ExportedChatInvite {
+                invite: tl::enums::ExportedChatInvite::ChatInviteExported(exported_link_fixture()),
+                users: Vec::new(),
+            },
+        );
+        assert_eq!(exported_invite_result_rows(&single).len(), 1);
+    }
+
+    #[test]
+    fn importer_rows_resolve_names_with_numeric_fallback() {
+        let client = offline_client();
+        let importers = tl::enums::messages::ChatInviteImporters::Importers(
+            tl::types::messages::ChatInviteImporters {
+                count: 2,
+                importers: vec![
+                    tl::enums::ChatInviteImporter::Importer(tl::types::ChatInviteImporter {
+                        requested: false,
+                        via_chatlist: false,
+                        user_id: 11,
+                        date: 1_700_000_000,
+                        about: None,
+                        approved_by: Some(5),
+                    }),
+                    tl::enums::ChatInviteImporter::Importer(tl::types::ChatInviteImporter {
+                        requested: true,
+                        via_chatlist: false,
+                        user_id: 99,
+                        date: 1_700_000_100,
+                        about: None,
+                        approved_by: None,
+                    }),
+                ],
+                users: vec![test_user(11, "alice")],
+            },
+        );
+        let rows = chat_invite_importers_rows(&client, &importers);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], 11);
+        assert_eq!(rows[0]["name"], "alice");
+        assert_eq!(rows[0]["requested"], false);
+        assert_eq!(rows[0]["approved_by"], 5);
+        assert_eq!(rows[1]["id"], 99);
+        assert_eq!(rows[1]["name"], "99");
+        assert_eq!(rows[1]["requested"], true);
+    }
+
+    #[test]
+    fn invite_dry_run_payloads_carry_modes_and_echoes() {
+        let target = "@c";
+        let mut plan = ValidatedInvite {
+            mode: InviteMode::User,
+            user: Some("@bob".to_string()),
+            ..Default::default()
+        };
+        let v = invite_dry_run_payload(target, &plan);
+        assert_eq!(v["user"], serde_json::json!("@bob"));
+        assert_eq!(v["would"], serde_json::json!("invite user @bob to chat @c"));
+
+        plan = ValidatedInvite {
+            mode: InviteMode::Export,
+            title: Some("Weekly".to_string()),
+            expire_date: Some(123456),
+            ..Default::default()
+        };
+        let v = invite_dry_run_payload(target, &plan);
+        assert_eq!(v["mode"], serde_json::json!("export"));
+        assert_eq!(v["title"], serde_json::json!("Weekly"));
+        assert_eq!(v["expire_date"], serde_json::json!(123456));
+        assert!(v.get("usage_limit").is_none());
+
+        plan = ValidatedInvite {
+            mode: InviteMode::List,
+            revoked: true,
+            ..Default::default()
+        };
+        let v = invite_dry_run_payload(target, &plan);
+        assert_eq!(v["mode"], serde_json::json!("list"));
+        assert_eq!(v["revoked"], serde_json::json!(true));
+        assert!(v["would"]
+            .as_str()
+            .unwrap()
+            .contains("revoked invite links"));
+
+        plan = ValidatedInvite {
+            mode: InviteMode::List,
+            link: Some("https://t.me/+x".to_string()),
+            ..Default::default()
+        };
+        let v = invite_dry_run_payload(target, &plan);
+        assert_eq!(
+            v["would"],
+            serde_json::json!("list who joined link https://t.me/+x in chat @c")
+        );
+
+        plan = ValidatedInvite {
+            mode: InviteMode::Edit,
+            link: Some("https://t.me/+x".to_string()),
+            revoked: true,
+            ..Default::default()
+        };
+        let v = invite_dry_run_payload(target, &plan);
+        assert_eq!(v["mode"], serde_json::json!("edit"));
+        assert_eq!(v["revoke"], serde_json::json!(true));
+        assert!(v["would"].as_str().unwrap().starts_with("revoke"));
+
+        plan = ValidatedInvite {
+            mode: InviteMode::DeleteRevoked,
+            ..Default::default()
+        };
+        let v = invite_dry_run_payload(target, &plan);
+        assert_eq!(v["mode"], serde_json::json!("delete_revoked"));
     }
 
     #[test]

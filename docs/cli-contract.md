@@ -206,6 +206,34 @@ Rules:
   `--to remove` is an honest Usage error before connect: this API layer has no
   unlink method.
 
+## `chat invite`
+
+- Default mode invites a user: `chat invite --chat X --user U` keeps its legacy
+  behavior and JSON shape (`channels.InviteToChannel`, `messages.AddChatUser`
+  for basic groups). Omitting `--user` exports a default invite link via raw
+  `messages.exportChatInvite`.
+- Export options: `--title`, `--expire <unix-ts|RFC3339|duration>` (durations:
+  `90s/30m/24h/7d/2w`; must be in the future; stored as epoch seconds),
+  `--usage-limit <n>` (>0), `--request-approval true|false`. Success rows carry
+  `link,title,revoked,permanent,request_needed,start_date,expire_date,
+  usage_limit,usage,requested,admin_id,date`.
+- `--list [--revoked] [--importers LINK]` lists links exported by this account
+  (`messages.getExportedChatInvites`, admin_id = self) or who joined LINK
+  (`messages.getChatInviteImporters`; importer rows carry
+  `id,name,date,requested,approved_by`). `SearchExportedChatInvites` does not
+  exist in this TL layer; `getExportedChatInvites` covers it.
+- `--edit LINK` modifies one link via raw `messages.editExportedChatInvite`
+  with any of the export options plus `--revoke` to revoke; at least one change
+  is required. When Telegram replaces a permanent link the response carries two
+  rows (old + new).
+- `--delete-revoked` purges every revoked link of this account via raw
+  `messages.deleteRevokedExportedChatInvites`; row reports `deleted_revoked`.
+- Modes are mutually exclusive (`--user`, plain export/options, `--list`,
+  `--edit`, `--delete-revoked`); `--revoke` requires `--edit`, `--revoked` /
+  `--importers` require `--list`, and link options are rejected outside
+  export/edit modes. All validation happens offline before any connection.
+  The raw registry entry `tele raw messages.ExportChatInvite` stays available.
+
 ## `dialog draft` / `dialog pin` / `dialog delete`
 
 - `dialog draft --chat X --text T` saves a draft via raw
