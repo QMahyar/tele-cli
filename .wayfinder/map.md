@@ -3,7 +3,7 @@
 Label: wayfinder:map
 Tracker: local markdown (`.wayfinder/tickets/`)
 Plan: `tasks/plan.md`
-Status: ACTIVE — Phase 1 COMPLETE + CAP-1/2/3/4/5 merged into `fix/hardening` (690 tests green); remaining: CAP-6..CAP-16
+Status: COMPLETE — all 23 tickets closed on `fix/hardening`; 837 tests green; ready for review/merge to main (push/tag pending user confirm)
 
 ## Destination
 
@@ -32,6 +32,17 @@ All 9 confirmed bugs from the 2026-08-21 deep-dive fixed, then the merged gramme
 - [CAP-5 global search](tickets/CAP-5-global-search.md) — msg search --global via search_all_messages; per-chat path byte-identical.
 - [CAP-2 topic scoping](tickets/CAP-2-topic-scope) — send-only: msg send --topic (reply-header semantics, conflicts --reply). get/search --topic NOT implemented: grammers Message::from_raw needs a PeerMap that cannot be constructed publicly, so raw Search results cannot be shaped as messages; reads documented to go through tele raw messages.Search (CAP-16).
 - [CAP-3 album + builders](tickets/CAP-3-album-and-builders.md) — repeatable --file (2-10 = album via client.send_album), --media-ttl, --thumbnail (single doc), --url+--kind (photo_url/document_url), --copy-from/--copy-id (copy_media), --schedule online (sentinel 0 → schedule_once_online). upload_stream/stdin piping deferred (ergonomics need mime/name plumbing). Note: CAP-3 commit landed directly on fix/hardening (branch was lost to a dead agent); content identical to branch flow.
+- [CAP-6 topic lifecycle](tickets/CAP-6-topic-lifecycle.md) — topic close/reopen/edit/delete/pin all raw (EditForumTopic, updatePinnedForumTopic, deleteTopicHistory — not deleteHistory as ticket guessed); list gains closed+pinned.
+- [CAP-12 dialog extras](tickets/CAP-12-dialog-extras.md) — dialog draft set/clear (raw saveDraft), dialog pin/unpin (raw toggleDialogPin), delete gains left/cleared honesty + --revoke (raw deleteHistory for user peers).
+- [CAP-7 moderation depth](tickets/CAP-7-moderation-depth.md) — participants --role/--search via friendly filters; admin rights anonymous/other/manage_topics completed (raw EditAdmin fallback where builder lacks setters); kick --ban/--duration/--rights via set_banned_rights.
+- [CAP-8 chat settings](tickets/CAP-8-chat-settings.md) — settings toggles raw; read-back via GetFullChannel; --noforwards honest Usage error (no toggleNoforwards in layer 227).
+- [CAP-9 chat metadata edit](tickets/CAP-9-chat-metadata-edit.md) — chat edit title/about/photo (raw, basic-group equivalents), photo remove via photos.deletePhotos, chat link get/set discussion group.
+- [CAP-10 invite-link suite](tickets/CAP-10-invite-link-suite.md) — five-mode chat invite command wrapping raw messages.* constructors; SearchExportedChatInvites does not exist in this layer (getExportedChatInvites covers it).
+- [CAP-11 admin-log depth](tickets/CAP-11-admin-log-depth.md) — actor resolution from response users vector, old/new payload depth across ~15 event kinds, server-side --admin/--search/--events filter, client-side --since/--until (TL has no timestamp bounds).
+- [CAP-13 identity surface](tickets/CAP-13-contacts-profile-privacy.md) — contact remove + username in rows; profile username/photo-remove/emoji-status (EmojiStatus::Status/Empty — no InputEmojiStatus constructor); privacy 14/14 keys + --allow-chat/--deny-chat + overlap rejection; profile.* matrix row corrected.
+- [CAP-14 listen upgrades](tickets/CAP-14-listen-upgrades.md) — Gap synthetic row via pts-delta tracking (--events Gap), Album coalescing with 500ms flush, bounded 10k id→peer map enables DM deletion matching under --chat. Dev-only tokio test-util feature added for paused-clock tests.
+- [CAP-15 takeout upgrades](tickets/CAP-15-takeout-upgrades.md) — human-mode progress lines, per-dialog checkpoint resume (takeout.json checkpoints), finish --abandon success:false.
+- [CAP-16 raw registry growth](tickets/CAP-16-raw-growth.md) — registry 6→18 methods; auth.session-ttl → done. folders.GetChatFolders skipped (constructor absent from layer 227).
 
 ## Tickets — Phase 1 (bugs; parallel-ready, file-disjoint)
 
