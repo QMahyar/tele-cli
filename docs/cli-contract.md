@@ -234,6 +234,34 @@ Rules:
   export/edit modes. All validation happens offline before any connection.
   The raw registry entry `tele raw messages.ExportChatInvite` stays available.
 
+## `chat admin-log`
+
+- `chat admin-log --chat X [--limit N]` streams raw `channels.getAdminLog`
+  pages. Rows keep legacy keys `id,date,action` and additively gain `actor`
+  (`{"id","name"}`; the name resolves from the response's attached users,
+  falling back to the numeric id).
+- Action payloads got additive depth: `change_title/about/username` carry
+  `prev_*` + new value; `toggle_ban` carries `ban`/`prev_ban`
+  (`left`,`denied` right names,`until_date` epoch when timed,`rank`);
+  `toggle_admin` carries `admin`/`prev_admin` (`granted` right names,
+  `anonymous`,`rank`); `change_photo` carries `photo`/`prev_photo`
+  (`id`,`date`,`sizes` or `empty`); `update_pinned` and `delete_message` carry
+  the message `id`; `join_by_invite` / `join_by_request` carry `invite_link`;
+  `edit_message` adds `prev_text`. Also shaped: slow-mode/pre-history/
+  noforwards toggles, default banned rights, linked chat, exported invite
+  delete/revoke/edit, edit_rank. Unknown actions stay `{"kind":"other"}`.
+- Filters: `--admin <user>` maps to the `admins` param (resolved like other
+  user targets; `me` works), `--search <q>` to the server-side `q` string, and
+  `--events <csv>` to `channel.AdminLogEventsFilter` flags — valid flags:
+  join,leave,invite,ban,unban,kick,unkick,promote,demote,info,settings,pinned,
+  edit,delete,group_call,invites,send,forums,sub_extend,edit_rank (unknown
+  names are a Usage error before connect). `--since/--until <ts|RFC3339>`
+  filter client-side on event dates (the API only exposes event-id bounds);
+  `--since` after `--until` is rejected.
+- Human table columns are `id,date,actor,action`; the action column keeps the
+  existing char-safe 60-char truncation policy. JSON stays additive: no
+  legacy key changed shape or meaning.
+
 ## `dialog draft` / `dialog pin` / `dialog delete`
 
 - `dialog draft --chat X --text T` saves a draft via raw

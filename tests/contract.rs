@@ -933,6 +933,70 @@ fn chat_invite_rejects_bad_flag_combinations_before_connect() {
 }
 
 #[test]
+fn chat_admin_log_dry_run_echoes_filters() {
+    let dir = isolated_appdir("chatadml");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "chat",
+            "admin-log",
+            "--chat",
+            "@c",
+            "--search",
+            "spam",
+            "--events",
+            "ban,promote",
+            "--admin",
+            "@boss",
+            "--since",
+            "1000000000",
+            "--until",
+            "2000000000",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["search"], serde_json::json!("spam"));
+    assert_eq!(d["events_filter"], serde_json::json!(true));
+    assert_eq!(d["admins"], serde_json::json!(true));
+}
+
+#[test]
+fn chat_admin_log_rejects_bad_filters_before_connect() {
+    for (tag, flag, value) in [
+        ("admbadev", "--events", "fly"),
+        ("admcase", "--events", "Ban"),
+        ("admbadsince", "--since", "yesterday"),
+        ("admbaduntil", "--until", "not-a-date"),
+    ] {
+        let (code, _out, err) =
+            run_isolated(tag, &["chat", "admin-log", "--chat", "@c", flag, value]);
+        assert_eq!(code, 1, "{flag}={value}: stderr: {err}");
+    }
+    let (code, _out, err) = run_isolated(
+        "admrange",
+        &[
+            "chat",
+            "admin-log",
+            "--chat",
+            "@c",
+            "--since",
+            "2000000000",
+            "--until",
+            "1000000000",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("--since"), "stderr: {err}");
+}
+
+#[test]
 fn unknown_account_rejected_exit_1() {
     let (code, _out, err) = run_isolated(
         "unkacc",
