@@ -626,7 +626,7 @@ async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
     Ok(())
 }
 
-async fn handle_stream_failure(
+pub(crate) async fn handle_stream_failure(
     account: &str,
     err: TeleError,
     failures: &mut u32,
@@ -659,7 +659,7 @@ fn is_auth_error(e: &TeleError) -> bool {
     matches!(e, TeleError::Auth(_))
 }
 
-fn getstate_probe_error(e: grammers_client::InvocationError) -> TeleError {
+pub(crate) fn getstate_probe_error(e: grammers_client::InvocationError) -> TeleError {
     if crate::error::invocation_is_unauthorized(&e) {
         crate::error::invocation_error(e)
     } else {
@@ -676,7 +676,7 @@ fn next_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(secs.into())
 }
 
-fn update_peer(u: &tl::enums::Update) -> Option<PeerId> {
+pub(crate) fn update_peer(u: &tl::enums::Update) -> Option<PeerId> {
     match u {
         tl::enums::Update::NewMessage(x) => message_peer(&x.message),
         tl::enums::Update::NewChannelMessage(x) => message_peer(&x.message),
@@ -699,7 +699,7 @@ fn is_empty_message(msg: &tl::enums::Message) -> bool {
     matches!(msg, tl::enums::Message::Empty(_))
 }
 
-fn is_empty_update(u: &tl::enums::Update) -> bool {
+pub(crate) fn is_empty_update(u: &tl::enums::Update) -> bool {
     match u {
         tl::enums::Update::NewMessage(x) => is_empty_message(&x.message),
         tl::enums::Update::NewChannelMessage(x) => is_empty_message(&x.message),
@@ -749,7 +749,7 @@ fn reconnect_message(account: &str, failures: u32, backoff: u32, cause: &str) ->
     )
 }
 
-fn poll_timeout(
+pub(crate) fn poll_timeout(
     deadline: Option<std::time::Instant>,
     now: std::time::Instant,
 ) -> std::time::Duration {
@@ -774,7 +774,7 @@ fn dry_run_row(events: &[String], account: &str) -> serde_json::Value {
     )
 }
 
-fn event_row(
+pub(crate) fn event_row(
     event: &str,
     account: &str,
     chat_id: Option<i64>,

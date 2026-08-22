@@ -10,6 +10,7 @@ pub mod msg;
 pub mod privacy;
 pub mod profile;
 pub mod raw;
+pub mod serve;
 pub mod takeout;
 pub mod topic;
 

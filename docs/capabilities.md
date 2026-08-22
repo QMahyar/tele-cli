@@ -17,8 +17,10 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | auth.qr | QR login | `auth.exportLoginToken` | raw flow (no friendly helper) | `tele account login --method qr` (raw `tg://login` URI printed only on TTY stderr or `--show-token`) | done |
 | auth.logout | Logout + delete session | `auth.logOut` | `sign_out` | `tele account logout` | done |
 | auth.session-ttl | Session TTL / auth settings | `account.setAuthorizationTTL` | raw | `tele raw` account.SetAuthorizationTTL | done |
-| auth.passkey | Passkeys | `/api/passkeys` | none friendly | — | later |
+| auth.passkey | Passkeys | `/api/passkeys` | none friendly | — | want |
 | auth.bot-token | Bot token login | `auth.importBotAuthorization` | `bot_sign_in` | not a product path | never |
+| auth.password-manage | Cloud password set/change/remove + recovery email | `account.{GetPassword,UpdatePasswordSettings}` | raw | `tele account password set|change|remove` | want |
+| auth.sessions-manage | List + terminate other sessions/devices | `account.{GetAuthorizations,ResetAuthorization}` | raw (`GetAuthorizations` in raw registry today) | `tele account sessions [--terminate HASH]` | want |
 
 ## Messages
 
@@ -26,7 +28,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 |---|---|---|---|---|---|
 | msg.send | Send text | `messages.sendMessage` | `send_message` | `tele msg send` | done |
 | msg.schedule | Scheduled send | `schedule_date` | raw (no friendly param) | `tele msg send --schedule` | done |
-| msg.schedule-repeat | Repeating scheduled | layer 215+ | raw if present | `tele raw` registry | later |
+| msg.schedule-repeat | Repeating scheduled | layer 215+ | raw if present | `tele raw` registry | want |
 | msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` | done |
 | msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` (partial reporting + `--self-only`) | done |
 | msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` (always silent via grammers; no `--silent` flag) | done |
@@ -36,14 +38,19 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | msg.file | Send file | `messages.sendMedia` | `upload_file` + `send_message` | `tele msg send --file` | done |
 | msg.download | Download media | upload/download API | `download_media`, `iter_download` | `tele msg download` | done |
 | msg.react | Reactions | `/api/reactions` | `send_reactions` | `tele msg react` | done |
-| msg.poll | Polls | `/api/poll` | `send_message(InputMessage::poll)` or raw | `tele msg poll` | later |
+| msg.poll | Polls | `/api/poll` | `send_message(InputMessage::poll)` or raw | `tele msg poll` | want |
 | msg.search | Search / filters | `/api/search` | `search_messages`, `search_all_messages` | `tele msg search` | done |
 | msg.draft | Drafts | `/api/drafts` | raw | `tele dialog drafts` | done |
-| msg.effect | Animated effects | `/api/effects` | raw | `tele raw` registry | later |
-| msg.checklist | Checklists | `/api/todo` | raw | `tele raw` registry | later |
-| msg.translate | Translation | `/api/translation` | raw | later | later |
-| msg.transcribe | Voice transcription | `/api/transcribe` | raw | later | later |
-| msg.ai-compose | AI compose | `/api/ai` | raw | later | later |
+| msg.effect | Animated effects | `/api/effects` | raw | `tele raw` registry | want |
+| msg.checklist | Checklists | `/api/todo` | raw | `tele raw` registry | want |
+| msg.translate | Translation | `/api/translation` | raw | `tele raw` registry | want |
+| msg.transcribe | Voice transcription | `/api/transcribe` | raw | `tele raw` registry | want |
+| msg.ai-compose | AI compose | `/api/ai` | raw | `tele raw` registry | want |
+| msg.buttons | Reply markup / inline buttons in message JSON | `ReplyMarkup` | `Message::reply_markup` | serialized additively as `reply_markup` in every message JSON row (msg get/listen/takeout) | want |
+| msg.click | Inline button press (+ reply-keyboard fallback) | `messages.getBotCallbackAnswer` | raw | `tele msg click` (reply-keyboard buttons fall back to sending their text) | want |
+| msg.album-send | Send media group together | `messages.sendMultiMedia` | raw | `tele msg send --file A --file B` (grouped) | want |
+| msg.typing | Chat action indicator | `messages.setTyping` | raw | `tele msg typing [--action typing/upload_*]` | want |
+| msg.send-mods | Send modifiers: noforwards (protected), background send | `sendMessage`/`sendMultiMedia` flags | raw (grammers exposes none) | `tele msg send --noforwards/--background` | want |
 
 ## Chats
 
@@ -63,6 +70,8 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.create | Create channel / group | `channels.createChannel` | raw | `tele chat create` | done |
 | chat.edit | Edit title / about / photo | `channels.{editTitle,editPhoto}`, `messages.{editChatTitle,editChatPhoto,editChatAbout}`, `photos.deletePhotos` | raw | `tele chat edit` (`--title`, `--about`, `--photo path-or-remove`) | done |
 | chat.link | Discussion group linkage | `channels.{getFullChannel,setDiscussionGroup}` | raw | `tele chat link` (`--to CHANNEL` set; unlink has no API method — honest error) | done |
+| chat.invite-check | Preview invite link without joining (title/members/request flag) | `messages.checkChatInvite` | raw | `tele chat invite-check LINK` | want |
+| chat.join-requests | Approve/dismiss join requests, bulk | `messages.{hideChatJoinRequest,hideAllChatJoinRequests}` | raw | `tele chat requests [--approve|--dismiss] [--all]` | want |
 
 Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (open item M7, tracked in `tasks/todo.md`). Topic lifecycle (`close`, `reopen`, `edit`, `delete`, `pin`) ships via raw TL: `messages.editForumTopic` (closed flag / title), `messages.updatePinnedForumTopic` (pin), and `messages.deleteTopicHistory` (whole-topic history removal; not `messages.deleteHistory`). `topic list` rows carry additive `closed` + `pinned`.
 
@@ -86,11 +95,13 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | listen.new | NewMessage | updates | `Update::NewMessage` | `tele listen` (default; requires explicit `--account`/`--tag`) | done |
 | listen.edit | MessageEdited | updates | `Update::EditMessage` | `--events MessageEdited` | done |
 | listen.delete | MessageDeleted | updates | `Update::DeleteMessages` | `--events MessageDeleted` (DM/basic-group deletions match under `--chat` via bounded observed-id map) | done |
-| listen.action | ChatAction | updates | `Update::UserStatus`/raw | `--events ChatAction` | later |
-| listen.user | UserUpdate | updates | `Update::*` | `--events UserUpdate` | later |
+| listen.action | ChatAction | updates | `Update::UserStatus`/raw | `--events ChatAction` | want |
+| listen.user | UserUpdate | updates | `Update::*` | `--events UserUpdate` | want |
 | listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` (coalesce by grouped_id, ~500 ms quiescence flush) | done |
 | listen.gap | Gap (update-loss marker) | updates | pts tracking per message box | `--events Gap` (synthetic row when updates were dropped/difference ended early) | done |
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
+| listen.filters | Sender / direction / regex / multi-chat filters | client-side | client-side | `listen --from USER --in --out --pattern RE --chat repeatable` | want |
+| listen.service | Parsed service messages (joins/leaves/…) | updates `messageService` | `Update::NewMessage` (service) | parsed event rows with action kind | want |
 | listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
 
@@ -98,18 +109,18 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 
 | id | Domain | Status | Why |
 |---|---|---|---|
-| stories.* | Stories | later | Extra surface |
-| stickers.manage | Sticker / GIF pack management | later | Send-as-file first |
-| business.* | Telegram Business | later | Monetization extras |
-| stars.* | Stars, gifts, payments, boosts, giveaways | later | Monetization |
+| stories.* | Stories | want | Extra surface |
+| stickers.manage | Sticker / GIF pack management | want | Send-as-file first |
+| business.* | Telegram Business | never | Monetization extras — cut by product decision 2026-08-23 |
+| stars.* | Stars, gifts, payments, boosts, giveaways | never | Monetization — cut by product decision 2026-08-23 |
 | calls.* | 1:1 and group calls | never | Realtime media |
 | secret.* | Secret chats / E2E | never | Separate protocol |
 | passport.* | Telegram Passport | never | Not this product |
 | ads.* | Sponsored messages | never | Official-client burden |
 | collectibles.* | Fragment collectibles | never | Not this product |
 | smsjobs.* | Official-client SMS jobs | never | Official only |
-| mcp | MCP server | later | End of development |
-| skill | Agent skill | later | End of development |
+| mcp | MCP server | want | End of development |
+| skill | Agent skill | want | End of development |
 
 ## Kernel (not Telegram, but blocking)
 
@@ -125,3 +136,8 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | kernel.raw | Build-time TL registry | `tele raw` (`src/commands/raw.rs` + `build.rs` + vendored `tl/api.tl`) — validation, registry, and help generated from TL schema at build time via `grammers-tl-parser`; dispatch arms hand-written for response shaping; human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `account.SetAuthorizationTTL`, `contacts.DeleteByPhones`, `messages.ExportChatInvite`) require an explicit `--account` and honor `--dry-run`; 18 registry names incl. read-only `channels.GetFullChannel`, `users.GetUsers`, `messages.{GetHistory,Search,GetScheduledHistory,GetMessagesViews,ReadReactions,ReadMentions,GetDialogUnreadMarks}`, `account.GetAuthorizations` | done |
 | kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after; `-100…` bot-API dialog ids via `PeerId::from_bot_api_dialog_id`), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path; the temporary import is deleted immediately after resolution — no contact side effect, and privacy settings may hide the account) | `src/entities.rs` | done |
 | kernel.completions | Shell completions (bash, zsh, fish, powershell), printed to stdout, exit 0 | `tele completions` (`src/commands/completions.rs`) | done |
+| kernel.device-id | Per-account device identity (`device_model`/`system_version`/`app_version`/`lang_code`) fed to the client builder | config `[accounts.<name>]` keys → `src/client.rs` | want |
+| kernel.session-port | Session export/import across machines + Telethon `.session` converter | `tele account export-session/import-session`, `src/session.rs` | want |
+| kernel.login-staged | Non-TTY staged login; pending auth state resumable across invocations | `tele account login --stage …` (state under app dir) | want |
+| kernel.link-resolve | Deep link → chat id + message id (`t.me/<chat>/<id>`) | extend `classify_target` (`src/entities.rs`) + JSON id fields | want |
+| kernel.serve | Single-owner runtime: `tele serve` child process holds the connected client per account, streams events on stdout, accepts action requests on stdin (duplex JSONL, LSP/MCP shape: versioned hello handshake, request-id correlation, stderr logs; script is supervisor). Solves listen+act-on-one-session (MTProto main sessions are full-duplex; `tmp_sessions` default 1 — one connection multiplexes RPC + updates) without session-lock contention | `tele serve --account X` (`src/commands/serve.rs`; tokio io-util; actions via in-process `*_core` fns) | want |

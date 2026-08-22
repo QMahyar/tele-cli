@@ -186,3 +186,58 @@ Five-agent codebase review; all confirmed findings fixed on `fix/review-findings
 - [x] T7 CI/docs — cargo-audit job; MSRV job pinned 1.89 (`File::try_lock` floor, mirrored in `Cargo.toml rust-version`); concurrency group; AGENTS.md/capabilities/security/observability/release/CHANGELOG synced
 
 Out of scope: raw.rs registry dev-facing error text (contract-mandated), macOS CI job (release.yml ships mac binaries but ci.yml never tests the target).
+
+## Gap triage (2026-08-22, external review) — new `want` rows in capabilities.md
+
+- [ ] msg.buttons — serialize reply markup / inline buttons additively as `reply_markup` in every message JSON row (get/listen/takeout share `message_to_json`)
+- [ ] msg.click — inline button press (`messages.getBotCallbackAnswer`) + reply-keyboard fallback (send its text)
+- [ ] msg.album-send — send media groups together (`messages.sendMultiMedia`)
+- [ ] msg.typing — chat action indicator (`messages.setTyping`)
+- [ ] msg.send-mods — `--noforwards`/`--background` on send (raw flags; silent already shipped)
+- [ ] listen.filters — `--from`, `--in/--out`, `--pattern` regex, repeatable `--chat`
+- [ ] listen.service — parsed joins/leaves from service messages
+- [ ] chat.invite-check — preview invite before joining (`messages.checkChatInvite`)
+- [ ] chat.join-requests — approve/dismiss/bulk (`messages.hideChatJoinRequest(s)` family)
+- [ ] auth.password-manage — cloud password set/change/remove + recovery email (`account.UpdatePasswordSettings`)
+- [ ] auth.sessions-manage — list + terminate remote sessions (`account.ResetAuthorization`; GetAuthorizations already raw-registry)
+- [ ] kernel.device-id — per-account device_model/system_version/app_version/lang_code → client builder
+- [ ] kernel.session-port — session export/import + Telethon `.session` converter
+- [ ] kernel.login-staged — non-TTY staged login, pending auth resumable across invocations
+- [ ] kernel.link-resolve — `t.me/<chat>/<id>` → chat id + message id
+
+Partial notes from triage: FLOOD_WAIT seconds already in envelope (`error.rs`, `wait_seconds`) — SLOWMODE_WAIT not special-cased yet, fold into next error.rs touch. Scheduled send done; list/cancel stay on the raw registry. Album receive-side done (`grouped_id` + `--events Album`). Silent send done.
+
+Priority order: msg.buttons (offline-testable, additive JSON) → listen.filters → chat.join-requests → kernel.device-id → rest by demand.
+
+## kernel.serve — listen+act runtime (2026-08-22, three-agent research)
+
+Verdict (protocol scout + codebase explorer + ecosystem survey): one MTProto main session is full-duplex by design (`tmp_sessions` default 1; exceeding concurrent main sessions = AUTH_KEY_DUPLICATED trigger). grammers echo.rs pattern: `select!` over `updates.next()` and actions, `Client` Clone. Cross-process session sharing is the only conflict; in-process listen+act needs nothing special. Cleanest external-script shape = LSP/MCP child process: stdin/stdout JSONL, stderr logs, versioned hello, request-id correlation (TDLib `@extra`), script-as-supervisor. Named pipe deferred as backend two behind a transport trait.
+
+- [ ] serve-A skeleton — `tele serve --account X [--events ...]`: hold ClientGuard, hello handshake first line both ways, push update events on stdout (existing envelope shapes), read action requests on stdin; malformed/unknown-op lines get error envelopes, never panic/exit
+  - RED: offline protocol unit tests (hello validation, action parse, unknown op, id correlation shape)
+  - GREEN: `src/commands/serve.rs` + clap subcommand + tokio `io-util`; reuse listen reconnect/backoff + `stream_updates(catch_up:true)` config verbatim (listen.rs:324-405)
+- [ ] serve-B action cores — extract `*_core(client, session, limiter, params) -> Value` from msg.rs handlers (send/edit/delete/react/get/forward/pin/read/search); serve dispatches ops to cores against the held guard (no re-connect, no lock touch). Mechanical refactor ~8 files, no behavior change
+- [ ] serve-C hardening — EOF = clean shutdown (release lock, disconnect, exit 0); script-supervisor contract documented; FLOOD_WAIT beyond AutoSleep threshold returned as correlated error envelope (never process::exit); optional named-pipe transport trait later
+
+Landmines from code review: stdout is events-only (stderr logging invariant); do not wrap serve task in AbortOnDrop; single guard per account (try_lock fails on second open); `Dropped` RPC ≠ network failure; avoid `+phone` resolution in hot path.
+
+serve-A SHIPPED 2026-08-23 (`src/commands/serve.rs`): clap subcommand, protocol v1 (hello handshake + VersionMismatch fail-fast, request-id correlated response envelopes with unattributed-id error rows, malformed lines never panic), stdin JSONL reader → mpsc, `select!` duplex loop reusing listen's reconnect/backoff/poll_timeout/event_row, `ping` op live (pong), unknown ops get NotImplemented envelopes, EOF = clean shutdown (close guard, release lock, exit 0). 10 offline protocol tests; clippy+fmt clean; suite 769+58 green. Live verify pending: real session roundtrip (hello → NewMessage push → ping). serve-B/C remain.
+
+## Delegation waves — implement every remaining want (2026-08-23)
+
+Manager mode: main agent orchestrates only; implementation via sub-agents on per-ticket branches; capabilities.md/todo.md row flips done by manager at merge time (agents must NOT touch docs/tracker to avoid collisions). business.*/stars.* flipped `never` by product decision 2026-08-23. mcp/skill stay gated on explicit user go (Phase 6 boundary) despite want status.
+
+File-ownership map (one agent per file-set at a time):
+- serialize.rs → msg.buttons
+- listen.rs → listen.filters + listen.action/user/service (one agent)
+- chat.rs → chat.invite-check + chat.join-requests (one agent)
+- account.rs → auth.password-manage + auth.sessions-manage (one agent)
+- config.rs + client.rs → kernel.device-id
+- entities.rs → kernel.link-resolve
+
+Wave plan:
+- [ ] W1 (parallel, disjoint): T1 msg.buttons · T2 listen.filters(+action/user/service) · T3 chat.invite-check+join-requests · T4 auth.password-manage+sessions-manage · T5 kernel.device-id · T6 kernel.link-resolve
+- [ ] W2 (after W1 merge): T7 msg.rs batch: poll/typing/album-send/send-mods/click (msg.rs+raw.rs) · T8 kernel.session-port (+Telethon converter, session.rs) · T9 kernel.login-staged (account.rs)
+- [ ] W3: T10 serve-B `_core` extraction + dispatch (touches many files — SOLO wave) · T11 serve-C hardening
+- [ ] W4: T12 raw-registry batch: effect/checklist/translate/transcribe/ai-compose/schedule-repeat · T13 stickers.manage · T14 stories.*
+- [ ] Final: contract test sweep + full suite + live verification checklist refresh
