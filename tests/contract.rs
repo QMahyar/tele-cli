@@ -851,6 +851,88 @@ fn chat_admin_promote_demote_conflict() {
 }
 
 #[test]
+fn chat_invite_dry_run_covers_all_link_modes() {
+    let dir = isolated_appdir("chatchinv");
+    write_session(&dir, "work");
+    let run = |args: &[&str]| {
+        let mut full = vec![
+            "chat",
+            "invite",
+            "--chat",
+            "@c",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ];
+        full.extend_from_slice(args);
+        let (code, out, err) = run_in(&dir, &full);
+        assert_eq!(code, 0, "stderr: {err}; args: {full:?}");
+        parse_json(&out)["results"][0]["data"].clone()
+    };
+    let export = run(&["--title", "Weekly", "--expire", "24h", "--usage-limit", "5"]);
+    assert_eq!(export["mode"], serde_json::json!("export"));
+    assert_eq!(export["title"], serde_json::json!("Weekly"));
+    assert_eq!(export["usage_limit"], serde_json::json!(5));
+    assert!(export["expire_date"].as_i64().unwrap() > 0);
+
+    let list = run(&["--list"]);
+    assert_eq!(list["mode"], serde_json::json!("list"));
+    assert_eq!(list["revoked"], serde_json::json!(false));
+
+    let importers = run(&["--list", "--importers", "t.me/+abc123"]);
+    assert_eq!(
+        importers["importers"],
+        serde_json::json!("https://t.me/+abc123")
+    );
+
+    let edit = run(&["--edit", "+abc123", "--revoke"]);
+    assert_eq!(edit["mode"], serde_json::json!("edit"));
+    assert_eq!(edit["revoke"], serde_json::json!(true));
+
+    let purge = run(&["--delete-revoked"]);
+    assert_eq!(purge["mode"], serde_json::json!("delete_revoked"));
+
+    let user = run(&["--user", "@bob"]);
+    assert_eq!(
+        user["would"],
+        serde_json::json!("invite user @bob to chat @c")
+    );
+}
+
+#[test]
+fn chat_invite_rejects_bad_flag_combinations_before_connect() {
+    let bad = |tag: &str, args: &[&str]| {
+        let (code, _out, err) = run_isolated(tag, args);
+        assert_eq!(code, 1, "expected usage exit, stderr: {err}");
+    };
+    bad("invrev", &["chat", "invite", "--chat", "@c", "--revoke"]);
+    bad(
+        "invimp",
+        &["chat", "invite", "--chat", "@c", "--importers", "+abc"],
+    );
+    bad(
+        "inveditnone",
+        &["chat", "invite", "--chat", "@c", "--edit", "+abc123"],
+    );
+    bad(
+        "invbadexp",
+        &["chat", "invite", "--chat", "@c", "--expire", "next tuesday"],
+    );
+    bad(
+        "invbadbool",
+        &[
+            "chat",
+            "invite",
+            "--chat",
+            "@c",
+            "--request-approval",
+            "maybe",
+        ],
+    );
+}
+
+#[test]
 fn unknown_account_rejected_exit_1() {
     let (code, _out, err) = run_isolated(
         "unkacc",
