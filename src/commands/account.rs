@@ -33,6 +33,8 @@ pub enum AccountCmd {
     Remove(RemoveArgs),
     Sessions(SessionsArgs),
     Password(PasswordArgs),
+    ExportSession(ExportSessionArgs),
+    ImportSession(ImportSessionArgs),
 }
 #[derive(Args)]
 pub struct AddArgs {
@@ -105,6 +107,26 @@ pub struct RemoveArgs {
     #[arg(long)]
     name: String,
 }
+
+#[derive(Args)]
+pub struct ExportSessionArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long, help = "destination path; defaults to ./{name}.session")]
+    out: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ImportSessionArgs {
+    #[arg(long)]
+    file: String,
+    #[arg(long = "as", help = "target account name; defaults to the file stem")]
+    as_name: Option<String>,
+    #[arg(long, help = "overwrite an existing account session")]
+    force: bool,
+    #[arg(long, help = "source is a Telethon SQLite session to convert")]
+    from_telethon: bool,
+}
 pub async fn run(cmd: AccountCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         AccountCmd::List => list(flags).await,
@@ -115,6 +137,8 @@ pub async fn run(cmd: AccountCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         AccountCmd::Remove(args) => remove(&args, flags).await,
         AccountCmd::Sessions(args) => sessions(&args, flags).await,
         AccountCmd::Password(args) => password(&args, flags).await,
+        AccountCmd::ExportSession(args) => export_session(&args, flags).await,
+        AccountCmd::ImportSession(args) => import_session(&args, flags).await,
     }
 }
 async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
@@ -577,6 +601,118 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(
         flags,
         &action_envelope(&args.name, data, flags.dry_run, &flags.command),
+    )
+}
+
+fn export_row(exported: &session::ExportedSession) -> Vec<String> {
+    vec![
+        exported.account.clone(),
+        exported.path.display().to_string(),
+        exported.bytes.to_string(),
+        exported.sha256.clone(),
+    ]
+}
+
+fn export_data(exported: &session::ExportedSession) -> serde_json::Value {
+    serde_json::json!({
+        "account": exported.account,
+        "path": exported.path.display().to_string(),
+        "bytes": exported.bytes,
+        "sha256": exported.sha256,
+    })
+}
+
+fn import_data(imported: &session::ImportedSession) -> serde_json::Value {
+    serde_json::json!({
+        "imported": true,
+        "account": imported.account,
+        "path": imported.path.display().to_string(),
+        "bytes": imported.bytes,
+    })
+}
+
+async fn export_session(args: &ExportSessionArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    session::validate_name(&args.name).map_err(TeleError::Usage)?;
+    if flags.dry_run {
+        let dest = args.out.as_deref().unwrap_or("./<name>.session");
+        let would = format!("export session {dest} from account {}", args.name);
+        return crate::executor::finish(
+            flags,
+            &dry_run_envelope(&args.name, &would, &flags.command),
+        );
+    }
+    let exported =
+        session::export_session(&args.name, args.out.as_deref().map(std::path::Path::new))?;
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        log_line("warn", session::SESSION_FILE_WARNING);
+    }
+    let data = export_data(&exported);
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        output::print_table(
+            &["account", "path", "bytes", "sha256"],
+            &[export_row(&exported)],
+        )?;
+    }
+    crate::executor::finish(
+        flags,
+        &action_envelope(&args.name, data, false, &flags.command),
+    )
+}
+
+fn import_row(imported: &session::ImportedSession) -> Vec<String> {
+    vec![
+        imported.account.clone(),
+        imported.path.display().to_string(),
+        imported.bytes.to_string(),
+    ]
+}
+
+async fn import_session(args: &ImportSessionArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if let Some(name) = args.as_name.as_deref() {
+        session::validate_name(name).map_err(TeleError::Usage)?;
+    }
+    let file = std::path::PathBuf::from(args.file.trim());
+    if args.from_telethon {
+        if flags.dry_run {
+            let name = session::resolve_import_name(args.as_name.as_deref(), &file)
+                .map_err(|e| TeleError::Usage(format!("{e:#}")))?;
+            let would = format!(
+                "convert Telethon session {} as account {name}",
+                file.display()
+            );
+            return crate::executor::finish(
+                flags,
+                &dry_run_envelope(&name, &would, &flags.command),
+            );
+        }
+        let imported =
+            session::convert_telethon_session(&file, args.as_name.as_deref(), args.force).await?;
+        return finish_import(flags, &imported).await;
+    }
+    if flags.dry_run {
+        let name = session::resolve_import_name(args.as_name.as_deref(), &file)
+            .map_err(|e| TeleError::Usage(format!("{e:#}")))?;
+        let would = format!("import session {} as account {name}", file.display());
+        return crate::executor::finish(flags, &dry_run_envelope(&name, &would, &flags.command));
+    }
+    let imported = session::import_session(&file, args.as_name.as_deref(), args.force).await?;
+    finish_import(flags, &imported).await
+}
+
+async fn finish_import(
+    flags: &GlobalFlags,
+    imported: &session::ImportedSession,
+) -> TeleResult<i32> {
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        log_line("warn", session::SESSION_FILE_WARNING);
+    }
+    let data = import_data(imported);
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        output::print_table(&["account", "path", "bytes"], &[import_row(imported)])?;
+    }
+    crate::executor::finish(
+        flags,
+        &action_envelope(&imported.account, data, false, &flags.command),
     )
 }
 const SESSION_REMOVE_RETRIES: usize = 20;
@@ -1803,5 +1939,290 @@ mod tests {
         assert!(!matches!(err, TeleError::Usage(_)), "{err}");
         assert!(err.message().contains("InputCheckPasswordSRP"), "{err}");
         assert!(err.message().contains("calculate_2fa"), "{err}");
+    }
+
+    fn export_args(name: &str, out: Option<&str>) -> ExportSessionArgs {
+        ExportSessionArgs {
+            name: name.to_string(),
+            out: out.map(str::to_string),
+        }
+    }
+
+    fn import_args(
+        file: &str,
+        as_name: Option<&str>,
+        force: bool,
+        from_telethon: bool,
+    ) -> ImportSessionArgs {
+        ImportSessionArgs {
+            file: file.to_string(),
+            as_name: as_name.map(str::to_string),
+            force,
+            from_telethon,
+        }
+    }
+
+    fn seed_test_env(dir: &std::path::Path) {
+        std::env::set_var("TELE_APP_DIR", dir);
+        std::fs::write(
+            dir.join("config.toml"),
+            "[accounts.me]\n\
+             [accounts.work]\n\
+             [accounts.origin]\n\
+             [accounts.restored]\n\
+             [accounts.keyed]\n\
+             [accounts.fromtg]\n\
+             ",
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn export_session_rejects_invalid_names_as_usage() {
+        let dir = std::env::temp_dir().join(format!("telecli-exp-badname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags(
+            "account export-session",
+            false,
+            false,
+            &dir.join("config.toml"),
+        );
+        for bad in ["all", ".", "..", "../x", "a/b"] {
+            let err = export_session(&export_args(bad, None), &flags)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+            assert_eq!(err.exit_code(), crate::error::EXIT_USAGE, "{bad:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn export_session_dry_run_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!("telecli-exp-dry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        seed_test_env(&dir);
+        let flags = test_flags(
+            "account export-session",
+            false,
+            true,
+            &dir.join("config.toml"),
+        );
+        let code = export_session(&export_args("work", Some("out/w.session")), &flags)
+            .await
+            .unwrap();
+        assert_eq!(code, 0);
+        std::env::remove_var("TELE_APP_DIR");
+        drop(_guard);
+        assert!(
+            !dir.join("sessions").exists(),
+            "dry run must not touch sessions"
+        );
+        assert!(!dir.join("out").join("w.session").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_row_and_data_carry_contract_keys() {
+        let exported = session::ExportedSession {
+            account: "work".to_string(),
+            path: std::path::PathBuf::from("/backup/work.session"),
+            bytes: 4321,
+            sha256: "ab".repeat(32),
+        };
+        let row = export_row(&exported);
+        assert_eq!(row.len(), 4);
+        assert_eq!(row[0], "work");
+        assert_eq!(row[2], "4321");
+        assert_eq!(row[3], format!("{}{}", "ab".repeat(31), "ab"));
+        let data = export_data(&exported);
+        assert_eq!(data["account"], serde_json::json!("work"));
+        assert_eq!(data["bytes"], serde_json::json!(4321));
+        assert_eq!(data["sha256"], serde_json::json!("ab".repeat(32)));
+        assert!(data["path"].is_string());
+    }
+
+    #[test]
+    fn import_row_and_data_carry_resulting_account() {
+        let imported = session::ImportedSession {
+            account: "team_a".to_string(),
+            path: std::path::PathBuf::from("sessions/team_a.session"),
+            bytes: 8192,
+        };
+        let row = import_row(&imported);
+        assert_eq!(
+            row,
+            vec![
+                "team_a".to_string(),
+                "sessions/team_a.session".to_string(),
+                "8192".to_string(),
+            ]
+        );
+        let data = import_data(&imported);
+        assert_eq!(data["imported"], serde_json::json!(true));
+        assert_eq!(data["account"], serde_json::json!("team_a"));
+        assert_eq!(data["bytes"], serde_json::json!(8192));
+    }
+
+    #[tokio::test]
+    async fn import_session_rejects_invalid_as_name_before_disk() {
+        let dir = std::env::temp_dir().join(format!("telecli-imp-badname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("src.session"), b"SQLite format 3\x00pad").unwrap();
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        seed_test_env(&dir);
+        let flags = test_flags(
+            "account import-session",
+            false,
+            false,
+            &dir.join("config.toml"),
+        );
+        for bad in ["all", ".", "..", "../escape", "has space"] {
+            let err = import_session(&import_args("src.session", Some(bad), false, false), &flags)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+        }
+        assert!(
+            !dir.join("sessions").exists(),
+            "invalid target names must create nothing"
+        );
+        std::env::remove_var("TELE_APP_DIR");
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_import_surfaces_blocker_without_side_effects() {
+        let dir = std::env::temp_dir().join(format!("telecli-imp-tgblock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("telethon.session");
+        std::fs::write(&src, b"SQLite format 3\x00").unwrap();
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        seed_test_env(&dir);
+        let flags = test_flags(
+            "account import-session",
+            true,
+            false,
+            &dir.join("config.toml"),
+        );
+        let err = import_session(
+            &import_args(src.to_str().unwrap(), Some("fromtg"), false, true),
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        let msg = err.message();
+        assert!(msg.contains("rusqlite"), "{msg}");
+        assert!(msg.contains("libsql"), "{msg}");
+        assert!(msg.contains("dependency approval"), "{msg}");
+        assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
+        assert!(
+            !dir.join("sessions").exists(),
+            "blocked conversion must not scaffold anything"
+        );
+        std::env::remove_var("TELE_APP_DIR");
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn exported_payload_never_contains_auth_key_material() {
+        use grammers_client::session::types::DcOption;
+        use grammers_client::session::Session as _;
+        use std::net::{SocketAddrV4, SocketAddrV6};
+
+        let dir = std::env::temp_dir().join(format!("telecli-exp-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        seed_test_env(&dir);
+        {
+            let locked = session::open_session("keyed").await.unwrap();
+            locked
+                .session
+                .set_dc_option(&DcOption {
+                    id: 9,
+                    ipv4: SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 443),
+                    ipv6: SocketAddrV6::new(std::net::Ipv6Addr::LOCALHOST, 443, 0, 0),
+                    auth_key: Some([0xA7u8; 256]),
+                })
+                .await
+                .unwrap();
+            drop(locked);
+        }
+        let dest = dir.join("leak-probe.session");
+        let exported = session::export_session("keyed", Some(&dest)).unwrap();
+        let payload = export_data(&exported);
+        assert_eq!(payload["sha256"].as_str().map(str::len), Some(64));
+        let rendered = payload.to_string();
+        assert!(
+            !rendered.contains("a7a7a7a7"),
+            "hex key material leaked into machine payload: {rendered}"
+        );
+        assert!(
+            !rendered.contains("p6enp6en"),
+            "base64 key material leaked into machine payload: {rendered}"
+        );
+        remove_session_file_retry(&dest).await.unwrap();
+        session::remove_session("keyed").unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn import_then_export_via_commands_preserves_bytes() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-cmd-roundtrip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        seed_test_env(&dir);
+        {
+            let locked = session::open_session("origin").await.unwrap();
+            drop(locked);
+        }
+        let backup = dir.join("inbox").join("origin.session");
+        let json_flags = test_flags(
+            "account export-session",
+            true,
+            false,
+            &dir.join("config.toml"),
+        );
+        export_session(&export_args("origin", backup.to_str()), &json_flags)
+            .await
+            .unwrap();
+        let import_flags = test_flags(
+            "account import-session",
+            true,
+            false,
+            &dir.join("config.toml"),
+        );
+        import_session(
+            &import_args(backup.to_str().unwrap(), Some("restored"), false, false),
+            &import_flags,
+        )
+        .await
+        .unwrap();
+        let reexport = dir.join("inbox").join("restored.session");
+        export_session(&export_args("restored", reexport.to_str()), &json_flags)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            std::fs::read(&reexport).unwrap(),
+            "command-level roundtrip must be byte identical"
+        );
+        session::remove_session("restored").unwrap();
+        session::remove_session("origin").unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
