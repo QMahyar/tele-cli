@@ -39,9 +39,9 @@ pub struct SendArgs {
     )]
     schedule: Option<String>,
     #[arg(
-        long,
-        help = "file path(s) to upload; 2-10 paths send as an album (mutually exclusive with --text)",
-        value_name = "PATH"
+        long = "file",
+        value_name = "PATH",
+        help = "file path(s) to upload; 2-10 paths send as an album (mutually exclusive with --text)"
     )]
     files: Vec<String>,
     #[arg(long, help = "caption for uploaded file(s) (requires --file)")]
@@ -232,7 +232,8 @@ pub struct ReactArgs {
 pub struct SearchArgs {
     #[arg(
         long,
-        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+        default_value = "",
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me (not required with --global)"
     )]
     chat: String,
     #[arg(long, help = "search query text")]
