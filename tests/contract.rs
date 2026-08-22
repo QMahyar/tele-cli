@@ -204,6 +204,24 @@ fn raw_registered_name_reaches_fanout() {
 }
 
 #[test]
+fn raw_new_mutators_require_explicit_account_offline() {
+    for (name, args) in [
+        (
+            "account.SetAuthorizationTTL",
+            "{\"authorization_ttl_days\":30}",
+        ),
+        ("contacts.DeleteByPhones", "{\"phones\":[\"+15550100\"]}"),
+    ] {
+        let (code, _out, err) = run_isolated("rawgate2", &["raw", name, "--args", args]);
+        assert_eq!(code, 1, "raw {name}");
+        assert!(
+            err.contains("mutates account data"),
+            "raw {name}: stderr: {err}"
+        );
+    }
+}
+
+#[test]
 fn listen_unknown_event_exits_1_before_connect() {
     for name in ["Bogus", "Nope"] {
         let (code, _out, err) = run_isolated("lsev", &["listen", "--events", name]);
@@ -1328,7 +1346,7 @@ fn raw_registry_names_are_offline_usable() {
     let src =
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/raw.rs")).unwrap();
     let names = raw_registry_names();
-    assert!(names.len() >= 6, "registry should hold all raw arms");
+    assert!(names.len() >= 18, "registry should hold all raw arms");
     for name in &names {
         assert!(
             src.contains(&format!("\"{name}\" =>")),
@@ -1339,6 +1357,13 @@ fn raw_registry_names_are_offline_usable() {
         "contacts.Search" => "{\"q\":\"x\"}",
         "messages.ExportChatInvite" => "{\"chat\":\"me\"}",
         "stats.GetBroadcastStats" | "stats.GetMegagroupStats" => "{\"channel\":\"me\"}",
+        "channels.GetFullChannel" => "{\"channel\":\"me\"}",
+        "users.GetUsers" => "{\"id\":[\"me\"]}",
+        "messages.GetHistory" | "messages.GetScheduledHistory" => "{\"chat\":\"me\"}",
+        "messages.Search" => "{\"chat\":\"me\",\"q\":\"x\",\"filter\":\"empty\"}",
+        "messages.GetMessagesViews" => "{\"chat\":\"me\",\"id\":[1],\"increment\":false}",
+        "messages.ReadReactions" | "messages.ReadMentions" => "{\"chat\":\"me\"}",
+        "contacts.DeleteByPhones" => "{\"phones\":[\"+15550100\"]}",
         _ => "{}",
     };
     let dir = isolated_appdir("rawreg2");

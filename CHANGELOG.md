@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- `tele raw` registry grows from 6 to 18 typed methods: `channels.GetFullChannel`, `users.GetUsers`, `messages.GetHistory`, `messages.Search`, `messages.GetScheduledHistory`, `messages.GetMessagesViews`, `messages.ReadReactions`, `messages.ReadMentions`, `messages.GetDialogUnreadMarks`, `account.GetAuthorizations`, `account.SetAuthorizationTTL` (requires explicit `--account`), `contacts.DeleteByPhones` (requires explicit `--account`). Each arm ships a hand-shaped JSON payload plus human-readable output; peer params accept the same target syntax as `--chat` under the `chat` key.
 - RPC errors in `--json` envelopes now carry additive `code` and `name` keys — scripts should match on these instead of parsing the human `message` string.
 - Message objects may carry additive `media_kind` and `media_label` fields alongside the legacy colon-joined `media` string.
 - `account login --show-token`: prints the raw `tg://login?token=…` URI to stderr even when stderr is redirected to a log. Without the flag the URI is printed only on an interactive terminal.
