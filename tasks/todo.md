@@ -223,6 +223,25 @@ Landmines from code review: stdout is events-only (stderr logging invariant); do
 
 serve-A SHIPPED 2026-08-23 (`src/commands/serve.rs`): clap subcommand, protocol v1 (hello handshake + VersionMismatch fail-fast, request-id correlated response envelopes with unattributed-id error rows, malformed lines never panic), stdin JSONL reader → mpsc, `select!` duplex loop reusing listen's reconnect/backoff/poll_timeout/event_row, `ping` op live (pong), unknown ops get NotImplemented envelopes, EOF = clean shutdown (close guard, release lock, exit 0). 10 offline protocol tests; clippy+fmt clean; suite 769+58 green. Live verify pending: real session roundtrip (hello → NewMessage push → ping). serve-B/C remain.
 
+## Implement-every-want program — COMPLETE (2026-08-23)
+
+Manager-delegated waves, 13 agent tickets merged to main via --no-ff, each gated fmt/clippy/test. Final state: **1136 tests** (1047 unit + 69 contract + 20 selection), clippy/fmt clean, independent cli-tester QA sweep = SHIP IT.
+
+Shipped: kernel.serve duplex runtime (A+B) · msg.buttons · listen.filters (--pattern/--from/--in/--out/multi-chat) · listen Service/ChatAction/UserUpdate events (+poll rows in streams) · chat invite --check + join requests · auth sessions-manage · password --remove (grammers-crypto SRP) · staged non-TTY login · session export/import + Telethon import (libsql) · device-id per account · link-resolve wired into msg get · msg vote/poll rows/typing/click/send-mods · raw registry batch (translate/transcribe/effects/todo/schedule-send/ai-compose) · sticker group · story group.
+
+Remaining want rows (7) — none buildable today:
+- auth.password-manage set/change — upstream-blocked (PH2 pbkdf2 private in grammers-crypto)
+- msg.schedule-repeat — absent from TL layer 227
+- auth.passkey — research verdict: impractical in CLI (WebAuthn ceremony + RP-ID=telegram.org ban for unofficial apps; list/delete would work raw). PROPOSED never — needs user sign-off
+- mcp, skill — Phase-6 gate, user go required
+- stories.* subset gaps (edit/getByID/views-list/feed/albums/stealth) documented in matrix row
+
+QA follow-up tickets (LOW):
+- [ ] QA-1: generated raw validator lacks required int/long presence checks (`raw messages.GetAvailableEffects --args {}` passes validation, would hit network half-arg'd) — tighten build.rs validator + tests
+- [ ] QA-2: decide --pattern repeatability (currently single-value; from/chat are repeatable) — align flag + help text
+
+Live verification owed by user (real sessions): serve duplex roundtrip incl. action op · listen filters against real traffic · invite-check on a real link · join-request approve/dismiss · sessions terminate · password remove · staged login both accounts · Telethon import of a real .session · device identity visible in Telegram devices list · sticker install/remove · story send/list.
+
 ## Delegation waves — implement every remaining want (2026-08-23)
 
 Manager mode: main agent orchestrates only; implementation via sub-agents on per-ticket branches; capabilities.md/todo.md row flips done by manager at merge time (agents must NOT touch docs/tracker to avoid collisions). business.*/stars.* flipped `never` by product decision 2026-08-23. mcp/skill stay gated on explicit user go (Phase 6 boundary) despite want status.
