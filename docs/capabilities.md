@@ -110,7 +110,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | id | Domain | Status | Why |
 |---|---|---|---|
 | stories.* | Stories | want | Extra surface |
-| stickers.manage | Sticker / GIF pack management | want | Send-as-file first |
+| stickers.manage | Sticker pack management: list/search/show/install/remove | `messages.{getAllStickers,searchStickerSets,getStickerSet,installStickerSet,uninstallStickerSet}` | raw arms in dedicated module | `tele sticker list/search/show/install/remove` (`--set` accepts short name or t.me/addstickers link; creator-side naming + archive-toggle reachable via `tele raw`) | done |
 | business.* | Telegram Business | never | Monetization extras — cut by product decision 2026-08-23 |
 | stars.* | Stars, gifts, payments, boosts, giveaways | never | Monetization — cut by product decision 2026-08-23 |
 | calls.* | 1:1 and group calls | never | Realtime media |
