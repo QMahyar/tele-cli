@@ -506,6 +506,50 @@ fn observed_deletion_ids(ids: &[i32], observed: &ObservedPeers, target: PeerId) 
         .collect()
 }
 
+const LISTEN_DEDUPE_CAP: usize = 10_000;
+
+struct ListenDedupe {
+    seen: HashMap<(i64, i32, i32), ()>,
+    order: VecDeque<(i64, i32, i32)>,
+}
+
+impl ListenDedupe {
+    fn new() -> Self {
+        Self {
+            seen: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+    fn check(&mut self, key: (i64, i32, i32)) -> bool {
+        if self.seen.contains_key(&key) {
+            return true;
+        }
+        if self.seen.len() >= LISTEN_DEDUPE_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        self.seen.insert(key, ());
+        self.order.push_back(key);
+        false
+    }
+}
+
+fn dedupe_key(chat_id: Option<i64>, msg_id: i32, pts: i32) -> (i64, i32, i32) {
+    (chat_id.unwrap_or(0), msg_id, pts)
+}
+
+fn pts_from_state(state: &State) -> i32 {
+    match &state.message_box {
+        Some(mb) => match mb {
+            grammers_session::updates::MessageBox::Common { pts } => *pts,
+            grammers_session::updates::MessageBox::Secondary { qts } => *qts,
+            grammers_session::updates::MessageBox::Channel { pts, .. } => *pts,
+        },
+        None => 0,
+    }
+}
+
 pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     use grammers_client::update::Update;
@@ -571,6 +615,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 let mut filter = EventFilter::default();
                 let mut targets_resolved = false;
                 let mut failures: u32 = 0;
+                let mut dedupe = ListenDedupe::new();
                 loop {
                     if let Some(d) = deadline {
                         if std::time::Instant::now() >= d {
@@ -719,6 +764,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             Tick::Update(u) => *u,
                         };
                         failures = on_reconnect_success(failures);
+                        let _ = stream.sync_update_state().await;
                         if gap_on {
                             if let Some(signal) = gaps.observe(update.raw()) {
                                 emit_row(gap_row(&name, &signal, update.state())).await?;
@@ -756,11 +802,16 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         observed.observe(m.id(), peer.id());
                                     }
                                 }
+                                let chat_id = peer.and_then(|p| p.bare_id());
+                                let pts = pts_from_state(update.state());
+                                if dedupe.check(dedupe_key(chat_id, m.id(), pts)) {
+                                    continue;
+                                }
                                 if routes_to_service(service_on, service_flavored) {
                                     if let tl::enums::Message::Service(svc) = &(**m).raw {
                                         emit_row(service_row(
                                             &name,
-                                            peer.and_then(|p| p.bare_id()),
+                                            chat_id,
                                             streamed_message_row(m)?,
                                             &svc.action,
                                         ))
@@ -768,7 +819,6 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         continue;
                                     }
                                 }
-                                let chat_id = peer.and_then(|p| p.bare_id());
                                 let row = streamed_message_row(m)?;
                                 let grouped = if album_on { album_member(&row) } else { None };
                                 match (grouped, chat_id) {
@@ -830,11 +880,16 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         observed.observe(m.id(), peer.id());
                                     }
                                 }
+                                let chat_id = peer.and_then(|p| p.bare_id());
+                                let pts = pts_from_state(update.state());
+                                if dedupe.check(dedupe_key(chat_id, m.id(), pts)) {
+                                    continue;
+                                }
                                 if routes_to_service(service_on, service_flavored) {
                                     if let tl::enums::Message::Service(svc) = &(**m).raw {
                                         emit_row(service_row(
                                             &name,
-                                            peer.and_then(|p| p.bare_id()),
+                                            chat_id,
                                             streamed_message_row(m)?,
                                             &svc.action,
                                         ))
@@ -846,7 +901,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 emit_row(event_row(
                                     "MessageEdited",
                                     &name,
-                                    peer.and_then(|p| p.bare_id()),
+                                    chat_id,
                                     None,
                                     Some(row),
                                 ))
@@ -1448,6 +1503,7 @@ fn message_action_kind(action: &tl::enums::MessageAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grammers_session::Session;
 
     fn base_message_row() -> serde_json::Value {
         serde_json::json!({
@@ -3627,5 +3683,115 @@ mod tests {
             "poll key must stay absent without poll media"
         );
         assert_eq!(row["text"], "plain");
+    }
+
+    #[test]
+    fn listen_dedupe_suppresses_duplicate_pts_windows() {
+        let mut d = ListenDedupe::new();
+        let k1 = dedupe_key(Some(123), 5, 10);
+        let k2 = dedupe_key(Some(123), 5, 11);
+        let k3 = dedupe_key(Some(456), 5, 10);
+        assert!(!d.check(k1));
+        assert!(d.check(k1));
+        assert!(!d.check(k2));
+        assert!(d.check(k2));
+        assert!(!d.check(k3));
+        assert!(d.check(k3));
+    }
+
+    #[test]
+    fn listen_dedupe_evicts_oldest_beyond_cap() {
+        let mut d = ListenDedupe::new();
+        for i in 0..(LISTEN_DEDUPE_CAP as i32) {
+            assert!(!d.check(dedupe_key(Some(1), i, i)));
+        }
+        assert_eq!(d.seen.len(), LISTEN_DEDUPE_CAP);
+        let first = dedupe_key(Some(1), 0, 0);
+        assert!(d.check(first));
+        assert!(!d.check(dedupe_key(
+            Some(1),
+            LISTEN_DEDUPE_CAP as i32,
+            LISTEN_DEDUPE_CAP as i32
+        )));
+    }
+
+    #[test]
+    fn listen_pts_from_state_reads_all_variants() {
+        use grammers_session::updates::{MessageBox, State};
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Common { pts: 42 }),
+        };
+        assert_eq!(pts_from_state(&s), 42);
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Secondary { qts: 43 }),
+        };
+        assert_eq!(pts_from_state(&s), 43);
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Channel {
+                channel_id: 9,
+                pts: 44,
+            }),
+        };
+        assert_eq!(pts_from_state(&s), 44);
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: None,
+        };
+        assert_eq!(pts_from_state(&s), 0);
+    }
+
+    #[tokio::test]
+    async fn listen_state_persists_and_resumes_offline() {
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-listen-state-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        std::fs::write(dir.join("config.toml"), "[accounts.listen_test]\n").unwrap();
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let path = crate::session::session_path("listen_test");
+        {
+            let sess = grammers_session::storages::SqliteSession::open(&path)
+                .await
+                .unwrap();
+            sess.set_update_state(grammers_session::types::UpdateState::All(
+                grammers_session::types::UpdatesState {
+                    pts: 88,
+                    qts: 1,
+                    date: 2000,
+                    seq: 2,
+                    channels: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+            let state = sess.updates_state().await.unwrap();
+            let mbox = grammers_session::updates::MessageBoxes::load(state);
+            assert_eq!(mbox.session_state().pts, 88);
+            let mut dedupe = ListenDedupe::new();
+            let k = dedupe_key(Some(1), 1, mbox.session_state().pts);
+            assert!(!dedupe.check(k));
+            assert!(dedupe.check(k));
+        }
+        {
+            let sess2 = grammers_session::storages::SqliteSession::open(&path)
+                .await
+                .unwrap();
+            let resumed = sess2.updates_state().await.unwrap();
+            assert_eq!(resumed.pts, 88);
+        }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
