@@ -194,12 +194,19 @@ fn main() -> std::process::ExitCode {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let code = runtime.block_on(async {
-        tokio::select! {
-            code = run_command(cli.command, &flags) => code,
-            _ = tokio::signal::ctrl_c() => error::EXIT_INTERRUPTED,
-        }
-    });
+    let code = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            runtime.block_on(async {
+                tokio::select! {
+                    code = run_command(cli.command, &flags) => code,
+                    _ = tokio::signal::ctrl_c() => error::EXIT_INTERRUPTED,
+                }
+            })
+        })
+        .expect("spawn main runtime thread")
+        .join()
+        .unwrap_or(error::EXIT_ALL_FAILED);
     std::process::ExitCode::from(code.clamp(0, 255) as u8)
 }
 
