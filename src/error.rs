@@ -165,21 +165,44 @@ mod tests {
     use super::*;
     use grammers_client::sender::RpcError;
 
+    fn rpc420(name: &str, seconds: u32) -> grammers_client::InvocationError {
+        grammers_client::InvocationError::Rpc(RpcError {
+            code: 420,
+            name: name.to_string(),
+            value: Some(seconds),
+            caused_by: None,
+        })
+    }
+
     fn flood(seconds: u32) -> TeleError {
-        TeleError::Invocation(
-            invocation_message(&grammers_client::InvocationError::Rpc(RpcError {
-                code: 420,
-                name: "FLOOD_WAIT".to_string(),
-                value: Some(seconds),
-                caused_by: None,
-            })),
-            invocation_wait_seconds(&grammers_client::InvocationError::Rpc(RpcError {
-                code: 420,
-                name: "FLOOD_WAIT".to_string(),
-                value: Some(seconds),
-                caused_by: None,
-            })),
-        )
+        let e = rpc420("FLOOD_WAIT", seconds);
+        TeleError::Invocation(invocation_message(&e), invocation_wait_seconds(&e))
+    }
+
+    #[test]
+    fn slowmode_wait_error_carries_seconds_like_flood() {
+        let e = rpc420("SLOWMODE_WAIT", 30);
+        assert_eq!(invocation_wait_seconds(&e), Some(30));
+        let err = invocation_error(e);
+        assert!(matches!(err, TeleError::Rpc(_, 420, _, Some(30))));
+        assert_eq!(err.message(), "rpc error 420: SLOWMODE_WAIT (value: 30)");
+        let v = err.as_json();
+        assert_eq!(v["type"], "InvocationError");
+        assert_eq!(v["code"], 420);
+        assert_eq!(v["name"], "SLOWMODE_WAIT");
+        assert_eq!(v["seconds"], 30);
+    }
+
+    #[test]
+    fn slowmode_wait_zero_seconds_is_some_zero() {
+        let e = rpc420("SLOWMODE_WAIT", 0);
+        assert_eq!(invocation_wait_seconds(&e), Some(0));
+    }
+
+    #[test]
+    fn non_wait_420_names_still_carry_value_seconds() {
+        let e = rpc420("FLOOD_PREMIUM_WAIT_X", 5);
+        assert_eq!(invocation_wait_seconds(&e), Some(5));
     }
 
     #[test]

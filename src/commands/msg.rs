@@ -201,6 +201,11 @@ pub struct GetArgs {
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
     chat: String,
+    #[arg(
+        long,
+        help = "fetch a single message by ID (conflicts with a msg id carried in --chat)"
+    )]
+    id: Option<i32>,
     #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     limit: u32,
     #[arg(long, help = "fetch messages before this ID")]
@@ -574,6 +579,8 @@ impl From<&PinParams> for PinArgs {
 pub(crate) struct GetParams {
     #[serde(default)]
     pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) id: Option<i32>,
     #[serde(default = "default_limit")]
     pub(crate) limit: u32,
     pub(crate) offset_id: Option<i32>,
@@ -587,6 +594,7 @@ impl From<&GetArgs> for GetParams {
     fn from(a: &GetArgs) -> Self {
         Self {
             chat: a.chat.clone(),
+            id: a.id,
             limit: a.limit,
             offset_id: a.offset_id,
             last: a.last,
@@ -599,6 +607,7 @@ impl From<&GetParams> for GetArgs {
     fn from(p: &GetParams) -> Self {
         Self {
             chat: p.chat.clone(),
+            id: p.id,
             limit: p.limit,
             offset_id: p.offset_id,
             last: p.last,
@@ -884,6 +893,7 @@ fn effective_preview(args: &SendArgs) -> bool {
 
 pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     if let Some(topic) = args.topic {
         if topic <= 0 {
             return Err(TeleError::Usage(
@@ -1156,6 +1166,7 @@ fn validate_download_dir(dir: &str) -> TeleResult<()> {
 
 pub(crate) fn validate_download(args: &DownloadArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     validate_download_dir(&args.dir)?;
     if let Some(kb) = args.chunk_size_kb {
         validate_chunk_size_kb(kb)?;
@@ -1578,6 +1589,7 @@ pub(crate) async fn send_core(
 
 pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     if args.text.trim().is_empty() {
         return Err(TeleError::Usage("--text must not be empty".to_string()));
     }
@@ -1636,6 +1648,7 @@ pub(crate) async fn edit_core(
 
 pub(crate) fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     if args.all && !args.ids.is_empty() {
         return Err(TeleError::Usage(
             "--all and --ids are mutually exclusive".to_string(),
@@ -1787,6 +1800,8 @@ pub(crate) async fn delete_core(
 pub(crate) fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
     require_chat_target(&args.from, "from")?;
     require_chat_target(&args.to, "to")?;
+    reject_deep_link_msg_id(&args.from, "from")?;
+    reject_deep_link_msg_id(&args.to, "to")?;
     if args.ids.is_empty() {
         return Err(TeleError::Usage("--ids required".to_string()));
     }
@@ -2005,6 +2020,7 @@ pub(crate) async fn pin_core(
 
 pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     if args.show || args.all {
         return Ok(());
     }
@@ -2024,11 +2040,41 @@ pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
         ));
     }
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    let target = get_target_message_id(&GetParams::from(args))?;
+    if target.is_some() && (args.last || args.offset_id.is_some()) {
+        return Err(TeleError::Usage(
+            "--last/--offset-id are mutually exclusive with a target message (--id or deep-link)"
+                .to_string(),
+        ));
+    }
     Ok(())
 }
 
+const DEEP_LINK_MSG_ID_CONSUMERS: &str = "tele msg get";
+
+fn reject_deep_link_msg_id(target: &str, flag: &str) -> TeleResult<()> {
+    if entities::parse_target(target)?.msg_id.is_some() {
+        return Err(TeleError::Usage(format!(
+            "--{flag} \"{target}\" carries a deep-link message id; deep-link message ids are only accepted by: {DEEP_LINK_MSG_ID_CONSUMERS}"
+        )));
+    }
+    Ok(())
+}
+
+fn get_target_message_id(params: &GetParams) -> TeleResult<Option<i32>> {
+    let carried = entities::parse_target(&params.chat)?.msg_id;
+    match (params.id, carried) {
+        (Some(explicit), Some(link)) => Err(TeleError::Usage(format!(
+            "--id {explicit} conflicts with message id {link} carried by \"{}\"; pass only one",
+            params.chat
+        ))),
+        (explicit, link) => Ok(explicit.or(link)),
+    }
+}
+
 pub(crate) fn validate_read(args: &ReadArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")
+    require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")
 }
 
 fn upload_error(e: std::io::Error) -> TeleError {
@@ -2047,6 +2093,7 @@ pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value>
     Ok(serde_json::json!({
         "dry_run": true,
         "chat": args.chat,
+        "id": args.id,
         "limit": args.limit,
         "offset_id": args.offset_id,
         "last": args.last,
@@ -2105,9 +2152,22 @@ pub(crate) async fn get_core(
     guard: &crate::client::ClientGuard,
     params: GetParams,
 ) -> TeleResult<serde_json::Value> {
+    let target_message = get_target_message_id(&params)?;
     guard.rate_limiter.acquire().await;
     let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    if let Some(target) = target_message {
+        let fetched = guard
+            .client
+            .get_messages_by_id(chat_ref, &[target])
+            .await
+            .map_err(tele_invocation)?;
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+        for msg in fetched.into_iter().flatten() {
+            push_message_row(&mut rows, &msg)?;
+        }
+        return Ok(serde_json::json!({"messages": rows}));
+    }
     let mut iter = guard.client.iter_messages(chat_ref);
     if let Some(offset) = params.offset_id {
         iter = iter.offset_id(offset);
@@ -2282,6 +2342,7 @@ pub(crate) async fn read_core(
 
 pub(crate) fn validate_react(args: &ReactArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     if args.reaction.is_some() && args.remove {
         return Err(TeleError::Usage(
             "use --reaction or --remove, not both".to_string(),
@@ -2354,6 +2415,7 @@ pub(crate) async fn react_core(
 
 pub(crate) fn validate_vote(args: &VoteArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     if args.id <= 0 {
         return Err(TeleError::Usage(
             "--id must be a positive message ID".to_string(),
@@ -2573,6 +2635,7 @@ fn typing_action(name: Option<&str>) -> TeleResult<TypingChoice> {
 
 pub(crate) fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     typing_action(args.action.as_deref())?;
     Ok(())
 }
@@ -2580,6 +2643,9 @@ pub(crate) fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
 pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
     if !args.global {
         require_chat_target(&args.chat, "chat")?;
+    }
+    if !args.chat.trim().is_empty() {
+        reject_deep_link_msg_id(&args.chat, "chat")?;
     }
     crate::commands::validate_limit(args.limit, 10_000, "limit").map(|_| ())
 }
@@ -2776,6 +2842,7 @@ fn button_requires_password(
 
 pub(crate) fn validate_click(args: &ClickArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    reject_deep_link_msg_id(&args.chat, "chat")?;
     if args.id <= 0 {
         return Err(TeleError::Usage(
             "--id must be a positive message ID".to_string(),
@@ -3786,6 +3853,7 @@ mod tests {
     fn get_rejects_last_with_offset_id() {
         let args = GetArgs {
             chat: "me".to_string(),
+            id: None,
             limit: 10,
             offset_id: Some(5),
             last: true,
@@ -3793,6 +3861,7 @@ mod tests {
         assert!(matches!(validate_get(&args), Err(TeleError::Usage(_))));
         let no_offset = GetArgs {
             chat: "me".to_string(),
+            id: None,
             limit: 10,
             offset_id: None,
             last: true,
@@ -3800,11 +3869,261 @@ mod tests {
         assert!(validate_get(&no_offset).is_ok());
         let no_last = GetArgs {
             chat: "me".to_string(),
+            id: None,
             limit: 10,
             offset_id: Some(5),
             last: false,
         };
         assert!(validate_get(&no_last).is_ok());
+    }
+
+    fn get_params(chat: &str, id: Option<i32>) -> GetParams {
+        GetParams {
+            chat: chat.to_string(),
+            id,
+            limit: 10,
+            offset_id: None,
+            last: false,
+            dry_run: false,
+        }
+    }
+
+    #[test]
+    fn get_target_id_comes_from_deep_link_when_no_explicit_id() {
+        for (chat, expected) in [
+            ("t.me/durov/42", 42),
+            ("https://t.me/durov/42", 42),
+            ("telegram.me/durov/9", 9),
+            ("t.me/c/1234567890/42", 42),
+            ("t.me/me/5", 5),
+            ("t.me/durov/042/", 42),
+            ("t.me/durov/7?single#f", 7),
+        ] {
+            let target = get_target_message_id(&get_params(chat, None))
+                .unwrap_or_else(|e| panic!("{chat}: {e}"));
+            assert_eq!(target, Some(expected), "{chat}");
+        }
+    }
+
+    #[test]
+    fn get_target_id_uses_explicit_id_for_plain_targets() {
+        for chat in ["@durov", "durov", "-1001234567890", "+15551234567", "me"] {
+            let target = get_target_message_id(&get_params(chat, Some(11)))
+                .unwrap_or_else(|e| panic!("{chat}: {e}"));
+            assert_eq!(target, Some(11), "{chat}");
+            assert_eq!(
+                get_target_message_id(&get_params(chat, None)).unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn get_target_id_conflicts_when_link_carries_and_explicit_id_given() {
+        let err = get_target_message_id(&get_params("https://t.me/durov/42", Some(7))).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        let msg = err.message();
+        assert!(msg.contains("--id 7"), "msg: {msg}");
+        assert!(msg.contains("42"), "msg: {msg}");
+        assert!(msg.contains("t.me/durov/42"), "msg: {msg}");
+        let c_form =
+            get_target_message_id(&get_params("t.me/c/1234567890/42", Some(7))).unwrap_err();
+        assert!(matches!(c_form, TeleError::Usage(_)));
+    }
+
+    #[test]
+    fn validate_get_accepts_deep_link_without_explicit_id() {
+        let args = GetArgs {
+            chat: "t.me/durov/42".to_string(),
+            id: None,
+            limit: 10,
+            offset_id: None,
+            last: false,
+        };
+        assert!(validate_get(&args).is_ok());
+        let c_form = GetArgs {
+            chat: "https://t.me/c/1234567890/8".to_string(),
+            id: None,
+            limit: 10,
+            offset_id: None,
+            last: false,
+        };
+        assert!(validate_get(&c_form).is_ok());
+    }
+
+    #[test]
+    fn validate_get_rejects_deep_link_plus_explicit_id() {
+        let args = GetArgs {
+            chat: "t.me/durov/42".to_string(),
+            id: Some(42),
+            limit: 10,
+            offset_id: None,
+            last: false,
+        };
+        let err = validate_get(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("conflicts"));
+    }
+
+    #[test]
+    fn validate_get_rejects_target_message_with_listing_flags() {
+        for (id, offset_id, last) in [
+            (None, None, true),
+            (None, Some(5), false),
+            (Some(3), None, true),
+            (Some(3), Some(5), false),
+        ] {
+            let args = GetArgs {
+                chat: "t.me/durov/42".to_string(),
+                id,
+                limit: 10,
+                offset_id,
+                last,
+            };
+            assert!(
+                matches!(validate_get(&args), Err(TeleError::Usage(_))),
+                "id={id:?} offset={offset_id:?} last={last}"
+            );
+        }
+        let explicit_ok = GetArgs {
+            chat: "@durov".to_string(),
+            id: Some(3),
+            limit: 10,
+            offset_id: None,
+            last: false,
+        };
+        assert!(validate_get(&explicit_ok).is_ok());
+    }
+
+    #[test]
+    fn get_params_missing_id_deserializes_to_none() {
+        let p: GetParams = serde_json::from_value(serde_json::json!({"chat": "@durov"})).unwrap();
+        assert_eq!(p.chat, "@durov");
+        assert_eq!(p.id, None);
+        assert_eq!(p.limit, 10);
+        assert!(!p.last);
+        assert!(!p.dry_run);
+    }
+
+    #[test]
+    fn non_get_commands_reject_deep_link_message_ids() {
+        let link = "https://t.me/durov/42";
+        let plain = "t.me/durov";
+
+        let mut send = send_args("plain");
+        send.chat = link.to_string();
+        let err = validate_send(&send).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("tele msg get"), "msg: {err}");
+        send.chat = plain.to_string();
+        assert!(validate_send(&send).is_ok());
+
+        let edit = EditArgs {
+            chat: link.to_string(),
+            id: 1,
+            text: "x".to_string(),
+        };
+        assert!(matches!(validate_edit(&edit), Err(TeleError::Usage(_))));
+
+        let delete = DeleteArgs {
+            chat: link.to_string(),
+            ids: vec![1],
+            all: false,
+            self_only: false,
+        };
+        assert!(matches!(validate_delete(&delete), Err(TeleError::Usage(_))));
+
+        let fwd = ForwardArgs {
+            from: link.to_string(),
+            ids: vec![1],
+            to: "b".to_string(),
+        };
+        assert!(matches!(validate_forward(&fwd), Err(TeleError::Usage(_))));
+        let fwd_to = ForwardArgs {
+            from: "a".to_string(),
+            ids: vec![1],
+            to: link.to_string(),
+        };
+        assert!(matches!(
+            validate_forward(&fwd_to),
+            Err(TeleError::Usage(_))
+        ));
+
+        let react = ReactArgs {
+            chat: link.to_string(),
+            id: 1,
+            reaction: Some("+1".to_string()),
+            remove: false,
+        };
+        let err = validate_react(&react).unwrap_err();
+        assert!(err.message().contains("tele msg get"), "msg: {err}");
+
+        let vote = VoteArgs {
+            chat: link.to_string(),
+            id: 4,
+            option: "1".to_string(),
+        };
+        assert!(matches!(validate_vote(&vote), Err(TeleError::Usage(_))));
+
+        let download = DownloadArgs {
+            chat: link.to_string(),
+            id: 4,
+            dir: std::env::temp_dir().to_string_lossy().to_string(),
+            force: false,
+            chunk_size_kb: None,
+        };
+        assert!(matches!(
+            validate_download(&download),
+            Err(TeleError::Usage(_))
+        ));
+
+        let read = ReadArgs {
+            chat: link.to_string(),
+            mark_unread: false,
+            mentions: false,
+        };
+        assert!(matches!(validate_read(&read), Err(TeleError::Usage(_))));
+
+        let pin = PinArgs {
+            chat: link.to_string(),
+            id: Some(4),
+            unpin: false,
+            notify: false,
+            show: false,
+            all: false,
+        };
+        assert!(matches!(validate_pin(&pin), Err(TeleError::Usage(_))));
+
+        let typing = TypingArgs {
+            chat: link.to_string(),
+            action: None,
+        };
+        assert!(matches!(validate_typing(&typing), Err(TeleError::Usage(_))));
+
+        let click = ClickArgs {
+            chat: link.to_string(),
+            id: 4,
+            button: Some("ok".to_string()),
+            button_index: None,
+            password: false,
+        };
+        assert!(matches!(validate_click(&click), Err(TeleError::Usage(_))));
+
+        let search = SearchArgs {
+            chat: link.to_string(),
+            query: "q".to_string(),
+            limit: 10,
+            global: false,
+        };
+        assert!(matches!(validate_search(&search), Err(TeleError::Usage(_))));
+
+        let search_global = SearchArgs {
+            chat: String::new(),
+            query: "q".to_string(),
+            limit: 10,
+            global: true,
+        };
+        assert!(validate_search(&search_global).is_ok());
     }
 
     #[test]
@@ -3859,6 +4178,7 @@ mod tests {
 
             let get = GetArgs {
                 chat: chat.to_string(),
+                id: None,
                 limit: 10,
                 offset_id: None,
                 last: false,
@@ -4543,6 +4863,7 @@ mod tests {
         let code = get(
             GetArgs {
                 chat: "me".to_string(),
+                id: None,
                 limit: 10,
                 offset_id: None,
                 last: false,
@@ -4564,6 +4885,7 @@ mod tests {
         let code = get(
             GetArgs {
                 chat: "me".to_string(),
+                id: None,
                 limit: 10,
                 offset_id: None,
                 last: false,

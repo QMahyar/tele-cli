@@ -192,9 +192,11 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
 async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let credentials = creds()?;
+    let cfg = config::load_config(flags.config_path.as_deref())?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let credentials = credentials.clone();
+        let cfg = cfg.clone();
         Box::pin(async move {
             let guard =
                 ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
@@ -209,17 +211,48 @@ async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
                     )
                 }
             })?;
-            Ok(serde_json::json!({ "authorized": authorized }))
+            let device = status_device_data(&config::account_identity(&cfg, &name));
+            Ok(serde_json::json!({ "authorized": authorized, "device": device }))
         })
     })
     .await?;
     if !output::machine_mode(flags.json, flags.jsonl) {
         let rows = status_table_rows(&envelope);
         if !rows.is_empty() {
-            output::print_table(&["account", "authorized"], &rows)?;
+            output::print_table(&["account", "authorized", "device"], &rows)?;
         }
     }
     crate::executor::finish(flags, &envelope)
+}
+
+fn status_device_data(identity: &config::DeviceIdentity) -> serde_json::Value {
+    let mut device = serde_json::Map::new();
+    for (key, value) in [
+        ("device_model", &identity.device_model),
+        ("system_version", &identity.system_version),
+        ("app_version", &identity.app_version),
+        ("lang_code", &identity.lang_code),
+    ] {
+        if let Some(v) = value {
+            device.insert(key.to_string(), serde_json::json!(v));
+        }
+    }
+    serde_json::Value::Object(device)
+}
+
+fn status_device_summary(data: Option<&serde_json::Value>) -> String {
+    let Some(serde_json::Value::Object(map)) = data else {
+        return "-".to_string();
+    };
+    let parts: Vec<String> = ["device_model", "system_version", "app_version", "lang_code"]
+        .iter()
+        .filter_map(|k| map.get(*k).and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join("/")
+    }
 }
 async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     session::validate_name(&args.name).map_err(TeleError::Usage)?;
@@ -1563,6 +1596,7 @@ fn status_table_rows(envelope: &Envelope) -> Vec<Vec<String>> {
             vec![
                 o.account.clone(),
                 if authorized { "yes" } else { "no" }.to_string(),
+                status_device_summary(o.data.as_ref().and_then(|d| d.get("device"))),
             ]
         })
         .collect()
@@ -2301,10 +2335,82 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                vec!["home".to_string(), "yes".to_string()],
-                vec!["work".to_string(), "no".to_string()],
+                vec!["home".to_string(), "yes".to_string(), "-".to_string()],
+                vec!["work".to_string(), "no".to_string(), "-".to_string()],
             ]
         );
+    }
+
+    #[test]
+    fn status_device_object_omits_unset_fields() {
+        let identity = config::DeviceIdentity::default();
+        let data = status_device_data(&identity);
+        assert_eq!(data, serde_json::json!({}));
+    }
+
+    #[test]
+    fn status_device_object_keeps_configured_fields() {
+        let identity = config::DeviceIdentity {
+            device_model: Some("Desktop".to_string()),
+            system_version: Some("Windows".to_string()),
+            app_version: Some("1.2.3".to_string()),
+            lang_code: Some("en".to_string()),
+        };
+        assert_eq!(
+            status_device_data(&identity),
+            serde_json::json!({
+                "device_model": "Desktop",
+                "system_version": "Windows",
+                "app_version": "1.2.3",
+                "lang_code": "en"
+            })
+        );
+    }
+
+    #[test]
+    fn status_device_object_is_partial_when_only_some_fields_set() {
+        let identity = config::DeviceIdentity {
+            device_model: Some("Desktop".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            status_device_data(&identity),
+            serde_json::json!({ "device_model": "Desktop" })
+        );
+    }
+
+    #[test]
+    fn status_rows_show_device_summary_from_outcome_data() {
+        let envelope = Envelope::new(
+            vec![
+                single_outcome(
+                    "full",
+                    serde_json::json!({
+                        "authorized": true,
+                        "device": {
+                            "device_model": "Desktop",
+                            "system_version": "Linux",
+                            "app_version": "0.4.0",
+                            "lang_code": "en"
+                        }
+                    }),
+                ),
+                single_outcome(
+                    "partial",
+                    serde_json::json!({
+                        "authorized": true,
+                        "device": { "device_model": "Phone" }
+                    }),
+                ),
+                single_outcome("empty", serde_json::json!({"authorized": true})),
+            ],
+            false,
+            "account status",
+        );
+        let rows = status_table_rows(&envelope);
+        assert_eq!(rows[0][2], "Desktop/Linux/0.4.0/en");
+        assert_eq!(rows[1][2], "Phone");
+        assert_eq!(rows[2][2], "-");
     }
 
     #[tokio::test]
