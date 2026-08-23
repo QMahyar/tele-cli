@@ -1,11 +1,26 @@
 use clap::Parser;
 use grammers_client::tl;
 use grammers_client::update::Update;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::client::ClientGuard;
 use crate::commands::listen::{
     event_row, getstate_probe_error, handle_stream_failure, is_empty_update, poll_timeout,
     update_peer,
+};
+use crate::commands::msg::{
+    click_core, click_serve_dry_run, delete_core, delete_serve_dry_run, download_core,
+    download_serve_dry_run, edit_core, edit_serve_dry_run, forward_core, forward_serve_dry_run,
+    get_core, get_serve_dry_run, pin_core, pin_serve_dry_run, react_core, react_serve_dry_run,
+    read_core, read_serve_dry_run, search_core, search_serve_dry_run, send_core,
+    send_serve_dry_run, typing_core, typing_serve_dry_run, validate_click, validate_delete,
+    validate_download, validate_edit, validate_forward, validate_get, validate_pin, validate_react,
+    validate_read, validate_search, validate_send, validate_typing, validate_vote, vote_core,
+    vote_serve_dry_run, ClickArgs, ClickParams, DeleteArgs, DeleteParams, DownloadArgs,
+    DownloadParams, EditArgs, EditParams, ForwardArgs, ForwardParams, GetArgs, GetParams, PinArgs,
+    PinParams, ReactArgs, ReactParams, ReadArgs, ReadParams, SearchArgs, SearchParams, SendArgs,
+    SendParams, TypingArgs, TypingParams, VoteArgs, VoteParams,
 };
 use crate::error::{TeleError, TeleResult, EXIT_OK};
 use crate::executor::GlobalFlags;
@@ -14,6 +29,27 @@ use crate::output;
 pub const SERVE_PROTOCOL: u32 = 1;
 
 const SERVE_EVENTS: &[&str] = &["NewMessage", "MessageEdited"];
+
+type ServeRunner = for<'a> fn(
+    &'a ClientGuard,
+    serde_json::Value,
+) -> Pin<
+    Box<dyn Future<Output = Result<serde_json::Value, serde_json::Value>> + Send + 'a>,
+>;
+
+type Planner = fn(&str, serde_json::Value) -> Result<Plan, serde_json::Value>;
+
+#[derive(Debug)]
+enum Plan {
+    DryRun(serde_json::Value),
+    Execute(serde_json::Value),
+}
+
+struct OpRoute {
+    op: &'static str,
+    planner: Planner,
+    runner: ServeRunner,
+}
 
 #[derive(Parser)]
 pub struct ServeArgs {
@@ -124,21 +160,208 @@ fn emit(value: &serde_json::Value) -> TeleResult<()> {
     output::print_json(value)
 }
 
-async fn handle_action(id: u64, op: &str) -> TeleResult<()> {
+macro_rules! serve_runner {
+    ($name:ident, $core:path, $params:ty) => {
+        fn $name<'a>(
+            guard: &'a ClientGuard,
+            raw: serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, serde_json::Value>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                let params: $params = serde_json::from_value(raw)
+                    .map_err(|e| err_json("ServeError", format!("params: {e}")))?;
+                $core(guard, params).await.map_err(|e| e.as_json())
+            })
+        }
+    };
+}
+
+serve_runner!(run_send, send_core, SendParams);
+serve_runner!(run_edit, edit_core, EditParams);
+serve_runner!(run_delete, delete_core, DeleteParams);
+serve_runner!(run_forward, forward_core, ForwardParams);
+serve_runner!(run_pin, pin_core, PinParams);
+serve_runner!(run_get, get_core, GetParams);
+serve_runner!(run_read, read_core, ReadParams);
+serve_runner!(run_react, react_core, ReactParams);
+serve_runner!(run_search, search_core, SearchParams);
+serve_runner!(run_download, download_core, DownloadParams);
+serve_runner!(run_vote, vote_core, VoteParams);
+serve_runner!(run_typing, typing_core, TypingParams);
+serve_runner!(run_click, click_core, ClickParams);
+
+macro_rules! serve_route {
+    ($op:literal, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr) => {
+        OpRoute {
+            op: $op,
+            planner: |op: &str, raw: serde_json::Value| {
+                let parsed: $params = prep(op, raw.clone())?;
+                let args: $args = (&parsed).into();
+                $validate(&args).map_err(|e| e.as_json())?;
+                if parsed.dry_run {
+                    return Ok(Plan::DryRun($dry(&args).map_err(|e| e.as_json())?));
+                }
+                Ok(Plan::Execute(raw))
+            },
+            runner: $runner,
+        }
+    };
+}
+
+const SERVE_OPS: &[OpRoute] = &[
+    serve_route!(
+        "msg click",
+        ClickParams,
+        ClickArgs,
+        validate_click,
+        click_serve_dry_run,
+        run_click
+    ),
+    serve_route!(
+        "msg delete",
+        DeleteParams,
+        DeleteArgs,
+        validate_delete,
+        delete_serve_dry_run,
+        run_delete
+    ),
+    serve_route!(
+        "msg download",
+        DownloadParams,
+        DownloadArgs,
+        validate_download,
+        download_serve_dry_run,
+        run_download
+    ),
+    serve_route!(
+        "msg edit",
+        EditParams,
+        EditArgs,
+        validate_edit,
+        edit_serve_dry_run,
+        run_edit
+    ),
+    serve_route!(
+        "msg forward",
+        ForwardParams,
+        ForwardArgs,
+        validate_forward,
+        forward_serve_dry_run,
+        run_forward
+    ),
+    serve_route!(
+        "msg get",
+        GetParams,
+        GetArgs,
+        validate_get,
+        get_serve_dry_run,
+        run_get
+    ),
+    serve_route!(
+        "msg pin",
+        PinParams,
+        PinArgs,
+        validate_pin,
+        pin_serve_dry_run,
+        run_pin
+    ),
+    serve_route!(
+        "msg read",
+        ReadParams,
+        ReadArgs,
+        validate_read,
+        read_serve_dry_run,
+        run_read
+    ),
+    serve_route!(
+        "msg react",
+        ReactParams,
+        ReactArgs,
+        validate_react,
+        react_serve_dry_run,
+        run_react
+    ),
+    serve_route!(
+        "msg search",
+        SearchParams,
+        SearchArgs,
+        validate_search,
+        search_serve_dry_run,
+        run_search
+    ),
+    serve_route!(
+        "msg send",
+        SendParams,
+        SendArgs,
+        validate_send,
+        send_serve_dry_run,
+        run_send
+    ),
+    serve_route!(
+        "msg typing",
+        TypingParams,
+        TypingArgs,
+        validate_typing,
+        typing_serve_dry_run,
+        run_typing
+    ),
+    serve_route!(
+        "msg vote",
+        VoteParams,
+        VoteArgs,
+        validate_vote,
+        vote_serve_dry_run,
+        run_vote
+    ),
+];
+
+fn prep<P: serde::de::DeserializeOwned>(
+    op: &str,
+    raw: serde_json::Value,
+) -> Result<P, serde_json::Value> {
+    serde_json::from_value(raw)
+        .map_err(|e| err_json("ServeError", format!("op {op}: invalid params: {e}")))
+}
+
+fn known_op_names() -> String {
+    let mut names: Vec<&str> = SERVE_OPS.iter().map(|r| r.op).collect();
+    names.sort_unstable();
+    names.join(", ")
+}
+
+fn not_implemented(op: &str) -> serde_json::Value {
+    let ops = known_op_names();
+    err_json(
+        "NotImplemented",
+        format!("unknown op {op}; supported ops: ping, {ops}"),
+    )
+}
+
+fn find_route(op: &str) -> Option<&'static OpRoute> {
+    SERVE_OPS.iter().find(|r| r.op == op)
+}
+
+async fn handle_action(
+    guard: &ClientGuard,
+    id: u64,
+    op: &str,
+    params: serde_json::Value,
+) -> TeleResult<()> {
     if op == "ping" {
         return emit(&response_ok(id, serde_json::json!({ "pong": true })));
     }
-    output::log_line(
-        "info",
-        &format!("serve: action {op} not implemented yet (serve-B)"),
-    );
-    emit(&response_err(
-        Some(id),
-        err_json(
-            "NotImplemented",
-            format!("op {op} arrives in serve-B; serve-A streams events only"),
-        ),
-    ))
+    let response = match find_route(op) {
+        None => response_err(Some(id), not_implemented(op)),
+        Some(route) => match (route.planner)(op, params) {
+            Err(error) => response_err(Some(id), error),
+            Ok(Plan::DryRun(data)) => response_ok(id, data),
+            Ok(Plan::Execute(raw)) => match (route.runner)(guard, raw).await {
+                Ok(data) => response_ok(id, data),
+                Err(error) => response_err(Some(id), error),
+            },
+        },
+    };
+    emit(&response)
 }
 
 fn event_kind_allowed(update: &Update, kinds: &[String]) -> Option<&'static str> {
@@ -316,7 +539,9 @@ async fn serve_connection(
                         ));
                     }
                 }
-                Ok(ServeIn::Action { id, op, .. }) => handle_action(id, &op).await?,
+                Ok(ServeIn::Action { id, op, params }) => {
+                    handle_action(&guard, id, &op, params).await?
+                }
             },
             Tick::StreamError(e) => {
                 if crate::error::invocation_is_unauthorized(&e) {
@@ -466,5 +691,187 @@ mod tests {
             }
             other => panic!("expected action, got {other:?}"),
         }
+    }
+
+    fn plan_for(op: &str, params: serde_json::Value) -> Result<Plan, serde_json::Value> {
+        let route = find_route(op).unwrap_or_else(|| panic!("route missing for {op}"));
+        let planner = route.planner;
+        planner(op, params)
+    }
+
+    #[test]
+    fn routes_table_is_locked_command_path_form() {
+        let expected = [
+            "msg click",
+            "msg delete",
+            "msg download",
+            "msg edit",
+            "msg forward",
+            "msg get",
+            "msg pin",
+            "msg react",
+            "msg read",
+            "msg search",
+            "msg send",
+            "msg typing",
+            "msg vote",
+        ];
+        let mut actual: Vec<&str> = SERVE_OPS.iter().map(|r| r.op).collect();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+        assert!(SERVE_OPS.iter().all(|r| r.op.starts_with("msg ")
+            && !r.op.contains('.')
+            && r.op
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == ' ' || c.is_ascii_digit())));
+    }
+
+    #[test]
+    fn unknown_op_maps_to_not_implemented_listing_known_ops() {
+        assert!(find_route("msg.send").is_none());
+        assert!(find_route("chat join").is_none());
+        assert!(find_route("ping").is_none());
+        let err = not_implemented("msg.send");
+        assert_eq!(err["type"], "NotImplemented");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("msg.send"), "{msg}");
+        assert!(msg.contains("msg send"), "{msg}");
+        assert!(msg.contains("ping"), "{msg}");
+    }
+
+    #[test]
+    fn missing_required_param_yields_serve_error_naming_field() {
+        let err = plan_for("msg edit", serde_json::json!({"chat": "@x"})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("msg edit"), "{msg}");
+        assert!(msg.contains("id"), "{msg}");
+        assert!(msg.contains("missing field"), "{msg}");
+
+        let err = plan_for("msg react", serde_json::json!({"chat": "@x"})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err["message"].as_str().unwrap().contains("id"));
+    }
+
+    #[test]
+    fn defaulted_params_missing_key_fall_through_to_validation() {
+        let err = plan_for("msg send", serde_json::json!({"text": "hi"})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("--chat"));
+
+        let err = plan_for(
+            "msg search",
+            serde_json::json!({"global": false, "query": "x"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+    }
+
+    #[test]
+    fn wrong_typed_param_yields_serve_error_with_serde_message() {
+        let err = plan_for(
+            "msg edit",
+            serde_json::json!({"chat": "@x", "id": "abc", "text": "t"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("msg edit"), "{msg}");
+        assert!(msg.contains("invalid type"), "{msg}");
+        assert!(msg.contains("i32"), "{msg}");
+
+        let err = plan_for(
+            "msg get",
+            serde_json::json!({"chat": "@x", "limit": "many"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err["message"].as_str().unwrap().contains("u32"));
+    }
+
+    #[test]
+    fn validation_failure_yields_usage_error_envelope() {
+        let err = plan_for(
+            "msg send",
+            serde_json::json!({"chat": "@x", "text": "hi", "format": "html"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("--format"),);
+
+        let err = plan_for(
+            "msg react",
+            serde_json::json!({"chat": "", "id": 1, "remove": true}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for("msg click", serde_json::json!({"chat": "@x", "id": 3})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("--button"));
+    }
+
+    #[test]
+    fn dry_run_param_roundtrips_through_planner_without_guard() {
+        let plan = plan_for(
+            "msg react",
+            serde_json::json!({"chat": "@game", "id": 5, "reaction": "+1", "dry_run": true}),
+        )
+        .unwrap();
+        let Plan::DryRun(data) = plan else {
+            panic!("expected dry run plan");
+        };
+        assert_eq!(data["dry_run"], true);
+        assert_eq!(data["id"], 5);
+        assert_eq!(data["would"], "react +1 to message 5");
+
+        let plan = plan_for(
+            "msg delete",
+            serde_json::json!({"chat": "@game", "all": true, "dry_run": true}),
+        )
+        .unwrap();
+        let Plan::DryRun(data) = plan else {
+            panic!("expected dry run plan");
+        };
+        assert_eq!(data["would"], "delete all messages in chat @game");
+        assert_eq!(data["self_only"], false);
+
+        let plan = plan_for(
+            "msg send",
+            serde_json::json!({"chat": "@game", "text": "gl hf", "dry_run": true}),
+        )
+        .unwrap();
+        let Plan::DryRun(data) = plan else {
+            panic!("expected dry run plan");
+        };
+        assert_eq!(data["dry_run"], true);
+        assert_eq!(data["text"], "gl hf");
+        assert_eq!(data["preview"], true);
+        assert_eq!(data["format"], "plain");
+    }
+
+    #[test]
+    fn execute_plan_carries_raw_params_to_runner() {
+        let raw = serde_json::json!({"chat": "@game", "id": 7, "button_index": 2});
+        let plan = plan_for("msg click", raw.clone()).unwrap();
+        match plan {
+            Plan::Execute(passed) => assert_eq!(passed, raw),
+            other => panic!("expected execute plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_err_wraps_core_tele_errors_additively() {
+        let flood = TeleError::Rpc(
+            "rpc error 420: FLOOD_WAIT (value: 17)".to_string(),
+            420,
+            "FLOOD_WAIT".to_string(),
+            Some(17),
+        );
+        let envelope = response_err(Some(9), flood.as_json());
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["id"], 9);
+        assert_eq!(envelope["error"]["name"], "FLOOD_WAIT");
+        assert_eq!(envelope["error"]["seconds"], 17);
     }
 }
