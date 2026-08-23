@@ -1456,10 +1456,14 @@ async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let credentials = creds()?;
             let guard =
                 ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
-            guard.rate_limiter.acquire().await;
-            let has_password = fetch_has_password(&guard.client).await?;
-            drop(guard);
-            plan_password_step(mode, has_password)?;
+            if mode == PasswordMode::Remove {
+                remove_cloud_password(&guard).await?;
+            } else {
+                guard.rate_limiter.acquire().await;
+                let has_password = fetch_has_password(&guard.client).await?;
+                drop(guard);
+                plan_password_step(mode, has_password)?;
+            }
             Ok(serde_json::json!({"updated": true, "mode": mode.as_str()}))
         })
     })
@@ -1706,10 +1710,10 @@ fn validate_password_modes(
     })
 }
 
-const SRP_PROOF_BLOCKER: &str =
-    "cannot build InputCheckPasswordSRP: the SRP proof needs grammers-crypto's two_factor_auth::calculate_2fa, which grammers-client 0.10 does not re-export";
 const NEW_HASH_BLOCKER: &str =
     "cannot compute new_password_hash: the PH2 KDF (pbkdf2-hmac-sha512 x100000 plus salt wrapping) is private inside grammers-crypto 0.10 and exposed nowhere reachable";
+const NO_SRP_CHALLENGE_MSG: &str =
+    "GetPassword response is missing SRP challenge parameters; retry the command";
 
 fn plan_password_step(mode: PasswordMode, has_password: bool) -> TeleResult<()> {
     match (mode, has_password) {
@@ -1720,10 +1724,160 @@ fn plan_password_step(mode: PasswordMode, has_password: bool) -> TeleResult<()> 
         (PasswordMode::Change, false) | (PasswordMode::Remove, false) => Err(TeleError::Usage(
             "no cloud password is set on this account; use --set".to_string(),
         )),
-        (PasswordMode::Change, true) => Err(TeleError::Other(format!(
-            "{SRP_PROOF_BLOCKER}; additionally, {NEW_HASH_BLOCKER}"
-        ))),
-        (PasswordMode::Remove, true) => Err(TeleError::Other(SRP_PROOF_BLOCKER.to_string())),
+        (PasswordMode::Change, true) => Err(TeleError::Other(NEW_HASH_BLOCKER.to_string())),
+        (PasswordMode::Remove, true) => Ok(()),
+    }
+}
+
+#[derive(Debug)]
+struct SrpParams {
+    salt1: Vec<u8>,
+    salt2: Vec<u8>,
+    p: Vec<u8>,
+    g: i32,
+}
+
+fn extract_srp_params(
+    algo: Option<&grammers_client::tl::enums::PasswordKdfAlgo>,
+) -> TeleResult<SrpParams> {
+    use grammers_client::tl::{self, enums};
+    match algo {
+        Some(enums::PasswordKdfAlgo::Sha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow(
+            tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow {
+                salt1,
+                salt2,
+                p,
+                g,
+            },
+        )) => Ok(SrpParams {
+            salt1: salt1.clone(),
+            salt2: salt2.clone(),
+            p: p.clone(),
+            g: *g,
+        }),
+        Some(enums::PasswordKdfAlgo::Unknown) | None => Err(TeleError::Other(
+            "server sent an unsupported cloud-password KDF algorithm; cannot build SRP proof"
+                .to_string(),
+        )),
+    }
+}
+
+fn input_check_password_srp(
+    params: &SrpParams,
+    srp_id: i64,
+    srp_b: &[u8],
+    random_a: &[u8],
+    password: &str,
+) -> TeleResult<grammers_client::tl::enums::InputCheckPasswordSrp> {
+    use grammers_client::tl::{self, enums};
+    use grammers_crypto::two_factor_auth::{calculate_2fa, check_p_and_g};
+    if !(2..=7).contains(&params.g) {
+        return Err(TeleError::Other(format!(
+            "server sent unsupported SRP generator g={}; cannot build proof",
+            params.g
+        )));
+    }
+    if !check_p_and_g(&params.p, &params.g) {
+        return Err(TeleError::Other(
+            "server sent invalid SRP prime parameters; cannot build proof".to_string(),
+        ));
+    }
+    let (m1, g_a) = calculate_2fa(
+        &params.salt1,
+        &params.salt2,
+        &params.p,
+        &params.g,
+        srp_b.to_vec(),
+        random_a.to_vec(),
+        password,
+    );
+    Ok(enums::InputCheckPasswordSrp::Srp(
+        tl::types::InputCheckPasswordSrp {
+            srp_id,
+            a: g_a.to_vec(),
+            m1: m1.to_vec(),
+        },
+    ))
+}
+
+fn map_update_password_error(e: grammers_client::InvocationError) -> TeleError {
+    if let grammers_client::InvocationError::Rpc(rpc) = &e {
+        if rpc.name == "PASSWORD_HASH_INVALID" {
+            return TeleError::Auth("invalid cloud password; nothing was changed".to_string());
+        }
+    }
+    tele_invocation(e)
+}
+
+fn prompt_current_password_proof(
+    params: &SrpParams,
+    srp_id: i64,
+    srp_b: &[u8],
+    random_a: &[u8],
+) -> TeleResult<grammers_client::tl::enums::InputCheckPasswordSrp> {
+    let mut stdin = std::io::stdin().lock();
+    let mut stderr = std::io::stderr();
+    let echo_disabled = disable_stdin_echo();
+    if !echo_disabled {
+        log_line(
+            "warn",
+            "secure password input unavailable; input will be echoed to the terminal",
+        );
+    }
+    let read = prompt_line(
+        "Enter the current cloud password to remove it: ",
+        &mut stdin,
+        &mut stderr,
+    );
+    restore_stdin_echo(echo_disabled);
+    let Some(password_line) = read? else {
+        return Err(TeleError::Auth(
+            "cloud password required to remove it; stdin closed".to_string(),
+        ));
+    };
+    let current = strip_line_ending(&password_line);
+    input_check_password_srp(params, srp_id, srp_b, random_a, current)
+}
+
+async fn remove_cloud_password(guard: &ClientGuard) -> TeleResult<()> {
+    use grammers_client::tl::{self, enums};
+    guard.rate_limiter.acquire().await;
+    let response = guard
+        .client
+        .invoke(&tl::functions::account::GetPassword {})
+        .await
+        .map_err(tele_invocation)?;
+    let enums::account::Password::Password(password) = response;
+    if !password.has_password {
+        return Err(TeleError::Usage(
+            "no cloud password is set on this account; use --set".to_string(),
+        ));
+    }
+    let params = extract_srp_params(password.current_algo.as_ref())?;
+    let srp_b = password
+        .srp_b
+        .clone()
+        .ok_or_else(|| TeleError::Other(NO_SRP_CHALLENGE_MSG.to_string()))?;
+    let srp_id = password
+        .srp_id
+        .ok_or_else(|| TeleError::Other(NO_SRP_CHALLENGE_MSG.to_string()))?;
+    let proof = prompt_current_password_proof(&params, srp_id, &srp_b, &password.secure_random)?;
+    guard.rate_limiter.acquire().await;
+    let request = tl::functions::account::UpdatePasswordSettings {
+        password: proof,
+        new_settings: enums::account::PasswordInputSettings::Settings(
+            tl::types::account::PasswordInputSettings {
+                new_algo: None,
+                new_password_hash: None,
+                hint: None,
+                email: None,
+                new_secure_settings: None,
+            },
+        ),
+    };
+    match guard.client.invoke(&request).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(map_update_password_error(e)),
     }
 }
 
@@ -2584,17 +2738,123 @@ mod tests {
 
         let err = plan_password_step(PasswordMode::Change, true).unwrap_err();
         assert!(!matches!(err, TeleError::Usage(_)), "{err}");
-        assert!(err.message().contains("calculate_2fa"), "{err}");
         assert!(err.message().contains("new_password_hash"), "{err}");
 
         let err = plan_password_step(PasswordMode::Remove, false).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)), "{err}");
         assert!(err.message().contains("no cloud password"), "{err}");
 
-        let err = plan_password_step(PasswordMode::Remove, true).unwrap_err();
-        assert!(!matches!(err, TeleError::Usage(_)), "{err}");
-        assert!(err.message().contains("InputCheckPasswordSRP"), "{err}");
-        assert!(err.message().contains("calculate_2fa"), "{err}");
+        assert!(plan_password_step(PasswordMode::Remove, true).is_ok());
+    }
+
+    const REF_SALT1_B64: &str = "X0g8OL0JhufNyVrhOO9PSblRwfgccT/s3vOvaSzsS0cWrJt3Chlevg==";
+    const REF_SALT2_B64: &str = "thb8a77fUREZxe00YpUn8Q==";
+    const REF_P_B64: &str = "xxyuucaxyQSObFIvcPE/c5gNQCOOPiHBSTTQN1Y9kw9IGYoKp8FAWCKUk9IlMPTb+jNvbgrJJROVQ67UTM58NyD9UfaUWHBaxozU/mtrE6vcl0ZRKWkyhFTxj6+MWV9kJHf+lrsqlB1bzR1KyMxJiAcI+ps3jjxPOpBgvuZ8+aSkppWBEFGQfhYnU7VrD2tBDbp02KhLKhSzFE4O8ShHVP0X7ZUNWWW0ud1GWC2xF40WnGvEZbDW/5yjko/vW5rk5Bj8Feg+vqD4f6n/Xu1wBQ3tKEn0e/lZ2VaFDOkphR8NgRX2NbEF7i5OFdBLJFS/b0+t8DSxBAMRnNjjuS/MWw==";
+    const REF_SRP_B_B64: &str = "k/cOvVD2QmrKJWh2lZn5HyTQEoTMUaRJ5i3MFSff5QEmsqpEI45PsjMUGe1K6/GgrhXgOr0Yv8UsprrsVkwTtaHS41d5mJd1e7c2/cLOsbVqrPGas1SNbZIqUi8LUfQBJMO8mTav8+Hc++o5rJrSrdxq8K0weDJ4u7hMqw7YRksP/rKwyTo5pdl9ugEFZyylR1Nz2NI+VKasm+2VGei+9PAHGfWtVhUb5VN2SN8vjj5yZctX+5SgVM4qgrjMZkrQYODWxt8YeTRUQOuXf6Dy028xolPYkXcy8TPUADOjS2FSlptgDVnNq/6iqyOTrWWeVtZuE2BbH2HkjjzWXA9YrA==";
+    const REF_RANDOM_A_B64: &str = "vzFXTzT84eU4kcWbf2JGigymgtqFhd+N4KGIczWXVfuxgYh4qe6Rm7HpTSDF8GB+AqMxdhmb8yICVsnqGmnzlaUV0gU52IzadQpSUvuGT1c/KwMvO0Z9CLNP2cidHF0GJ44RPlHU6JPBwCdFWvRlPwlmB6QVbZT7jh3HzuW/4yhQmC+UGuRBToO/It9WJwtDt8zETCbUCIZGTajjRKhUB5W49puPUIVSpyPNaTHh1pIE6OncBW8KKhCg15UeNV8+3vWl4YqQkSlaUeudsQuLDTBInI0pvAzYbpd4H14wxba/58r0qugbKC5lOsSKoaj954lyK8BPQyDNn4aEn+BcpA==";
+    const REF_M1_B64: &str = "TXr0EsWi57FUZzdr0Ri4U2BOaHsx9RxJgMTXwYdmE+M=";
+    const REF_G_A_B64: &str = "D6ErxlWxGHooKWpprlZdaCeC4M6wWgicDEHB3OmD3H9KU0NOp44GXZ4ctg5Ce0RopHgGCf66L1VlTuLv4K63Ltr94mUuJu1bTUuq2dKjgYBq9jQWv2Jj30WkPYW+VAG8Ij6/rAlCHK3dfiYL1rhlQhM8BI1s1Us42OLM32tVDodbE1OkrP4ykv+1ag9YsqOQJ8m/3ZH9TFMdI8d9bo99WD6u6jFt7d7WmTUpbOfqNOm+bvL72CnqxMm9ZG3BVj5H93uRQxygAs95/BSdloJyg1wVyhxrLF4DcSouG11S9eT6ocFssXf6/ZamqltLP0xkmRVkS2OFXPs4Vh/xf+37ig==";
+    const REF_PASSWORD: &str = "234567";
+
+    fn decode_b64(value: &str) -> Vec<u8> {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        STANDARD.decode(value).unwrap()
+    }
+
+    fn ref_srp_params() -> SrpParams {
+        SrpParams {
+            salt1: decode_b64(REF_SALT1_B64),
+            salt2: decode_b64(REF_SALT2_B64),
+            p: decode_b64(REF_P_B64),
+            g: 3,
+        }
+    }
+
+    #[test]
+    fn remove_srp_proof_matches_grammers_reference_vector() {
+        let proof = input_check_password_srp(
+            &ref_srp_params(),
+            0x1234_5678_9abc_def0,
+            &decode_b64(REF_SRP_B_B64),
+            &decode_b64(REF_RANDOM_A_B64),
+            REF_PASSWORD,
+        )
+        .unwrap();
+        match proof {
+            grammers_client::tl::enums::InputCheckPasswordSrp::Srp(srp) => {
+                let grammers_client::tl::types::InputCheckPasswordSrp { srp_id, a, m1 } = srp;
+                assert_eq!(srp_id, 0x1234_5678_9abc_def0);
+                assert_eq!(decode_b64(REF_G_A_B64), a);
+                assert_eq!(decode_b64(REF_M1_B64), m1);
+            }
+            other => panic!("expected Srp proof, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_srp_proof_rejects_unsupported_kdf_honestly() {
+        use grammers_client::tl::enums;
+        let err = extract_srp_params(None).unwrap_err();
+        assert!(err.message().contains("unsupported"), "{err}");
+        let err = extract_srp_params(Some(&enums::PasswordKdfAlgo::Unknown)).unwrap_err();
+        assert!(err.message().contains("unsupported"), "{err}");
+    }
+
+    #[test]
+    fn remove_srp_proof_rejects_bad_prime_and_generator_without_panicking() {
+        let mut params = ref_srp_params();
+        params.p.truncate(128);
+        let err = input_check_password_srp(
+            &params,
+            1,
+            &decode_b64(REF_SRP_B_B64),
+            &decode_b64(REF_RANDOM_A_B64),
+            REF_PASSWORD,
+        )
+        .unwrap_err();
+        assert!(err.message().contains("SRP"), "{err}");
+        assert!(!err.message().contains(REF_PASSWORD), "{err}");
+
+        let mut params = ref_srp_params();
+        params.g = 99;
+        let err = input_check_password_srp(
+            &params,
+            1,
+            &decode_b64(REF_SRP_B_B64),
+            &decode_b64(REF_RANDOM_A_B64),
+            REF_PASSWORD,
+        )
+        .unwrap_err();
+        assert!(err.message().contains("generator"), "{err}");
+        assert!(!err.message().contains(REF_PASSWORD), "{err}");
+    }
+
+    #[test]
+    fn invalid_cloud_password_maps_to_auth_error_without_echoing_secret() {
+        let e = grammers_client::InvocationError::Rpc(grammers_client::sender::RpcError {
+            code: 400,
+            name: "PASSWORD_HASH_INVALID".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        let err = map_update_password_error(e);
+        assert!(matches!(err, TeleError::Auth(_)), "{err}");
+        assert_eq!(err.exit_code(), crate::error::EXIT_AUTH);
+        assert!(err.message().contains("invalid cloud password"), "{err}");
+        assert!(!err.message().contains(REF_PASSWORD), "{err}");
+    }
+
+    #[test]
+    fn other_update_password_errors_pass_through_taxonomy() {
+        let e = grammers_client::InvocationError::Rpc(grammers_client::sender::RpcError {
+            code: 420,
+            name: "FLOOD_WAIT".to_string(),
+            value: Some(9),
+            caused_by: None,
+        });
+        let err = map_update_password_error(e);
+        assert!(matches!(err, TeleError::Rpc(_, 420, _, Some(9))), "{err}");
     }
 
     fn export_args(name: &str, out: Option<&str>) -> ExportSessionArgs {
