@@ -46,7 +46,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | msg.translate | Translation | `/api/translation` | raw | `tele raw` registry | want |
 | msg.transcribe | Voice transcription | `/api/transcribe` | raw | `tele raw` registry | want |
 | msg.ai-compose | AI compose | `/api/ai` | raw | `tele raw` registry | want |
-| msg.buttons | Reply markup / inline buttons in message JSON | `ReplyMarkup` | `Message::reply_markup` | serialized additively as `reply_markup` in every message JSON row (msg get/listen/serve/takeout); kinds inline/reply/hide/force_reply; unknown variants degrade to raw_kind, never panic | done |
+| msg.buttons | Reply markup / inline buttons in message JSON | `ReplyMarkup` | `Message::reply_markup` | `tele msg get` / `listen` / `serve` rows carry additive `reply_markup`; kinds inline/reply/hide/force_reply; unknown variants degrade to raw_kind, never panic | done |
 | msg.click | Inline button press (+ reply-keyboard fallback) | `messages.getBotCallbackAnswer` | raw | `tele msg click` (reply-keyboard buttons fall back to sending their text) | want |
 | msg.album-send | Send media group together | `messages.sendMultiMedia` | raw | `tele msg send --file A --file B` (grouped) | want |
 | msg.typing | Chat action indicator | `messages.setTyping` | raw | `tele msg typing [--action typing/upload_*]` | want |
@@ -71,7 +71,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.edit | Edit title / about / photo | `channels.{editTitle,editPhoto}`, `messages.{editChatTitle,editChatPhoto,editChatAbout}`, `photos.deletePhotos` | raw | `tele chat edit` (`--title`, `--about`, `--photo path-or-remove`) | done |
 | chat.link | Discussion group linkage | `channels.{getFullChannel,setDiscussionGroup}` | raw | `tele chat link` (`--to CHANNEL` set; unlink has no API method — honest error) | done |
 | chat.invite-check | Preview invite link without joining (title/members/request flag) | `messages.checkChatInvite` | raw | `tele chat invite --check LINK` (Already/Peek/Invite variants; bare +hash accepted) | done |
-| chat.join-requests | Approve/dismiss join requests, bulk | `messages.{hideChatJoinRequest,hideAllChatJoinRequests}` (+ list via GetChatInviteImporters requested:true — getChatJoinRequests absent at layer 227) | raw | `tele chat requests [--approve|--dismiss] [--user|--all]` | done |
+| chat.join-requests | Approve/dismiss join requests, bulk | `messages.{hideChatJoinRequest,hideAllChatJoinRequests}` (+ list via GetChatInviteImporters requested:true — getChatJoinRequests absent at layer 227) | raw | `tele chat requests` list; approve/dismiss via `--approve` / `--dismiss` with `--user USER` or `--all` | done |
 
 Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (open item M7, tracked in `tasks/todo.md`). Topic lifecycle (`close`, `reopen`, `edit`, `delete`, `pin`) ships via raw TL: `messages.editForumTopic` (closed flag / title), `messages.updatePinnedForumTopic` (pin), and `messages.deleteTopicHistory` (whole-topic history removal; not `messages.deleteHistory`). `topic list` rows carry additive `closed` + `pinned`.
 
@@ -100,7 +100,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` (coalesce by grouped_id, ~500 ms quiescence flush) | done |
 | listen.gap | Gap (update-loss marker) | updates | pts tracking per message box | `--events Gap` (synthetic row when updates were dropped/difference ended early) | done |
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
-| listen.filters | Sender / direction / regex / multi-chat filters | client-side | client-side | `listen --from USER --in --out --chat repeatable` shipped; `--pattern` regex blocked on `regex` crate approval | done |
+| listen.filters | Sender / direction / regex / multi-chat filters | client-side | client-side | `tele listen` with `--from USER` / `--in` / `--out` / repeatable `--chat`; `--pattern` regex blocked on `regex` crate approval | done |
 | listen.service | Parsed service messages (joins/leaves/…) | updates `messageService` | `Update::NewMessage` (service) | parsed event rows with action kind | want |
 | listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
