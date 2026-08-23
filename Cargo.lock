@@ -2271,6 +2271,7 @@ dependencies = [
  "clap_complete",
  "comfy-table",
  "grammers-client",
+ "grammers-crypto",
  "grammers-session",
  "grammers-tl-parser",
  "libsql",
