@@ -19,7 +19,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | auth.session-ttl | Session TTL / auth settings | `account.setAuthorizationTTL` | raw | `tele raw` account.SetAuthorizationTTL | done |
 | auth.passkey | Passkeys | `/api/passkeys` | none friendly | — | want |
 | auth.bot-token | Bot token login | `auth.importBotAuthorization` | `bot_sign_in` | not a product path | never |
-| auth.password-manage | Cloud password set/change/remove + recovery email | `account.{GetPassword,UpdatePasswordSettings}` | raw | `tele account password set|change|remove` | want |
+| auth.password-manage | Cloud password verify/remove shipped (`--remove` via grammers-crypto SRP proof, deterministic reference-vector test); `--set`/`--change` blocked upstream: PH2 pbkdf2 hashing is private in grammers-crypto 0.10 (blocker error names the gap; no hand-rolled crypto) | `account.{GetPassword,UpdatePasswordSettings}` + `grammers_crypto::two_factor_auth::calculate_2fa` | raw | `tele account password --remove` done; set/change pending upstream | want |
 | auth.sessions-manage | List + terminate other sessions/devices | `account.{GetAuthorizations,ResetAuthorization}` | raw (`GetAuthorizations` in raw registry today) | `tele account sessions [--terminate HASH]` | want |
 
 ## Messages
