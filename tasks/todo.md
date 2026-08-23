@@ -242,6 +242,20 @@ QA follow-up tickets (LOW):
 
 Live verification owed by user (real sessions): serve duplex roundtrip incl. action op · listen filters against real traffic · invite-check on a real link · join-request approve/dismiss · sessions terminate · password remove · staged login both accounts · Telethon import of a real .session · device identity visible in Telegram devices list · sticker install/remove · story send/list.
 
+## Live verification round 1 (2026-08-23, Throne socks5 127.0.0.1:2080 wired as global proxy)
+
+Verified LIVE (accounts 1+2 real):
+- [x] account status both accounts authorized; sessions list (5 authorizations, current flag correct); profile get
+- [x] self-chat roundtrip send→edit→get→delete (react honestly surfaced Telegram 403 PREMIUM_ACCOUNT_REQUIRED — server policy, taxonomy correct)
+- [x] serve duplex: hello + ping/pong over pipe; live cross-account event delivered (~instant, account2→account1); msg get/typing ops via pipe; send op delivers but CRASHED pre-fix → fixed (runtime now on 64MB-stack thread, commit 9198058) and re-verified delivering
+- [x] buttons serialization confirmed on real bot messages (GapoGram rows carry reply_markup)
+
+New defects found live (fix next):
+- [ ] LIVE-1 HIGH: serve restart replays ENTIRE catch-up history every start (update state not persisted across runs) and flaky-proxy reconnects re-deliver overlapping windows (same rows 3× within one run). Suspect session update-state save path / catch_up semantics. Game scripts need "start from now" default or state persistence.
+- [ ] LIVE-2 MED: streamed row for brand-new peer carries peer:null sender:null (DUPLEX-SECOND row) — peer resolution/cache miss on first sighting in stream path.
+
+Still deferred pending explicit user go: password --remove, sessions --terminate, story send (public), staged login begin (sends code), sticker install/remove roundtrip, Telethon import (needs a source .session), dialog list spot-check.
+
 ## Delegation waves — implement every remaining want (2026-08-23)
 
 Manager mode: main agent orchestrates only; implementation via sub-agents on per-ticket branches; capabilities.md/todo.md row flips done by manager at merge time (agents must NOT touch docs/tracker to avoid collisions). business.*/stars.* flipped `never` by product decision 2026-08-23. mcp/skill stay gated on explicit user go (Phase 6 boundary) despite want status.
