@@ -1,8 +1,69 @@
 use grammers_client::media::Media;
 use grammers_client::peer::Peer;
 use grammers_client::tl;
+use grammers_session::types::{PeerId, PeerKind};
 
 use crate::error::TeleError;
+
+pub fn peer_id_kind(peer_id: PeerId) -> &'static str {
+    match peer_id.kind() {
+        PeerKind::User => "user",
+        PeerKind::Chat => "group",
+        PeerKind::Channel => "channel",
+    }
+}
+
+pub fn peer_id_key(peer_id: PeerId) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Some(id) = peer_id.bare_id() {
+        out.insert("id".into(), serde_json::json!(id));
+    }
+    out.insert("kind".into(), serde_json::json!(peer_id_kind(peer_id)));
+    let name = peer_id
+        .bare_id()
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "self".to_string());
+    out.insert("name".into(), serde_json::json!(name));
+    serde_json::Value::Object(out)
+}
+
+fn message_peer_id_fallback(msg: &grammers_client::message::Message) -> Option<PeerId> {
+    match &msg.raw {
+        tl::enums::Message::Empty(_) => None,
+        _ => Some(msg.peer_id()),
+    }
+}
+
+fn message_sender_id_fallback(msg: &grammers_client::message::Message) -> Option<PeerId> {
+    match &msg.raw {
+        tl::enums::Message::Empty(_) => None,
+        _ => msg.sender_id(),
+    }
+}
+
+#[allow(dead_code)]
+pub fn ensure_outer_peer_sender(
+    row: &mut serde_json::Value,
+    outer_peer: Option<PeerId>,
+    outer_sender: Option<PeerId>,
+) {
+    let needs_peer = row.get("peer").is_some_and(|v| v.is_null());
+    let needs_sender = row.get("sender").is_some_and(|v| v.is_null());
+    if needs_peer {
+        if let Some(peer_id) = outer_peer {
+            row["peer"] = peer_id_key(peer_id);
+        }
+    }
+    if needs_sender {
+        if let Some(sender_id) = outer_sender {
+            row["sender"] = peer_id_key(sender_id);
+        } else if let Some(peer_id) = outer_peer {
+            if peer_id.kind() == PeerKind::User {
+                row["sender"] = peer_id_key(peer_id);
+            }
+        }
+    }
+}
 
 pub fn peer_name(peer: &Peer) -> String {
     peer.name()
@@ -29,14 +90,20 @@ pub fn message_to_json(
         "peer".into(),
         match msg.peer() {
             Some(peer) => serde_json::json!(peer_key(peer)),
-            None => serde_json::Value::Null,
+            None => match message_peer_id_fallback(msg) {
+                Some(peer_id) => peer_id_key(peer_id),
+                None => serde_json::Value::Null,
+            },
         },
     );
     out.insert(
         "sender".into(),
         match msg.sender() {
             Some(sender) => serde_json::json!(peer_key(sender)),
-            None => serde_json::Value::Null,
+            None => match message_sender_id_fallback(msg) {
+                Some(sender_id) => peer_id_key(sender_id),
+                None => serde_json::Value::Null,
+            },
         },
     );
     out.insert("text".into(), serde_json::json!(msg.text()));
@@ -767,8 +834,10 @@ mod tests {
         assert_eq!(value["date"], "2023-11-14T22:13:20+00:00");
         assert_eq!(value["out"], true);
         assert_eq!(value["text"], "hello");
-        assert!(value["peer"].is_null());
-        assert!(value["sender"].is_null());
+        assert_eq!(value["peer"]["id"], 42);
+        assert_eq!(value["peer"]["kind"], "user");
+        assert!(value["sender"].is_object());
+        assert_eq!(value["sender"]["kind"], "user");
         assert!(value.get("media").is_none());
     }
 
@@ -1330,6 +1399,103 @@ mod tests {
             bare.get("poll").is_none(),
             "non-poll media must not gain a poll key"
         );
+    }
+
+    #[test]
+    fn peer_id_key_user_has_correct_kind_and_id() {
+        let peer_id = grammers_session::types::PeerId::user(8552872518).unwrap();
+        let key = peer_id_key(peer_id);
+        assert_eq!(key["id"], 8552872518_i64);
+        assert_eq!(key["kind"], "user");
+        assert_eq!(key["name"], "8552872518");
+    }
+
+    #[test]
+    fn peer_id_kind_maps_all_variants() {
+        let user = grammers_session::types::PeerId::user(123).unwrap();
+        let group = grammers_session::types::PeerId::chat(456).unwrap();
+        let channel = grammers_session::types::PeerId::channel(789).unwrap();
+        assert_eq!(peer_id_kind(user), "user");
+        assert_eq!(peer_id_kind(group), "group");
+        assert_eq!(peer_id_kind(channel), "channel");
+    }
+
+    #[test]
+    fn message_to_json_fallback_incoming_dm_has_peer_and_sender() {
+        let client = offline_client();
+        let msg = make_message(&client, 99, false, "hello fresh dm", None);
+        let value = message_to_json(&msg).unwrap();
+        assert_eq!(value["peer"]["id"], 42);
+        assert_eq!(value["peer"]["kind"], "user");
+        assert_eq!(value["sender"]["id"], 42);
+        assert_eq!(value["sender"]["kind"], "user");
+    }
+
+    #[test]
+    fn ensure_outer_peer_sender_fills_nulls_from_outer() {
+        let mut row = serde_json::json!({"id": 1, "peer": null, "sender": null, "text": "hi"});
+        let peer_id = grammers_session::types::PeerId::user(8552872518).unwrap();
+        ensure_outer_peer_sender(&mut row, Some(peer_id), None);
+        assert_eq!(row["peer"]["id"], 8552872518_i64);
+        assert_eq!(row["peer"]["kind"], "user");
+        assert_eq!(row["sender"]["id"], 8552872518_i64);
+        assert_eq!(row["sender"]["kind"], "user");
+    }
+
+    #[test]
+    fn ensure_outer_peer_sender_does_not_overwrite_existing() {
+        let mut row = serde_json::json!({"peer": {"id": 1, "kind": "user", "name": "a"}, "sender": {"id": 2, "kind": "user", "name": "b"}});
+        let peer_id = grammers_session::types::PeerId::user(999).unwrap();
+        let sender_id = grammers_session::types::PeerId::user(888).unwrap();
+        ensure_outer_peer_sender(&mut row, Some(peer_id), Some(sender_id));
+        assert_eq!(row["peer"]["id"], 1);
+        assert_eq!(row["sender"]["id"], 2);
+    }
+
+    #[test]
+    fn ensure_outer_sender_uses_explicit_sender_when_provided() {
+        let mut row = serde_json::json!({"peer": null, "sender": null});
+        let peer_id = grammers_session::types::PeerId::channel(12345).unwrap();
+        let sender_id = grammers_session::types::PeerId::user(777).unwrap();
+        ensure_outer_peer_sender(&mut row, Some(peer_id), Some(sender_id));
+        assert_eq!(row["peer"]["kind"], "channel");
+        assert_eq!(row["peer"]["id"], 12345);
+        assert_eq!(row["sender"]["id"], 777);
+        assert_eq!(row["sender"]["kind"], "user");
+    }
+
+    #[test]
+    fn message_to_json_duplex_second_live_shape() {
+        let client = offline_client();
+        let peer_id = grammers_session::types::PeerId::user(8552872518).unwrap();
+        let mut msg = grammers_client::message::Message::from_raw_short_updates(
+            &client,
+            tl::types::UpdateShortSentMessage {
+                out: false,
+                id: 101,
+                pts: 0,
+                pts_count: 0,
+                date: 1700000000,
+                media: None,
+                entities: None,
+                ttl_period: None,
+            },
+            grammers_client::message::InputMessage::new().text("fresh dm duplex"),
+            peer_id.to_ambient_ref(),
+        );
+        let _ = &mut msg;
+        let value = message_to_json(&msg).unwrap();
+        assert_eq!(value["out"], false);
+        assert_eq!(value["text"], "fresh dm duplex");
+        assert_eq!(value["peer"]["id"], 8552872518_i64);
+        assert_eq!(value["peer"]["kind"], "user");
+        assert!(!value["peer"].is_null());
+        assert!(!value["sender"].is_null());
+        assert_eq!(value["sender"]["kind"], "user");
+        let outer_chat_id = peer_id.bare_id().unwrap();
+        let mut row = serde_json::json!({"peer": null, "sender": null});
+        ensure_outer_peer_sender(&mut row, Some(peer_id), None);
+        assert_eq!(row["peer"]["id"], outer_chat_id);
     }
 
     use proptest::prelude::*;
