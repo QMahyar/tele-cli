@@ -20,7 +20,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | auth.passkey | Passkeys | `/api/passkeys` | none friendly | — | want |
 | auth.bot-token | Bot token login | `auth.importBotAuthorization` | `bot_sign_in` | not a product path | never |
 | auth.password-manage | Cloud password verify/remove shipped (`--remove` via grammers-crypto SRP proof, deterministic reference-vector test); `--set`/`--change` blocked upstream: PH2 pbkdf2 hashing is private in grammers-crypto 0.10 (blocker error names the gap; no hand-rolled crypto) | `account.{GetPassword,UpdatePasswordSettings}` + `grammers_crypto::two_factor_auth::calculate_2fa` | raw | `tele account password --remove` done; set/change pending upstream | want |
-| auth.sessions-manage | List + terminate other sessions/devices | `account.{GetAuthorizations,ResetAuthorization}` | raw (`GetAuthorizations` in raw registry today) | `tele account sessions [--terminate HASH]` | want |
+| auth.sessions-manage | List + terminate other sessions/devices | `account.{GetAuthorizations,ResetAuthorization}` | raw | `tele account sessions [--terminate HASH]` (own current-hash refusal; live verify pending) | done |
 
 ## Messages
 
@@ -38,7 +38,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | msg.file | Send file | `messages.sendMedia` | `upload_file` + `send_message` | `tele msg send --file` | done |
 | msg.download | Download media | upload/download API | `download_media`, `iter_download` | `tele msg download` | done |
 | msg.react | Reactions | `/api/reactions` | `send_reactions` | `tele msg react` | done |
-| msg.poll | Polls | `/api/poll` | `send_message(InputMessage::poll)` or raw | `tele msg poll` | want |
+| msg.poll | Polls: render in message rows + vote | `/api/poll`, `messages.sendVote` (no close flag at layer 227 — closing polls impossible) | raw arm; `Media::Poll` answers | `tele msg vote --chat X --id N --option 1[,2]`; additive `poll` object on msg get/search rows | done |
 | msg.search | Search / filters | `/api/search` | `search_messages`, `search_all_messages` | `tele msg search` | done |
 | msg.draft | Drafts | `/api/drafts` | raw | `tele dialog drafts` | done |
 | msg.effect | Animated effects | `/api/effects` | raw | `tele raw` registry | want |
@@ -47,10 +47,10 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | msg.transcribe | Voice transcription | `/api/transcribe` | raw | `tele raw` registry | want |
 | msg.ai-compose | AI compose | `/api/ai` | raw | `tele raw` registry | want |
 | msg.buttons | Reply markup / inline buttons in message JSON | `ReplyMarkup` | `Message::reply_markup` | `tele msg get` / `listen` / `serve` rows carry additive `reply_markup`; kinds inline/reply/hide/force_reply; unknown variants degrade to raw_kind, never panic | done |
-| msg.click | Inline button press (+ reply-keyboard fallback) | `messages.getBotCallbackAnswer` | raw | `tele msg click` (reply-keyboard buttons fall back to sending their text) | want |
-| msg.album-send | Send media group together | `messages.sendMultiMedia` | raw | `tele msg send --file A --file B` (grouped) | want |
-| msg.typing | Chat action indicator | `messages.setTyping` | raw | `tele msg typing [--action typing/upload_*]` | want |
-| msg.send-mods | Send modifiers: noforwards (protected), background send | `sendMessage`/`sendMultiMedia` flags | raw (grammers exposes none) | `tele msg send --noforwards/--background` | want |
+| msg.click | Inline button press (+ reply-keyboard fallback) | `messages.getBotCallbackAnswer` | raw arm (button located via serialize shapes) | `tele msg click --chat X --id N (--button TEXT / --button-index N)`; reply-keyboard buttons error with send-text hint | done |
+| msg.album-send | Send media group together | `messages.sendMultiMedia` | `send_album` (CAP-3, 2–10 files) | `tele msg send --file A --file B` (grouped) | done |
+| msg.typing | Chat action indicator | `messages.setTyping` | friendly `Client::action()` oneshot/cancel | `tele msg typing --chat X [--action typing/upload-photo/upload-file/cancel]` | done |
+| msg.send-mods | Send modifiers: noforwards (protected), background send | sendMessage flags (grammers builder lacks noforwards → raw arm with markdown parse) | raw + builder `.background()` | `tele msg send` with `--noforwards` / `--background`; silent pre-existing | done |
 
 ## Chats
 
