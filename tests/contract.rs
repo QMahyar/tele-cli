@@ -1354,7 +1354,7 @@ fn raw_registry_names_are_offline_usable() {
         );
     }
     let args_for = |name: &str| match name {
-        "contacts.Search" => "{\"q\":\"x\"}",
+        "contacts.Search" => "{\"q\":\"x\",\"limit\":10}",
         "messages.ExportChatInvite" => "{\"chat\":\"me\"}",
         "stats.GetBroadcastStats" | "stats.GetMegagroupStats" => "{\"channel\":\"me\"}",
         "channels.GetFullChannel" => "{\"channel\":\"me\"}",

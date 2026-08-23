@@ -53,9 +53,10 @@ pub struct ListenArgs {
     #[arg(
         long,
         value_name = "RE",
-        help = "only messages whose text matches this Rust regex, case-sensitive (message events only)"
+        action = clap::ArgAction::Append,
+        help = "only messages whose text matches one of these Rust regexes, case-sensitive (repeatable; message events only)"
     )]
-    pattern: Option<String>,
+    pattern: Vec<String>,
 }
 const VALID_EVENTS: &[&str] = &[
     "NewMessage",
@@ -84,7 +85,7 @@ struct EventFilter {
     chats: Vec<PeerId>,
     senders: Vec<PeerId>,
     direction: Option<Direction>,
-    pattern: Option<regex::Regex>,
+    patterns: Vec<regex::Regex>,
 }
 
 impl EventFilter {
@@ -103,9 +104,9 @@ impl EventFilter {
     }
 
     fn text_allows(&self, text: Option<&str>) -> bool {
-        match &self.pattern {
-            None => true,
-            Some(re) => text.is_some_and(|t| re.is_match(t)),
+        match self.patterns.as_slice() {
+            [] => true,
+            patterns => text.is_some_and(|t| patterns.iter().any(|re| re.is_match(t))),
         }
     }
 
@@ -127,7 +128,7 @@ impl EventFilter {
     fn raw_allows(&self, peer: Option<PeerId>) -> bool {
         self.senders.is_empty()
             && self.direction.is_none()
-            && self.pattern.is_none()
+            && self.patterns.is_empty()
             && self.chat_allows(peer)
     }
 
@@ -136,7 +137,7 @@ impl EventFilter {
     }
 
     fn deletions_pass(&self) -> bool {
-        self.senders.is_empty() && self.direction.is_none() && self.pattern.is_none()
+        self.senders.is_empty() && self.direction.is_none() && self.patterns.is_empty()
     }
 }
 
@@ -229,13 +230,14 @@ fn update_text(u: &tl::enums::Update) -> Option<&str> {
     }
 }
 
-fn compile_pattern(pattern: Option<&str>) -> TeleResult<Option<regex::Regex>> {
-    pattern
+fn compile_pattern(patterns: &[String]) -> TeleResult<Vec<regex::Regex>> {
+    patterns
+        .iter()
         .map(|p| {
             regex::Regex::new(p)
                 .map_err(|e| TeleError::Usage(format!("invalid --pattern {p:?}: {e}")))
         })
-        .transpose()
+        .collect()
 }
 
 fn resolution_usage_error(flag: &str, target: &str, cause: &TeleError) -> TeleError {
@@ -281,7 +283,7 @@ async fn resolve_filter(
         chats: resolved_chats,
         senders: resolved_senders,
         direction,
-        pattern: None,
+        patterns: Vec::new(),
     })
 }
 
@@ -517,7 +519,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if args.raw && !events.iter().any(|e| e == "Raw") {
         events.push("Raw".to_string());
     }
-    let filter_pattern = compile_pattern(args.pattern.as_deref())?;
+    let filter_patterns = compile_pattern(&args.pattern)?;
     require_explicit_selection("listen", flags)?;
     let names = crate::executor::select_accounts(flags)?;
     if names.is_empty() {
@@ -556,7 +558,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_targets = chat_targets.clone();
         let from_targets = from_targets.clone();
         let events = events.clone();
-        let filter_pattern = filter_pattern.clone();
+        let filter_patterns = filter_patterns.clone();
         tasks.spawn(async move {
             let result: TeleResult<()> = async {
                 let creds =
@@ -604,7 +606,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             direction,
                         )
                         .await?;
-                        filter.pattern = filter_pattern.clone();
+                        filter.patterns = filter_patterns.clone();
                         targets_resolved = true;
                     }
                     if let Err(e) = guard
@@ -2640,7 +2642,7 @@ mod tests {
             chats: vec![PeerId::chat_unchecked(1)],
             senders: vec![PeerId::user_unchecked(2)],
             direction: Some(Direction::In),
-            pattern: None,
+            patterns: Vec::new(),
         };
         let peer_ok = Some(PeerId::chat_unchecked(1));
         let sender_ok = Some(PeerId::user_unchecked(2));
@@ -2666,7 +2668,7 @@ mod tests {
             chats: vec![PeerId::chat_unchecked(1)],
             senders: vec![PeerId::user_unchecked(2), PeerId::user_unchecked(3)],
             direction: None,
-            pattern: None,
+            patterns: Vec::new(),
         };
         let peer_ok = Some(PeerId::chat_unchecked(1));
         assert!(filter_message(
@@ -2765,7 +2767,7 @@ mod tests {
 
     #[test]
     fn compile_pattern_rejects_invalid_regex_as_usage() {
-        let err = compile_pattern(Some("(")).expect_err("invalid regex must be rejected");
+        let err = compile_pattern(&["(".to_string()]).expect_err("invalid regex must be rejected");
         assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
         assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
         assert!(err.message().contains("--pattern"), "err: {err}");
@@ -2773,22 +2775,35 @@ mod tests {
 
     #[test]
     fn compile_pattern_none_is_no_filter_and_valid_pattern_compiles() {
-        assert!(compile_pattern(None).unwrap().is_none());
-        assert!(compile_pattern(Some("^buy")).unwrap().is_some());
+        assert!(compile_pattern(&[]).unwrap().is_empty());
+        assert_eq!(compile_pattern(&["^buy".to_string()]).unwrap().len(), 1);
     }
 
     #[test]
     fn compile_pattern_matches_as_written_case_sensitively() {
-        let re = compile_pattern(Some("alert")).unwrap().unwrap();
+        let patterns = compile_pattern(&["alert".to_string()]).unwrap();
+        let re = patterns.first().unwrap();
         assert!(re.is_match("urgent alert now"));
         assert!(!re.is_match("nothing here"));
         assert!(!re.is_match("ALERT"), "matching stays case-sensitive");
     }
 
     #[test]
+    fn multiple_patterns_match_any_within_dimension() {
+        let f = EventFilter {
+            patterns: compile_pattern(&["^buy".to_string(), "sell$".to_string()]).unwrap(),
+            ..Default::default()
+        };
+        assert!(f.text_allows(Some("buy now")));
+        assert!(f.text_allows(Some("want to sell")));
+        assert!(!f.text_allows(Some("hold forever")));
+        assert!(!f.text_allows(None));
+    }
+
+    #[test]
     fn pattern_filter_matches_and_mismatches_text_case_sensitively() {
         let f = EventFilter {
-            pattern: compile_pattern(Some("alert")).unwrap(),
+            patterns: compile_pattern(&["alert".to_string()]).unwrap(),
             ..Default::default()
         };
         assert!(f.text_allows(Some("urgent alert now")));
@@ -2799,7 +2814,7 @@ mod tests {
     #[test]
     fn pattern_filter_drops_textless_rows_but_passes_all_when_unset() {
         let f = EventFilter {
-            pattern: compile_pattern(Some(".")).unwrap(),
+            patterns: compile_pattern(&[".".to_string()]).unwrap(),
             ..Default::default()
         };
         assert!(
@@ -2839,7 +2854,7 @@ mod tests {
     fn pattern_composes_with_sender_dimension_and_wise() {
         let f = EventFilter {
             senders: vec![PeerId::user_unchecked(7)],
-            pattern: compile_pattern(Some("alert")).unwrap(),
+            patterns: compile_pattern(&["alert".to_string()]).unwrap(),
             ..Default::default()
         };
         let sender_ok = Some(PeerId::user_unchecked(7));
@@ -2864,7 +2879,7 @@ mod tests {
     fn raw_events_blocked_when_pattern_set() {
         let peer = Some(PeerId::channel_unchecked(4));
         let f = EventFilter {
-            pattern: compile_pattern(Some("x")).unwrap(),
+            patterns: compile_pattern(&["x".to_string()]).unwrap(),
             ..Default::default()
         };
         assert!(!f.raw_allows(peer), "raw carries no text to match");
@@ -2874,7 +2889,7 @@ mod tests {
     #[test]
     fn deletions_blocked_when_pattern_set() {
         let f = EventFilter {
-            pattern: compile_pattern(Some("x")).unwrap(),
+            patterns: compile_pattern(&["x".to_string()]).unwrap(),
             ..Default::default()
         };
         assert!(!f.deletions_pass(), "deletions carry no text to match");
@@ -2896,7 +2911,35 @@ mod tests {
         .expect("--pattern must parse");
         match cli.command {
             Command::Listen(args) => {
-                assert_eq!(args.pattern.as_deref(), Some("^buy|sell$"));
+                assert_eq!(args.pattern, vec!["^buy|sell$"]);
+            }
+            _ => panic!("expected listen subcommand"),
+        }
+    }
+
+    #[test]
+    fn listen_parses_repeated_pattern_flags() {
+        use crate::Command;
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "tele",
+            "listen",
+            "--account",
+            "a",
+            "--pattern",
+            "^buy",
+            "--pattern",
+            "sell$",
+        ])
+        .expect("repeated --pattern must parse");
+        match cli.command {
+            Command::Listen(args) => {
+                assert_eq!(args.pattern, vec!["^buy", "sell$"]);
+                let patterns = compile_pattern(&args.pattern).unwrap();
+                assert_eq!(patterns.len(), 2);
+                assert!(patterns.iter().any(|re| re.is_match("buy now")));
+                assert!(patterns.iter().any(|re| re.is_match("please sell")));
+                assert!(!patterns.iter().any(|re| re.is_match("hold")));
             }
             _ => panic!("expected listen subcommand"),
         }
@@ -3401,7 +3444,7 @@ mod tests {
             chats: vec![PeerId::chat_unchecked(42)],
             senders: vec![PeerId::user_unchecked(8)],
             direction: None,
-            pattern: None,
+            patterns: Vec::new(),
         };
         assert!(f.action_allows(
             Some(PeerId::chat_unchecked(42)),
@@ -3445,7 +3488,7 @@ mod tests {
             "direction has no meaning for typing/status rows and must not block them"
         );
         let f_pattern = EventFilter {
-            pattern: compile_pattern(Some("x")).unwrap(),
+            patterns: compile_pattern(&["x".to_string()]).unwrap(),
             ..Default::default()
         };
         assert!(

@@ -1207,6 +1207,43 @@ mod tests {
     }
 
     #[test]
+    fn validate_params_rejects_missing_required_ints_pre_connect() {
+        for (method, field, extra) in [
+            ("contacts.Search", "limit", serde_json::json!({"q": "x"})),
+            (
+                "messages.AppendTodoList",
+                "msg_id",
+                serde_json::json!({"chat": "@ok"}),
+            ),
+            (
+                "messages.ToggleTodoCompleted",
+                "msg_id",
+                serde_json::json!({"chat": "@ok"}),
+            ),
+            (
+                "messages.TranscribeAudio",
+                "msg_id",
+                serde_json::json!({"chat": "@ok"}),
+            ),
+        ] {
+            let err = validate_params(method, &extra).expect_err("missing required int must fail");
+            assert!(matches!(err, TeleError::Usage(_)), "{method}: {err}");
+            assert!(
+                err.message().contains(field) && err.message().contains("required"),
+                "{method}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_params_allows_defaultable_ints_to_stay_absent() {
+        assert!(
+            validate_params("messages.GetHistory", &serde_json::json!({"chat": "@ok"})).is_ok()
+        );
+        assert!(validate_params("messages.GetAvailableEffects", &serde_json::json!({})).is_ok());
+    }
+
+    #[test]
     fn validate_params_accepts_valid_chat() {
         assert!(validate_params(
             "messages.ExportChatInvite",

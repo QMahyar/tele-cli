@@ -7,6 +7,13 @@ use std::path::Path;
 use grammers_tl_parser::parse_tl_file;
 use grammers_tl_parser::tl::{Category, ParameterType};
 
+const REQUIRED_INTS: &[(&str, &[&str])] = &[
+    ("contacts.Search", &["limit"]),
+    ("messages.AppendTodoList", &["msg_id"]),
+    ("messages.ToggleTodoCompleted", &["msg_id"]),
+    ("messages.TranscribeAudio", &["msg_id"]),
+];
+
 const REGISTRY: &[&str] = &[
     "account.GetAuthorizations",
     "account.SetAuthorizationTTL",
@@ -143,7 +150,9 @@ fn main() {
     writeln!(f, "        pub name: &'static str,").unwrap();
     writeln!(f, "        pub args: &'static [ArgMeta],").unwrap();
     writeln!(f, "        pub needs_peer: bool,").unwrap();
+    writeln!(f, "        pub required_ints: &'static [&'static str],").unwrap();
     writeln!(f, "    }}").unwrap();
+    writeln!(f, "    pub const NO_REQUIRED_INTS: &[&str] = &[];").unwrap();
     writeln!(f, "    pub static METHODS: &[MethodMeta] = &[").unwrap();
     for name in REGISTRY {
         let args = methods.get(*name).unwrap();
@@ -164,7 +173,17 @@ fn main() {
             .unwrap();
         }
         writeln!(f, "            ],").unwrap();
+        let required_ints = REQUIRED_INTS
+            .iter()
+            .find(|(m, _)| *m == *name)
+            .map(|(_, fields)| *fields)
+            .unwrap_or(&[]);
         writeln!(f, "            needs_peer: {},", needs).unwrap();
+        if required_ints.is_empty() {
+            writeln!(f, "            required_ints: NO_REQUIRED_INTS,").unwrap();
+        } else {
+            writeln!(f, "            required_ints: &{:?},", required_ints).unwrap();
+        }
         writeln!(f, "        }},").unwrap();
     }
     writeln!(f, "    ];").unwrap();
@@ -227,7 +246,17 @@ fn main() {
     writeln!(f, "                if !arg.optional {{").unwrap();
     writeln!(
         f,
-        "                    if arg.tl_type == \"int\" || arg.tl_type == \"long\" {{"
+        "                    if method.required_ints.contains(&arg.name) {{"
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                        return Err(TeleError::Usage(format!("--args field {{}} is required (integer)", arg.name)));"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        "                    }} else if arg.tl_type == \"int\" || arg.tl_type == \"long\" {{"
     )
     .unwrap();
     writeln!(f, "                    }} else {{").unwrap();
