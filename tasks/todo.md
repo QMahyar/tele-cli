@@ -254,7 +254,15 @@ New defects found live (fix next):
 - [ ] LIVE-1 HIGH: serve restart replays ENTIRE catch-up history every start (update state not persisted across runs) and flaky-proxy reconnects re-deliver overlapping windows (same rows 3× within one run). Suspect session update-state save path / catch_up semantics. Game scripts need "start from now" default or state persistence.
 - [ ] LIVE-2 MED: streamed row for brand-new peer carries peer:null sender:null (DUPLEX-SECOND row) — peer resolution/cache miss on first sighting in stream path.
 
-Still deferred pending explicit user go: password --remove, sessions --terminate, story send (public), staged login begin (sends code), sticker install/remove roundtrip, Telethon import (needs a source .session), dialog list spot-check.
+Round 2 (2026-08-23, after LIVE fixes):
+- [x] serve replay: run1=0 run2=0 events (live-only, no history replay) — LIVE-1 fixed
+- [x] pipe send peer/sender non-null (user/8766913483) — LIVE-2 fixed
+- [x] cross-account live event peer/sender non-null (user/8552872518) — LIVE-2 fixed
+- [x] listen --pattern PATTERN-.* live: PATTERN-HIT-123 passed, nohit filtered
+- [x] dialog list, sticker list, story list read-only
+- [x] device echo empty {} when unconfigured (correct)
+
+Still deferred pending explicit user go: password --remove (destructive), sessions --terminate (destructive), story send (public post), staged login begin (sends SMS), sticker install/remove roundtrip (touches live sticker sets), Telethon import (needs source .session).
 
 ## Delegation waves — implement every remaining want (2026-08-23)
 
