@@ -138,8 +138,8 @@ fn help_lists_all_groups_and_exits_zero() {
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
     for group in [
-        "account", "msg", "chat", "dialog", "topic", "sticker", "contact", "profile", "privacy",
-        "takeout", "listen", "raw",
+        "account", "msg", "chat", "dialog", "topic", "sticker", "story", "contact", "profile",
+        "privacy", "takeout", "listen", "raw",
     ] {
         assert!(
             text.contains(&format!(" {group} ")),
@@ -1535,6 +1535,217 @@ fn sticker_search_rejects_blank_query_offline() {
     let (code, _out, err) = run_isolated("stblankq", &["sticker", "search", "--query", "   "]);
     assert_eq!(code, 1);
     assert!(err.contains("--query"), "stderr: {err}");
+}
+
+#[test]
+fn story_mutators_require_explicit_account_offline() {
+    for args in [
+        vec![
+            "story",
+            "send",
+            "--chat",
+            "me",
+            "--file",
+            "C:/missing/pic.png",
+        ],
+        vec!["story", "read", "--chat", "me", "--max-id", "5"],
+        vec!["story", "delete", "--chat", "me", "--ids", "1,2"],
+        vec!["story", "pin", "--chat", "me", "--ids", "1"],
+        vec!["story", "unpin", "--chat", "me", "--ids", "1"],
+    ] {
+        let (code, _out, err) = run_isolated("sygate", &args);
+        assert_eq!(code, 1, "args: {args:?}");
+        assert!(
+            err.contains("requires --account"),
+            "args: {args:?}: stderr: {err}"
+        );
+    }
+}
+
+#[test]
+fn story_send_rejects_bad_flags_before_connect() {
+    let cases: [Vec<&str>; 4] = [
+        vec!["story", "send", "--chat", "   ", "--file", "x.png"],
+        vec!["story", "send", "--chat", "me", "--file", " "],
+        vec![
+            "story",
+            "send",
+            "--chat",
+            "me",
+            "--file",
+            "x.png",
+            "--caption",
+            "  ",
+        ],
+        vec![
+            "story",
+            "send",
+            "--chat",
+            "me",
+            "--file",
+            "x.png",
+            "--privacy",
+            "public",
+        ],
+    ];
+    for args in cases {
+        let (code, _out, err) = run_isolated("sybadflag", &args);
+        assert_eq!(code, 1, "args: {args:?}");
+        assert!(err.contains("--"), "args: {args:?}: stderr: {err}");
+    }
+}
+
+#[test]
+fn story_send_rejects_bad_period_and_mutators_reject_bad_ids_offline() {
+    let (code, _out, err) = run_in(
+        &isolated_appdir("syperiod"),
+        &[
+            "story",
+            "send",
+            "--chat",
+            "me",
+            "--file",
+            "x.png",
+            "--period",
+            "3600",
+            "--account",
+            "work",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("--period"), "stderr: {err}");
+
+    for args in [
+        vec!["story", "delete", "--chat", "me", "--ids", ""],
+        vec!["story", "delete", "--chat", "me", "--ids", "a,b"],
+        vec!["story", "delete", "--chat", "me", "--ids", "-3"],
+        vec!["story", "pin", "--chat", "me", "--ids", "0"],
+        vec!["story", "unpin", "--chat", "me", "--ids", "1,,2"],
+    ] {
+        let (code, _out, err) = run_isolated("sybadids", &args);
+        assert_eq!(code, 1, "args: {args:?}");
+        assert!(err.contains("--ids"), "args: {args:?}: stderr: {err}");
+    }
+
+    let (code, _out, err) = run_isolated(
+        "symaxid",
+        &["story", "read", "--chat", "me", "--max-id", "0"],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("--max-id"), "stderr: {err}");
+}
+
+#[test]
+fn story_list_rejects_bad_limit_and_blank_chat_offline() {
+    for args in [
+        vec!["story", "list", "--chat", ""],
+        vec!["story", "list", "--chat", "me", "--limit", "101"],
+    ] {
+        let (code, _out, err) = run_isolated("sylimit", &args);
+        assert_eq!(code, 1, "args: {args:?}");
+        assert!(err.contains("--"), "args: {args:?}: stderr: {err}");
+    }
+}
+
+#[test]
+fn story_mutator_dry_run_reports_args_with_session() {
+    let dir = isolated_appdir("sydry");
+    write_session(&dir, "work");
+    let send_args = [
+        "story",
+        "send",
+        "--chat",
+        "@someone",
+        "--file",
+        "C:/tmp/pic.png",
+        "--caption",
+        "cap",
+        "--privacy",
+        "close-friends",
+        "--pinned",
+        "--period",
+        "86400",
+        "--account",
+        "work",
+        "--dry-run",
+        "--json",
+    ];
+    let (code, out, err) = run_in(&dir, &send_args);
+    assert_eq!(code, 0, "send dry-run: stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["chat"], serde_json::json!("@someone"));
+    assert_eq!(d["file"], serde_json::json!("C:/tmp/pic.png"));
+    assert_eq!(d["privacy"], serde_json::json!("close-friends"));
+    assert_eq!(d["pinned"], serde_json::json!(true));
+    assert_eq!(d["period"], serde_json::json!(86_400));
+    assert_eq!(
+        d["would"],
+        serde_json::json!("send story C:/tmp/pic.png to @someone")
+    );
+
+    for (verb, id_flag, id_value, would) in [
+        (
+            "read",
+            "--max-id",
+            "33",
+            "mark stories up to 33 as read for @someone",
+        ),
+        ("delete", "--ids", "1,2", "delete stories 1,2 of @someone"),
+        ("pin", "--ids", "4", "pin stories 4 of @someone"),
+        ("unpin", "--ids", "4", "unpin stories 4 of @someone"),
+    ] {
+        let mut args: Vec<&str> = vec!["story", verb, "--chat", "@someone", id_flag, id_value];
+        args.extend(["--account", "work", "--dry-run", "--json"]);
+        let (code, out, err) = run_in(&dir, &args);
+        assert_eq!(code, 0, "{verb}: stderr: {err}");
+        let d = parse_json(&out)["results"][0]["data"].clone();
+        assert_eq!(d["dry_run"], serde_json::json!(true), "{verb}");
+        assert_eq!(d["chat"], serde_json::json!("@someone"), "{verb}");
+        assert_eq!(d["would"], serde_json::json!(would), "{verb}");
+    }
+
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "story",
+            "delete",
+            "--chat",
+            "@someone",
+            "--ids",
+            "1,2",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["ids"], serde_json::json!([1, 2]));
+}
+
+#[test]
+fn story_list_dry_run_exit_zero_with_session() {
+    let dir = isolated_appdir("sylist");
+    write_session(&dir, "work");
+    for (extra, mode) in [
+        (vec![], "active"),
+        (vec!["--archive"], "archive"),
+        (vec!["--pinned"], "pinned"),
+    ] {
+        let mut args: Vec<&str> = vec!["story", "list", "--chat", "@someone"];
+        args.extend(extra);
+        args.extend(["--limit", "20", "--account", "work", "--dry-run", "--json"]);
+        let (code, out, err) = run_in(&dir, &args);
+        assert_eq!(code, 0, "mode {mode}: stderr: {err}");
+        let v = parse_json(&out);
+        assert_eq!(v["ok"], serde_json::json!(true), "mode {mode}");
+        assert_eq!(v["command"], serde_json::json!("story list"), "mode {mode}");
+        let d = &v["results"][0]["data"];
+        assert_eq!(d["dry_run"], serde_json::json!(true), "mode {mode}");
+        assert_eq!(d["mode"], serde_json::json!(mode), "mode {mode}");
+    }
 }
 
 #[test]

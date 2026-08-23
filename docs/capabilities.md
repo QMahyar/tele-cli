@@ -87,6 +87,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | profile.* | Profile get/set (name, bio, photo, username), photo remove, emoji status | `get_me`, `account.{UpdateProfile,UpdateUsername}`, `users.getFullUser`, `photos.{UploadProfilePhoto,UpdateProfilePhoto,DeletePhotos}`, `account.updateEmojiStatus` | `get_me` + raw | `tele profile *` (`get`; `set` incl. `--username <u or remove>` with USERNAME errors mapped to Usage; `photo --remove`; `emoji-status --emoji <id>` or `--remove`; no colors commands exist) | done |
 | privacy.* | Privacy rules (14 keys, user plus chat-participant rules) | `account.{GetPrivacy,SetPrivacy}` | raw | `tele privacy *` (keys incl. phone_p2p, birthday, star_gifts_auto_save, no_paid_messages, saved_music; `--allow-chat` / `--deny-chat`; same target on both sides rejected) | done |
 | takeout | Data export | `/api/takeout` | raw | `tele takeout` (requires explicit `--account`/`--tag`; `all` allowed; stderr progress in human mode; per-dialog checkpoint resume appends instead of truncating; `finish --abandon` = success:false) | done |
+| stories.* | Story send/list/read/delete/pin | `stories.{sendStory,getPeerStories,getStoriesArchive,getPinnedStories,readStories,deleteStories,togglePinned}`, `upload_file` + `inputMediaUploadedPhoto`/`inputMediaUploadedDocument` | raw | `tele story *` (`send --file F [--caption C] [--privacy everyone/contacts/close-friends] [--period s] [--pinned] [--noforwards]`; `list [--archive] [--pinned]`; `read --max-id N` (API is max-id only, no per-id read); `delete --ids`, `pin --ids`, `unpin --ids`; all mutators require explicit `--account` and honor `--dry-run`; send validates sensitive paths like msg uploads; peer must be own account, a user whose privacy permits, or a channel you admin — server-enforced, not pre-checked offline) | done |
 
 ## Updates
 
@@ -109,7 +110,6 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 
 | id | Domain | Status | Why |
 |---|---|---|---|
-| stories.* | Stories | want | Extra surface |
 | stickers.manage | Sticker pack management | `messages.{getAllStickers,searchStickerSets,getStickerSet,installStickerSet,uninstallStickerSet}` | raw arms in dedicated module | `tele sticker` with `list` / `search --query` / `show --set S` / `install --set S [--archive]` / `remove --set S` (`--set` accepts short name or t.me/addstickers link; creator-side naming + archive-toggle via `tele raw`) | done |
 | business.* | Telegram Business | never | Monetization extras — cut by product decision 2026-08-23 |
 | stars.* | Stars, gifts, payments, boosts, giveaways | never | Monetization — cut by product decision 2026-08-23 |
