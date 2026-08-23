@@ -22,6 +22,9 @@ pub enum MsgCmd {
     React(ReactArgs),
     Search(SearchArgs),
     Download(DownloadArgs),
+    Vote(VoteArgs),
+    Typing(TypingArgs),
+    Click(ClickArgs),
 }
 
 #[derive(Args, Clone)]
@@ -99,6 +102,16 @@ pub struct SendArgs {
     format: String,
     #[arg(long, help = "send without notification sound")]
     silent: bool,
+    #[arg(
+        long,
+        help = "disallow forwarding and saving of this message (text sends only)"
+    )]
+    noforwards: bool,
+    #[arg(
+        long,
+        help = "send as a background message (no notification sound even in unmuted chats)"
+    )]
+    background: bool,
 }
 
 #[derive(Args)]
@@ -265,6 +278,66 @@ pub struct DownloadArgs {
     chunk_size_kb: Option<usize>,
 }
 
+#[derive(Args)]
+pub struct VoteArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    chat: String,
+    #[arg(long, help = "message ID of the poll")]
+    id: i32,
+    #[arg(
+        long,
+        help = "1-based option indexes to vote for, e.g. 1 or 1,3 (multiple only for multi-choice polls)"
+    )]
+    option: String,
+}
+
+#[derive(Args)]
+pub struct TypingArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    chat: String,
+    #[arg(
+        long,
+        help = "chat action: typing | upload-photo | upload-file | cancel (default typing; actions auto-expire)"
+    )]
+    action: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ClickArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    chat: String,
+    #[arg(long, help = "message ID carrying the inline keyboard")]
+    id: i32,
+    #[arg(
+        long,
+        value_name = "TEXT",
+        help = "inline button text to click",
+        conflicts_with = "button_index"
+    )]
+    button: Option<String>,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "1-based inline button position across all rows",
+        conflicts_with = "button"
+    )]
+    button_index: Option<usize>,
+    #[arg(
+        long,
+        help = "reserved for 2FA-protected buttons; not supported at this layer"
+    )]
+    password: bool,
+}
+
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         MsgCmd::Send(a) => send(*a, flags).await,
@@ -277,6 +350,9 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         MsgCmd::React(a) => react(a, flags).await,
         MsgCmd::Search(a) => search(a, flags).await,
         MsgCmd::Download(a) => download(a, flags).await,
+        MsgCmd::Vote(a) => vote(a, flags).await,
+        MsgCmd::Typing(a) => typing(a, flags).await,
+        MsgCmd::Click(a) => click(a, flags).await,
     }
 }
 
@@ -354,6 +430,17 @@ fn validate_send(args: &SendArgs) -> TeleResult<()> {
     }
     if args.caption.is_some() && args.files.is_empty() {
         return Err(TeleError::Usage("--caption requires --file".to_string()));
+    }
+    if args.noforwards && (!args.files.is_empty() || args.url.is_some() || args.copy_from.is_some())
+    {
+        return Err(TeleError::Usage(
+            "--noforwards supports text sends only at this layer".to_string(),
+        ));
+    }
+    if args.background && args.files.len() > 1 {
+        return Err(TeleError::Usage(
+            "--background is not supported with albums".to_string(),
+        ));
     }
     if !args.files.is_empty() {
         if !effective_preview(args) {
@@ -572,6 +659,162 @@ fn parse_schedule(value: Option<&str>) -> TeleResult<Option<i32>> {
     })
 }
 
+const SCHEDULE_ONCE_ONLINE_RAW: i32 = 0x7fff_fffe;
+
+fn message_random_id() -> i64 {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST_ID: AtomicI64 = AtomicI64::new(0);
+    if LAST_ID.load(Ordering::SeqCst) == 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(1);
+        LAST_ID.fetch_max(now.max(1), Ordering::SeqCst);
+    }
+    LAST_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+fn raw_input_reply_to(reply_to_msg_id: i32) -> grammers_client::tl::enums::InputReplyTo {
+    grammers_client::tl::types::InputReplyToMessage {
+        reply_to_msg_id,
+        top_msg_id: None,
+        reply_to_peer_id: None,
+        quote_text: None,
+        quote_entities: None,
+        quote_offset: None,
+        monoforum_peer_id: None,
+        todo_item_id: None,
+        poll_option: None,
+    }
+    .into()
+}
+
+fn rfc3339_ts(ts: i32) -> String {
+    chrono::DateTime::from_timestamp(ts as i64, 0)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+fn merge_sent_updates(
+    row: &mut serde_json::Map<String, serde_json::Value>,
+    updates: &[grammers_client::tl::enums::Update],
+) {
+    use grammers_client::tl;
+    for update in updates {
+        match update {
+            tl::enums::Update::MessageId(m) => {
+                row.entry("id".to_string())
+                    .or_insert_with(|| serde_json::json!(m.id));
+            }
+            tl::enums::Update::NewMessage(n) => {
+                if let tl::enums::Message::Message(m) = &n.message {
+                    row.insert("id".into(), serde_json::json!(m.id));
+                    row.insert("out".into(), serde_json::json!(m.out));
+                    row.insert("date".into(), serde_json::json!(rfc3339_ts(m.date)));
+                }
+            }
+            _ => {}
+        }
+    }
+    if !row.contains_key("id") {
+        row.insert("sent".into(), serde_json::json!(true));
+    }
+}
+
+fn sent_updates_row(
+    updates: &grammers_client::tl::enums::Updates,
+    text: &str,
+) -> serde_json::Value {
+    use grammers_client::tl;
+    let mut row = serde_json::Map::new();
+    row.insert("text".into(), serde_json::json!(text));
+    row.insert("noforwards".into(), serde_json::json!(true));
+    match updates {
+        tl::enums::Updates::UpdateShortSentMessage(s) => {
+            row.insert("id".into(), serde_json::json!(s.id));
+            row.insert("out".into(), serde_json::json!(s.out));
+            row.insert("date".into(), serde_json::json!(rfc3339_ts(s.date)));
+        }
+        tl::enums::Updates::Updates(u) => merge_sent_updates(&mut row, &u.updates),
+        tl::enums::Updates::Combined(c) => merge_sent_updates(&mut row, &c.updates),
+        _ => {
+            row.insert("sent".into(), serde_json::json!(true));
+        }
+    }
+    serde_json::Value::Object(row)
+}
+
+struct RawTextSend<'a> {
+    text: &'a str,
+    format: &'a str,
+    preview: bool,
+    silent: bool,
+    background: bool,
+    reply: Option<i32>,
+    schedule: Option<u64>,
+}
+
+async fn send_noforwards_text(
+    client: &grammers_client::Client,
+    peer: grammers_client::tl::enums::InputPeer,
+    spec: RawTextSend<'_>,
+) -> TeleResult<serde_json::Value> {
+    use grammers_client::parsers::parse_markdown_message;
+    use grammers_client::tl;
+    let RawTextSend {
+        text,
+        format,
+        preview,
+        silent,
+        background,
+        reply,
+        schedule,
+    } = spec;
+    let (message, entities) = match format {
+        "markdown" => parse_markdown_message(text),
+        _ => (text.to_string(), Vec::new()),
+    };
+    let schedule_date = schedule.map(|s| {
+        if s == 0 {
+            SCHEDULE_ONCE_ONLINE_RAW
+        } else {
+            s as i32
+        }
+    });
+    let updates: tl::enums::Updates = client
+        .invoke(&tl::functions::messages::SendMessage {
+            no_webpage: !preview,
+            silent,
+            background,
+            clear_draft: false,
+            peer,
+            reply_to: reply.map(raw_input_reply_to),
+            message: message.clone(),
+            random_id: message_random_id(),
+            reply_markup: None,
+            entities: if entities.is_empty() {
+                None
+            } else {
+                Some(entities)
+            },
+            schedule_date,
+            schedule_repeat_period: None,
+            send_as: None,
+            noforwards: true,
+            update_stickersets_order: false,
+            invert_media: false,
+            quick_reply_shortcut: None,
+            effect: None,
+            allow_paid_floodskip: false,
+            allow_paid_stars: None,
+            suggested_post: None,
+            rich_message: None,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(sent_updates_row(&updates, &message))
+}
+
 fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::Value {
     let would = format!("send message to chat {}", args.chat);
     serde_json::json!({
@@ -592,6 +835,8 @@ fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::V
         "topic": args.topic,
         "preview": effective_preview(args),
         "silent": args.silent,
+        "noforwards": args.noforwards,
+        "background": args.background,
         "would": would,
     })
 }
@@ -613,6 +858,8 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let reply = args.reply.or(args.topic);
         let preview = effective_preview(&args);
         let silent = args.silent;
+        let noforwards = args.noforwards;
+        let background = args.background;
         let media_ttl = args.media_ttl;
         let thumbnail = args.thumbnail.clone();
         let url = args.url.clone();
@@ -634,6 +881,9 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 let mut msg = msg.reply_to(reply);
                 if silent {
                     msg = msg.silent(true);
+                }
+                if background {
+                    msg = msg.background(true);
                 }
                 if let Some(ttl) = media_ttl {
                     msg = msg.media_ttl(ttl);
@@ -740,6 +990,23 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 }
             } else {
                 let text = text.as_deref().unwrap_or_default();
+                if noforwards {
+                    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                    return send_noforwards_text(
+                        &guard.client,
+                        peer,
+                        RawTextSend {
+                            text,
+                            format: format.as_str(),
+                            preview,
+                            silent,
+                            background,
+                            reply,
+                            schedule,
+                        },
+                    )
+                    .await;
+                }
                 let base = match format.as_str() {
                     "markdown" => InputMessage::new().markdown(text),
                     _ => InputMessage::new().text(text),
@@ -1244,7 +1511,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
                 served += 1;
                 guard.rate_limiter.acquire_for_items(served).await;
-                rows.push(crate::serialize::message_to_json(&msg)?);
+                push_message_row(&mut rows, &msg)?;
             }
             if !output::machine_mode(json, jsonl) {
                 let table_rows: Vec<Vec<String>> = rows
@@ -1280,6 +1547,68 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     } else {
         truncated
     }
+}
+
+fn poll_question_text(poll: &grammers_client::media::Poll) -> String {
+    match poll.question() {
+        grammers_client::tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+    }
+}
+
+fn poll_row(poll: &grammers_client::media::Poll) -> serde_json::Value {
+    let answers = poll_answers(poll);
+    let voters: Vec<&grammers_client::tl::types::PollAnswerVoters> = poll
+        .iter_voters_summary()
+        .map(|summary| summary.collect())
+        .unwrap_or_default();
+    let options: Vec<serde_json::Value> = answers
+        .iter()
+        .enumerate()
+        .map(|(i, (text, option))| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("index".into(), serde_json::json!(i + 1));
+            entry.insert("text".into(), serde_json::json!(text));
+            if let Some(v) = voters.iter().find(|v| v.option == *option) {
+                entry.insert("chosen".into(), serde_json::json!(v.chosen));
+                if v.correct {
+                    entry.insert("correct".into(), serde_json::json!(true));
+                }
+                if let Some(count) = v.voters {
+                    entry.insert("voters".into(), serde_json::json!(count));
+                }
+            }
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+    let mut out = serde_json::Map::new();
+    out.insert("id".into(), serde_json::json!(poll.raw.id));
+    out.insert(
+        "question".into(),
+        serde_json::json!(poll_question_text(poll)),
+    );
+    out.insert("closed".into(), serde_json::json!(poll.closed()));
+    out.insert("quiz".into(), serde_json::json!(poll.is_quiz()));
+    if let Some(total) = poll.total_voters() {
+        out.insert("total_voters".into(), serde_json::json!(total));
+    }
+    out.insert("options".into(), serde_json::Value::Array(options));
+    serde_json::Value::Object(out)
+}
+
+fn enrich_message_row(row: &mut serde_json::Value, msg: &grammers_client::message::Message) {
+    if let Some(grammers_client::media::Media::Poll(poll)) = msg.media() {
+        row["poll"] = poll_row(&poll);
+    }
+}
+
+fn push_message_row(
+    rows: &mut Vec<serde_json::Value>,
+    msg: &grammers_client::message::Message,
+) -> TeleResult<()> {
+    let mut row = crate::serialize::message_to_json(msg)?;
+    enrich_message_row(&mut row, msg);
+    rows.push(row);
+    Ok(())
 }
 
 async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1419,6 +1748,519 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+fn validate_vote(args: &VoteArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    if args.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive message ID".to_string(),
+        ));
+    }
+    parse_vote_options(&args.option)?;
+    Ok(())
+}
+
+fn parse_vote_options(spec: &str) -> TeleResult<Vec<usize>> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut options = Vec::new();
+    for part in spec.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            return Err(TeleError::Usage(format!(
+                "--option must be comma-separated positive indexes like 1 or 1,2 (got {spec:?})"
+            )));
+        }
+        let index: usize = trimmed.parse().map_err(|_| {
+            TeleError::Usage(format!(
+                "--option must be comma-separated positive indexes like 1 or 1,2 (got {trimmed:?})"
+            ))
+        })?;
+        if index == 0 {
+            return Err(TeleError::Usage(format!(
+                "--option indexes are 1-based (got {index})"
+            )));
+        }
+        if !seen.insert(index) {
+            return Err(TeleError::Usage(format!(
+                "duplicate --option index {index}"
+            )));
+        }
+        options.push(index);
+    }
+    if options.is_empty() {
+        return Err(TeleError::Usage(
+            "--option must list at least one option index (e.g. --option 1)".to_string(),
+        ));
+    }
+    Ok(options)
+}
+
+fn poll_answers(poll: &grammers_client::media::Poll) -> Vec<(String, Vec<u8>)> {
+    use grammers_client::tl;
+    poll.iter_answers()
+        .filter_map(|answer| match answer {
+            tl::enums::PollAnswer::Answer(a) => Some((
+                match &a.text {
+                    tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+                },
+                a.option.clone(),
+            )),
+            tl::enums::PollAnswer::InputPollAnswer(_) => None,
+        })
+        .collect()
+}
+
+fn resolve_vote_options(
+    answers: &[(String, Vec<u8>)],
+    indexes: &[usize],
+) -> TeleResult<Vec<Vec<u8>>> {
+    indexes
+        .iter()
+        .map(|i| {
+            answers
+                .get(i.wrapping_sub(1))
+                .map(|(_, bytes)| bytes.clone())
+                .ok_or_else(|| {
+                    TeleError::Usage(format!(
+                        "--option index {i} is out of range (poll has {} option(s))",
+                        answers.len()
+                    ))
+                })
+        })
+        .collect()
+}
+
+async fn vote(args: VoteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_vote(&args)?;
+    if !flags.dry_run {
+        crate::executor::require_explicit_selection("msg vote", flags)?;
+    }
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let id = args.id;
+    let chat_target = args.chat.clone();
+    let option_indexes = parse_vote_options(&args.option)?;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let chat_target = chat_target.clone();
+        let option_indexes = option_indexes.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": chat_target,
+                    "id": id,
+                    "options": option_indexes,
+                    "would": format!("vote on poll {id} with option(s) {option_indexes:?}"),
+                }));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+            let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let found = guard
+                .client
+                .get_messages_by_id(chat_ref, &[id])
+                .await
+                .map_err(tele_invocation)?;
+            let msg = found
+                .into_iter()
+                .flatten()
+                .next()
+                .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+            let poll = match msg.media() {
+                Some(grammers_client::media::Media::Poll(poll)) => poll,
+                _ => return Err(TeleError::Usage(format!("message {id} has no poll"))),
+            };
+            if poll.closed() {
+                return Err(TeleError::Usage(format!("poll in message {id} is closed")));
+            }
+            let answers = poll_answers(&poll);
+            let options = resolve_vote_options(&answers, &option_indexes)?;
+            use grammers_client::tl;
+            guard
+                .client
+                .invoke(&tl::functions::messages::SendVote {
+                    peer: input_peer,
+                    msg_id: id,
+                    options,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(serde_json::json!({
+                "id": id,
+                "voted": true,
+                "options": option_indexes,
+            }))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TypingChoice {
+    Typing,
+    UploadPhoto,
+    UploadFile,
+    Cancel,
+}
+
+impl TypingChoice {
+    fn name(self) -> &'static str {
+        match self {
+            TypingChoice::Typing => "typing",
+            TypingChoice::UploadPhoto => "upload-photo",
+            TypingChoice::UploadFile => "upload-file",
+            TypingChoice::Cancel => "cancel",
+        }
+    }
+
+    fn action(self) -> grammers_client::tl::enums::SendMessageAction {
+        use grammers_client::tl;
+        match self {
+            TypingChoice::Typing => tl::enums::SendMessageAction::SendMessageTypingAction,
+            TypingChoice::UploadPhoto => {
+                tl::enums::SendMessageAction::SendMessageUploadPhotoAction(
+                    tl::types::SendMessageUploadPhotoAction { progress: 0 },
+                )
+            }
+            TypingChoice::UploadFile => {
+                tl::enums::SendMessageAction::SendMessageUploadDocumentAction(
+                    tl::types::SendMessageUploadDocumentAction { progress: 0 },
+                )
+            }
+            TypingChoice::Cancel => tl::enums::SendMessageAction::SendMessageCancelAction,
+        }
+    }
+}
+
+const TYPING_ACTIONS: [&str; 4] = ["typing", "upload-photo", "upload-file", "cancel"];
+
+fn typing_action(name: Option<&str>) -> TeleResult<TypingChoice> {
+    match name
+        .unwrap_or("typing")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "typing" => Ok(TypingChoice::Typing),
+        "upload-photo" => Ok(TypingChoice::UploadPhoto),
+        "upload-file" => Ok(TypingChoice::UploadFile),
+        "cancel" => Ok(TypingChoice::Cancel),
+        other => Err(TeleError::Usage(format!(
+            "unknown --action {other:?} (valid actions: {TYPING_ACTIONS:?})"
+        ))),
+    }
+}
+
+fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    typing_action(args.action.as_deref())?;
+    Ok(())
+}
+
+async fn typing(args: TypingArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_typing(&args)?;
+    let choice = typing_action(args.action.as_deref())?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let chat_target = args.chat.clone();
+    let action_name = choice.name();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let chat_target = chat_target.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": chat_target,
+                    "action": action_name,
+                    "would": format!("send {action_name} chat action to {chat_target}"),
+                }));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+            let sender = guard.client.action(chat_ref);
+            match choice {
+                TypingChoice::Cancel => sender.cancel().await,
+                other => sender.oneshot(other.action()).await,
+            }
+            .map_err(tele_invocation)?;
+            Ok(serde_json::json!({"chat": chat_target, "action": action_name}))
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+#[derive(Clone, Debug)]
+enum ButtonSelector {
+    Text(String),
+    Index(usize),
+}
+
+#[derive(Debug)]
+struct LocatedButton {
+    position: usize,
+    text: String,
+    callback_data: Vec<u8>,
+}
+
+fn button_text(button: &serde_json::Value) -> Option<&str> {
+    button.get("text").and_then(|v| v.as_str())
+}
+
+fn locate_button(
+    markup: &serde_json::Value,
+    selector: &ButtonSelector,
+) -> TeleResult<LocatedButton> {
+    let kind = markup
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if kind == "reply" {
+        return Err(TeleError::Usage(
+            "reply-keyboard buttons are not clickable; press them by sending their text instead: tele msg send --chat <chat> --text \"<button text>\"".to_string(),
+        ));
+    }
+    let empty = Vec::new();
+    let rows = markup
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
+    let mut buttons: Vec<(usize, &serde_json::Value)> = Vec::new();
+    for row in rows {
+        if let Some(items) = row.as_array() {
+            for button in items {
+                buttons.push((buttons.len() + 1, button));
+            }
+        }
+    }
+    let total = buttons.len();
+    if total == 0 {
+        return Err(TeleError::Usage(
+            "message has no clickable buttons".to_string(),
+        ));
+    }
+    let matches: Vec<(usize, &serde_json::Value)> = match selector {
+        ButtonSelector::Index(n) => {
+            if *n == 0 {
+                return Err(TeleError::Usage("--button-index is 1-based".to_string()));
+            }
+            buttons.into_iter().filter(|(p, _)| p == n).collect()
+        }
+        ButtonSelector::Text(text) => {
+            let exact: Vec<_> = buttons
+                .iter()
+                .copied()
+                .filter(|(_, b)| button_text(b) == Some(text.as_str()))
+                .collect();
+            if !exact.is_empty() {
+                exact
+            } else {
+                let lowered = text.to_lowercase();
+                buttons
+                    .iter()
+                    .copied()
+                    .filter(|(_, b)| button_text(b).is_some_and(|s| s.to_lowercase() == lowered))
+                    .collect()
+            }
+        }
+    };
+    match matches.len() {
+        0 => Err(TeleError::Usage(match selector {
+            ButtonSelector::Index(n) => {
+                format!("no button at position {n} (markup has {total} button(s))")
+            }
+            ButtonSelector::Text(text) => {
+                format!("no button named {text:?} in this message's inline keyboard")
+            }
+        })),
+        1 => {
+            let (position, button) = matches[0];
+            let text = button_text(button).unwrap_or_default().to_string();
+            let encoded = button
+                .get("callback_data")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    TeleError::Usage(format!(
+                        "button {text:?} carries no callback action; only callback buttons can be clicked"
+                    ))
+                })?;
+            use base64::engine::general_purpose::STANDARD;
+            use base64::Engine;
+            let callback_data = STANDARD.decode(encoded).map_err(|e| {
+                TeleError::Usage(format!(
+                    "button {text:?} has undecodable callback_data: {e}"
+                ))
+            })?;
+            Ok(LocatedButton {
+                position,
+                text,
+                callback_data,
+            })
+        }
+        _ => {
+            let positions: Vec<usize> = matches.iter().map(|(p, _)| *p).collect();
+            let label = match selector {
+                ButtonSelector::Text(text) => format!("{text:?}"),
+                ButtonSelector::Index(_) => String::new(),
+            };
+            Err(TeleError::Usage(format!(
+                "button {label} matches multiple buttons at positions {positions:?}; use --button-index"
+            )))
+        }
+    }
+}
+
+fn button_requires_password(
+    markup: &grammers_client::tl::enums::ReplyMarkup,
+    text: &str,
+    data: &[u8],
+) -> bool {
+    use grammers_client::tl;
+    let tl::enums::ReplyMarkup::ReplyInlineMarkup(m) = markup else {
+        return false;
+    };
+    m.rows.iter().any(|row| match row {
+        tl::enums::KeyboardButtonRow::Row(r) => r.buttons.iter().any(|b| match b {
+            tl::enums::KeyboardButton::Callback(cb) => {
+                cb.requires_password && cb.text == text && cb.data == data
+            }
+            _ => false,
+        }),
+    })
+}
+
+fn validate_click(args: &ClickArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    if args.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive message ID".to_string(),
+        ));
+    }
+    if args.password {
+        return Err(TeleError::Usage(
+            "--password is not supported at this layer: grammers 0.10 exposes no public path to build the getBotCallbackAnswer SRP payload, so password-protected buttons cannot be clicked".to_string(),
+        ));
+    }
+    match (&args.button, args.button_index) {
+        (None, None) => Err(TeleError::Usage(
+            "--button TEXT or --button-index N required".to_string(),
+        )),
+        (Some(_), Some(_)) => Err(TeleError::Usage(
+            "--button and --button-index are mutually exclusive".to_string(),
+        )),
+        (_, Some(0)) => Err(TeleError::Usage("--button-index is 1-based".to_string())),
+        _ => Ok(()),
+    }
+}
+
+async fn click(args: ClickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_click(&args)?;
+    if !flags.dry_run {
+        crate::executor::require_explicit_selection("msg click", flags)?;
+    }
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let id = args.id;
+    let chat_target = args.chat.clone();
+    let selector = if let Some(text) = &args.button {
+        ButtonSelector::Text(text.clone())
+    } else {
+        ButtonSelector::Index(args.button_index.expect("validated: one selector required"))
+    };
+    let selector_label = match &selector {
+        ButtonSelector::Text(t) => format!("button {t:?}"),
+        ButtonSelector::Index(n) => format!("button #{n}"),
+    };
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let chat_target = chat_target.clone();
+        let selector = selector.clone();
+        let selector_label = selector_label.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(serde_json::json!({
+                    "dry_run": true,
+                    "chat": chat_target,
+                    "id": id,
+                    "selector": selector_label,
+                    "would": format!("click {selector_label} on message {id}"),
+                }));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            guard.rate_limiter.acquire().await;
+            let chat =
+                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+            let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let found = guard
+                .client
+                .get_messages_by_id(chat_ref, &[id])
+                .await
+                .map_err(tele_invocation)?;
+            let msg = found
+                .into_iter()
+                .flatten()
+                .next()
+                .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+            let markup = msg.reply_markup().ok_or_else(|| {
+                TeleError::Usage(format!("message {id} has no reply markup"))
+            })?;
+            let markup_json = crate::serialize::reply_markup_to_json(&markup);
+            let located = locate_button(&markup_json, &selector)?;
+            if button_requires_password(&markup, &located.text, &located.callback_data) {
+                return Err(TeleError::Usage(format!(
+                    "button {:?} requires the account's 2FA password; password-protected clicks are not supported at this layer",
+                    located.text
+                )));
+            }
+            use grammers_client::tl;
+            let answer: tl::enums::messages::BotCallbackAnswer = guard
+                .client
+                .invoke(&tl::functions::messages::GetBotCallbackAnswer {
+                    game: false,
+                    peer: input_peer,
+                    msg_id: id,
+                    data: Some(located.callback_data.clone()),
+                    password: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            let mut row = serde_json::json!({
+                "id": id,
+                "clicked": true,
+                "button": located.text,
+                "position": located.position,
+            });
+            let tl::enums::messages::BotCallbackAnswer::Answer(a) = answer;
+            row["alert"] = serde_json::json!(a.alert);
+            if let Some(message) = a.message {
+                row["answer"] = serde_json::json!(message);
+            }
+            if let Some(url) = a.url {
+                row["url"] = serde_json::json!(url);
+            }
+            row["cache_time"] = serde_json::json!(a.cache_time);
+            Ok(row)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
 async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let global = args.global;
     if !global {
@@ -1465,7 +2307,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
                     served += 1;
                     guard.rate_limiter.acquire_for_items(served).await;
-                    rows.push(crate::serialize::message_to_json(&msg)?);
+                    push_message_row(&mut rows, &msg)?;
                 }
             } else {
                 let chat = entities::resolve_peer(
@@ -1483,7 +2325,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
                     served += 1;
                     guard.rate_limiter.acquire_for_items(served).await;
-                    rows.push(crate::serialize::message_to_json(&msg)?);
+                    push_message_row(&mut rows, &msg)?;
                 }
             }
             if !output::machine_mode(json, jsonl) {
@@ -1759,6 +2601,8 @@ mod tests {
             no_preview: false,
             format: format.to_string(),
             silent: false,
+            noforwards: false,
+            background: false,
         }
     }
 
@@ -3213,6 +4057,8 @@ mod tests {
             no_preview: false,
             format: "plain".to_string(),
             silent: false,
+            noforwards: false,
+            background: false,
         };
         assert!(matches!(validate_send(&url_only), Err(TeleError::Usage(_))));
         let with_kind = SendArgs {
@@ -3291,5 +4137,684 @@ mod tests {
         assert_eq!(value["chat"], serde_json::json!("@x"));
         assert_eq!(value["text"], serde_json::json!("new text"));
         assert_eq!(value["would"], serde_json::json!("edit message 5"));
+    }
+
+    fn vote_args(option: &str) -> VoteArgs {
+        VoteArgs {
+            chat: "me".to_string(),
+            id: 5,
+            option: option.to_string(),
+        }
+    }
+
+    fn typing_args(action: Option<&str>) -> TypingArgs {
+        TypingArgs {
+            chat: "me".to_string(),
+            action: action.map(str::to_string),
+        }
+    }
+
+    fn click_args(button: Option<String>, button_index: Option<usize>) -> ClickArgs {
+        ClickArgs {
+            chat: "me".to_string(),
+            id: 5,
+            button,
+            button_index,
+            password: false,
+        }
+    }
+
+    #[test]
+    fn parse_vote_options_accepts_single_and_multiple() {
+        assert_eq!(parse_vote_options("2").unwrap(), vec![2]);
+        assert_eq!(parse_vote_options("1,3").unwrap(), vec![1, 3]);
+        assert_eq!(parse_vote_options(" 2 , 1 ").unwrap(), vec![2, 1]);
+    }
+
+    #[test]
+    fn parse_vote_options_rejects_garbage() {
+        for bad in ["", " ", ",", "0", "-1", "a", "1,,2", "1.5", "2,", ",1"] {
+            assert!(
+                matches!(parse_vote_options(bad), Err(TeleError::Usage(_))),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_vote_options_rejects_duplicates() {
+        let err = parse_vote_options("1,1").unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("duplicate"), "{}", err.message());
+    }
+
+    #[test]
+    fn validate_vote_matrix() {
+        assert!(validate_vote(&vote_args("1")).is_ok());
+        let mut bad = vote_args("1");
+        bad.chat = "  ".to_string();
+        assert!(matches!(validate_vote(&bad), Err(TeleError::Usage(_))));
+        let mut zero_id = vote_args("1");
+        zero_id.id = 0;
+        assert!(matches!(validate_vote(&zero_id), Err(TeleError::Usage(_))));
+        assert!(matches!(
+            validate_vote(&vote_args("0")),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_vote(&vote_args("x")),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn vote_requires_explicit_account_when_not_dry_run() {
+        let flags = GlobalFlags {
+            account: Vec::new(),
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: false,
+            quiet: true,
+            config_path: None,
+            command: "msg vote".to_string(),
+        };
+        let err = vote(vote_args("1"), &flags).await.unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("--account"), "{}", err.message());
+    }
+
+    #[tokio::test]
+    async fn click_requires_explicit_account_when_not_dry_run() {
+        let flags = GlobalFlags {
+            account: Vec::new(),
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: false,
+            quiet: true,
+            config_path: None,
+            command: "msg click".to_string(),
+        };
+        let err = click(click_args(Some("Yes".to_string()), None), &flags)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("--account"), "{}", err.message());
+    }
+
+    #[tokio::test]
+    async fn vote_dry_run_short_circuits_before_connect() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = vote(vote_args("1,3"), &dryrun_flags("msg vote", true))
+            .await
+            .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn typing_action_allowlist_maps_known_names() {
+        assert!(matches!(typing_action(None).unwrap(), TypingChoice::Typing));
+        assert!(matches!(
+            typing_action(Some("typing")).unwrap(),
+            TypingChoice::Typing
+        ));
+        assert!(matches!(
+            typing_action(Some("upload-photo")).unwrap(),
+            TypingChoice::UploadPhoto
+        ));
+        assert!(matches!(
+            typing_action(Some("upload-file")).unwrap(),
+            TypingChoice::UploadFile
+        ));
+        assert!(matches!(
+            typing_action(Some("cancel")).unwrap(),
+            TypingChoice::Cancel
+        ));
+    }
+
+    #[test]
+    fn typing_action_rejects_unknown_with_valid_list() {
+        for bad in ["giphy", "", "TYPING LOUDLY", "upload"] {
+            let err = typing_action(Some(bad)).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+            assert!(err.message().contains("upload-photo"), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_typing_matrix() {
+        assert!(validate_typing(&typing_args(None)).is_ok());
+        assert!(validate_typing(&typing_args(Some("cancel"))).is_ok());
+        let mut bad = typing_args(None);
+        bad.chat = String::new();
+        assert!(matches!(validate_typing(&bad), Err(TeleError::Usage(_))));
+    }
+
+    #[tokio::test]
+    async fn typing_dry_run_short_circuits_before_connect() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = typing(
+            typing_args(Some("upload-photo")),
+            &dryrun_flags("msg typing", true),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
+    }
+
+    fn inline_markup_json(
+        rows: Vec<Vec<grammers_client::tl::enums::KeyboardButton>>,
+    ) -> serde_json::Value {
+        crate::serialize::reply_markup_to_json(
+            &grammers_client::tl::enums::ReplyMarkup::ReplyInlineMarkup(
+                grammers_client::tl::types::ReplyInlineMarkup {
+                    rows: rows
+                        .into_iter()
+                        .map(|buttons| {
+                            grammers_client::tl::enums::KeyboardButtonRow::Row(
+                                grammers_client::tl::types::KeyboardButtonRow { buttons },
+                            )
+                        })
+                        .collect(),
+                },
+            ),
+        )
+    }
+
+    fn reply_keyboard_json(
+        rows: Vec<Vec<grammers_client::tl::enums::KeyboardButton>>,
+    ) -> serde_json::Value {
+        crate::serialize::reply_markup_to_json(
+            &grammers_client::tl::enums::ReplyMarkup::ReplyKeyboardMarkup(
+                grammers_client::tl::types::ReplyKeyboardMarkup {
+                    resize: false,
+                    single_use: false,
+                    selective: false,
+                    persistent: false,
+                    rows: rows
+                        .into_iter()
+                        .map(|buttons| {
+                            grammers_client::tl::enums::KeyboardButtonRow::Row(
+                                grammers_client::tl::types::KeyboardButtonRow { buttons },
+                            )
+                        })
+                        .collect(),
+                    placeholder: None,
+                },
+            ),
+        )
+    }
+
+    fn hide_markup_json() -> serde_json::Value {
+        crate::serialize::reply_markup_to_json(
+            &grammers_client::tl::enums::ReplyMarkup::ReplyKeyboardHide(
+                grammers_client::tl::types::ReplyKeyboardHide { selective: false },
+            ),
+        )
+    }
+
+    fn tl_text_button(text: &str) -> grammers_client::tl::enums::KeyboardButton {
+        grammers_client::tl::enums::KeyboardButton::Button(
+            grammers_client::tl::types::KeyboardButton {
+                style: None,
+                text: text.into(),
+            },
+        )
+    }
+
+    fn tl_url_button(text: &str, url: &str) -> grammers_client::tl::enums::KeyboardButton {
+        grammers_client::tl::enums::KeyboardButton::Url(
+            grammers_client::tl::types::KeyboardButtonUrl {
+                style: None,
+                text: text.into(),
+                url: url.into(),
+            },
+        )
+    }
+
+    fn tl_callback_button(text: &str, data: &[u8]) -> grammers_client::tl::enums::KeyboardButton {
+        grammers_client::tl::enums::KeyboardButton::Callback(
+            grammers_client::tl::types::KeyboardButtonCallback {
+                requires_password: false,
+                style: None,
+                text: text.into(),
+                data: data.to_vec(),
+            },
+        )
+    }
+
+    fn two_row_inline_markup() -> serde_json::Value {
+        inline_markup_json(vec![
+            vec![
+                tl_callback_button("Yes", b"q:yes"),
+                tl_url_button("Docs", "https://example.com"),
+            ],
+            vec![
+                tl_callback_button("No", b"q:no"),
+                tl_callback_button("Maybe", b"q:maybe"),
+            ],
+        ])
+    }
+
+    #[test]
+    fn locate_button_finds_callback_by_exact_text() {
+        let found =
+            locate_button(&two_row_inline_markup(), &ButtonSelector::Text("No".into())).unwrap();
+        assert_eq!(found.position, 3);
+        assert_eq!(found.text, "No");
+        assert_eq!(found.callback_data, b"q:no".to_vec());
+    }
+
+    #[test]
+    fn locate_button_finds_by_index_across_rows() {
+        let found = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(1)).unwrap();
+        assert_eq!(found.position, 1);
+        assert_eq!(found.text, "Yes");
+        assert_eq!(found.callback_data, b"q:yes".to_vec());
+        let last = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(4)).unwrap();
+        assert_eq!(last.text, "Maybe");
+        let url_hit =
+            locate_button(&two_row_inline_markup(), &ButtonSelector::Index(2)).unwrap_err();
+        assert!(
+            url_hit.message().contains("callback"),
+            "{}",
+            url_hit.message()
+        );
+    }
+
+    #[test]
+    fn locate_button_matches_case_insensitive_when_unique() {
+        let found = locate_button(
+            &two_row_inline_markup(),
+            &ButtonSelector::Text("maybe".into()),
+        )
+        .unwrap();
+        assert_eq!(found.callback_data, b"q:maybe".to_vec());
+    }
+
+    #[test]
+    fn locate_button_reports_ambiguous_text_match() {
+        let markup = inline_markup_json(vec![vec![
+            tl_callback_button("ok", b"a"),
+            tl_callback_button("ok", b"b"),
+        ]]);
+        let err = locate_button(&markup, &ButtonSelector::Text("ok".into())).unwrap_err();
+        assert!(
+            err.message().contains("--button-index"),
+            "{}",
+            err.message()
+        );
+        assert!(err.message().contains("[1, 2]"), "{}", err.message());
+    }
+
+    #[test]
+    fn locate_button_prefers_exact_over_case_insensitive_match() {
+        let markup = inline_markup_json(vec![vec![
+            tl_callback_button("ok", b"a"),
+            tl_callback_button("OK", b"b"),
+        ]]);
+        let found = locate_button(&markup, &ButtonSelector::Text("ok".into())).unwrap();
+        assert_eq!(found.callback_data, b"a".to_vec());
+    }
+
+    #[test]
+    fn locate_button_errors_on_missing_text() {
+        let err = locate_button(
+            &two_row_inline_markup(),
+            &ButtonSelector::Text("Zilch".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("Zilch"), "{}", err.message());
+    }
+
+    #[test]
+    fn locate_button_rejects_reply_keyboard_with_send_hint() {
+        let markup = reply_keyboard_json(vec![
+            vec![tl_text_button("Ping")],
+            vec![tl_text_button("Pong")],
+        ]);
+        let err = locate_button(&markup, &ButtonSelector::Text("Ping".into())).unwrap_err();
+        assert!(err.message().contains("not clickable"), "{}", err.message());
+        assert!(err.message().contains("msg send"), "{}", err.message());
+    }
+
+    #[test]
+    fn locate_button_handles_empty_markup_kinds() {
+        let err = locate_button(&hide_markup_json(), &ButtonSelector::Index(1)).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        let force_reply = crate::serialize::reply_markup_to_json(
+            &grammers_client::tl::enums::ReplyMarkup::ReplyKeyboardForceReply(
+                grammers_client::tl::types::ReplyKeyboardForceReply {
+                    single_use: false,
+                    selective: false,
+                    placeholder: None,
+                },
+            ),
+        );
+        assert!(locate_button(&force_reply, &ButtonSelector::Index(1)).is_err());
+    }
+
+    #[test]
+    fn locate_button_rejects_zero_and_out_of_range_index() {
+        let zero = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(0)).unwrap_err();
+        assert!(zero.message().contains("1-based"), "{}", zero.message());
+        let over = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(9)).unwrap_err();
+        assert!(over.message().contains('9'), "{}", over.message());
+    }
+
+    #[test]
+    fn validate_click_requires_exactly_one_selector() {
+        assert!(validate_click(&click_args(Some("Yes".to_string()), None)).is_ok());
+        assert!(validate_click(&click_args(None, Some(2))).is_ok());
+        let none = click_args(None, None);
+        assert!(matches!(validate_click(&none), Err(TeleError::Usage(_))));
+        let both = click_args(Some("Yes".to_string()), Some(2));
+        assert!(matches!(validate_click(&both), Err(TeleError::Usage(_))));
+        let mut empty_chat = click_args(None, Some(1));
+        empty_chat.chat = "".to_string();
+        assert!(matches!(
+            validate_click(&empty_chat),
+            Err(TeleError::Usage(_))
+        ));
+        let mut zero = click_args(None, Some(0));
+        zero.id = 0;
+        assert!(matches!(validate_click(&zero), Err(TeleError::Usage(_))));
+        let mut idx0 = click_args(None, Some(0));
+        idx0.button_index = Some(0);
+        assert!(matches!(validate_click(&idx0), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn validate_click_password_fails_honestly() {
+        let mut args = click_args(Some("Yes".to_string()), None);
+        args.password = true;
+        let err = validate_click(&args).unwrap_err();
+        assert!(err.message().contains("password"), "{}", err.message());
+        assert!(err.message().contains("not supported"), "{}", err.message());
+    }
+
+    #[tokio::test]
+    async fn click_dry_run_short_circuits_before_connect() {
+        let _guard = lock_env().await;
+        let dir = fake_app_dir();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let code = click(
+            click_args(Some("Yes".to_string()), None),
+            &dryrun_flags("msg click", true),
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 0);
+    }
+
+    fn poll_media_with_answers() -> grammers_client::media::Poll {
+        use grammers_client::tl;
+        let answers = ["Alpha", "Beta", "Gamma"]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                tl::enums::PollAnswer::Answer(tl::types::PollAnswer {
+                    media: None,
+                    added_by: None,
+                    date: None,
+                    text: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: label.to_string(),
+                        entities: Vec::new(),
+                    }),
+                    option: format!("opt{i}").into_bytes(),
+                })
+            })
+            .collect();
+        let media = tl::enums::MessageMedia::Poll(Box::new(tl::types::MessageMediaPoll {
+            poll: tl::enums::Poll::Poll(tl::types::Poll {
+                id: 7,
+                closed: false,
+                public_voters: true,
+                multiple_choice: false,
+                quiz: false,
+                open_answers: false,
+                revoting_disabled: false,
+                shuffle_answers: false,
+                hide_results_until_close: false,
+                creator: false,
+                subscribers_only: false,
+                question: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                    text: "Pick one?".into(),
+                    entities: Vec::new(),
+                }),
+                answers,
+                close_period: None,
+                close_date: None,
+                countries_iso2: None,
+                hash: 0,
+            }),
+            results: tl::enums::PollResults::Results(Box::new(tl::types::PollResults {
+                min: false,
+                has_unread_votes: false,
+                can_view_stats: true,
+                results: Some(vec![tl::enums::PollAnswerVoters::Voters(
+                    tl::types::PollAnswerVoters {
+                        chosen: true,
+                        correct: false,
+                        option: b"opt0".to_vec(),
+                        voters: Some(12),
+                        recent_voters: None,
+                    },
+                )]),
+                total_voters: Some(30),
+                recent_voters: None,
+                solution: None,
+                solution_entities: None,
+                solution_media: None,
+            })),
+            attached_media: None,
+        }));
+        match grammers_client::media::Media::from_raw(media).unwrap() {
+            grammers_client::media::Media::Poll(p) => p,
+            _ => panic!("expected poll media"),
+        }
+    }
+
+    #[test]
+    fn poll_answers_lists_option_texts_and_bytes_in_order() {
+        let answers = poll_answers(&poll_media_with_answers());
+        assert_eq!(
+            answers.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            vec!["Alpha", "Beta", "Gamma"]
+        );
+        assert_eq!(answers[0].1, b"opt0".to_vec());
+        assert_eq!(answers[2].1, b"opt2".to_vec());
+    }
+
+    #[test]
+    fn resolve_vote_options_maps_indexes_to_bytes() {
+        let answers = poll_answers(&poll_media_with_answers());
+        let picked = resolve_vote_options(&answers, &[1, 3]).unwrap();
+        assert_eq!(picked, vec![b"opt0".to_vec(), b"opt2".to_vec()]);
+        let out_of_range = resolve_vote_options(&answers, &[4]).unwrap_err();
+        assert!(
+            out_of_range.message().contains("4"),
+            "{}",
+            out_of_range.message()
+        );
+        assert!(matches!(
+            resolve_vote_options(&answers, &[0]),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn poll_row_emits_question_flags_options_voters() {
+        let row = poll_row(&poll_media_with_answers());
+        assert_eq!(row["question"], "Pick one?");
+        assert_eq!(row["closed"], false);
+        assert_eq!(row["quiz"], false);
+        assert_eq!(row["total_voters"], 30);
+        let options = row["options"].as_array().unwrap();
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0]["index"], 1);
+        assert_eq!(options[0]["text"], "Alpha");
+        assert_eq!(options[0]["voters"], 12);
+        assert_eq!(options[0]["chosen"], true);
+        assert!(options[1].get("voters").is_none());
+        assert!(options[1].get("chosen").is_none());
+    }
+
+    #[test]
+    fn poll_row_omits_voters_without_results() {
+        use grammers_client::tl;
+        let media = tl::enums::MessageMedia::Poll(Box::new(tl::types::MessageMediaPoll {
+            poll: tl::enums::Poll::Poll(tl::types::Poll {
+                id: 1,
+                closed: true,
+                public_voters: false,
+                multiple_choice: false,
+                quiz: true,
+                open_answers: false,
+                revoting_disabled: false,
+                shuffle_answers: false,
+                hide_results_until_close: false,
+                creator: false,
+                subscribers_only: false,
+                question: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                    text: "Closed quiz".into(),
+                    entities: Vec::new(),
+                }),
+                answers: vec![tl::enums::PollAnswer::Answer(tl::types::PollAnswer {
+                    media: None,
+                    added_by: None,
+                    date: None,
+                    text: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: "Only".into(),
+                        entities: Vec::new(),
+                    }),
+                    option: b"only".to_vec(),
+                })],
+                close_period: None,
+                close_date: None,
+                countries_iso2: None,
+                hash: 0,
+            }),
+            results: tl::enums::PollResults::Results(Box::new(tl::types::PollResults {
+                min: false,
+                has_unread_votes: false,
+                can_view_stats: false,
+                results: None,
+                total_voters: None,
+                recent_voters: None,
+                solution: None,
+                solution_entities: None,
+                solution_media: None,
+            })),
+            attached_media: None,
+        }));
+        let poll = match grammers_client::media::Media::from_raw(media).unwrap() {
+            grammers_client::media::Media::Poll(p) => p,
+            _ => panic!("expected poll media"),
+        };
+        let row = poll_row(&poll);
+        assert_eq!(row["closed"], true);
+        assert_eq!(row["quiz"], true);
+        assert!(row.get("total_voters").is_none());
+        let options = row["options"].as_array().unwrap();
+        assert_eq!(options.len(), 1);
+        assert!(options[0].get("voters").is_none());
+        assert!(options[0].get("chosen").is_none());
+    }
+
+    #[test]
+    fn message_random_id_is_nonzero_and_advances() {
+        let a = message_random_id();
+        let b = message_random_id();
+        assert_ne!(a, 0);
+        assert_ne!(b, 0);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn validate_send_noforwards_supports_text_only() {
+        let mut text_only = send_args("plain");
+        text_only.noforwards = true;
+        text_only.background = true;
+        assert!(validate_send(&text_only).is_ok());
+
+        let dir = upload_fixture("nofwd", &["a.pdf"]);
+        let mut with_file = send_args("plain");
+        with_file.text = None;
+        with_file.noforwards = true;
+        with_file.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
+        let err = validate_send(&with_file).unwrap_err();
+        assert!(err.message().contains("--noforwards"), "{}", err.message());
+
+        let mut with_url = send_args("plain");
+        with_url.text = None;
+        with_url.noforwards = true;
+        with_url.url = Some("https://example.com/x.jpg".to_string());
+        with_url.kind = Some("photo".to_string());
+        assert!(matches!(validate_send(&with_url), Err(TeleError::Usage(_))));
+
+        let mut with_copy = send_args("plain");
+        with_copy.text = None;
+        with_copy.noforwards = true;
+        with_copy.copy_from = Some("@src".to_string());
+        with_copy.copy_id = Some(1);
+        assert!(matches!(
+            validate_send(&with_copy),
+            Err(TeleError::Usage(_))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_send_background_rejects_albums_allows_single_and_text() {
+        let dir = upload_fixture("bgmod", &["a.jpg", "b.jpg"]);
+        let paths: Vec<String> = ["a.jpg", "b.jpg"]
+            .iter()
+            .map(|n| dir.join(n).to_string_lossy().into_owned())
+            .collect();
+        let mut album = send_args("plain");
+        album.text = None;
+        album.background = true;
+        album.files = paths;
+        let err = validate_send(&album).unwrap_err();
+        assert!(err.message().contains("--background"), "{}", err.message());
+
+        let mut single = send_args("plain");
+        single.text = None;
+        single.background = true;
+        single.files = vec![dir.join("a.jpg").to_string_lossy().into_owned()];
+        assert!(validate_send(&single).is_ok());
+
+        let mut text = send_args("plain");
+        text.background = true;
+        assert!(validate_send(&text).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn send_dry_run_payload_carries_send_mods() {
+        let mut args = send_args("plain");
+        args.noforwards = true;
+        args.background = true;
+        let value = send_dry_run_payload(&args, None);
+        assert_eq!(value["noforwards"], serde_json::json!(true));
+        assert_eq!(value["background"], serde_json::json!(true));
+        let plain = send_dry_run_payload(&send_args("plain"), None);
+        assert_eq!(plain["noforwards"], serde_json::json!(false));
+        assert_eq!(plain["background"], serde_json::json!(false));
     }
 }
