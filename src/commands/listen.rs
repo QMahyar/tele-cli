@@ -50,6 +50,12 @@ pub struct ListenArgs {
     r#in: bool,
     #[arg(long, help = "only outgoing messages (message events only)")]
     out: bool,
+    #[arg(
+        long,
+        value_name = "RE",
+        help = "only messages whose text matches this Rust regex, case-sensitive (message events only)"
+    )]
+    pattern: Option<String>,
 }
 const VALID_EVENTS: &[&str] = &[
     "NewMessage",
@@ -75,6 +81,7 @@ struct EventFilter {
     chats: Vec<PeerId>,
     senders: Vec<PeerId>,
     direction: Option<Direction>,
+    pattern: Option<regex::Regex>,
 }
 
 impl EventFilter {
@@ -90,6 +97,13 @@ impl EventFilter {
             return false;
         }
         self.direction_allows(out)
+    }
+
+    fn text_allows(&self, text: Option<&str>) -> bool {
+        match &self.pattern {
+            None => true,
+            Some(re) => text.is_some_and(|t| re.is_match(t)),
+        }
     }
 
     fn sender_allows(&self, sender: Option<PeerId>) -> bool {
@@ -108,11 +122,14 @@ impl EventFilter {
     }
 
     fn raw_allows(&self, peer: Option<PeerId>) -> bool {
-        self.senders.is_empty() && self.direction.is_none() && self.chat_allows(peer)
+        self.senders.is_empty()
+            && self.direction.is_none()
+            && self.pattern.is_none()
+            && self.chat_allows(peer)
     }
 
     fn deletions_pass(&self) -> bool {
-        self.senders.is_empty() && self.direction.is_none()
+        self.senders.is_empty() && self.direction.is_none() && self.pattern.is_none()
     }
 }
 
@@ -188,6 +205,32 @@ fn update_outgoing(u: &tl::enums::Update) -> Option<bool> {
     }
 }
 
+fn message_text(msg: &tl::enums::Message) -> Option<&str> {
+    match msg {
+        tl::enums::Message::Message(m) => Some(m.message.as_str()),
+        _ => None,
+    }
+}
+
+fn update_text(u: &tl::enums::Update) -> Option<&str> {
+    match u {
+        tl::enums::Update::NewMessage(x) => message_text(&x.message),
+        tl::enums::Update::NewChannelMessage(x) => message_text(&x.message),
+        tl::enums::Update::EditMessage(x) => message_text(&x.message),
+        tl::enums::Update::EditChannelMessage(x) => message_text(&x.message),
+        _ => None,
+    }
+}
+
+fn compile_pattern(pattern: Option<&str>) -> TeleResult<Option<regex::Regex>> {
+    pattern
+        .map(|p| {
+            regex::Regex::new(p)
+                .map_err(|e| TeleError::Usage(format!("invalid --pattern {p:?}: {e}")))
+        })
+        .transpose()
+}
+
 fn resolution_usage_error(flag: &str, target: &str, cause: &TeleError) -> TeleError {
     TeleError::Usage(format!(
         "cannot resolve {flag} {target}: {}",
@@ -231,6 +274,7 @@ async fn resolve_filter(
         chats: resolved_chats,
         senders: resolved_senders,
         direction,
+        pattern: None,
     })
 }
 
@@ -466,6 +510,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if args.raw && !events.iter().any(|e| e == "Raw") {
         events.push("Raw".to_string());
     }
+    let filter_pattern = compile_pattern(args.pattern.as_deref())?;
     require_explicit_selection("listen", flags)?;
     let names = crate::executor::select_accounts(flags)?;
     if names.is_empty() {
@@ -504,6 +549,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let chat_targets = chat_targets.clone();
         let from_targets = from_targets.clone();
         let events = events.clone();
+        let filter_pattern = filter_pattern.clone();
         tasks.spawn(async move {
             let result: TeleResult<()> = async {
                 let creds =
@@ -551,6 +597,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             direction,
                         )
                         .await?;
+                        filter.pattern = filter_pattern.clone();
                         targets_resolved = true;
                     }
                     if let Err(e) = guard
@@ -682,6 +729,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 {
                                     continue;
                                 }
+                                if !filter.text_allows(update_text(&m.raw)) {
+                                    continue;
+                                }
                                 if !filter.chats.is_empty() {
                                     if let Some(peer) = m.peer() {
                                         observed.observe(m.id(), peer.id());
@@ -735,6 +785,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !filter
                                     .message_allows(update_sender(&m.raw), update_outgoing(&m.raw))
                                 {
+                                    continue;
+                                }
+                                if !filter.text_allows(update_text(&m.raw)) {
                                     continue;
                                 }
                                 if !filter.chats.is_empty() {
@@ -2227,6 +2280,7 @@ mod tests {
             chats: vec![PeerId::chat_unchecked(1)],
             senders: vec![PeerId::user_unchecked(2)],
             direction: Some(Direction::In),
+            pattern: None,
         };
         let peer_ok = Some(PeerId::chat_unchecked(1));
         let sender_ok = Some(PeerId::user_unchecked(2));
@@ -2252,6 +2306,7 @@ mod tests {
             chats: vec![PeerId::chat_unchecked(1)],
             senders: vec![PeerId::user_unchecked(2), PeerId::user_unchecked(3)],
             direction: None,
+            pattern: None,
         };
         let peer_ok = Some(PeerId::chat_unchecked(1));
         assert!(filter_message(
@@ -2308,6 +2363,195 @@ mod tests {
             ..Default::default()
         };
         assert!(!f_dir.deletions_pass());
+    }
+
+    fn text_update(body: &str) -> tl::enums::Update {
+        let mut msg = match tl_message(user_tl_peer()) {
+            tl::enums::Message::Message(m) => m,
+            _ => unreachable!("tl_message always builds a concrete message"),
+        };
+        msg.message = body.to_string();
+        tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: tl::enums::Message::Message(msg),
+            pts: 1,
+            pts_count: 1,
+        })
+    }
+
+    fn service_textless_update() -> tl::enums::Update {
+        tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: tl::enums::Message::Service(tl::types::MessageService {
+                out: false,
+                mentioned: false,
+                media_unread: false,
+                reactions_are_possible: false,
+                silent: false,
+                post: false,
+                legacy: false,
+                id: 1,
+                from_id: None,
+                peer_id: channel_peer(),
+                saved_peer_id: None,
+                reply_to: None,
+                date: 0,
+                action: tl::enums::MessageAction::Empty,
+                reactions: None,
+                ttl_period: None,
+            }),
+            pts: 1,
+            pts_count: 1,
+        })
+    }
+
+    #[test]
+    fn compile_pattern_rejects_invalid_regex_as_usage() {
+        let err = compile_pattern(Some("(")).expect_err("invalid regex must be rejected");
+        assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+        assert!(err.message().contains("--pattern"), "err: {err}");
+    }
+
+    #[test]
+    fn compile_pattern_none_is_no_filter_and_valid_pattern_compiles() {
+        assert!(compile_pattern(None).unwrap().is_none());
+        assert!(compile_pattern(Some("^buy")).unwrap().is_some());
+    }
+
+    #[test]
+    fn compile_pattern_matches_as_written_case_sensitively() {
+        let re = compile_pattern(Some("alert")).unwrap().unwrap();
+        assert!(re.is_match("urgent alert now"));
+        assert!(!re.is_match("nothing here"));
+        assert!(!re.is_match("ALERT"), "matching stays case-sensitive");
+    }
+
+    #[test]
+    fn pattern_filter_matches_and_mismatches_text_case_sensitively() {
+        let f = EventFilter {
+            pattern: compile_pattern(Some("alert")).unwrap(),
+            ..Default::default()
+        };
+        assert!(f.text_allows(Some("urgent alert now")));
+        assert!(!f.text_allows(Some("nothing here")));
+        assert!(!f.text_allows(Some("ALERT")), "case-sensitive by default");
+    }
+
+    #[test]
+    fn pattern_filter_drops_textless_rows_but_passes_all_when_unset() {
+        let f = EventFilter {
+            pattern: compile_pattern(Some(".")).unwrap(),
+            ..Default::default()
+        };
+        assert!(
+            !f.text_allows(None),
+            "textless rows cannot satisfy a text pattern"
+        );
+        assert!(EventFilter::default().text_allows(None));
+        assert!(EventFilter::default().text_allows(Some("any")));
+    }
+
+    #[test]
+    fn update_text_reads_body_only_from_concrete_message_kinds() {
+        assert_eq!(
+            update_text(&text_update("hello there")),
+            Some("hello there")
+        );
+        let empty_update = tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: empty_message(),
+            pts: 1,
+            pts_count: 1,
+        });
+        assert_eq!(update_text(&empty_update), None);
+        assert_eq!(update_text(&service_textless_update()), None);
+        assert_eq!(update_text(&tl::enums::Update::PtsChanged), None);
+    }
+
+    fn filter_full_row(
+        f: &EventFilter,
+        sender: Option<PeerId>,
+        out: Option<bool>,
+        text: Option<&str>,
+    ) -> bool {
+        f.message_allows(sender, out) && f.text_allows(text)
+    }
+
+    #[test]
+    fn pattern_composes_with_sender_dimension_and_wise() {
+        let f = EventFilter {
+            senders: vec![PeerId::user_unchecked(7)],
+            pattern: compile_pattern(Some("alert")).unwrap(),
+            ..Default::default()
+        };
+        let sender_ok = Some(PeerId::user_unchecked(7));
+        let sender_other = Some(PeerId::user_unchecked(8));
+        assert!(filter_full_row(
+            &f,
+            sender_ok,
+            Some(false),
+            Some("big alert")
+        ));
+        assert!(
+            !filter_full_row(&f, sender_ok, Some(false), Some("quiet")),
+            "right sender, non-matching text"
+        );
+        assert!(
+            !filter_full_row(&f, sender_other, Some(false), Some("big alert")),
+            "matching text, wrong sender"
+        );
+    }
+
+    #[test]
+    fn raw_events_blocked_when_pattern_set() {
+        let peer = Some(PeerId::channel_unchecked(4));
+        let f = EventFilter {
+            pattern: compile_pattern(Some("x")).unwrap(),
+            ..Default::default()
+        };
+        assert!(!f.raw_allows(peer), "raw carries no text to match");
+        assert!(EventFilter::default().raw_allows(peer));
+    }
+
+    #[test]
+    fn deletions_blocked_when_pattern_set() {
+        let f = EventFilter {
+            pattern: compile_pattern(Some("x")).unwrap(),
+            ..Default::default()
+        };
+        assert!(!f.deletions_pass(), "deletions carry no text to match");
+        assert!(EventFilter::default().deletions_pass());
+    }
+
+    #[test]
+    fn listen_parses_pattern_flag() {
+        use crate::Command;
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "tele",
+            "listen",
+            "--account",
+            "a",
+            "--pattern",
+            "^buy|sell$",
+        ])
+        .expect("--pattern must parse");
+        match cli.command {
+            Command::Listen(args) => {
+                assert_eq!(args.pattern.as_deref(), Some("^buy|sell$"));
+            }
+            _ => panic!("expected listen subcommand"),
+        }
+    }
+
+    #[test]
+    fn listen_help_documents_pattern_case_sensitivity() {
+        use clap::CommandFactory;
+        let mut cmd = crate::Cli::command();
+        let listen = cmd
+            .find_subcommand_mut("listen")
+            .expect("listen subcommand");
+        let help = listen.render_help().to_string();
+        assert!(help.contains("--pattern"), "help: {help}");
+        assert!(help.contains("case-sensitive"), "help: {help}");
     }
 
     #[test]
