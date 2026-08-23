@@ -3946,6 +3946,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_log_validates_since_until_and_flags_offline() {
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
         let mut a = admin_log_args("@c");
         a.since = Some("not-a-date".to_string());
         assert!(matches!(
