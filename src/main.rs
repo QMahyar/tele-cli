@@ -96,6 +96,9 @@ enum Command {
     /// Sticker packs: list, search, show, install, remove
     #[command(subcommand)]
     Sticker(stickers::StickerCmd),
+    /// Stories: send, list, read, delete, pin, unpin
+    #[command(subcommand)]
+    Story(stories::StoryCmd),
     /// Contacts: list, add, remove, block, unblock
     #[command(subcommand)]
     Contact(contact::ContactCmd),
@@ -269,6 +272,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Dialog(c) => dialog::run(c, flags).await,
         Command::Topic(c) => topic::run(c, flags).await,
         Command::Sticker(c) => stickers::run(c, flags).await,
+        Command::Story(c) => stories::run(c, flags).await,
         Command::Contact(c) => contact::run(c, flags).await,
         Command::Profile(c) => profile::run(c, flags).await,
         Command::Privacy(c) => privacy::run(c, flags).await,

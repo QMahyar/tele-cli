@@ -12,6 +12,7 @@ pub mod profile;
 pub mod raw;
 pub mod serve;
 pub mod stickers;
+pub mod stories;
 pub mod takeout;
 pub mod topic;
 
