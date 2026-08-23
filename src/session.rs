@@ -1,14 +1,13 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::types::{DcOption, PeerInfo};
 use grammers_client::session::Session as _;
 
 pub const SESSION_FILE_WARNING: &str =
     "session files grant full access to their Telegram account; treat exports as secrets";
-
-pub const TELETHON_CONVERT_BLOCKER: &str = "cannot convert Telethon sessions: reading the Telethon SQLite schema (version + sessions tables) needs a direct SQLite reader dependency (rusqlite, or libsql matching grammers-session's own engine); grammers-session 0.10 exposes no public raw-SQL access and no foreign-database ingestion, so this requires an explicit dependency approval";
 
 pub fn session_dir() -> PathBuf {
     crate::config::app_data_dir().join("sessions")
@@ -333,8 +332,219 @@ impl std::fmt::Debug for TelethonSessionData {
     }
 }
 
-pub fn parse_telethon_session(_source: &Path) -> anyhow::Result<TelethonSessionData> {
-    Err(anyhow::anyhow!("{TELETHON_CONVERT_BLOCKER}"))
+const TELETHON_SESSION_COLUMNS_REQUIRED: [&str; 4] =
+    ["dc_id", "server_address", "port", "auth_key"];
+const TELETHON_AUTH_KEY_LEN: usize = 256;
+
+fn libsql_value_kind(value: &libsql::Value) -> &'static str {
+    match value {
+        libsql::Value::Null => "NULL",
+        libsql::Value::Integer(_) => "integer",
+        libsql::Value::Real(_) => "real",
+        libsql::Value::Text(_) => "text",
+        libsql::Value::Blob(_) => "blob",
+    }
+}
+
+fn libsql_value_string(value: &libsql::Value) -> Option<String> {
+    match value {
+        libsql::Value::Text(s) => Some(s.clone()),
+        libsql::Value::Blob(b) => Some(String::from_utf8_lossy(b).into_owned()),
+        _ => None,
+    }
+}
+
+async fn libsql_table_columns(
+    conn: &libsql::Connection,
+    table: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut columns = Vec::new();
+    let quoted = format!("'{table}'");
+    let mut rows = conn
+        .query(&format!("PRAGMA table_info({quoted})"), ())
+        .await?;
+    while let Some(row) = rows.next().await? {
+        if let Some(name) = libsql_value_string(&row.get::<libsql::Value>(1)?) {
+            columns.push(name);
+        }
+    }
+    Ok(columns)
+}
+
+async fn libsql_read_only_conn(path: &Path) -> anyhow::Result<libsql::Connection> {
+    let db = libsql::Builder::new_local(path)
+        .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .build()
+        .await
+        .with_context(|| format!("cannot open Telethon session {}", path.display()))?;
+    Ok(db.connect()?)
+}
+
+async fn libsql_collect_rows(
+    conn: &libsql::Connection,
+    sql: &str,
+) -> anyhow::Result<Vec<Vec<libsql::Value>>> {
+    let mut collected = Vec::new();
+    let mut rows = conn.query(sql, ()).await?;
+    while let Some(row) = rows.next().await? {
+        let width = rows.column_count();
+        let mut cells = Vec::with_capacity(width.max(0) as usize);
+        for idx in 0..width {
+            cells.push(row.get::<libsql::Value>(idx)?);
+        }
+        collected.push(cells);
+    }
+    Ok(collected)
+}
+
+fn telethon_int_cell(column: &str, value: &libsql::Value) -> anyhow::Result<i64> {
+    match value {
+        libsql::Value::Integer(i) => Ok(*i),
+        other => Err(anyhow::anyhow!(
+            "Telethon column {column} should be integer, found {}",
+            libsql_value_kind(other)
+        )),
+    }
+}
+
+fn telethon_auth_key_cell(value: &libsql::Value) -> anyhow::Result<[u8; TELETHON_AUTH_KEY_LEN]> {
+    match value {
+        libsql::Value::Blob(bytes) => bytes.as_slice().try_into().map_err(|_| {
+            anyhow::anyhow!(
+                "Telethon auth_key has {} bytes; expected {TELETHON_AUTH_KEY_LEN}",
+                bytes.len()
+            )
+        }),
+        libsql::Value::Null => Err(anyhow::anyhow!("Telethon auth_key is NULL")),
+        other => Err(anyhow::anyhow!(
+            "Telethon auth_key should be a 256-byte BLOB, found {}",
+            libsql_value_kind(other)
+        )),
+    }
+}
+
+pub async fn parse_telethon_session(source: &Path) -> anyhow::Result<TelethonSessionData> {
+    if !source.is_file() {
+        anyhow::bail!(
+            "Telethon session file not found or not a regular file: {}",
+            source.display()
+        );
+    }
+    let header = std::fs::read(source)?;
+    if !header.starts_with(SQLITE_MAGIC) {
+        anyhow::bail!(
+            "not a Telethon session: {} lacks the SQLite file header",
+            source.display()
+        );
+    }
+    let conn = libsql_read_only_conn(source).await?;
+    let tables: Vec<String> = {
+        let rows = libsql_collect_rows(
+            &conn,
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        )
+        .await?;
+        rows.into_iter()
+            .filter_map(|cells| cells.first().and_then(libsql_value_string))
+            .collect()
+    };
+    if !tables.iter().any(|t| t == "sessions") {
+        anyhow::bail!(
+            "not a Telethon session: found tables [{}], expected one named 'sessions'",
+            tables.join(", ")
+        );
+    }
+    let columns = libsql_table_columns(&conn, "sessions").await?;
+    let missing: Vec<&str> = TELETHON_SESSION_COLUMNS_REQUIRED
+        .iter()
+        .copied()
+        .filter(|required| !columns.iter().any(|found| found == required))
+        .collect();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "not a Telethon session: 'sessions' table lacks required columns [{}]; found columns [{}]",
+            missing.join(", "),
+            columns.join(", ")
+        );
+    }
+    let schema_version = match tables.iter().position(|t| t == "version") {
+        None => 0,
+        Some(_) => {
+            let version_columns = libsql_table_columns(&conn, "version").await?;
+            match ["number", "version"]
+                .iter()
+                .find(|candidate| version_columns.iter().any(|found| found == *candidate))
+            {
+                None => 0,
+                Some(candidate) => {
+                    let sql = format!(
+                        "SELECT {candidate} FROM version WHERE {candidate} IS NOT NULL ORDER BY {candidate} DESC LIMIT 1"
+                    );
+                    match libsql_collect_rows(&conn, &sql)
+                        .await?
+                        .into_iter()
+                        .next()
+                        .and_then(|cells| cells.into_iter().next())
+                    {
+                        Some(libsql::Value::Integer(number)) => number,
+                        _ => 0,
+                    }
+                }
+            }
+        }
+    };
+    let has_user_id = columns.iter().any(|found| found == "user_id");
+    let select_sql = if has_user_id {
+        "SELECT dc_id, server_address, port, auth_key, user_id FROM sessions ORDER BY dc_id"
+    } else {
+        "SELECT dc_id, server_address, port, auth_key FROM sessions ORDER BY dc_id"
+    };
+    let data_rows = libsql_collect_rows(&conn, select_sql).await?;
+    match data_rows.len() {
+        0 => anyhow::bail!(
+            "not a usable Telethon session: 'sessions' table holds no rows, expected exactly one"
+        ),
+        n @ 2.. => anyhow::bail!(
+            "ambiguous Telethon session: 'sessions' table holds {n} rows, expected exactly one"
+        ),
+        1 => {}
+    }
+    let cells = &data_rows[0];
+    let dc_id = i32::try_from(telethon_int_cell("dc_id", &cells[0])?)
+        .map_err(|_| anyhow::anyhow!("Telethon dc_id out of range"))?;
+    let server_address = match &cells[1] {
+        libsql::Value::Null => {
+            anyhow::bail!("Telethon server_address is NULL")
+        }
+        value @ (libsql::Value::Text(_) | libsql::Value::Blob(_)) => {
+            libsql_value_string(value).unwrap_or_default()
+        }
+        other => {
+            anyhow::bail!(
+                "Telethon server_address should be text, found {}",
+                libsql_value_kind(other)
+            )
+        }
+    };
+    let port = i32::try_from(telethon_int_cell("port", &cells[2])?)
+        .map_err(|_| anyhow::anyhow!("Telethon port out of range"))?;
+    let auth_key = telethon_auth_key_cell(&cells[3])?;
+    let user_id = if has_user_id {
+        match &cells[4] {
+            libsql::Value::Null => None,
+            value => Some(telethon_int_cell("user_id", value)?),
+        }
+    } else {
+        None
+    };
+    Ok(TelethonSessionData {
+        schema_version,
+        dc_id,
+        server_address,
+        port,
+        auth_key,
+        user_id,
+    })
 }
 
 fn telethon_dc_sockets(
@@ -417,7 +627,7 @@ pub async fn convert_telethon_session(
     as_name: Option<&str>,
     force: bool,
 ) -> anyhow::Result<ImportedSession> {
-    let data = parse_telethon_session(source)?;
+    let data = parse_telethon_session(source).await?;
     let name = resolve_import_name(as_name, source)?;
     ensure_no_clobber(&name, force)?;
     let path = write_native_from_telethon(&name, &data, true).await?;
@@ -927,34 +1137,259 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telethon_parse_reports_dependency_blocker() {
+    async fn telethon_parse_reads_classic_schema() {
+        let dir = test_dir("tg-parse-classic");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+        let fixture = inbox.join("classic.session");
+        write_telethon_fixture(&fixture, None).await;
+        let parsed = parse_telethon_session(&fixture).await.unwrap();
+        assert_eq!(parsed.schema_version, 0);
+        assert_eq!(parsed.dc_id, 2);
+        assert_eq!(parsed.server_address, "149.154.167.51");
+        assert_eq!(parsed.port, 443);
+        assert_eq!(parsed.auth_key, [0xA7u8; 256]);
+        assert_eq!(parsed.user_id, Some(867_5309));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_parse_reads_version_table_layout() {
+        let dir = test_dir("tg-parse-versioned");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+        let fixture = inbox.join("versioned.session");
+        write_telethon_fixture(&fixture, Some(7)).await;
+        let parsed = parse_telethon_session(&fixture).await.unwrap();
+        assert_eq!(parsed.schema_version, 7);
+        assert_eq!(parsed.dc_id, 2);
+        assert_eq!(parsed.server_address, "149.154.167.51");
+        assert_eq!(parsed.port, 443);
+        assert_eq!(parsed.auth_key, [0xA7u8; 256]);
+        assert_eq!(parsed.user_id, Some(867_5309));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_parse_rejects_unknown_schema_enumerating_findings() {
+        let dir = test_dir("tg-parse-unknown");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let foreign = inbox.join("foreign.session");
+        let db = libsql::Builder::new_local(&foreign).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute("CREATE TABLE entities (id INTEGER)", ())
+            .await
+            .unwrap();
+        conn.execute("CREATE TABLE sent_files (id INTEGER)", ())
+            .await
+            .unwrap();
+        drop(conn);
+        drop(db);
+        let err = parse_telethon_session(&foreign).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("sessions"), "{msg}");
+        assert!(
+            msg.contains("entities") && msg.contains("sent_files"),
+            "{msg}"
+        );
+
+        let partial = inbox.join("partial.session");
+        let db = libsql::Builder::new_local(&partial).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute("CREATE TABLE sessions (dc_id INTEGER, port INTEGER)", ())
+            .await
+            .unwrap();
+        drop(conn);
+        drop(db);
+        let err = parse_telethon_session(&partial).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("auth_key"), "{msg}");
+        assert!(msg.contains("server_address"), "{msg}");
+        assert!(msg.contains("dc_id") && msg.contains("port"), "{msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_parse_rejects_unusable_session_rows_honestly() {
+        let dir = test_dir("tg-parse-badrows");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        let empty = inbox.join("empty.session");
+        let db = libsql::Builder::new_local(&empty).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, server_address TEXT, port INTEGER, auth_key BLOB, takeout_id BLOB, user_id INTEGER)",
+            (),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        drop(db);
+        let err = parse_telethon_session(&empty).await.unwrap_err();
+        assert!(err.to_string().contains("no row"), "{}", err);
+
+        let nullkey = inbox.join("nullkey.session");
+        let db = libsql::Builder::new_local(&nullkey).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, server_address TEXT, port INTEGER, auth_key BLOB, takeout_id BLOB, user_id INTEGER)",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions VALUES (2, '149.154.167.51', 443, NULL, NULL, 1)",
+            (),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        drop(db);
+        let err = parse_telethon_session(&nullkey).await.unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("auth_key"),
+            "{}",
+            err
+        );
+
+        let shortkey = inbox.join("shortkey.session");
+        let db = libsql::Builder::new_local(&shortkey).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, server_address TEXT, port INTEGER, auth_key BLOB, takeout_id BLOB, user_id INTEGER)",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            &format!(
+                "INSERT INTO sessions VALUES (2, '149.154.167.51', 443, X'{}', NULL, 1)",
+                "B7".repeat(128)
+            ),
+            (),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        drop(db);
+        let err = parse_telethon_session(&shortkey).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("128") && msg.contains("256"), "{msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_parse_rejects_garbage_and_missing_files() {
+        let dir = test_dir("tg-parse-garbage");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+        let junk = inbox.join("junk.session");
+        std::fs::write(&junk, b"definitely not sqlite").unwrap();
+        let err = parse_telethon_session(&junk).await.unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("sqlite")
+                || err.to_string().to_lowercase().contains("header"),
+            "{}",
+            err
+        );
+        let missing = inbox.join("missing.session");
+        let err = parse_telethon_session(&missing).await.unwrap_err();
+        assert!(err.to_string().contains("missing.session"), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_convert_end_to_end_roundtrips_auth_key_and_dc() {
         let _guard = lock_env().await;
-        let dir = test_dir("telethon-blocker");
+        let dir = test_dir("tg-e2e-roundtrip");
         let inbox = dir.join("inbox");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&inbox).unwrap();
         seed_test_env(&dir);
-        let fake = inbox.join("t.session");
-        sqlite_scaffold(&fake).await;
-        let err = convert_telethon_session(&fake, Some("fromtg"), false)
+        let fixture = inbox.join("fromtg.session");
+        write_telethon_fixture(&fixture, Some(7)).await;
+        let imported = convert_telethon_session(&fixture, None, false)
             .await
-            .unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("rusqlite") && msg.contains("libsql"), "{msg}");
+            .unwrap();
+        assert_eq!(imported.account, "fromtg");
+        assert_eq!(imported.path, session_path("fromtg"));
+        {
+            let reopened = open_session("fromtg").await.unwrap();
+            assert_eq!(reopened.session.home_dc_id().unwrap(), 2);
+            let option = reopened.session.dc_option(2).unwrap().expect("dc option");
+            assert_eq!(option.auth_key, Some([0xA7u8; 256]));
+            let myself = reopened
+                .session
+                .peer(grammers_client::session::types::PeerId::self_user())
+                .await
+                .unwrap()
+                .expect("cached self user");
+            match myself {
+                PeerInfo::User { id, .. } => assert_eq!(id, 867_5309),
+                other => panic!("expected self user, got {other:?}"),
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(session_path("fromtg"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "converted session must be owner-only");
+        }
+        let mut failure_text = String::new();
+        let mut broken = fixture_telethon(2);
+        broken.server_address = "venus.web.telegram.org".to_string();
+        if let Err(e) = write_native_from_telethon("x", &broken, false).await {
+            failure_text = format!("{e:#}");
+        }
         assert!(
-            msg.contains("dependency approval"),
-            "must name the required approval: {msg}"
+            !failure_text.contains("167,") && !failure_text.contains(&"A7".repeat(256)),
+            "error output leaked key material: {failure_text}"
         );
-        assert!(
-            !session_path("fromtg").exists(),
-            "blocked conversion must not create a session file"
-        );
-        assert!(
-            !lock_path("fromtg").exists(),
-            "blocked conversion must not create a lock file"
-        );
+        remove_session("fromtg").unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn write_telethon_fixture(path: &Path, version: Option<i64>) {
+        let db = libsql::Builder::new_local(path).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, server_address TEXT, port INTEGER, auth_key BLOB, takeout_id BLOB, user_id INTEGER)",
+            (),
+        )
+        .await
+        .unwrap();
+        if let Some(v) = version {
+            conn.execute("CREATE TABLE version (number INTEGER PRIMARY KEY)", ())
+                .await
+                .unwrap();
+            conn.execute(&format!("INSERT INTO version VALUES ({v})"), ())
+                .await
+                .unwrap();
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO sessions VALUES (2, '149.154.167.51', 443, X'{}', NULL, 8675309)",
+                "A7".repeat(256)
+            ),
+            (),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
