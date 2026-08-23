@@ -21,7 +21,7 @@ pub struct ListenArgs {
         long,
         value_delimiter = ',',
         default_value = "NewMessage",
-        help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap"
+        help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap, Service, ChatAction, UserUpdate (ChatAction/UserUpdate are parsed out of grammers' raw-update wrapper)"
     )]
     events: Vec<String>,
     #[arg(
@@ -64,6 +64,9 @@ const VALID_EVENTS: &[&str] = &[
     "Raw",
     "Album",
     "Gap",
+    "Service",
+    "ChatAction",
+    "UserUpdate",
 ];
 const MAX_RECONNECT_BACKOFF: u32 = 30;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
@@ -126,6 +129,10 @@ impl EventFilter {
             && self.direction.is_none()
             && self.pattern.is_none()
             && self.chat_allows(peer)
+    }
+
+    fn action_allows(&self, peer: Option<PeerId>, sender: Option<PeerId>) -> bool {
+        self.chat_allows(peer) && self.sender_allows(sender)
     }
 
     fn deletions_pass(&self) -> bool {
@@ -650,6 +657,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     let gap_on = events.iter().any(|e| e == "Gap");
                     let album_on = events.iter().any(|e| e == "Album");
                     let new_message_on = events.iter().any(|e| e == "NewMessage");
+                    let service_on = events.iter().any(|e| e == "Service");
+                    let chat_action_on = events.iter().any(|e| e == "ChatAction");
+                    let user_update_on = events.iter().any(|e| e == "UserUpdate");
                     loop {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
@@ -714,7 +724,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         }
                         match &update {
                             Update::NewMessage(m) => {
-                                if !new_message_on && !album_on {
+                                let service_flavored =
+                                    matches!(&(**m).raw, tl::enums::Message::Service(_));
+                                if !message_event_applies(
+                                    new_message_on,
+                                    album_on,
+                                    service_on,
+                                    service_flavored,
+                                ) {
                                     continue;
                                 }
                                 let peer = update_peer(&m.raw);
@@ -737,8 +754,20 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         observed.observe(m.id(), peer.id());
                                     }
                                 }
+                                if routes_to_service(service_on, service_flavored) {
+                                    if let tl::enums::Message::Service(svc) = &(**m).raw {
+                                        emit_row(service_row(
+                                            &name,
+                                            peer.and_then(|p| p.bare_id()),
+                                            streamed_message_row(m)?,
+                                            &svc.action,
+                                        ))
+                                        .await?;
+                                        continue;
+                                    }
+                                }
                                 let chat_id = peer.and_then(|p| p.bare_id());
-                                let row = crate::serialize::message_to_json(m)?;
+                                let row = streamed_message_row(m)?;
                                 let grouped = if album_on { album_member(&row) } else { None };
                                 match (grouped, chat_id) {
                                     (Some((member_chat, gid)), _) => {
@@ -772,7 +801,11 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 }
                             }
                             Update::MessageEdited(m) => {
-                                if !events.iter().any(|e| e == "MessageEdited") {
+                                let service_flavored =
+                                    matches!(&(**m).raw, tl::enums::Message::Service(_));
+                                if !routes_to_service(service_on, service_flavored)
+                                    && !events.iter().any(|e| e == "MessageEdited")
+                                {
                                     continue;
                                 }
                                 let peer = update_peer(&m.raw);
@@ -795,7 +828,19 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         observed.observe(m.id(), peer.id());
                                     }
                                 }
-                                let row = crate::serialize::message_to_json(m)?;
+                                if routes_to_service(service_on, service_flavored) {
+                                    if let tl::enums::Message::Service(svc) = &(**m).raw {
+                                        emit_row(service_row(
+                                            &name,
+                                            peer.and_then(|p| p.bare_id()),
+                                            streamed_message_row(m)?,
+                                            &svc.action,
+                                        ))
+                                        .await?;
+                                        continue;
+                                    }
+                                }
+                                let row = streamed_message_row(m)?;
                                 emit_row(event_row(
                                     "MessageEdited",
                                     &name,
@@ -834,6 +879,28 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 .await?;
                             }
                             _ => {
+                                if chat_action_on {
+                                    if let Some((peer, sender, row)) =
+                                        chat_action_row(&name, update.raw())
+                                    {
+                                        if !filter.action_allows(peer, sender) {
+                                            continue;
+                                        }
+                                        emit_row(row).await?;
+                                        continue;
+                                    }
+                                }
+                                if user_update_on {
+                                    if let Some((peer, sender, row)) =
+                                        user_update_row(&name, update.raw())
+                                    {
+                                        if !filter.action_allows(peer, sender) {
+                                            continue;
+                                        }
+                                        emit_row(row).await?;
+                                        continue;
+                                    }
+                                }
                                 if !events.iter().any(|e| e == "Raw") {
                                     continue;
                                 }
@@ -1081,6 +1148,299 @@ fn base64_encode(bytes: &[u8]) -> String {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     STANDARD.encode(bytes)
+}
+
+fn streamed_message_row(m: &grammers_client::message::Message) -> TeleResult<serde_json::Value> {
+    let mut row = crate::serialize::message_to_json(m)?;
+    crate::serialize::enrich_message_row(&mut row, m);
+    Ok(row)
+}
+
+fn message_event_applies(
+    new_message_on: bool,
+    album_on: bool,
+    service_on: bool,
+    service_flavored: bool,
+) -> bool {
+    new_message_on || album_on || (service_on && service_flavored)
+}
+
+fn routes_to_service(service_on: bool, service_flavored: bool) -> bool {
+    service_on && service_flavored
+}
+
+fn service_row(
+    account: &str,
+    chat_id: Option<i64>,
+    base: serde_json::Value,
+    action: &tl::enums::MessageAction,
+) -> serde_json::Value {
+    let mut row = event_row("Service", account, chat_id, None, Some(base));
+    let (kind, label) = message_action_kind_label(action);
+    if let serde_json::Value::Object(map) = &mut row {
+        map.insert(
+            "service_action".into(),
+            serde_json::json!({ "kind": kind, "label": label }),
+        );
+    }
+    row
+}
+
+fn chat_action_row(
+    account: &str,
+    raw: &tl::enums::Update,
+) -> Option<(Option<PeerId>, Option<PeerId>, serde_json::Value)> {
+    let build = |peer: Option<PeerId>,
+                 emit_chat_id: Option<i64>,
+                 sender: Option<PeerId>,
+                 user_id: Option<i64>,
+                 action: &tl::enums::SendMessageAction| {
+        let (kind, label) = typing_action_kind_label(action);
+        let mut row = event_row("ChatAction", account, None, None, None);
+        if let serde_json::Value::Object(map) = &mut row {
+            if let Some(chat_id) = emit_chat_id {
+                map.insert("chat_id".into(), serde_json::json!(chat_id));
+            }
+            if let Some(user_id) = user_id {
+                map.insert("user_id".into(), serde_json::json!(user_id));
+            }
+            map.insert(
+                "action".into(),
+                serde_json::json!({ "kind": kind, "label": label }),
+            );
+        }
+        (peer, sender, row)
+    };
+    let sender_user_id = |from_id: &tl::enums::Peer| match from_id {
+        tl::enums::Peer::User(user) => Some(user.user_id),
+        _ => None,
+    };
+    match raw {
+        tl::enums::Update::UserTyping(t) => {
+            let peer = PeerId::user(t.user_id);
+            Some(build(peer, None, peer, Some(t.user_id), &t.action))
+        }
+        tl::enums::Update::ChatUserTyping(t) => {
+            let chat = PeerId::chat(t.chat_id);
+            let sender = PeerId::from(&t.from_id);
+            let emit = chat.and_then(|p| p.bare_id());
+            Some(build(
+                chat,
+                emit,
+                Some(sender),
+                sender_user_id(&t.from_id),
+                &t.action,
+            ))
+        }
+        tl::enums::Update::ChannelUserTyping(t) => {
+            let chat = PeerId::channel(t.channel_id);
+            let sender = PeerId::from(&t.from_id);
+            let emit = chat.and_then(|p| p.bare_id());
+            Some(build(
+                chat,
+                emit,
+                Some(sender),
+                sender_user_id(&t.from_id),
+                &t.action,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn user_update_row(
+    account: &str,
+    raw: &tl::enums::Update,
+) -> Option<(Option<PeerId>, Option<PeerId>, serde_json::Value)> {
+    match raw {
+        tl::enums::Update::UserStatus(u) => {
+            let peer = PeerId::user(u.user_id);
+            let mut row = event_row("UserUpdate", account, None, None, None);
+            if let serde_json::Value::Object(map) = &mut row {
+                map.insert("user_id".into(), serde_json::json!(u.user_id));
+                map.insert("status".into(), user_status_json(&u.status));
+            }
+            Some((peer, peer, row))
+        }
+        _ => None,
+    }
+}
+
+fn user_status_json(status: &tl::enums::UserStatus) -> serde_json::Value {
+    let (kind, label) = user_status_kind_label(status);
+    let mut out = serde_json::Map::new();
+    out.insert("kind".into(), serde_json::json!(kind));
+    out.insert("label".into(), serde_json::json!(label));
+    match status {
+        tl::enums::UserStatus::Online(t) => {
+            out.insert("expires".into(), serde_json::json!(t.expires));
+        }
+        tl::enums::UserStatus::Offline(t) => {
+            out.insert("was_online".into(), serde_json::json!(t.was_online));
+        }
+        _ => {}
+    }
+    serde_json::Value::Object(out)
+}
+
+fn user_status_kind_label(status: &tl::enums::UserStatus) -> (&'static str, &'static str) {
+    match status {
+        tl::enums::UserStatus::Empty => ("userStatusEmpty", "empty"),
+        tl::enums::UserStatus::Online(_) => ("userStatusOnline", "online"),
+        tl::enums::UserStatus::Offline(_) => ("userStatusOffline", "offline"),
+        tl::enums::UserStatus::Recently(_) => ("userStatusRecently", "recently"),
+        tl::enums::UserStatus::LastWeek(_) => ("userStatusLastWeek", "last-week"),
+        tl::enums::UserStatus::LastMonth(_) => ("userStatusLastMonth", "last-month"),
+    }
+}
+
+fn typing_action_kind_label(action: &tl::enums::SendMessageAction) -> (&'static str, &'static str) {
+    let kind = match action {
+        tl::enums::SendMessageAction::SendMessageTypingAction => "sendMessageTypingAction",
+        tl::enums::SendMessageAction::SendMessageCancelAction => "sendMessageCancelAction",
+        tl::enums::SendMessageAction::SendMessageRecordVideoAction => {
+            "sendMessageRecordVideoAction"
+        }
+        tl::enums::SendMessageAction::SendMessageUploadVideoAction(_) => {
+            "sendMessageUploadVideoAction"
+        }
+        tl::enums::SendMessageAction::SendMessageRecordAudioAction => {
+            "sendMessageRecordAudioAction"
+        }
+        tl::enums::SendMessageAction::SendMessageUploadAudioAction(_) => {
+            "sendMessageUploadAudioAction"
+        }
+        tl::enums::SendMessageAction::SendMessageUploadPhotoAction(_) => {
+            "sendMessageUploadPhotoAction"
+        }
+        tl::enums::SendMessageAction::SendMessageUploadDocumentAction(_) => {
+            "sendMessageUploadDocumentAction"
+        }
+        tl::enums::SendMessageAction::SendMessageGeoLocationAction => {
+            "sendMessageGeoLocationAction"
+        }
+        tl::enums::SendMessageAction::SendMessageChooseContactAction => {
+            "sendMessageChooseContactAction"
+        }
+        tl::enums::SendMessageAction::SendMessageGamePlayAction => "sendMessageGamePlayAction",
+        tl::enums::SendMessageAction::SendMessageRecordRoundAction => {
+            "sendMessageRecordRoundAction"
+        }
+        tl::enums::SendMessageAction::SendMessageUploadRoundAction(_) => {
+            "sendMessageUploadRoundAction"
+        }
+        tl::enums::SendMessageAction::SpeakingInGroupCallAction => "speakingInGroupCallAction",
+        tl::enums::SendMessageAction::SendMessageHistoryImportAction(_) => {
+            "sendMessageHistoryImportAction"
+        }
+        tl::enums::SendMessageAction::SendMessageChooseStickerAction => {
+            "sendMessageChooseStickerAction"
+        }
+        tl::enums::SendMessageAction::SendMessageEmojiInteraction(_) => {
+            "sendMessageEmojiInteraction"
+        }
+        tl::enums::SendMessageAction::SendMessageEmojiInteractionSeen(_) => {
+            "sendMessageEmojiInteractionSeen"
+        }
+        tl::enums::SendMessageAction::SendMessageTextDraftAction(_) => "sendMessageTextDraftAction",
+        tl::enums::SendMessageAction::InputSendMessageRichMessageDraftAction(_) => {
+            "inputSendMessageRichMessageDraftAction"
+        }
+        tl::enums::SendMessageAction::SendMessageRichMessageDraftAction(_) => {
+            "sendMessageRichMessageDraftAction"
+        }
+    };
+    let label = match kind {
+        "sendMessageTypingAction" => "typing",
+        _ => kind,
+    };
+    (kind, label)
+}
+
+fn message_action_kind_label(action: &tl::enums::MessageAction) -> (&'static str, &'static str) {
+    let kind = message_action_kind(action);
+    let label = match kind {
+        "messageActionChatAddUser" | "messageActionInviteToGroupCall" => "join-invite",
+        "messageActionChatJoinedByLink" | "messageActionChatJoinedByRequest" => "join",
+        "messageActionChatDeleteUser" => "leave",
+        "messageActionPinMessage" => "pin",
+        _ => kind,
+    };
+    (kind, label)
+}
+
+fn message_action_kind(action: &tl::enums::MessageAction) -> &'static str {
+    match action {
+        tl::enums::MessageAction::Empty => "messageActionEmpty",
+        tl::enums::MessageAction::ChatCreate(_) => "messageActionChatCreate",
+        tl::enums::MessageAction::ChatEditTitle(_) => "messageActionChatEditTitle",
+        tl::enums::MessageAction::ChatEditPhoto(_) => "messageActionChatEditPhoto",
+        tl::enums::MessageAction::ChatDeletePhoto => "messageActionChatDeletePhoto",
+        tl::enums::MessageAction::ChatAddUser(_) => "messageActionChatAddUser",
+        tl::enums::MessageAction::ChatDeleteUser(_) => "messageActionChatDeleteUser",
+        tl::enums::MessageAction::ChatJoinedByLink(_) => "messageActionChatJoinedByLink",
+        tl::enums::MessageAction::ChannelCreate(_) => "messageActionChannelCreate",
+        tl::enums::MessageAction::ChatMigrateTo(_) => "messageActionChatMigrateTo",
+        tl::enums::MessageAction::ChannelMigrateFrom(_) => "messageActionChannelMigrateFrom",
+        tl::enums::MessageAction::PinMessage => "messageActionPinMessage",
+        tl::enums::MessageAction::HistoryClear => "messageActionHistoryClear",
+        tl::enums::MessageAction::GameScore(_) => "messageActionGameScore",
+        tl::enums::MessageAction::PaymentSentMe(_) => "messageActionPaymentSentMe",
+        tl::enums::MessageAction::PaymentSent(_) => "messageActionPaymentSent",
+        tl::enums::MessageAction::PhoneCall(_) => "messageActionPhoneCall",
+        tl::enums::MessageAction::ScreenshotTaken => "messageActionScreenshotTaken",
+        tl::enums::MessageAction::CustomAction(_) => "messageActionCustomAction",
+        tl::enums::MessageAction::BotAllowed(_) => "messageActionBotAllowed",
+        tl::enums::MessageAction::SecureValuesSentMe(_) => "messageActionSecureValuesSentMe",
+        tl::enums::MessageAction::SecureValuesSent(_) => "messageActionSecureValuesSent",
+        tl::enums::MessageAction::ContactSignUp => "messageActionContactSignUp",
+        tl::enums::MessageAction::GeoProximityReached(_) => "messageActionGeoProximityReached",
+        tl::enums::MessageAction::GroupCall(_) => "messageActionGroupCall",
+        tl::enums::MessageAction::InviteToGroupCall(_) => "messageActionInviteToGroupCall",
+        tl::enums::MessageAction::SetMessagesTtl(_) => "messageActionSetMessagesTTL",
+        tl::enums::MessageAction::GroupCallScheduled(_) => "messageActionGroupCallScheduled",
+        tl::enums::MessageAction::SetChatTheme(_) => "messageActionSetChatTheme",
+        tl::enums::MessageAction::ChatJoinedByRequest => "messageActionChatJoinedByRequest",
+        tl::enums::MessageAction::WebViewDataSentMe(_) => "messageActionWebViewDataSentMe",
+        tl::enums::MessageAction::WebViewDataSent(_) => "messageActionWebViewDataSent",
+        tl::enums::MessageAction::GiftPremium(_) => "messageActionGiftPremium",
+        tl::enums::MessageAction::TopicCreate(_) => "messageActionTopicCreate",
+        tl::enums::MessageAction::TopicEdit(_) => "messageActionTopicEdit",
+        tl::enums::MessageAction::SuggestProfilePhoto(_) => "messageActionSuggestProfilePhoto",
+        tl::enums::MessageAction::RequestedPeer(_) => "messageActionRequestedPeer",
+        tl::enums::MessageAction::SetChatWallPaper(_) => "messageActionSetChatWallPaper",
+        tl::enums::MessageAction::GiftCode(_) => "messageActionGiftCode",
+        tl::enums::MessageAction::GiveawayLaunch(_) => "messageActionGiveawayLaunch",
+        tl::enums::MessageAction::GiveawayResults(_) => "messageActionGiveawayResults",
+        tl::enums::MessageAction::BoostApply(_) => "messageActionBoostApply",
+        tl::enums::MessageAction::RequestedPeerSentMe(_) => "messageActionRequestedPeerSentMe",
+        tl::enums::MessageAction::PaymentRefunded(_) => "messageActionPaymentRefunded",
+        tl::enums::MessageAction::GiftStars(_) => "messageActionGiftStars",
+        tl::enums::MessageAction::PrizeStars(_) => "messageActionPrizeStars",
+        tl::enums::MessageAction::StarGift(_) => "messageActionStarGift",
+        tl::enums::MessageAction::StarGiftUnique(_) => "messageActionStarGiftUnique",
+        tl::enums::MessageAction::PaidMessagesRefunded(_) => "messageActionPaidMessagesRefunded",
+        tl::enums::MessageAction::PaidMessagesPrice(_) => "messageActionPaidMessagesPrice",
+        tl::enums::MessageAction::ConferenceCall(_) => "messageActionConferenceCall",
+        tl::enums::MessageAction::TodoCompletions(_) => "messageActionTodoCompletions",
+        tl::enums::MessageAction::TodoAppendTasks(_) => "messageActionTodoAppendTasks",
+        tl::enums::MessageAction::SuggestedPostApproval(_) => "messageActionSuggestedPostApproval",
+        tl::enums::MessageAction::SuggestedPostSuccess(_) => "messageActionSuggestedPostSuccess",
+        tl::enums::MessageAction::SuggestedPostRefund(_) => "messageActionSuggestedPostRefund",
+        tl::enums::MessageAction::GiftTon(_) => "messageActionGiftTon",
+        tl::enums::MessageAction::SuggestBirthday(_) => "messageActionSuggestBirthday",
+        tl::enums::MessageAction::StarGiftPurchaseOffer(_) => "messageActionStarGiftPurchaseOffer",
+        tl::enums::MessageAction::StarGiftPurchaseOfferDeclined(_) => {
+            "messageActionStarGiftPurchaseOfferDeclined"
+        }
+        tl::enums::MessageAction::NewCreatorPending(_) => "messageActionNewCreatorPending",
+        tl::enums::MessageAction::ChangeCreator(_) => "messageActionChangeCreator",
+        tl::enums::MessageAction::NoForwardsToggle(_) => "messageActionNoForwardsToggle",
+        tl::enums::MessageAction::NoForwardsRequest(_) => "messageActionNoForwardsRequest",
+        tl::enums::MessageAction::PollAppendAnswer(_) => "messageActionPollAppendAnswer",
+        tl::enums::MessageAction::PollDeleteAnswer(_) => "messageActionPollDeleteAnswer",
+        tl::enums::MessageAction::ManagedBotCreated(_) => "messageActionManagedBotCreated",
+    }
 }
 
 #[cfg(test)]
@@ -2684,5 +3044,545 @@ mod tests {
         }
         assert!(crate::Cli::try_parse_from(["tele", "listen", "--in"]).is_ok());
         assert!(crate::Cli::try_parse_from(["tele", "listen", "--out"]).is_ok());
+    }
+
+    #[test]
+    fn listen_accepts_service_chataction_userupdate_event_names() {
+        use crate::Command;
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "tele",
+            "listen",
+            "--account",
+            "a",
+            "--events",
+            "Service,ChatAction,UserUpdate",
+        ])
+        .expect("new event kinds must parse");
+        match cli.command {
+            Command::Listen(args) => {
+                for kind in ["Service", "ChatAction", "UserUpdate"] {
+                    assert!(
+                        args.events.contains(&kind.to_string()),
+                        "{kind} must be accepted"
+                    );
+                }
+            }
+            _ => panic!("expected listen subcommand"),
+        }
+    }
+
+    #[test]
+    fn listen_rejects_unknown_new_kind_typos_still() {
+        assert!(
+            !VALID_EVENTS.contains(&"Services"),
+            "typo'd event names must stay outside the allowlist"
+        );
+        for kind in ["Service", "ChatAction", "UserUpdate"] {
+            assert!(
+                VALID_EVENTS.contains(&kind),
+                "{kind} must be in the allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn listen_help_documents_service_chataction_userupdate_kinds() {
+        use clap::CommandFactory;
+        let mut cmd = crate::Cli::command();
+        let listen = cmd
+            .find_subcommand_mut("listen")
+            .expect("listen subcommand");
+        let help = listen.render_help().to_string();
+        for kind in [
+            "Service",
+            "ChatAction",
+            "UserUpdate",
+            "NewMessage",
+            "MessageDeleted",
+            "Raw",
+        ] {
+            assert!(help.contains(kind), "help must document {kind}: {help}");
+        }
+    }
+
+    fn add_user_action() -> tl::enums::MessageAction {
+        tl::enums::MessageAction::ChatAddUser(tl::types::MessageActionChatAddUser {
+            users: vec![11, 12],
+        })
+    }
+
+    fn joined_by_link_action() -> tl::enums::MessageAction {
+        tl::enums::MessageAction::ChatJoinedByLink(tl::types::MessageActionChatJoinedByLink {
+            inviter_id: 2,
+        })
+    }
+
+    fn joined_by_request_action() -> tl::enums::MessageAction {
+        tl::enums::MessageAction::ChatJoinedByRequest
+    }
+
+    fn delete_user_action() -> tl::enums::MessageAction {
+        tl::enums::MessageAction::ChatDeleteUser(tl::types::MessageActionChatDeleteUser {
+            user_id: 13,
+        })
+    }
+
+    fn pin_action() -> tl::enums::MessageAction {
+        tl::enums::MessageAction::PinMessage
+    }
+
+    fn chat_create_action() -> tl::enums::MessageAction {
+        tl::enums::MessageAction::ChatCreate(tl::types::MessageActionChatCreate {
+            title: "crew".into(),
+            users: vec![1],
+        })
+    }
+
+    #[test]
+    fn common_message_actions_map_to_friendly_labels() {
+        let cases = [
+            (
+                add_user_action(),
+                ("messageActionChatAddUser", "join-invite"),
+            ),
+            (
+                joined_by_link_action(),
+                ("messageActionChatJoinedByLink", "join"),
+            ),
+            (
+                joined_by_request_action(),
+                ("messageActionChatJoinedByRequest", "join"),
+            ),
+            (
+                delete_user_action(),
+                ("messageActionChatDeleteUser", "leave"),
+            ),
+            (pin_action(), ("messageActionPinMessage", "pin")),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(
+                message_action_kind_label(&action),
+                expected,
+                "label table drifted for {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unmapped_message_actions_keep_raw_variant_name_as_label() {
+        assert_eq!(
+            message_action_kind_label(&chat_create_action()),
+            ("messageActionChatCreate", "messageActionChatCreate")
+        );
+        assert_eq!(
+            message_action_kind_label(&tl::enums::MessageAction::Empty),
+            ("messageActionEmpty", "messageActionEmpty")
+        );
+    }
+
+    fn typing_action() -> tl::enums::SendMessageAction {
+        tl::enums::SendMessageAction::SendMessageTypingAction
+    }
+
+    fn upload_photo_action() -> tl::enums::SendMessageAction {
+        tl::enums::SendMessageAction::SendMessageUploadPhotoAction(
+            tl::types::SendMessageUploadPhotoAction { progress: 40 },
+        )
+    }
+
+    #[test]
+    fn typing_action_maps_typing_label_and_falls_back_to_raw_kind() {
+        assert_eq!(
+            typing_action_kind_label(&typing_action()),
+            ("sendMessageTypingAction", "typing")
+        );
+        assert_eq!(
+            typing_action_kind_label(&upload_photo_action()),
+            (
+                "sendMessageUploadPhotoAction",
+                "sendMessageUploadPhotoAction"
+            )
+        );
+    }
+
+    #[test]
+    fn user_status_maps_presence_labels() {
+        let cases = [
+            (
+                tl::enums::UserStatus::Online(tl::types::UserStatusOnline { expires: 500 }),
+                "online",
+            ),
+            (
+                tl::enums::UserStatus::Offline(tl::types::UserStatusOffline { was_online: 300 }),
+                "offline",
+            ),
+            (
+                tl::enums::UserStatus::Recently(tl::types::UserStatusRecently { by_me: false }),
+                "recently",
+            ),
+            (
+                tl::enums::UserStatus::LastWeek(tl::types::UserStatusLastWeek { by_me: false }),
+                "last-week",
+            ),
+            (
+                tl::enums::UserStatus::LastMonth(tl::types::UserStatusLastMonth { by_me: false }),
+                "last-month",
+            ),
+            (tl::enums::UserStatus::Empty, "empty"),
+        ];
+        for (status, label) in cases {
+            let (_, got) = user_status_kind_label(&status);
+            assert_eq!(got, label, "presence label drift for {label}");
+        }
+    }
+
+    fn service_base_row() -> serde_json::Value {
+        serde_json::json!({
+            "id": 77,
+            "date": "2026-08-20T10:00:00+00:00",
+            "text": "",
+        })
+    }
+
+    #[test]
+    fn service_row_carries_additive_service_action_over_base_fields() {
+        let row = service_row("work", Some(456), service_base_row(), &pin_action());
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "Service");
+        assert_eq!(obj["account"], "work");
+        assert_eq!(obj["chat_id"], 456);
+        assert_eq!(obj["id"], 77);
+        assert_eq!(obj["service_action"]["kind"], "messageActionPinMessage");
+        assert_eq!(obj["service_action"]["label"], "pin");
+    }
+
+    #[test]
+    fn service_row_omits_chat_id_when_unknown() {
+        let row = service_row("work", None, service_base_row(), &add_user_action());
+        assert!(!row.as_object().unwrap().contains_key("chat_id"));
+        assert_eq!(
+            row["service_action"]["kind"], "messageActionChatAddUser",
+            "kinds outside the friendly table keep raw variant names"
+        );
+        assert_eq!(row["service_action"]["label"], "join-invite");
+    }
+
+    fn user_typing_update(user_id: i64) -> tl::enums::Update {
+        tl::enums::Update::UserTyping(tl::types::UpdateUserTyping {
+            top_msg_id: None,
+            user_id,
+            action: typing_action(),
+        })
+    }
+
+    fn chat_typing_update(chat_id: i64, sender: i64) -> tl::enums::Update {
+        tl::enums::Update::ChatUserTyping(tl::types::UpdateChatUserTyping {
+            chat_id,
+            from_id: tl::enums::Peer::User(tl::types::PeerUser { user_id: sender }),
+            action: upload_photo_action(),
+        })
+    }
+
+    fn channel_typing_update(channel_id: i64, sender: i64) -> tl::enums::Update {
+        tl::enums::Update::ChannelUserTyping(tl::types::UpdateChannelUserTyping {
+            top_msg_id: None,
+            channel_id,
+            from_id: tl::enums::Peer::User(tl::types::PeerUser { user_id: sender }),
+            action: typing_action(),
+        })
+    }
+
+    #[test]
+    fn chat_action_user_typing_row_has_user_id_without_chat_id() {
+        let (peer, sender, row) =
+            chat_action_row("work", &user_typing_update(7)).expect("typing update parses");
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "ChatAction");
+        assert_eq!(obj["account"], "work");
+        assert_eq!(obj["user_id"], 7);
+        assert!(!obj.contains_key("chat_id"), "DM typing has no chat id");
+        assert_eq!(obj["action"]["kind"], "sendMessageTypingAction");
+        assert_eq!(obj["action"]["label"], "typing");
+        assert_eq!(
+            peer.expect("user typing yields peer"),
+            PeerId::user_unchecked(7)
+        );
+        assert_eq!(sender, Some(PeerId::user_unchecked(7)));
+    }
+
+    #[test]
+    fn chat_action_chat_typing_row_carries_chat_and_sender_ids() {
+        let (peer, sender, row) =
+            chat_action_row("work", &chat_typing_update(42, 8)).expect("typing update parses");
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "ChatAction");
+        assert_eq!(obj["user_id"], 8);
+        assert_eq!(obj["chat_id"], 42);
+        assert_eq!(peer, Some(PeerId::chat_unchecked(42)));
+        assert_eq!(sender, Some(PeerId::user_unchecked(8)));
+        assert_eq!(
+            obj["action"]["kind"], "sendMessageUploadPhotoAction",
+            "unmapped actions keep raw variant name"
+        );
+        assert_eq!(obj["action"]["label"], "sendMessageUploadPhotoAction");
+    }
+
+    #[test]
+    fn chat_action_channel_typing_uses_channel_bare_chat_id() {
+        let (peer, _sender, row) = chat_action_row("work", &channel_typing_update(1234567890, 8))
+            .expect("typing update parses");
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["chat_id"], 1234567890);
+        assert_eq!(peer, Some(PeerId::channel_unchecked(1234567890)));
+    }
+
+    #[test]
+    fn non_chataction_raw_updates_are_not_claimed_by_chat_action() {
+        assert!(chat_action_row("work", &tl::enums::Update::PtsChanged).is_none());
+        assert!(chat_action_row(
+            "work",
+            &tl::enums::Update::UserStatus(tl::types::UpdateUserStatus {
+                user_id: 7,
+                status: tl::enums::UserStatus::Online(tl::types::UserStatusOnline { expires: 1 }),
+            })
+        )
+        .is_none());
+    }
+
+    fn user_status_update(status: tl::enums::UserStatus) -> tl::enums::Update {
+        tl::enums::Update::UserStatus(tl::types::UpdateUserStatus { user_id: 7, status })
+    }
+
+    #[test]
+    fn user_update_row_reports_slim_presence_status() {
+        let (peer, sender, row) = user_update_row(
+            "home",
+            &user_status_update(tl::enums::UserStatus::Online(tl::types::UserStatusOnline {
+                expires: 900,
+            })),
+        )
+        .expect("user status parses");
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "UserUpdate");
+        assert_eq!(obj["account"], "home");
+        assert_eq!(obj["user_id"], 7);
+        assert_eq!(obj["status"]["kind"], "userStatusOnline");
+        assert_eq!(obj["status"]["label"], "online");
+        assert_eq!(obj["status"]["expires"], 900);
+        assert_eq!(peer, Some(PeerId::user_unchecked(7)));
+        assert_eq!(sender, Some(PeerId::user_unchecked(7)));
+        assert!(!obj.contains_key("state"), "slim rows omit stream state");
+    }
+
+    #[test]
+    fn user_update_offline_row_carries_was_online() {
+        let (_, _, row) = user_update_row(
+            "home",
+            &user_status_update(tl::enums::UserStatus::Offline(
+                tl::types::UserStatusOffline { was_online: 55 },
+            )),
+        )
+        .expect("user status parses");
+        assert_eq!(row["status"]["kind"], "userStatusOffline");
+        assert_eq!(row["status"]["label"], "offline");
+        assert_eq!(row["status"]["was_online"], 55);
+    }
+
+    #[test]
+    fn non_userupdate_raw_updates_are_not_claimed_by_user_update() {
+        assert!(user_update_row("work", &tl::enums::Update::PtsChanged).is_none());
+        assert!(user_update_row("work", &user_typing_update(7)).is_none());
+    }
+
+    #[test]
+    fn action_allows_composes_chat_and_sender_dimensions() {
+        let f = EventFilter {
+            chats: vec![PeerId::chat_unchecked(42)],
+            senders: vec![PeerId::user_unchecked(8)],
+            direction: None,
+            pattern: None,
+        };
+        assert!(f.action_allows(
+            Some(PeerId::chat_unchecked(42)),
+            Some(PeerId::user_unchecked(8))
+        ));
+        assert!(
+            !f.action_allows(
+                Some(PeerId::chat_unchecked(43)),
+                Some(PeerId::user_unchecked(8))
+            ),
+            "wrong chat blocked"
+        );
+        assert!(
+            !f.action_allows(
+                Some(PeerId::chat_unchecked(42)),
+                Some(PeerId::user_unchecked(9))
+            ),
+            "wrong sender blocked"
+        );
+        assert!(
+            !f.action_allows(None, None),
+            "rows without ids cannot satisfy set dimensions"
+        );
+        assert!(
+            EventFilter::default().action_allows(None, None),
+            "unset dimensions pass rows without ids"
+        );
+    }
+
+    #[test]
+    fn action_allows_ignores_direction_and_pattern_honestly() {
+        let f_dir = EventFilter {
+            direction: Some(Direction::In),
+            ..Default::default()
+        };
+        assert!(
+            f_dir.action_allows(
+                Some(PeerId::user_unchecked(7)),
+                Some(PeerId::user_unchecked(7))
+            ),
+            "direction has no meaning for typing/status rows and must not block them"
+        );
+        let f_pattern = EventFilter {
+            pattern: compile_pattern(Some("x")).unwrap(),
+            ..Default::default()
+        };
+        assert!(
+            f_pattern.action_allows(
+                Some(PeerId::user_unchecked(7)),
+                Some(PeerId::user_unchecked(7))
+            ),
+            "pattern has no text to match on typing/status rows"
+        );
+    }
+
+    #[test]
+    fn message_event_applies_gates_service_only_selections() {
+        assert!(message_event_applies(true, false, false, true));
+        assert!(
+            message_event_applies(false, false, true, true),
+            "service-only admits service"
+        );
+        assert!(!message_event_applies(false, false, true, false));
+        assert!(
+            message_event_applies(false, true, false, true),
+            "album still buffers"
+        );
+        assert!(!message_event_applies(false, false, false, true));
+    }
+
+    #[test]
+    fn routes_to_service_requires_both_flavor_and_flag() {
+        assert!(routes_to_service(true, true));
+        assert!(!routes_to_service(false, true));
+        assert!(!routes_to_service(true, false));
+        assert!(!routes_to_service(false, false));
+    }
+
+    fn offline_client() -> grammers_client::Client {
+        let session = std::sync::Arc::new(grammers_session::storages::MemorySession::default());
+        let pool = grammers_client::sender::SenderPool::new(session, 12345);
+        grammers_client::Client::new(pool.handle)
+    }
+
+    fn poll_media_fixture(question: &str) -> tl::enums::MessageMedia {
+        tl::enums::MessageMedia::Poll(Box::new(tl::types::MessageMediaPoll {
+            poll: tl::enums::Poll::Poll(tl::types::Poll {
+                id: 9,
+                closed: false,
+                public_voters: false,
+                multiple_choice: false,
+                quiz: false,
+                open_answers: false,
+                revoting_disabled: false,
+                shuffle_answers: false,
+                hide_results_until_close: false,
+                creator: false,
+                subscribers_only: false,
+                question: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                    text: question.into(),
+                    entities: Vec::new(),
+                }),
+                answers: vec![tl::enums::PollAnswer::Answer(tl::types::PollAnswer {
+                    media: None,
+                    added_by: None,
+                    date: None,
+                    text: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: "Yes".into(),
+                        entities: Vec::new(),
+                    }),
+                    option: b"y".to_vec(),
+                })],
+                close_period: None,
+                close_date: None,
+                countries_iso2: None,
+                hash: 0,
+            }),
+            results: tl::enums::PollResults::Results(Box::new(tl::types::PollResults {
+                min: false,
+                has_unread_votes: false,
+                can_view_stats: false,
+                results: None,
+                total_voters: None,
+                recent_voters: None,
+                solution: None,
+                solution_entities: None,
+                solution_media: None,
+            })),
+            attached_media: None,
+        }))
+    }
+
+    fn short_update_message(
+        client: &grammers_client::Client,
+        text: &str,
+        media: Option<tl::enums::MessageMedia>,
+    ) -> grammers_client::message::Message {
+        grammers_client::message::Message::from_raw_short_updates(
+            client,
+            tl::types::UpdateShortSentMessage {
+                out: true,
+                id: 5,
+                pts: 0,
+                pts_count: 0,
+                date: 1700000000,
+                media,
+                entities: None,
+                ttl_period: None,
+            },
+            grammers_client::message::InputMessage::new().text(text),
+            grammers_session::types::PeerId::user(42)
+                .unwrap()
+                .to_ambient_ref(),
+        )
+    }
+
+    #[test]
+    fn streamed_rows_attach_poll_object_matching_get_shape() {
+        let client = offline_client();
+        let msg = short_update_message(&client, "vote", Some(poll_media_fixture("Stream vote?")));
+        let row = streamed_message_row(&msg).unwrap();
+        assert_eq!(row["poll"]["question"], "Stream vote?");
+        assert_eq!(row["poll"]["id"], 9);
+        assert_eq!(row["poll"]["closed"], false);
+        assert_eq!(row["poll"]["quiz"], false);
+        let options = row["poll"]["options"].as_array().unwrap();
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0]["index"], 1);
+        assert_eq!(options[0]["text"], "Yes");
+        assert!(options[0].get("voters").is_none());
+    }
+
+    #[test]
+    fn streamed_rows_without_poll_media_have_no_poll_key() {
+        let client = offline_client();
+        let msg = short_update_message(&client, "plain", None);
+        let row = streamed_message_row(&msg).unwrap();
+        assert!(
+            row.get("poll").is_none(),
+            "poll key must stay absent without poll media"
+        );
+        assert_eq!(row["text"], "plain");
     }
 }

@@ -140,6 +140,76 @@ fn media_parts(media: &Media) -> (&'static str, Option<String>) {
     }
 }
 
+pub(crate) fn enrich_message_row(
+    row: &mut serde_json::Value,
+    msg: &grammers_client::message::Message,
+) {
+    if let Some(grammers_client::media::Media::Poll(poll)) = msg.media() {
+        row["poll"] = poll_row(&poll);
+    }
+}
+
+pub(crate) fn poll_answers(poll: &grammers_client::media::Poll) -> Vec<(String, Vec<u8>)> {
+    use grammers_client::tl;
+    poll.iter_answers()
+        .filter_map(|answer| match answer {
+            tl::enums::PollAnswer::Answer(a) => Some((
+                match &a.text {
+                    tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+                },
+                a.option.clone(),
+            )),
+            tl::enums::PollAnswer::InputPollAnswer(_) => None,
+        })
+        .collect()
+}
+
+fn poll_question_text(poll: &grammers_client::media::Poll) -> String {
+    match poll.question() {
+        grammers_client::tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+    }
+}
+
+pub(crate) fn poll_row(poll: &grammers_client::media::Poll) -> serde_json::Value {
+    let answers = poll_answers(poll);
+    let voters: Vec<&grammers_client::tl::types::PollAnswerVoters> = poll
+        .iter_voters_summary()
+        .map(|summary| summary.collect())
+        .unwrap_or_default();
+    let options: Vec<serde_json::Value> = answers
+        .iter()
+        .enumerate()
+        .map(|(i, (text, option))| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("index".into(), serde_json::json!(i + 1));
+            entry.insert("text".into(), serde_json::json!(text));
+            if let Some(v) = voters.iter().find(|v| v.option == *option) {
+                entry.insert("chosen".into(), serde_json::json!(v.chosen));
+                if v.correct {
+                    entry.insert("correct".into(), serde_json::json!(true));
+                }
+                if let Some(count) = v.voters {
+                    entry.insert("voters".into(), serde_json::json!(count));
+                }
+            }
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+    let mut out = serde_json::Map::new();
+    out.insert("id".into(), serde_json::json!(poll.raw.id));
+    out.insert(
+        "question".into(),
+        serde_json::json!(poll_question_text(poll)),
+    );
+    out.insert("closed".into(), serde_json::json!(poll.closed()));
+    out.insert("quiz".into(), serde_json::json!(poll.is_quiz()));
+    if let Some(total) = poll.total_voters() {
+        out.insert("total_voters".into(), serde_json::json!(total));
+    }
+    out.insert("options".into(), serde_json::Value::Array(options));
+    serde_json::Value::Object(out)
+}
+
 pub fn reply_markup_to_json(markup: &tl::enums::ReplyMarkup) -> serde_json::Value {
     let mut out = serde_json::Map::new();
     let rows = match markup {
@@ -1082,6 +1152,183 @@ mod tests {
         assert_eq!(
             media_name(&Media::from_raw(document_media_without_object()).unwrap()),
             "document:unnamed"
+        );
+    }
+
+    fn poll_media_with_answers() -> grammers_client::media::Poll {
+        use grammers_client::tl;
+        let answers = ["Alpha", "Beta", "Gamma"]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                tl::enums::PollAnswer::Answer(tl::types::PollAnswer {
+                    media: None,
+                    added_by: None,
+                    date: None,
+                    text: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: label.to_string(),
+                        entities: Vec::new(),
+                    }),
+                    option: format!("opt{i}").into_bytes(),
+                })
+            })
+            .collect();
+        let media = tl::enums::MessageMedia::Poll(Box::new(tl::types::MessageMediaPoll {
+            poll: tl::enums::Poll::Poll(tl::types::Poll {
+                id: 7,
+                closed: false,
+                public_voters: true,
+                multiple_choice: false,
+                quiz: false,
+                open_answers: false,
+                revoting_disabled: false,
+                shuffle_answers: false,
+                hide_results_until_close: false,
+                creator: false,
+                subscribers_only: false,
+                question: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                    text: "Pick one?".into(),
+                    entities: Vec::new(),
+                }),
+                answers,
+                close_period: None,
+                close_date: None,
+                countries_iso2: None,
+                hash: 0,
+            }),
+            results: tl::enums::PollResults::Results(Box::new(tl::types::PollResults {
+                min: false,
+                has_unread_votes: false,
+                can_view_stats: true,
+                results: Some(vec![tl::enums::PollAnswerVoters::Voters(
+                    tl::types::PollAnswerVoters {
+                        chosen: true,
+                        correct: false,
+                        option: b"opt0".to_vec(),
+                        voters: Some(12),
+                        recent_voters: None,
+                    },
+                )]),
+                total_voters: Some(30),
+                recent_voters: None,
+                solution: None,
+                solution_entities: None,
+                solution_media: None,
+            })),
+            attached_media: None,
+        }));
+        match grammers_client::media::Media::from_raw(media).unwrap() {
+            grammers_client::media::Media::Poll(p) => p,
+            _ => panic!("expected poll media"),
+        }
+    }
+
+    #[test]
+    fn poll_answers_lists_option_texts_and_bytes_in_order() {
+        let answers = poll_answers(&poll_media_with_answers());
+        assert_eq!(
+            answers.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            vec!["Alpha", "Beta", "Gamma"]
+        );
+        assert_eq!(answers[0].1, b"opt0".to_vec());
+        assert_eq!(answers[2].1, b"opt2".to_vec());
+    }
+
+    #[test]
+    fn poll_row_emits_question_flags_options_voters() {
+        let row = poll_row(&poll_media_with_answers());
+        assert_eq!(row["question"], "Pick one?");
+        assert_eq!(row["closed"], false);
+        assert_eq!(row["quiz"], false);
+        assert_eq!(row["total_voters"], 30);
+        let options = row["options"].as_array().unwrap();
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0]["index"], 1);
+        assert_eq!(options[0]["text"], "Alpha");
+        assert_eq!(options[0]["voters"], 12);
+        assert_eq!(options[0]["chosen"], true);
+        assert!(options[1].get("voters").is_none());
+        assert!(options[1].get("chosen").is_none());
+    }
+
+    #[test]
+    fn poll_row_omits_voters_without_results() {
+        use grammers_client::tl;
+        let media = tl::enums::MessageMedia::Poll(Box::new(tl::types::MessageMediaPoll {
+            poll: tl::enums::Poll::Poll(tl::types::Poll {
+                id: 1,
+                closed: true,
+                public_voters: false,
+                multiple_choice: false,
+                quiz: true,
+                open_answers: false,
+                revoting_disabled: false,
+                shuffle_answers: false,
+                hide_results_until_close: false,
+                creator: false,
+                subscribers_only: false,
+                question: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                    text: "Closed quiz".into(),
+                    entities: Vec::new(),
+                }),
+                answers: vec![tl::enums::PollAnswer::Answer(tl::types::PollAnswer {
+                    media: None,
+                    added_by: None,
+                    date: None,
+                    text: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: "Only".into(),
+                        entities: Vec::new(),
+                    }),
+                    option: b"only".to_vec(),
+                })],
+                close_period: None,
+                close_date: None,
+                countries_iso2: None,
+                hash: 0,
+            }),
+            results: tl::enums::PollResults::Results(Box::new(tl::types::PollResults {
+                min: false,
+                has_unread_votes: false,
+                can_view_stats: false,
+                results: None,
+                total_voters: None,
+                recent_voters: None,
+                solution: None,
+                solution_entities: None,
+                solution_media: None,
+            })),
+            attached_media: None,
+        }));
+        let poll = match grammers_client::media::Media::from_raw(media).unwrap() {
+            grammers_client::media::Media::Poll(p) => p,
+            _ => panic!("expected poll media"),
+        };
+        let row = poll_row(&poll);
+        assert_eq!(row["closed"], true);
+        assert_eq!(row["quiz"], true);
+        assert!(row.get("total_voters").is_none());
+        let options = row["options"].as_array().unwrap();
+        assert_eq!(options.len(), 1);
+        assert!(options[0].get("voters").is_none());
+        assert!(options[0].get("chosen").is_none());
+    }
+
+    #[test]
+    fn enrich_message_row_attaches_poll_object_only_for_poll_media() {
+        let client = offline_client();
+        let with_poll = make_message(&client, 21, false, "vote", Some(poll_media()));
+        let mut row = message_to_json(&with_poll).unwrap();
+        enrich_message_row(&mut row, &with_poll);
+        assert_eq!(row["poll"]["question"], "Best option?");
+        assert_eq!(row["poll"]["id"], 1);
+        let options = row["poll"]["options"].as_array().unwrap();
+        assert!(options.is_empty(), "no answers means empty options list");
+        let plain = make_message(&client, 22, false, "plain", None);
+        let mut bare = message_to_json(&plain).unwrap();
+        enrich_message_row(&mut bare, &plain);
+        assert!(
+            bare.get("poll").is_none(),
+            "non-poll media must not gain a poll key"
         );
     }
 
