@@ -138,8 +138,8 @@ fn help_lists_all_groups_and_exits_zero() {
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
     for group in [
-        "account", "msg", "chat", "dialog", "topic", "contact", "profile", "privacy", "takeout",
-        "listen", "raw",
+        "account", "msg", "chat", "dialog", "topic", "sticker", "contact", "profile", "privacy",
+        "takeout", "listen", "raw",
     ] {
         assert!(
             text.contains(&format!(" {group} ")),
@@ -1406,6 +1406,135 @@ fn raw_registry_names_are_offline_usable() {
             "raw {name}: stdout: {out}"
         );
     }
+}
+
+#[test]
+fn sticker_mutators_require_explicit_account_offline() {
+    for args in [
+        vec!["sticker", "install", "--set", "ducks"],
+        vec!["sticker", "remove", "--set", "ducks"],
+    ] {
+        let (code, _out, err) = run_isolated("stgate", &args);
+        assert_eq!(code, 1, "args: {args:?}");
+        assert!(
+            err.contains("requires --account"),
+            "args: {args:?}: stderr: {err}"
+        );
+    }
+}
+
+#[test]
+fn sticker_rejects_bad_set_refs_before_connect() {
+    for bad in [
+        "",
+        "   ",
+        "https://t.me/addstickers/",
+        "bad name!",
+        "a/b",
+        "дюкс",
+    ] {
+        let (code, _out, err) = run_isolated("stbadref", &["sticker", "show", "--set", bad]);
+        assert_eq!(code, 1, "--set {bad:?}");
+        assert!(err.contains("--set"), "--set {bad:?}: stderr: {err}");
+    }
+}
+
+#[test]
+fn sticker_install_remove_dry_run_report_flags_and_would() {
+    let dir = isolated_appdir("stdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "sticker",
+            "install",
+            "--set",
+            "https://t.me/addstickers/duck_boi",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["set"], serde_json::json!("duck_boi"));
+    assert_eq!(d["archive"], serde_json::json!(false));
+    assert_eq!(
+        d["would"],
+        serde_json::json!("install sticker set duck_boi")
+    );
+
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "sticker",
+            "install",
+            "--set",
+            "duck_boi",
+            "--archive",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["archive"], serde_json::json!(true));
+
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "sticker",
+            "remove",
+            "--set",
+            "t.me/addstickers/duck_boi",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(
+        d["would"],
+        serde_json::json!("remove (uninstall) sticker set duck_boi")
+    );
+}
+
+#[test]
+fn sticker_reads_dry_run_exit_zero_with_session() {
+    let dir = isolated_appdir("stread");
+    write_session(&dir, "work");
+    for (args, command) in [
+        (vec!["sticker", "list", "--limit", "5"], "sticker list"),
+        (
+            vec!["sticker", "search", "--query", "cats", "--limit", "3"],
+            "sticker search",
+        ),
+        (vec!["sticker", "show", "--set", "ducks"], "sticker show"),
+    ] {
+        let mut full = args.clone();
+        full.extend(["--account", "work", "--dry-run", "--json"]);
+        let (code, out, err) = run_in(&dir, &full);
+        assert_eq!(code, 0, "args: {args:?}: stderr: {err}");
+        let v = parse_json(&out);
+        assert_eq!(v["ok"], serde_json::json!(true), "args: {args:?}");
+        assert_eq!(v["command"], serde_json::json!(command), "args: {args:?}");
+        let d = &v["results"][0]["data"];
+        assert_eq!(d["dry_run"], serde_json::json!(true), "args: {args:?}");
+    }
+}
+
+#[test]
+fn sticker_search_rejects_blank_query_offline() {
+    let (code, _out, err) = run_isolated("stblankq", &["sticker", "search", "--query", "   "]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--query"), "stderr: {err}");
 }
 
 #[test]
