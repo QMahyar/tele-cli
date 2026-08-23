@@ -620,13 +620,15 @@ async fn serve_connection(
                     Update::NewMessage(m) | Update::MessageEdited(m) => m,
                     _ => continue,
                 };
-                let chat_id = update_peer(update.raw()).and_then(|p| p.bare_id());
+                let peer = update_peer(update.raw());
+                let chat_id = peer.and_then(|p| p.bare_id());
                 let pts = pts_from_state(update.state());
                 let key = dedupe_key(chat_id, message.id(), pts);
                 if dedupe.check(key) {
                     continue;
                 }
-                let row = crate::serialize::message_to_json(message)?;
+                let mut row = crate::serialize::message_to_json(message)?;
+                crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
                 emit(&event_row(kind, name, chat_id, None, Some(row)))?;
             }
         }

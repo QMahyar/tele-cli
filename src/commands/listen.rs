@@ -809,17 +809,19 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 }
                                 if routes_to_service(service_on, service_flavored) {
                                     if let tl::enums::Message::Service(svc) = &(**m).raw {
-                                        emit_row(service_row(
-                                            &name,
-                                            chat_id,
-                                            streamed_message_row(m)?,
-                                            &svc.action,
-                                        ))
-                                        .await?;
+                                        let mut svc_row = streamed_message_row(m)?;
+                                        crate::serialize::ensure_outer_peer_sender(
+                                            &mut svc_row,
+                                            peer,
+                                            None,
+                                        );
+                                        emit_row(service_row(&name, chat_id, svc_row, &svc.action))
+                                            .await?;
                                         continue;
                                     }
                                 }
-                                let row = streamed_message_row(m)?;
+                                let mut row = streamed_message_row(m)?;
+                                crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
                                 let grouped = if album_on { album_member(&row) } else { None };
                                 match (grouped, chat_id) {
                                     (Some((member_chat, gid)), _) => {
@@ -887,17 +889,19 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 }
                                 if routes_to_service(service_on, service_flavored) {
                                     if let tl::enums::Message::Service(svc) = &(**m).raw {
-                                        emit_row(service_row(
-                                            &name,
-                                            chat_id,
-                                            streamed_message_row(m)?,
-                                            &svc.action,
-                                        ))
-                                        .await?;
+                                        let mut svc_row = streamed_message_row(m)?;
+                                        crate::serialize::ensure_outer_peer_sender(
+                                            &mut svc_row,
+                                            peer,
+                                            None,
+                                        );
+                                        emit_row(service_row(&name, chat_id, svc_row, &svc.action))
+                                            .await?;
                                         continue;
                                     }
                                 }
-                                let row = streamed_message_row(m)?;
+                                let mut row = streamed_message_row(m)?;
+                                crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
                                 emit_row(event_row(
                                     "MessageEdited",
                                     &name,
