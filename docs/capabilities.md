@@ -28,7 +28,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 |---|---|---|---|---|---|
 | msg.send | Send text | `messages.sendMessage` | `send_message` | `tele msg send` | done |
 | msg.schedule | Scheduled send | `schedule_date` | raw (no friendly param) | `tele msg send --schedule` | done |
-| msg.schedule-repeat | Repeating scheduled | layer 215+ | raw if present | `tele raw` registry | want |
+| msg.schedule-repeat | Repeating scheduled | absent from layer 227 (no recurring-schedule method; `messages.SendScheduledMessages` sends existing scheduled messages now) | raw | `tele raw` messages.SendScheduledMessages | want |
 | msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` | done |
 | msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` (partial reporting + `--self-only`) | done |
 | msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` (always silent via grammers; no `--silent` flag) | done |
@@ -41,11 +41,11 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | msg.poll | Polls: render in message rows + vote | `/api/poll`, `messages.sendVote` (no close flag at layer 227 — closing polls impossible) | raw arm; `Media::Poll` answers | `tele msg vote --chat X --id N --option 1[,2]`; additive `poll` object on msg get/search rows | done |
 | msg.search | Search / filters | `/api/search` | `search_messages`, `search_all_messages` | `tele msg search` | done |
 | msg.draft | Drafts | `/api/drafts` | raw | `tele dialog drafts` | done |
-| msg.effect | Animated effects | `/api/effects` | raw | `tele raw` registry | want |
-| msg.checklist | Checklists | `/api/todo` | raw | `tele raw` registry | want |
-| msg.translate | Translation | `/api/translation` | raw | `tele raw` registry | want |
-| msg.transcribe | Voice transcription | `/api/transcribe` | raw | `tele raw` registry | want |
-| msg.ai-compose | AI compose | `/api/ai` | raw | `tele raw` registry | want |
+| msg.effect | Animated effects: list available | `/api/effects` | raw `messages.GetAvailableEffects` | `tele raw` messages.GetAvailableEffects (apply-side is input-flag only at this layer) | done |
+| msg.checklist | Checklists: append items, toggle completion | `/api/todo` | raw `messages.{AppendTodoList,ToggleTodoCompleted}` (creation rides inputMediaTodo in send media) | `tele raw` registry arms | done |
+| msg.translate | Translation | `/api/translation`, `messages.TranslateText` | raw arm with result shaping | `tele raw` messages.TranslateText | done |
+| msg.transcribe | Voice transcription | `/api/transcribe`, `messages.TranscribeAudio` | raw arm with transcribed-audio shaping | `tele raw` messages.TranscribeAudio | done |
+| msg.ai-compose | AI compose | `messages.ComposeMessageWithAI` exists at layer 227 | raw arm with composed-message + tone shaping | `tele raw` messages.ComposeMessageWithAI | done |
 | msg.buttons | Reply markup / inline buttons in message JSON | `ReplyMarkup` | `Message::reply_markup` | `tele msg get` / `listen` / `serve` rows carry additive `reply_markup`; kinds inline/reply/hide/force_reply; unknown variants degrade to raw_kind, never panic | done |
 | msg.click | Inline button press (+ reply-keyboard fallback) | `messages.getBotCallbackAnswer` | raw arm (button located via serialize shapes) | `tele msg click --chat X --id N (--button TEXT / --button-index N)`; reply-keyboard buttons error with send-text hint | done |
 | msg.album-send | Send media group together | `messages.sendMultiMedia` | `send_album` (CAP-3, 2–10 files) | `tele msg send --file A --file B` (grouped) | done |
@@ -95,13 +95,13 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | listen.new | NewMessage | updates | `Update::NewMessage` | `tele listen` (default; requires explicit `--account`/`--tag`) | done |
 | listen.edit | MessageEdited | updates | `Update::EditMessage` | `--events MessageEdited` | done |
 | listen.delete | MessageDeleted | updates | `Update::DeleteMessages` | `--events MessageDeleted` (DM/basic-group deletions match under `--chat` via bounded observed-id map) | done |
-| listen.action | ChatAction | updates | `Update::UserStatus`/raw | `--events ChatAction` | want |
-| listen.user | UserUpdate | updates | `Update::*` | `--events UserUpdate` | want |
+| listen.action | ChatAction | updates (Raw wrapper: UserTyping/ChatUserTyping/ChannelUserTyping — typed enum carries none at this layer) | parsed-from-Raw | `--events ChatAction` rows `{action:{kind,label}}` | done |
+| listen.user | UserUpdate | updates (updateUserStatus via Raw wrapper; other user updates stay on Raw path) | parsed-from-Raw | `--events UserUpdate` presence rows `{status:{kind,label,expires?/was_online?}}` | done |
 | listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` (coalesce by grouped_id, ~500 ms quiescence flush) | done |
 | listen.gap | Gap (update-loss marker) | updates | pts tracking per message box | `--events Gap` (synthetic row when updates were dropped/difference ended early) | done |
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
 | listen.filters | Sender / direction / regex / multi-chat filters | client-side | client-side | `tele listen` with `--from USER` / `--in` / `--out` / `--pattern RE` (case-sensitive) / repeatable `--chat`; AND across dimensions, OR within | done |
-| listen.service | Parsed service messages (joins/leaves/…) | updates `messageService` | `Update::NewMessage` (service) | parsed event rows with action kind | want |
+| listen.service | Parsed service messages (joins/leaves/pin + 63 more kinds) | updates `messageService` | typed `Message::Service` | `--events Service` rows with `service_action:{kind,label}`; composes chat/from/direction filters | done |
 | listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
 
@@ -139,5 +139,5 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | kernel.device-id | Per-account device identity (`device_model`/`system_version`/`app_version`/`lang_code`) fed to the client builder; config `[accounts.<name>]` keys → `ConnectionParams`; all four wired at grammers 0.10, defaults neutral when unset | `src/config.rs`, `src/client.rs` | done |
 | kernel.session-port | Session export/import across machines + Telethon `.session` converter (classic + version-table schemas via read-only libsql, same engine as grammers; native authoring via public `Session` trait; sha256 rows, locked-source refusal, `--force` semantics, restricted perms) | `tele account export-session` / `import-session [--from-telethon]`, `src/session.rs` | done |
 | kernel.login-staged | Non-TTY staged login; pending auth state resumable across invocations (`--stage begin/code/status/cancel`; phone_code_hash persisted under `{app}/pending/`, secrets never stored; 303 DC migration handled; code-staged method only — QR staging excluded) | `tele account login --stage …` | done |
-| kernel.link-resolve | Deep link → chat id + message id (`t.me/<chat>/<id>`, `t.me/c/<internal>/<id>`) | `parse_target() -> ResolvedTarget{peer_ref,msg_id}` shipped in `src/entities.rs`; msg.rs flag integration lands with W2 | want |
+| kernel.link-resolve | Deep link → chat id + message id (`t.me/<chat>/<id>`, `t.me/c/<internal>/<id>`): `msg get --chat LINK` fetches that message (--id conflicts); other commands reject link-carried ids naming accepted consumers | `parse_target() -> ResolvedTarget`, wired in msg get (`src/entities.rs`, `src/commands/msg.rs`) | done |
 | kernel.serve | Single-owner runtime: `tele serve` child process holds the connected client per account, streams events on stdout, executes actions from stdin (duplex JSONL, LSP/MCP shape: versioned hello, request-id correlation, stderr logs; script is supervisor). 13 action ops live over the pipe (`msg send/edit/delete/react/get/forward/pin/read/search/vote/typing/click/download`) via shared `*_core` fns — same code path as CLI; dry-run per op; FLOOD_WAIT envelopes carry seconds; chat/dialog/etc. ops extend the table one line each as cores land | `tele serve --account X` (`src/commands/serve.rs` + cores in `msg.rs`) | done |
