@@ -114,7 +114,7 @@ pub struct SendArgs {
     background: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct EditArgs {
     #[arg(
         long,
@@ -127,7 +127,7 @@ pub struct EditArgs {
     text: String,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct DeleteArgs {
     #[arg(
         long,
@@ -149,7 +149,7 @@ pub struct DeleteArgs {
     self_only: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ForwardArgs {
     #[arg(long, help = "source chat to forward from")]
     from: String,
@@ -163,7 +163,7 @@ pub struct ForwardArgs {
     to: String,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct PinArgs {
     #[arg(
         long,
@@ -194,7 +194,7 @@ pub struct PinArgs {
     all: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct GetArgs {
     #[arg(
         long,
@@ -209,7 +209,7 @@ pub struct GetArgs {
     last: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ReadArgs {
     #[arg(
         long,
@@ -226,7 +226,7 @@ pub struct ReadArgs {
     mentions: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ReactArgs {
     #[arg(
         long,
@@ -241,7 +241,7 @@ pub struct ReactArgs {
     remove: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct SearchArgs {
     #[arg(
         long,
@@ -261,7 +261,7 @@ pub struct SearchArgs {
     global: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct DownloadArgs {
     #[arg(
         long,
@@ -278,7 +278,7 @@ pub struct DownloadArgs {
     chunk_size_kb: Option<usize>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct VoteArgs {
     #[arg(
         long,
@@ -294,7 +294,7 @@ pub struct VoteArgs {
     option: String,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct TypingArgs {
     #[arg(
         long,
@@ -308,7 +308,7 @@ pub struct TypingArgs {
     action: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ClickArgs {
     #[arg(
         long,
@@ -338,6 +338,528 @@ pub struct ClickArgs {
     password: bool,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct SendParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) text: Option<String>,
+    pub(crate) schedule: Option<String>,
+    #[serde(default)]
+    pub(crate) files: Vec<String>,
+    pub(crate) caption: Option<String>,
+    pub(crate) reply: Option<i32>,
+    pub(crate) topic: Option<i32>,
+    pub(crate) media_ttl: Option<i32>,
+    pub(crate) thumbnail: Option<String>,
+    pub(crate) url: Option<String>,
+    pub(crate) kind: Option<String>,
+    pub(crate) copy_from: Option<String>,
+    pub(crate) copy_id: Option<i32>,
+    #[serde(default = "default_true")]
+    pub(crate) preview: bool,
+    #[serde(default)]
+    pub(crate) no_preview: bool,
+    #[serde(default = "default_format")]
+    pub(crate) format: String,
+    #[serde(default)]
+    pub(crate) silent: bool,
+    #[serde(default)]
+    pub(crate) noforwards: bool,
+    #[serde(default)]
+    pub(crate) background: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&SendArgs> for SendParams {
+    fn from(a: &SendArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            text: a.text.clone(),
+            schedule: a.schedule.clone(),
+            files: a.files.clone(),
+            caption: a.caption.clone(),
+            reply: a.reply,
+            topic: a.topic,
+            media_ttl: a.media_ttl,
+            thumbnail: a.thumbnail.clone(),
+            url: a.url.clone(),
+            kind: a.kind.clone(),
+            copy_from: a.copy_from.clone(),
+            copy_id: a.copy_id,
+            preview: a.preview,
+            no_preview: a.no_preview,
+            format: a.format.clone(),
+            silent: a.silent,
+            noforwards: a.noforwards,
+            background: a.background,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&SendParams> for SendArgs {
+    fn from(p: &SendParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            text: p.text.clone(),
+            schedule: p.schedule.clone(),
+            files: p.files.clone(),
+            caption: p.caption.clone(),
+            reply: p.reply,
+            topic: p.topic,
+            media_ttl: p.media_ttl,
+            thumbnail: p.thumbnail.clone(),
+            url: p.url.clone(),
+            kind: p.kind.clone(),
+            copy_from: p.copy_from.clone(),
+            copy_id: p.copy_id,
+            preview: p.preview,
+            no_preview: p.no_preview,
+            format: p.format.clone(),
+            silent: p.silent,
+            noforwards: p.noforwards,
+            background: p.background,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct EditParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) id: i32,
+    #[serde(default)]
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&EditArgs> for EditParams {
+    fn from(a: &EditArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            text: a.text.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&EditParams> for EditArgs {
+    fn from(p: &EditParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            text: p.text.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct DeleteParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) ids: Vec<i32>,
+    #[serde(default)]
+    pub(crate) all: bool,
+    #[serde(default)]
+    pub(crate) self_only: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&DeleteArgs> for DeleteParams {
+    fn from(a: &DeleteArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            ids: a.ids.clone(),
+            all: a.all,
+            self_only: a.self_only,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&DeleteParams> for DeleteArgs {
+    fn from(p: &DeleteParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            ids: p.ids.clone(),
+            all: p.all,
+            self_only: p.self_only,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct ForwardParams {
+    #[serde(default)]
+    pub(crate) from: String,
+    #[serde(default)]
+    pub(crate) ids: Vec<i32>,
+    #[serde(default)]
+    pub(crate) to: String,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ForwardArgs> for ForwardParams {
+    fn from(a: &ForwardArgs) -> Self {
+        Self {
+            from: a.from.clone(),
+            ids: a.ids.clone(),
+            to: a.to.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ForwardParams> for ForwardArgs {
+    fn from(p: &ForwardParams) -> Self {
+        Self {
+            from: p.from.clone(),
+            ids: p.ids.clone(),
+            to: p.to.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct PinParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) id: Option<i32>,
+    #[serde(default)]
+    pub(crate) unpin: bool,
+    #[serde(default)]
+    pub(crate) notify: bool,
+    #[serde(default)]
+    pub(crate) show: bool,
+    #[serde(default)]
+    pub(crate) all: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&PinArgs> for PinParams {
+    fn from(a: &PinArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            unpin: a.unpin,
+            notify: a.notify,
+            show: a.show,
+            all: a.all,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&PinParams> for PinArgs {
+    fn from(p: &PinParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            unpin: p.unpin,
+            notify: p.notify,
+            show: p.show,
+            all: p.all,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct GetParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default = "default_limit")]
+    pub(crate) limit: u32,
+    pub(crate) offset_id: Option<i32>,
+    #[serde(default)]
+    pub(crate) last: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&GetArgs> for GetParams {
+    fn from(a: &GetArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            limit: a.limit,
+            offset_id: a.offset_id,
+            last: a.last,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&GetParams> for GetArgs {
+    fn from(p: &GetParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            limit: p.limit,
+            offset_id: p.offset_id,
+            last: p.last,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct ReadParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) mark_unread: bool,
+    #[serde(default)]
+    pub(crate) mentions: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ReadArgs> for ReadParams {
+    fn from(a: &ReadArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            mark_unread: a.mark_unread,
+            mentions: a.mentions,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ReadParams> for ReadArgs {
+    fn from(p: &ReadParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            mark_unread: p.mark_unread,
+            mentions: p.mentions,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct ReactParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) id: i32,
+    pub(crate) reaction: Option<String>,
+    #[serde(default)]
+    pub(crate) remove: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ReactArgs> for ReactParams {
+    fn from(a: &ReactArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            reaction: a.reaction.clone(),
+            remove: a.remove,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ReactParams> for ReactArgs {
+    fn from(p: &ReactParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            reaction: p.reaction.clone(),
+            remove: p.remove,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct SearchParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) query: String,
+    #[serde(default = "default_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) global: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&SearchArgs> for SearchParams {
+    fn from(a: &SearchArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            query: a.query.clone(),
+            limit: a.limit,
+            global: a.global,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&SearchParams> for SearchArgs {
+    fn from(p: &SearchParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            query: p.query.clone(),
+            limit: p.limit,
+            global: p.global,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct DownloadParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) id: i32,
+    #[serde(default)]
+    pub(crate) dir: String,
+    #[serde(default)]
+    pub(crate) force: bool,
+    pub(crate) chunk_size_kb: Option<usize>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&DownloadArgs> for DownloadParams {
+    fn from(a: &DownloadArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            dir: a.dir.clone(),
+            force: a.force,
+            chunk_size_kb: a.chunk_size_kb,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&DownloadParams> for DownloadArgs {
+    fn from(p: &DownloadParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            dir: p.dir.clone(),
+            force: p.force,
+            chunk_size_kb: p.chunk_size_kb,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct VoteParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) id: i32,
+    #[serde(default)]
+    pub(crate) option: String,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&VoteArgs> for VoteParams {
+    fn from(a: &VoteArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            option: a.option.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&VoteParams> for VoteArgs {
+    fn from(p: &VoteParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            option: p.option.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct TypingParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) action: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&TypingArgs> for TypingParams {
+    fn from(a: &TypingArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            action: a.action.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&TypingParams> for TypingArgs {
+    fn from(p: &TypingParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            action: p.action.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(crate) struct ClickParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) id: i32,
+    pub(crate) button: Option<String>,
+    pub(crate) button_index: Option<usize>,
+    #[serde(default)]
+    pub(crate) password: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ClickArgs> for ClickParams {
+    fn from(a: &ClickArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            button: a.button.clone(),
+            button_index: a.button_index,
+            password: a.password,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ClickParams> for ClickArgs {
+    fn from(p: &ClickParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            button: p.button.clone(),
+            button_index: p.button_index,
+            password: p.password,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_format() -> String {
+    "plain".to_string()
+}
+
+fn default_limit() -> u32 {
+    10
+}
+
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         MsgCmd::Send(a) => send(*a, flags).await,
@@ -360,7 +882,7 @@ fn effective_preview(args: &SendArgs) -> bool {
     args.preview && !args.no_preview
 }
 
-fn validate_send(args: &SendArgs) -> TeleResult<()> {
+pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if let Some(topic) = args.topic {
         if topic <= 0 {
@@ -632,6 +1154,15 @@ fn validate_download_dir(dir: &str) -> TeleResult<()> {
     Ok(())
 }
 
+pub(crate) fn validate_download(args: &DownloadArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    validate_download_dir(&args.dir)?;
+    if let Some(kb) = args.chunk_size_kb {
+        validate_chunk_size_kb(kb)?;
+    }
+    Ok(())
+}
+
 fn canonical_guard_path(path: &str) -> std::path::PathBuf {
     resolve_for_guard(std::path::Path::new(path))
 }
@@ -841,31 +1372,19 @@ fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::V
     })
 }
 
+pub(crate) fn send_serve_dry_run(args: &SendArgs) -> TeleResult<serde_json::Value> {
+    let schedule = parse_schedule(args.schedule.as_deref())?.map(|s| s as u64);
+    Ok(send_dry_run_payload(args, schedule))
+}
+
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_send(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let schedule = parse_schedule(args.schedule.as_deref())?;
+    let schedule = parse_schedule(args.schedule.as_deref())?.map(|s| s as u64);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let args = args.clone();
-        let chat_target = args.chat.clone();
-        let text = args.text.clone();
-        let caption = args.caption.clone();
-        let files = args.files.clone();
-        let format = args.format.clone();
-        let schedule = schedule.map(|s| s as u64);
-        let reply = args.reply.or(args.topic);
-        let preview = effective_preview(&args);
-        let silent = args.silent;
-        let noforwards = args.noforwards;
-        let background = args.background;
-        let media_ttl = args.media_ttl;
-        let thumbnail = args.thumbnail.clone();
-        let url = args.url.clone();
-        let kind = args.kind.clone();
-        let copy_from = args.copy_from.clone();
-        let copy_id = args.copy_id;
         Box::pin(async move {
             if dry_run {
                 return Ok(send_dry_run_payload(&args, schedule));
@@ -873,168 +1392,191 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let apply_common = |msg: InputMessage| -> InputMessage {
-                let mut msg = msg.reply_to(reply);
-                if silent {
-                    msg = msg.silent(true);
-                }
-                if background {
-                    msg = msg.background(true);
-                }
-                if let Some(ttl) = media_ttl {
-                    msg = msg.media_ttl(ttl);
-                }
-                msg
-            };
-            if let Some(src_chat) = &copy_from {
-                let id = copy_id.expect("validated: copy-id required with copy-from");
-                let src =
-                    entities::resolve_peer(&guard.client, guard.session.as_ref(), src_chat).await?;
-                let src_ref = entities::peer_ref(&src).await.map_err(tele_invocation)?;
-                let found = guard
-                    .client
-                    .get_messages_by_id(src_ref, &[id])
-                    .await
-                    .map_err(tele_invocation)?;
-                let source_msg = found
-                    .into_iter()
-                    .flatten()
-                    .next()
-                    .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
-                let media = source_msg.media().ok_or_else(|| {
-                    TeleError::Usage(format!("message {id} has no media to copy"))
-                })?;
-                let base = match format.as_str() {
-                    "markdown" => InputMessage::new()
-                        .copy_media(&media)
-                        .markdown(caption.unwrap_or_default()),
-                    _ => InputMessage::new().copy_media(&media),
-                };
-                let base = base.link_preview(preview);
-                let sent = guard
-                    .client
-                    .send_message(chat_ref, apply_common(base))
-                    .await
-                    .map_err(tele_invocation)?;
-                return crate::serialize::message_to_json(&sent);
-            }
-            if let Some(link) = &url {
-                let base = match kind.as_deref() {
-                    Some("document") => InputMessage::new().document_url(link),
-                    _ => InputMessage::new().photo_url(link),
-                };
-                let base = if let Some(cap) = &caption {
-                    match format.as_str() {
-                        "markdown" => base.markdown(cap.clone()),
-                        _ => base.text(cap.clone()),
-                    }
-                } else {
-                    base
-                };
-                let base = base.link_preview(preview);
-                let sent = guard
-                    .client
-                    .send_message(chat_ref, apply_common(base))
-                    .await
-                    .map_err(tele_invocation)?;
-                return crate::serialize::message_to_json(&sent);
-            }
-            if files.len() > 1 {
-                let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
-                for path in &files {
-                    let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
-                    let mut media = match looks_like_image(path) {
-                        true => grammers_client::media::InputMedia::new().photo(uploaded),
-                        false => grammers_client::media::InputMedia::new().document(uploaded),
-                    };
-                    media = match format.as_str() {
-                        "markdown" => media.markdown(caption.clone().unwrap_or_default()),
-                        _ => media.caption(caption.clone().unwrap_or_default()),
-                    };
-                    media = media.reply_to(reply);
-                    medias.push(media);
-                }
-                let sent_album = guard
-                    .client
-                    .send_album(chat_ref, medias)
-                    .await
-                    .map_err(tele_invocation)?;
-                let mut rows = Vec::new();
-                for m in sent_album.into_iter().flatten() {
-                    rows.push(crate::serialize::message_to_json(&m)?);
-                }
-                return Ok(serde_json::json!({"album": rows}));
-            }
-            let mut msg = if let Some(path) = files.first() {
-                let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
-                let mut base = match format.as_str() {
-                    "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
-                    _ => InputMessage::new().text(caption.unwrap_or_default()),
-                };
-                if let Some(thumb_path) = &thumbnail {
-                    let thumb_uploaded = guard
-                        .client
-                        .upload_file(thumb_path)
-                        .await
-                        .map_err(upload_error)?;
-                    base = base.thumbnail(thumb_uploaded);
-                }
-                if looks_like_image(path) {
-                    base.photo(uploaded)
-                } else {
-                    base.document(uploaded)
-                }
-            } else {
-                let text = text.as_deref().unwrap_or_default();
-                if noforwards {
-                    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-                    return send_noforwards_text(
-                        &guard.client,
-                        peer,
-                        RawTextSend {
-                            text,
-                            format: format.as_str(),
-                            preview,
-                            silent,
-                            background,
-                            reply,
-                            schedule,
-                        },
-                    )
-                    .await;
-                }
-                let base = match format.as_str() {
-                    "markdown" => InputMessage::new().markdown(text),
-                    _ => InputMessage::new().text(text),
-                };
-                base.link_preview(preview)
-            };
-            if let Some(s) = schedule {
-                if s == 0 {
-                    msg = msg.schedule_once_online();
-                } else {
-                    let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
-                    msg = msg.schedule_date(Some(ts));
-                }
-            }
-            msg = apply_common(msg);
-            let sent = guard
-                .client
-                .send_message(chat_ref, msg)
-                .await
-                .map_err(tele_invocation)?;
-            crate::serialize::message_to_json(&sent)
+            send_core(&guard, SendParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-fn validate_edit(args: &EditArgs) -> TeleResult<()> {
+pub(crate) async fn send_core(
+    guard: &crate::client::ClientGuard,
+    params: SendParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let chat_target = params.chat.clone();
+    let text = params.text.clone();
+    let caption = params.caption.clone();
+    let files = params.files.clone();
+    let format = params.format.clone();
+    let schedule = parse_schedule(params.schedule.as_deref())?.map(|s| s as u64);
+    let reply = params.reply.or(params.topic);
+    let preview = params.preview && !params.no_preview;
+    let silent = params.silent;
+    let noforwards = params.noforwards;
+    let background = params.background;
+    let media_ttl = params.media_ttl;
+    let thumbnail = params.thumbnail.clone();
+    let url = params.url.clone();
+    let kind = params.kind.clone();
+    let copy_from = params.copy_from.clone();
+    let copy_id = params.copy_id;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let apply_common = |msg: InputMessage| -> InputMessage {
+        let mut msg = msg.reply_to(reply);
+        if silent {
+            msg = msg.silent(true);
+        }
+        if background {
+            msg = msg.background(true);
+        }
+        if let Some(ttl) = media_ttl {
+            msg = msg.media_ttl(ttl);
+        }
+        msg
+    };
+    if let Some(src_chat) = &copy_from {
+        let id = copy_id
+            .ok_or_else(|| TeleError::Usage("copy-id required with copy-from".to_string()))?;
+        let src = entities::resolve_peer(&guard.client, guard.session.as_ref(), src_chat).await?;
+        let src_ref = entities::peer_ref(&src).await.map_err(tele_invocation)?;
+        let found = guard
+            .client
+            .get_messages_by_id(src_ref, &[id])
+            .await
+            .map_err(tele_invocation)?;
+        let source_msg = found
+            .into_iter()
+            .flatten()
+            .next()
+            .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+        let media = source_msg
+            .media()
+            .ok_or_else(|| TeleError::Usage(format!("message {id} has no media to copy")))?;
+        let base = match format.as_str() {
+            "markdown" => InputMessage::new()
+                .copy_media(&media)
+                .markdown(caption.unwrap_or_default()),
+            _ => InputMessage::new().copy_media(&media),
+        };
+        let base = base.link_preview(preview);
+        let sent = guard
+            .client
+            .send_message(chat_ref, apply_common(base))
+            .await
+            .map_err(tele_invocation)?;
+        return crate::serialize::message_to_json(&sent);
+    }
+    if let Some(link) = &url {
+        let base = match kind.as_deref() {
+            Some("document") => InputMessage::new().document_url(link),
+            _ => InputMessage::new().photo_url(link),
+        };
+        let base = if let Some(cap) = &caption {
+            match format.as_str() {
+                "markdown" => base.markdown(cap.clone()),
+                _ => base.text(cap.clone()),
+            }
+        } else {
+            base
+        };
+        let base = base.link_preview(preview);
+        let sent = guard
+            .client
+            .send_message(chat_ref, apply_common(base))
+            .await
+            .map_err(tele_invocation)?;
+        return crate::serialize::message_to_json(&sent);
+    }
+    if files.len() > 1 {
+        let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
+        for path in &files {
+            let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+            let mut media = match looks_like_image(path) {
+                true => grammers_client::media::InputMedia::new().photo(uploaded),
+                false => grammers_client::media::InputMedia::new().document(uploaded),
+            };
+            media = match format.as_str() {
+                "markdown" => media.markdown(caption.clone().unwrap_or_default()),
+                _ => media.caption(caption.clone().unwrap_or_default()),
+            };
+            media = media.reply_to(reply);
+            medias.push(media);
+        }
+        let sent_album = guard
+            .client
+            .send_album(chat_ref, medias)
+            .await
+            .map_err(tele_invocation)?;
+        let mut rows = Vec::new();
+        for m in sent_album.into_iter().flatten() {
+            rows.push(crate::serialize::message_to_json(&m)?);
+        }
+        return Ok(serde_json::json!({"album": rows}));
+    }
+    let mut msg = if let Some(path) = files.first() {
+        let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+        let mut base = match format.as_str() {
+            "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
+            _ => InputMessage::new().text(caption.unwrap_or_default()),
+        };
+        if let Some(thumb_path) = &thumbnail {
+            let thumb_uploaded = guard
+                .client
+                .upload_file(thumb_path)
+                .await
+                .map_err(upload_error)?;
+            base = base.thumbnail(thumb_uploaded);
+        }
+        if looks_like_image(path) {
+            base.photo(uploaded)
+        } else {
+            base.document(uploaded)
+        }
+    } else {
+        let text = text.as_deref().unwrap_or_default();
+        if noforwards {
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            return send_noforwards_text(
+                &guard.client,
+                peer,
+                RawTextSend {
+                    text,
+                    format: format.as_str(),
+                    preview,
+                    silent,
+                    background,
+                    reply,
+                    schedule,
+                },
+            )
+            .await;
+        }
+        let base = match format.as_str() {
+            "markdown" => InputMessage::new().markdown(text),
+            _ => InputMessage::new().text(text),
+        };
+        base.link_preview(preview)
+    };
+    if let Some(s) = schedule {
+        if s == 0 {
+            msg = msg.schedule_once_online();
+        } else {
+            let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
+            msg = msg.schedule_date(Some(ts));
+        }
+    }
+    msg = apply_common(msg);
+    let sent = guard
+        .client
+        .send_message(chat_ref, msg)
+        .await
+        .map_err(tele_invocation)?;
+    crate::serialize::message_to_json(&sent)
+}
+
+pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.text.trim().is_empty() {
         return Err(TeleError::Usage("--text must not be empty".to_string()));
@@ -1052,39 +1594,47 @@ fn edit_dry_run_payload(chat: &str, text: &str, id: i32) -> serde_json::Value {
     })
 }
 
+pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Value> {
+    Ok(edit_dry_run_payload(&args.chat, &args.text, args.id))
+}
+
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_edit(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let id = args.id;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
-        let text = args.text.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(edit_dry_run_payload(&chat_target, &text, id));
+                return edit_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            guard
-                .client
-                .edit_message(chat_ref, id, InputMessage::new().text(text))
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({"id": id, "edited": true}))
+            edit_core(&guard, EditParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
+pub(crate) async fn edit_core(
+    guard: &crate::client::ClientGuard,
+    params: EditParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    guard
+        .client
+        .edit_message(chat_ref, params.id, InputMessage::new().text(params.text))
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({"id": params.id, "edited": true}))
+}
+
+pub(crate) fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.all && !args.ids.is_empty() {
         return Err(TeleError::Usage(
@@ -1117,114 +1667,124 @@ fn delete_report(requested: usize, deleted: usize) -> (serde_json::Value, bool) 
     (value, partial)
 }
 
+pub(crate) fn delete_serve_dry_run(args: &DeleteArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "ids": args.ids,
+        "self_only": args.self_only,
+        "would": if args.all {
+            format!("delete all messages in chat {}", args.chat)
+        } else {
+            format!("delete {} message(s) by id", args.ids.len())
+        },
+    }))
+}
+
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_delete(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let all = args.all;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
-        let ids = args.ids.clone();
-        let self_only = args.self_only;
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "ids": ids,
-                    "self_only": self_only,
-                    "would": if all {
-                        format!("delete all messages in chat {chat_target}")
-                    } else {
-                        format!("delete {} message(s) by id", ids.len())
-                    },
-                }));
+                return delete_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            if all {
-                let mut iter = guard.client.iter_messages(chat_ref);
-                let mut count = 0usize;
-                let mut requested = 0usize;
-                let mut batch: Vec<i32> = Vec::with_capacity(100);
-                while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-                    requested += 1;
-                    batch.push(msg.id());
-                    if batch.len() >= 100 {
-                        guard
-                            .client
-                            .delete_messages(chat_ref, &batch)
-                            .await
-                            .map_err(tele_invocation)?;
-                        count += batch.len();
-                        batch.clear();
-                    }
-                }
-                if !batch.is_empty() {
-                    guard
-                        .client
-                        .delete_messages(chat_ref, &batch)
-                        .await
-                        .map_err(tele_invocation)?;
-                    count += batch.len();
-                }
-                let (report, partial) = delete_report(requested, count);
-                if partial {
-                    crate::output::log_line(
-                        "warn",
-                        &format!("delete removed {count} of {requested} requested message(s)"),
-                    );
-                }
-                return Ok(report);
-            }
-            let mut count = 0usize;
-            if self_only {
-                if !self_only_supported(chat.id().kind()) {
-                    return Err(TeleError::Usage(
-                        "--self-only is not supported in channels".to_string(),
-                    ));
-                }
-                for chunk in batches(&ids) {
-                    guard
-                        .client
-                        .invoke(&grammers_client::tl::functions::messages::DeleteMessages {
-                            revoke: false,
-                            id: chunk.to_vec(),
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                    count += chunk.len();
-                }
-            } else {
-                for chunk in batches(&ids) {
-                    guard
-                        .client
-                        .delete_messages(chat_ref, chunk)
-                        .await
-                        .map_err(tele_invocation)?;
-                    count += chunk.len();
-                }
-            }
-            let (report, partial) = delete_report(ids.len(), count);
-            if partial {
-                crate::output::log_line(
-                    "warn",
-                    &format!("delete removed {count} of {} requested id(s)", ids.len()),
-                );
-            }
-            Ok(report)
+            delete_core(&guard, DeleteParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
+pub(crate) async fn delete_core(
+    guard: &crate::client::ClientGuard,
+    params: DeleteParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let all = params.all;
+    let ids = params.ids;
+    let self_only = params.self_only;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    if all {
+        let mut iter = guard.client.iter_messages(chat_ref);
+        let mut count = 0usize;
+        let mut requested = 0usize;
+        let mut batch: Vec<i32> = Vec::with_capacity(100);
+        while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+            requested += 1;
+            batch.push(msg.id());
+            if batch.len() >= 100 {
+                guard
+                    .client
+                    .delete_messages(chat_ref, &batch)
+                    .await
+                    .map_err(tele_invocation)?;
+                count += batch.len();
+                batch.clear();
+            }
+        }
+        if !batch.is_empty() {
+            guard
+                .client
+                .delete_messages(chat_ref, &batch)
+                .await
+                .map_err(tele_invocation)?;
+            count += batch.len();
+        }
+        let (report, partial) = delete_report(requested, count);
+        if partial {
+            crate::output::log_line(
+                "warn",
+                &format!("delete removed {count} of {requested} requested message(s)"),
+            );
+        }
+        return Ok(report);
+    }
+    let mut count = 0usize;
+    if self_only {
+        if !self_only_supported(chat.id().kind()) {
+            return Err(TeleError::Usage(
+                "--self-only is not supported in channels".to_string(),
+            ));
+        }
+        for chunk in batches(&ids) {
+            guard
+                .client
+                .invoke(&grammers_client::tl::functions::messages::DeleteMessages {
+                    revoke: false,
+                    id: chunk.to_vec(),
+                })
+                .await
+                .map_err(tele_invocation)?;
+            count += chunk.len();
+        }
+    } else {
+        for chunk in batches(&ids) {
+            guard
+                .client
+                .delete_messages(chat_ref, chunk)
+                .await
+                .map_err(tele_invocation)?;
+            count += chunk.len();
+        }
+    }
+    let (report, partial) = delete_report(ids.len(), count);
+    if partial {
+        crate::output::log_line(
+            "warn",
+            &format!("delete removed {count} of {} requested id(s)", ids.len()),
+        );
+    }
+    Ok(report)
+}
+
+pub(crate) fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
     require_chat_target(&args.from, "from")?;
     require_chat_target(&args.to, "to")?;
     if args.ids.is_empty() {
@@ -1233,67 +1793,73 @@ fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
     Ok(())
 }
 
+pub(crate) fn forward_serve_dry_run(args: &ForwardArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "ids": args.ids,
+        "would": format!("forward {} message(s) to chat {}", args.ids.len(), args.to)
+    }))
+}
+
 async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_forward(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let from_target = args.from.clone();
-        let to_target = args.to.clone();
-        let ids = args.ids.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "ids": ids,
-                    "would": format!("forward {} message(s) to chat {to_target}", ids.len())
-                }));
+                return forward_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let from =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &from_target).await?;
-            let to =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &to_target).await?;
-            let from_ref = entities::peer_ref(&from).await.map_err(tele_invocation)?;
-            let to_ref = entities::peer_ref(&to).await.map_err(tele_invocation)?;
-            let mut forwarded: Vec<serde_json::Value> = Vec::new();
-            let mut dropped: Vec<i32> = Vec::new();
-            let mut failed: Vec<i32> = Vec::new();
-            for chunk in batches(&ids) {
-                let sent = guard
-                    .client
-                    .forward_messages(to_ref, chunk, from_ref)
-                    .await
-                    .map_err(tele_invocation);
-                match sent {
-                    Ok(results) => {
-                        push_forward_results(&mut forwarded, &mut dropped, chunk, results)?
-                    }
-                    Err(e) => {
-                        crate::output::log_line(
-                            "warn",
-                            &format!("forward failed for {} id(s): {e}", chunk.len()),
-                        );
-                        failed.extend_from_slice(chunk);
-                    }
-                }
-            }
-            let (report, should_warn) = forward_report(ids.len(), &forwarded, &dropped, &failed);
-            if should_warn {
-                crate::output::log_line(
-                    "warn",
-                    &format!("forward confirmed 0 of {} requested id(s)", ids.len()),
-                );
-            }
-            Ok(report)
+            forward_core(&guard, ForwardParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn forward_core(
+    guard: &crate::client::ClientGuard,
+    params: ForwardParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let ids = params.ids;
+    let from = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.from).await?;
+    let to = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.to).await?;
+    let from_ref = entities::peer_ref(&from).await.map_err(tele_invocation)?;
+    let to_ref = entities::peer_ref(&to).await.map_err(tele_invocation)?;
+    let mut forwarded: Vec<serde_json::Value> = Vec::new();
+    let mut dropped: Vec<i32> = Vec::new();
+    let mut failed: Vec<i32> = Vec::new();
+    for chunk in batches(&ids) {
+        let sent = guard
+            .client
+            .forward_messages(to_ref, chunk, from_ref)
+            .await
+            .map_err(tele_invocation);
+        match sent {
+            Ok(results) => push_forward_results(&mut forwarded, &mut dropped, chunk, results)?,
+            Err(e) => {
+                crate::output::log_line(
+                    "warn",
+                    &format!("forward failed for {} id(s): {e}", chunk.len()),
+                );
+                failed.extend_from_slice(chunk);
+            }
+        }
+    }
+    let (report, should_warn) = forward_report(ids.len(), &forwarded, &dropped, &failed);
+    if should_warn {
+        crate::output::log_line(
+            "warn",
+            &format!("forward confirmed 0 of {} requested id(s)", ids.len()),
+        );
+    }
+    Ok(report)
 }
 
 fn batches(ids: &[i32]) -> Vec<&[i32]> {
@@ -1340,98 +1906,105 @@ fn forward_report(
     (value, should_warn)
 }
 
+pub(crate) fn pin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Value> {
+    let would = if args.show {
+        "show pinned message".to_string()
+    } else if args.all {
+        "unpin all messages".to_string()
+    } else {
+        format!(
+            "{} message {}",
+            if args.unpin { "unpin" } else { "pin" },
+            args.id.unwrap_or_default()
+        )
+    };
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "id": args.id,
+        "unpin": args.unpin,
+        "show": args.show,
+        "all": args.all,
+        "would": would
+    }))
+}
+
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
     validate_pin(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let id = args.id;
-    let unpin = args.unpin;
-    let notify = args.notify;
-    let show = args.show;
-    let all = args.all;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                let would = if show {
-                    "show pinned message".to_string()
-                } else if all {
-                    "unpin all messages".to_string()
-                } else {
-                    format!(
-                        "{} message {}",
-                        if unpin { "unpin" } else { "pin" },
-                        id.unwrap_or_default()
-                    )
-                };
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "id": id,
-                    "unpin": unpin,
-                    "show": show,
-                    "all": all,
-                    "would": would
-                }));
+                return pin_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            if show {
-                let pinned = guard
-                    .client
-                    .get_pinned_message(chat_ref)
-                    .await
-                    .map_err(tele_invocation)?;
-                return Ok(serde_json::json!({
-                    "pinned_message": match &pinned {
-                        Some(m) => crate::serialize::message_to_json(m)?,
-                        None => serde_json::Value::Null,
-                    }
-                }));
-            }
-            if all {
-                guard
-                    .client
-                    .unpin_all_messages(chat_ref)
-                    .await
-                    .map_err(tele_invocation)?;
-                return Ok(serde_json::json!({"unpinned_all": true}));
-            }
-            let id = id.expect("validated: id required outside show/all modes");
-            use grammers_client::tl;
-            let result: std::result::Result<(), grammers_client::InvocationError> = if unpin {
-                guard.client.unpin_message(chat_ref, id).await
-            } else if notify {
-                let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-                guard
-                    .client
-                    .invoke(&tl::functions::messages::UpdatePinnedMessage {
-                        silent: false,
-                        unpin: false,
-                        pm_oneside: false,
-                        peer: input_peer,
-                        id,
-                    })
-                    .await
-                    .map(drop)
-            } else {
-                guard.client.pin_message(chat_ref, id).await
-            };
-            result.map_err(tele_invocation)?;
-            Ok(serde_json::json!({"id": id, "pinned": !unpin}))
+            pin_core(&guard, PinParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-fn validate_pin(args: &PinArgs) -> TeleResult<()> {
+pub(crate) async fn pin_core(
+    guard: &crate::client::ClientGuard,
+    params: PinParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    if params.show {
+        let pinned = guard
+            .client
+            .get_pinned_message(chat_ref)
+            .await
+            .map_err(tele_invocation)?;
+        return Ok(serde_json::json!({
+            "pinned_message": match &pinned {
+                Some(m) => crate::serialize::message_to_json(m)?,
+                None => serde_json::Value::Null,
+            }
+        }));
+    }
+    if params.all {
+        guard
+            .client
+            .unpin_all_messages(chat_ref)
+            .await
+            .map_err(tele_invocation)?;
+        return Ok(serde_json::json!({"unpinned_all": true}));
+    }
+    let id = params
+        .id
+        .ok_or_else(|| TeleError::Usage("--id required (or use --show / --all)".to_string()))?;
+    use grammers_client::tl;
+    let result: std::result::Result<(), grammers_client::InvocationError> = if params.unpin {
+        guard.client.unpin_message(chat_ref, id).await
+    } else if params.notify {
+        let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+        guard
+            .client
+            .invoke(&tl::functions::messages::UpdatePinnedMessage {
+                silent: false,
+                unpin: false,
+                pm_oneside: false,
+                peer: input_peer,
+                id,
+            })
+            .await
+            .map(drop)
+    } else {
+        guard.client.pin_message(chat_ref, id).await
+    };
+    result.map_err(tele_invocation)?;
+    Ok(serde_json::json!({"id": id, "pinned": !params.unpin}))
+}
+
+pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
     if args.show || args.all {
         return Ok(());
     }
@@ -1443,14 +2016,19 @@ fn validate_pin(args: &PinArgs) -> TeleResult<()> {
     Ok(())
 }
 
-fn validate_get(args: &GetArgs) -> TeleResult<()> {
+pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.last && args.offset_id.is_some() {
         return Err(TeleError::Usage(
             "--last and --offset-id are mutually exclusive".to_string(),
         ));
     }
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     Ok(())
+}
+
+pub(crate) fn validate_read(args: &ReadArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")
 }
 
 fn upload_error(e: std::io::Error) -> TeleError {
@@ -1465,78 +2043,88 @@ fn upload_error(e: std::io::Error) -> TeleError {
     }
 }
 
+pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "limit": args.limit,
+        "offset_id": args.offset_id,
+        "last": args.last,
+        "would": format!("get messages from chat {}", args.chat),
+    }))
+}
+
+fn message_table_rows(rows: &[serde_json::Value]) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|r| {
+            vec![
+                r["id"].to_string(),
+                r["date"].as_str().unwrap_or_default().to_string(),
+                r["sender"]["name"].as_str().unwrap_or_default().to_string(),
+                truncate_text(r["text"].as_str().unwrap_or_default(), 80),
+            ]
+        })
+        .collect()
+}
+
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_get(&args)?;
-    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
     let dry_run = flags.dry_run;
-    let limit = args.limit as usize;
-    let offset_id = args.offset_id;
-    let last = args.last;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": chat_target,
-                    "limit": limit,
-                    "offset_id": offset_id,
-                    "last": last,
-                    "would": format!("get messages from chat {chat_target}"),
-                }));
+                return get_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let mut iter = guard.client.iter_messages(chat_ref);
-            if let Some(offset) = offset_id {
-                iter = iter.offset_id(offset);
-            }
-            if last {
-                iter = iter.limit(1);
-            } else {
-                iter = iter.limit(limit);
-            }
-            let mut rows: Vec<serde_json::Value> = Vec::new();
-            let mut served = 0usize;
-            while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-                served += 1;
-                guard.rate_limiter.acquire_for_items(served).await;
-                push_message_row(&mut rows, &msg)?;
-            }
+            let result = get_core(&guard, GetParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
-                let table_rows: Vec<Vec<String>> = rows
-                    .iter()
-                    .map(|r| {
-                        vec![
-                            r["id"].to_string(),
-                            r["date"].as_str().unwrap_or_default().to_string(),
-                            r["sender"]["name"].as_str().unwrap_or_default().to_string(),
-                            truncate_text(r["text"].as_str().unwrap_or_default(), 80),
-                        ]
-                    })
-                    .collect();
+                let empty = Vec::new();
                 output::print_account_table(
                     &name,
                     multi,
                     &["id", "date", "sender", "text"],
-                    &table_rows,
+                    &message_table_rows(result["messages"].as_array().unwrap_or(&empty)),
                 )?;
             }
-            Ok(serde_json::json!({"messages": rows}))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn get_core(
+    guard: &crate::client::ClientGuard,
+    params: GetParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let mut iter = guard.client.iter_messages(chat_ref);
+    if let Some(offset) = params.offset_id {
+        iter = iter.offset_id(offset);
+    }
+    if params.last {
+        iter = iter.limit(1);
+    } else {
+        iter = iter.limit(params.limit as usize);
+    }
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut served = 0usize;
+    while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+        served += 1;
+        guard.rate_limiter.acquire_for_items(served).await;
+        push_message_row(&mut rows, &msg)?;
+    }
+    Ok(serde_json::json!({"messages": rows}))
 }
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
@@ -1611,79 +2199,88 @@ fn push_message_row(
     Ok(())
 }
 
+pub(crate) fn read_serve_dry_run(args: &ReadArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "unread": args.mark_unread,
+        "mentions": args.mentions,
+        "would": format!(
+            "mark chat {} as {}",
+            args.chat,
+            if args.mentions {
+                "mentions-cleared"
+            } else if args.mark_unread {
+                "unread"
+            } else {
+                "read"
+            }
+        ),
+    }))
+}
+
 async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    validate_read(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let mark_unread = args.mark_unread;
-    let mentions = args.mentions;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "unread": mark_unread,
-                    "mentions": mentions,
-                    "would": format!(
-                        "mark chat {chat_target} as {}",
-                        if mentions {
-                            "mentions-cleared"
-                        } else if mark_unread {
-                            "unread"
-                        } else {
-                            "read"
-                        }
-                    ),
-                }));
+                return read_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            if mentions {
-                let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-                guard
-                    .client
-                    .clear_mentions(chat_ref)
-                    .await
-                    .map_err(tele_invocation)?;
-                return Ok(serde_json::json!({"mentions_cleared": true}));
-            } else if mark_unread {
-                let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-                let dialog = grammers_client::tl::enums::InputDialogPeer::Peer(
-                    grammers_client::tl::types::InputDialogPeer { peer },
-                );
-                guard
-                    .client
-                    .invoke(
-                        &grammers_client::tl::functions::messages::MarkDialogUnread {
-                            unread: true,
-                            parent_peer: None,
-                            peer: dialog,
-                        },
-                    )
-                    .await
-                    .map_err(tele_invocation)?;
-            } else {
-                let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-                guard
-                    .client
-                    .mark_as_read(chat_ref)
-                    .await
-                    .map_err(tele_invocation)?;
-            }
-            Ok(serde_json::json!({"unread": mark_unread}))
+            read_core(&guard, ReadParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-fn validate_react(args: &ReactArgs) -> TeleResult<()> {
+pub(crate) async fn read_core(
+    guard: &crate::client::ClientGuard,
+    params: ReadParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    if params.mentions {
+        let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+        guard
+            .client
+            .clear_mentions(chat_ref)
+            .await
+            .map_err(tele_invocation)?;
+        return Ok(serde_json::json!({"mentions_cleared": true}));
+    } else if params.mark_unread {
+        let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+        let dialog = grammers_client::tl::enums::InputDialogPeer::Peer(
+            grammers_client::tl::types::InputDialogPeer { peer },
+        );
+        guard
+            .client
+            .invoke(
+                &grammers_client::tl::functions::messages::MarkDialogUnread {
+                    unread: true,
+                    parent_peer: None,
+                    peer: dialog,
+                },
+            )
+            .await
+            .map_err(tele_invocation)?;
+    } else {
+        let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+        guard
+            .client
+            .mark_as_read(chat_ref)
+            .await
+            .map_err(tele_invocation)?;
+    }
+    Ok(serde_json::json!({"unread": params.mark_unread}))
+}
+
+pub(crate) fn validate_react(args: &ReactArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.reaction.is_some() && args.remove {
         return Err(TeleError::Usage(
@@ -1698,57 +2295,64 @@ fn validate_react(args: &ReactArgs) -> TeleResult<()> {
     Ok(())
 }
 
+pub(crate) fn react_serve_dry_run(args: &ReactArgs) -> TeleResult<serde_json::Value> {
+    let would = if args.remove {
+        format!("remove reaction from message {}", args.id)
+    } else if let Some(r) = &args.reaction {
+        format!("react {r} to message {}", args.id)
+    } else {
+        format!("react to message {}", args.id)
+    };
+    Ok(serde_json::json!({"dry_run": true, "id": args.id, "would": would}))
+}
+
 async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_react(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let id = args.id;
-    let remove = args.remove;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
-        let reaction = args.reaction.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                let would = if remove {
-                    format!("remove reaction from message {id}")
-                } else if let Some(r) = &reaction {
-                    format!("react {r} to message {id}")
-                } else {
-                    format!("react to message {id}")
-                };
-                return Ok(serde_json::json!({"dry_run": true, "id": id, "would": would}));
+                return react_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            use grammers_client::message::InputReactions;
-            let input = if remove {
-                InputReactions::remove()
-            } else if let Some(r) = &reaction {
-                InputReactions::emoticon(r)
-            } else {
-                return Err(TeleError::Usage(
-                    "--reaction <emoji> or --remove required".to_string(),
-                ));
-            };
-            guard
-                .client
-                .send_reactions(chat_ref, id, input)
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({"id": id, "reaction": reaction}))
+            react_core(&guard, ReactParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-fn validate_vote(args: &VoteArgs) -> TeleResult<()> {
+pub(crate) async fn react_core(
+    guard: &crate::client::ClientGuard,
+    params: ReactParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    use grammers_client::message::InputReactions;
+    let input = if params.remove {
+        InputReactions::remove()
+    } else if let Some(r) = &params.reaction {
+        InputReactions::emoticon(r)
+    } else {
+        return Err(TeleError::Usage(
+            "--reaction <emoji> or --remove required".to_string(),
+        ));
+    };
+    guard
+        .client
+        .send_reactions(chat_ref, params.id, input)
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({"id": params.id, "reaction": params.reaction}))
+}
+
+pub(crate) fn validate_vote(args: &VoteArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.id <= 0 {
         return Err(TeleError::Usage(
@@ -1829,6 +2433,17 @@ fn resolve_vote_options(
         .collect()
 }
 
+pub(crate) fn vote_serve_dry_run(args: &VoteArgs) -> TeleResult<serde_json::Value> {
+    let option_indexes = parse_vote_options(&args.option)?;
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "id": args.id,
+        "options": option_indexes,
+        "would": format!("vote on poll {} with option(s) {option_indexes:?}", args.id),
+    }))
+}
+
 async fn vote(args: VoteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_vote(&args)?;
     if !flags.dry_run {
@@ -1836,69 +2451,68 @@ async fn vote(args: VoteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let id = args.id;
-    let chat_target = args.chat.clone();
-    let option_indexes = parse_vote_options(&args.option)?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = chat_target.clone();
-        let option_indexes = option_indexes.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": chat_target,
-                    "id": id,
-                    "options": option_indexes,
-                    "would": format!("vote on poll {id} with option(s) {option_indexes:?}"),
-                }));
+                return vote_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let found = guard
-                .client
-                .get_messages_by_id(chat_ref, &[id])
-                .await
-                .map_err(tele_invocation)?;
-            let msg = found
-                .into_iter()
-                .flatten()
-                .next()
-                .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
-            let poll = match msg.media() {
-                Some(grammers_client::media::Media::Poll(poll)) => poll,
-                _ => return Err(TeleError::Usage(format!("message {id} has no poll"))),
-            };
-            if poll.closed() {
-                return Err(TeleError::Usage(format!("poll in message {id} is closed")));
-            }
-            let answers = poll_answers(&poll);
-            let options = resolve_vote_options(&answers, &option_indexes)?;
-            use grammers_client::tl;
-            guard
-                .client
-                .invoke(&tl::functions::messages::SendVote {
-                    peer: input_peer,
-                    msg_id: id,
-                    options,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({
-                "id": id,
-                "voted": true,
-                "options": option_indexes,
-            }))
+            vote_core(&guard, VoteParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn vote_core(
+    guard: &crate::client::ClientGuard,
+    params: VoteParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let id = params.id;
+    let chat_target = params.chat.clone();
+    let option_indexes = parse_vote_options(&params.option)?;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let found = guard
+        .client
+        .get_messages_by_id(chat_ref, &[id])
+        .await
+        .map_err(tele_invocation)?;
+    let msg = found
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+    let poll = match msg.media() {
+        Some(grammers_client::media::Media::Poll(poll)) => poll,
+        _ => return Err(TeleError::Usage(format!("message {id} has no poll"))),
+    };
+    if poll.closed() {
+        return Err(TeleError::Usage(format!("poll in message {id} is closed")));
+    }
+    let answers = poll_answers(&poll);
+    let options = resolve_vote_options(&answers, &option_indexes)?;
+    use grammers_client::tl;
+    guard
+        .client
+        .invoke(&tl::functions::messages::SendVote {
+            peer: input_peer,
+            msg_id: id,
+            options,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "id": id,
+        "voted": true,
+        "options": option_indexes,
+    }))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1957,49 +2571,68 @@ fn typing_action(name: Option<&str>) -> TeleResult<TypingChoice> {
     }
 }
 
-fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
+pub(crate) fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     typing_action(args.action.as_deref())?;
     Ok(())
 }
 
+pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
+    if !args.global {
+        require_chat_target(&args.chat, "chat")?;
+    }
+    crate::commands::validate_limit(args.limit, 10_000, "limit").map(|_| ())
+}
+
+pub(crate) fn typing_serve_dry_run(args: &TypingArgs) -> TeleResult<serde_json::Value> {
+    let action_name = match typing_action(args.action.as_deref()) {
+        Ok(choice) => choice.name(),
+        Err(_) => "typing",
+    };
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "action": action_name,
+        "would": format!("send {action_name} chat action to {}", args.chat),
+    }))
+}
+
 async fn typing(args: TypingArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_typing(&args)?;
-    let choice = typing_action(args.action.as_deref())?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let chat_target = args.chat.clone();
-    let action_name = choice.name();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = chat_target.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": chat_target,
-                    "action": action_name,
-                    "would": format!("send {action_name} chat action to {chat_target}"),
-                }));
+                return typing_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let sender = guard.client.action(chat_ref);
-            match choice {
-                TypingChoice::Cancel => sender.cancel().await,
-                other => sender.oneshot(other.action()).await,
-            }
-            .map_err(tele_invocation)?;
-            Ok(serde_json::json!({"chat": chat_target, "action": action_name}))
+            typing_core(&guard, TypingParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn typing_core(
+    guard: &crate::client::ClientGuard,
+    params: TypingParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let choice = typing_action(params.action.as_deref())?;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let sender = guard.client.action(chat_ref);
+    match choice {
+        TypingChoice::Cancel => sender.cancel().await,
+        other => sender.oneshot(other.action()).await,
+    }
+    .map_err(tele_invocation)?;
+    Ok(serde_json::json!({"chat": params.chat, "action": choice.name()}))
 }
 
 #[derive(Clone, Debug)]
@@ -2141,7 +2774,7 @@ fn button_requires_password(
     })
 }
 
-fn validate_click(args: &ClickArgs) -> TeleResult<()> {
+pub(crate) fn validate_click(args: &ClickArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.id <= 0 {
         return Err(TeleError::Usage(
@@ -2165,6 +2798,33 @@ fn validate_click(args: &ClickArgs) -> TeleResult<()> {
     }
 }
 
+fn click_selector(args: &ClickArgs) -> ButtonSelector {
+    if let Some(text) = &args.button {
+        ButtonSelector::Text(text.clone())
+    } else {
+        ButtonSelector::Index(args.button_index.unwrap_or_default())
+    }
+}
+
+fn click_selector_label(selector: &ButtonSelector) -> String {
+    match selector {
+        ButtonSelector::Text(t) => format!("button {t:?}"),
+        ButtonSelector::Index(n) => format!("button #{n}"),
+    }
+}
+
+pub(crate) fn click_serve_dry_run(args: &ClickArgs) -> TeleResult<serde_json::Value> {
+    let selector = click_selector(args);
+    let selector_label = click_selector_label(&selector);
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "id": args.id,
+        "selector": selector_label,
+        "would": format!("click {selector_label} on message {}", args.id),
+    }))
+}
+
 async fn click(args: ClickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_click(&args)?;
     if !flags.dry_run {
@@ -2172,301 +2832,290 @@ async fn click(args: ClickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let id = args.id;
-    let chat_target = args.chat.clone();
-    let selector = if let Some(text) = &args.button {
-        ButtonSelector::Text(text.clone())
-    } else {
-        ButtonSelector::Index(args.button_index.expect("validated: one selector required"))
-    };
-    let selector_label = match &selector {
-        ButtonSelector::Text(t) => format!("button {t:?}"),
-        ButtonSelector::Index(n) => format!("button #{n}"),
-    };
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = chat_target.clone();
-        let selector = selector.clone();
-        let selector_label = selector_label.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": chat_target,
-                    "id": id,
-                    "selector": selector_label,
-                    "would": format!("click {selector_label} on message {id}"),
-                }));
+                return click_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let found = guard
-                .client
-                .get_messages_by_id(chat_ref, &[id])
-                .await
-                .map_err(tele_invocation)?;
-            let msg = found
-                .into_iter()
-                .flatten()
-                .next()
-                .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
-            let markup = msg.reply_markup().ok_or_else(|| {
-                TeleError::Usage(format!("message {id} has no reply markup"))
-            })?;
-            let markup_json = crate::serialize::reply_markup_to_json(&markup);
-            let located = locate_button(&markup_json, &selector)?;
-            if button_requires_password(&markup, &located.text, &located.callback_data) {
-                return Err(TeleError::Usage(format!(
-                    "button {:?} requires the account's 2FA password; password-protected clicks are not supported at this layer",
-                    located.text
-                )));
-            }
-            use grammers_client::tl;
-            let answer: tl::enums::messages::BotCallbackAnswer = guard
-                .client
-                .invoke(&tl::functions::messages::GetBotCallbackAnswer {
-                    game: false,
-                    peer: input_peer,
-                    msg_id: id,
-                    data: Some(located.callback_data.clone()),
-                    password: None,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            let mut row = serde_json::json!({
-                "id": id,
-                "clicked": true,
-                "button": located.text,
-                "position": located.position,
-            });
-            let tl::enums::messages::BotCallbackAnswer::Answer(a) = answer;
-            row["alert"] = serde_json::json!(a.alert);
-            if let Some(message) = a.message {
-                row["answer"] = serde_json::json!(message);
-            }
-            if let Some(url) = a.url {
-                row["url"] = serde_json::json!(url);
-            }
-            row["cache_time"] = serde_json::json!(a.cache_time);
-            Ok(row)
+            click_core(&guard, ClickParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let global = args.global;
-    if !global {
-        require_chat_target(&args.chat, "chat")?;
+pub(crate) async fn click_core(
+    guard: &crate::client::ClientGuard,
+    params: ClickParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let id = params.id;
+    let chat_target = params.chat.clone();
+    let selector = click_selector(&ClickArgs::from(&params));
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let found = guard
+        .client
+        .get_messages_by_id(chat_ref, &[id])
+        .await
+        .map_err(tele_invocation)?;
+    let msg = found
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+    let markup = msg
+        .reply_markup()
+        .ok_or_else(|| TeleError::Usage(format!("message {id} has no reply markup")))?;
+    let markup_json = crate::serialize::reply_markup_to_json(&markup);
+    let located = locate_button(&markup_json, &selector)?;
+    if button_requires_password(&markup, &located.text, &located.callback_data) {
+        return Err(TeleError::Usage(format!(
+            "button {:?} requires the account's 2FA password; password-protected clicks are not supported at this layer",
+            located.text
+        )));
     }
-    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    use grammers_client::tl;
+    let answer: tl::enums::messages::BotCallbackAnswer = guard
+        .client
+        .invoke(&tl::functions::messages::GetBotCallbackAnswer {
+            game: false,
+            peer: input_peer,
+            msg_id: id,
+            data: Some(located.callback_data.clone()),
+            password: None,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let mut row = serde_json::json!({
+        "id": id,
+        "clicked": true,
+        "button": located.text,
+        "position": located.position,
+    });
+    let tl::enums::messages::BotCallbackAnswer::Answer(a) = answer;
+    row["alert"] = serde_json::json!(a.alert);
+    if let Some(message) = a.message {
+        row["answer"] = serde_json::json!(message);
+    }
+    if let Some(url) = a.url {
+        row["url"] = serde_json::json!(url);
+    }
+    row["cache_time"] = serde_json::json!(a.cache_time);
+    Ok(row)
+}
+
+pub(crate) fn search_serve_dry_run(args: &SearchArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": if args.global { serde_json::Value::Null } else { serde_json::json!(args.chat) },
+        "global": args.global,
+        "query": args.query,
+        "limit": args.limit,
+        "would": if args.global {
+            format!("search all dialogs for \"{}\"", args.query)
+        } else {
+            format!("search messages in chat {}", args.chat)
+        },
+    }))
+}
+
+async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_search(&args)?;
     let config_path = flags.config_path.clone();
     let json = flags.json;
     let jsonl = flags.jsonl;
     let dry_run = flags.dry_run;
-    let limit = args.limit as usize;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
-        let query = args.query.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": if global { serde_json::Value::Null } else { serde_json::json!(chat_target) },
-                    "global": global,
-                    "query": query,
-                    "limit": limit,
-                    "would": if global {
-                        format!("search all dialogs for \"{query}\"")
-                    } else {
-                        format!("search messages in chat {chat_target}")
-                    },
-                }));
+                return search_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let mut rows: Vec<serde_json::Value> = Vec::new();
-            let mut served = 0usize;
-            if global {
-                let mut iter = guard
-                    .client
-                    .search_all_messages()
-                    .query(&query)
-                    .limit(limit);
-                while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-                    served += 1;
-                    guard.rate_limiter.acquire_for_items(served).await;
-                    push_message_row(&mut rows, &msg)?;
-                }
-            } else {
-                let chat = entities::resolve_peer(
-                    &guard.client,
-                    guard.session.as_ref(),
-                    &chat_target,
-                )
-                .await?;
-                let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-                let mut iter = guard
-                    .client
-                    .search_messages(chat_ref)
-                    .query(&query)
-                    .limit(limit);
-                while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-                    served += 1;
-                    guard.rate_limiter.acquire_for_items(served).await;
-                    push_message_row(&mut rows, &msg)?;
-                }
-            }
+            let result = search_core(&guard, SearchParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
-                let table_rows: Vec<Vec<String>> = rows
-                    .iter()
-                    .map(|r| {
-                        vec![
-                            r["id"].to_string(),
-                            r["date"].as_str().unwrap_or_default().to_string(),
-                            r["sender"]["name"].as_str().unwrap_or_default().to_string(),
-                            truncate_text(r["text"].as_str().unwrap_or_default(), 80),
-                        ]
-                    })
-                    .collect();
+                let empty = Vec::new();
                 output::print_account_table(
                     &name,
                     multi,
                     &["id", "date", "sender", "text"],
-                    &table_rows,
+                    &message_table_rows(result["messages"].as_array().unwrap_or(&empty)),
                 )?;
             }
-            Ok(serde_json::json!({"messages": rows}))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
-    validate_download_dir(&args.dir)?;
-    if let Some(kb) = args.chunk_size_kb {
-        validate_chunk_size_kb(kb)?;
+pub(crate) async fn search_core(
+    guard: &crate::client::ClientGuard,
+    params: SearchParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut served = 0usize;
+    let limit = params.limit as usize;
+    if params.global {
+        let mut iter = guard
+            .client
+            .search_all_messages()
+            .query(&params.query)
+            .limit(limit);
+        while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+            served += 1;
+            guard.rate_limiter.acquire_for_items(served).await;
+            push_message_row(&mut rows, &msg)?;
+        }
+    } else {
+        let chat =
+            entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+        let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+        let mut iter = guard
+            .client
+            .search_messages(chat_ref)
+            .query(&params.query)
+            .limit(limit);
+        while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+            served += 1;
+            guard.rate_limiter.acquire_for_items(served).await;
+            push_message_row(&mut rows, &msg)?;
+        }
     }
+    Ok(serde_json::json!({"messages": rows}))
+}
+
+pub(crate) fn download_serve_dry_run(args: &DownloadArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "id": args.id,
+        "would": format!("download message {}", args.id)
+    }))
+}
+
+async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_download(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let id = args.id;
-    let chunk_size_kb = args.chunk_size_kb;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = args.chat.clone();
-        let out_dir = args.dir.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "id": id,
-                    "would": format!("download message {id}")
-                }));
+                return download_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-            let found = guard
-                .client
-                .get_messages_by_id(chat_ref, &[id])
-                .await
-                .map_err(tele_invocation)?;
-            let msg = found
-                .into_iter()
-                .flatten()
-                .next()
-                .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
-            let name = download_name(&msg);
-            tokio::task::spawn_blocking({
-                let out_dir = out_dir.clone();
-                move || std::fs::create_dir_all(&out_dir)
-            })
-            .await
-            .map_err(|e| TeleError::Other(e.to_string()))??;
-            validate_download_dir(&out_dir)?;
-            let path = std::path::Path::new(&out_dir).join(name);
-            if !args.force {
-                refuse_existing_download_target(&path)?;
-            }
-            let temp = download_temp_path(&path);
-            tokio::task::spawn_blocking({
-                let temp = temp.clone();
-                move || create_download_temp(&temp)
-            })
-            .await
-            .map_err(|e| TeleError::Other(e.to_string()))??;
-            if msg.media().is_none() {
-                return Err(TeleError::Usage("message has no media".to_string()));
-            }
-            let ok = match chunk_size_kb {
-                Some(kb) => {
-                    let media = msg.media().expect("media checked above");
-                    let mut iter = guard
-                        .client
-                        .iter_download(&media)
-                        .chunk_size((kb * 1024) as i32);
-                    let mut file = tokio::fs::File::create(&temp)
-                        .await
-                        .map_err(|e| TeleError::Other(e.to_string()))?;
-                    use tokio::io::AsyncWriteExt;
-                    loop {
-                        match iter.next().await {
-                            Ok(Some(bytes)) => {
-                                file.write_all(&bytes).await.map_err(|err| {
-                                    let _ = std::fs::remove_file(&temp);
-                                    TeleError::Other(err.to_string())
-                                })?;
-                            }
-                            Ok(None) => break,
-                            Err(e) => {
-                                let _ = std::fs::remove_file(&temp);
-                                return Err(tele_invocation(e));
-                            }
-                        }
-                    }
-                    file.sync_all()
-                        .await
-                        .map_err(|e| TeleError::Other(e.to_string()))?;
-                    true
-                }
-                None => msg.download_media(&temp).await.map_err(|e| {
-                    let _ = std::fs::remove_file(&temp);
-                    tele_invocation(e)
-                })?,
-            };
-            if !ok {
-                let _ = std::fs::remove_file(&temp);
-                return Err(TeleError::Usage("message has no media".to_string()));
-            }
-            commit_download(&temp, &path)?;
-            let bytes = tokio::task::spawn_blocking({
-                let path = path.clone();
-                move || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-            })
-            .await
-            .map_err(|e| TeleError::Other(e.to_string()))?;
-            Ok(serde_json::json!({"path": path.to_string_lossy(), "bytes": bytes}))
+            download_core(&guard, DownloadParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn download_core(
+    guard: &crate::client::ClientGuard,
+    params: DownloadParams,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let id = params.id;
+    let out_dir = params.dir.clone();
+    let chunk_size_kb = params.chunk_size_kb;
+    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let found = guard
+        .client
+        .get_messages_by_id(chat_ref, &[id])
+        .await
+        .map_err(tele_invocation)?;
+    let msg = found
+        .into_iter()
+        .flatten()
+        .next()
+        .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+    let name = download_name(&msg);
+    tokio::task::spawn_blocking({
+        let out_dir = out_dir.clone();
+        move || std::fs::create_dir_all(&out_dir)
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))??;
+    validate_download_dir(&out_dir)?;
+    let path = std::path::Path::new(&out_dir).join(name);
+    if !params.force {
+        refuse_existing_download_target(&path)?;
+    }
+    let temp = download_temp_path(&path);
+    tokio::task::spawn_blocking({
+        let temp = temp.clone();
+        move || create_download_temp(&temp)
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))??;
+    if msg.media().is_none() {
+        return Err(TeleError::Usage("message has no media".to_string()));
+    }
+    let ok = match chunk_size_kb {
+        Some(kb) => {
+            let media = msg.media().expect("media checked above");
+            let mut iter = guard
+                .client
+                .iter_download(&media)
+                .chunk_size((kb * 1024) as i32);
+            let mut file = tokio::fs::File::create(&temp)
+                .await
+                .map_err(|e| TeleError::Other(e.to_string()))?;
+            use tokio::io::AsyncWriteExt;
+            loop {
+                match iter.next().await {
+                    Ok(Some(bytes)) => {
+                        file.write_all(&bytes).await.map_err(|err| {
+                            let _ = std::fs::remove_file(&temp);
+                            TeleError::Other(err.to_string())
+                        })?;
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&temp);
+                        return Err(tele_invocation(e));
+                    }
+                }
+            }
+            file.sync_all()
+                .await
+                .map_err(|e| TeleError::Other(e.to_string()))?;
+            true
+        }
+        None => msg.download_media(&temp).await.map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            tele_invocation(e)
+        })?,
+    };
+    if !ok {
+        let _ = std::fs::remove_file(&temp);
+        return Err(TeleError::Usage("message has no media".to_string()));
+    }
+    commit_download(&temp, &path)?;
+    let bytes = tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))?;
+    Ok(serde_json::json!({"path": path.to_string_lossy(), "bytes": bytes}))
 }
 
 fn validate_chunk_size_kb(kb: usize) -> TeleResult<()> {
@@ -2604,6 +3253,44 @@ mod tests {
             noforwards: false,
             background: false,
         }
+    }
+
+    #[test]
+    fn send_params_deserialize_with_cli_defaults() {
+        let p: SendParams = serde_json::from_value(serde_json::json!({"chat": "@game"})).unwrap();
+        assert_eq!(p.chat, "@game");
+        assert!(p.text.is_none());
+        assert!(p.files.is_empty());
+        assert!(p.preview);
+        assert!(!p.no_preview);
+        assert_eq!(p.format, "plain");
+        assert!(!p.silent);
+        assert!(!p.noforwards);
+        assert!(!p.background);
+        assert!(!p.dry_run);
+        let args = SendArgs::from(&p);
+        assert_eq!(args.chat, "@game");
+        assert_eq!(args.format, "plain");
+    }
+
+    #[test]
+    fn send_params_roundtrip_preserves_args_fields() {
+        let base = send_args("markdown");
+        let params = SendParams::from(&base);
+        let back = SendArgs::from(&params);
+        assert_eq!(back.chat, base.chat);
+        assert_eq!(back.text, base.text);
+        assert_eq!(back.format, base.format);
+        assert_eq!(back.preview, base.preview);
+        assert_eq!(back.no_preview, base.no_preview);
+        let mut edited = base.clone();
+        edited.reply = Some(3);
+        edited.topic = Some(9);
+        edited.silent = true;
+        let roundtrip = SendArgs::from(&SendParams::from(&edited));
+        assert_eq!(roundtrip.reply, Some(3));
+        assert_eq!(roundtrip.topic, Some(9));
+        assert!(roundtrip.silent);
     }
 
     fn upload_fixture(tag: &str, names: &[&str]) -> std::path::PathBuf {
