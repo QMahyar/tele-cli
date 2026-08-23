@@ -712,6 +712,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grammers_session::Session;
 
     #[test]
     fn validate_name_accepts_plain_names() {
@@ -1499,5 +1500,154 @@ mod tests {
             !rendered.contains("167,"),
             "raw key bytes leaked via Debug: {rendered}"
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_update_state_advances_and_resumes_next_start() {
+        let _guard = lock_env().await;
+        let dir = test_dir("state-advance-resume");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let path = session_path("work");
+        {
+            let s = SqliteSession::open(&path).await.unwrap();
+            s.set_update_state(grammers_session::types::UpdateState::All(
+                grammers_session::types::UpdatesState {
+                    pts: 100,
+                    qts: 20,
+                    date: 1_700_000_000,
+                    seq: 5,
+                    channels: vec![grammers_session::types::ChannelState { id: 123, pts: 7 }],
+                },
+            ))
+            .await
+            .unwrap();
+            let loaded = s.updates_state().await.unwrap();
+            assert_eq!(loaded.pts, 100);
+            assert_eq!(loaded.qts, 20);
+            assert_eq!(loaded.date, 1_700_000_000);
+            assert_eq!(loaded.seq, 5);
+            assert_eq!(loaded.channels.len(), 1);
+            assert_eq!(loaded.channels[0].id, 123);
+            assert_eq!(loaded.channels[0].pts, 7);
+        }
+        {
+            let s2 = SqliteSession::open(&path).await.unwrap();
+            let resumed = s2.updates_state().await.unwrap();
+            assert_eq!(resumed.pts, 100);
+            assert_eq!(resumed.qts, 20);
+            assert_eq!(resumed.channels[0].pts, 7);
+            s2.set_update_state(grammers_session::types::UpdateState::Primary {
+                pts: 101,
+                date: 1_700_000_100,
+                seq: 6,
+            })
+            .await
+            .unwrap();
+            let after = s2.updates_state().await.unwrap();
+            assert_eq!(after.pts, 101);
+            assert_eq!(after.date, 1_700_000_100);
+            assert_eq!(after.seq, 6);
+            assert_eq!(after.qts, 20);
+        }
+        {
+            let s3 = SqliteSession::open(&path).await.unwrap();
+            let final_state = s3.updates_state().await.unwrap();
+            assert_eq!(final_state.pts, 101);
+            assert_eq!(final_state.qts, 20);
+            assert_eq!(final_state.channels[0].pts, 7);
+        }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sqlite_channel_state_batched_persist_resumes_catch_up() {
+        let _guard = lock_env().await;
+        let dir = test_dir("state-channel-batch");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let path = session_path("work");
+        {
+            let s = SqliteSession::open(&path).await.unwrap();
+            s.set_update_state(grammers_session::types::UpdateState::All(
+                grammers_session::types::UpdatesState {
+                    pts: 1,
+                    qts: 0,
+                    date: 1,
+                    seq: 0,
+                    channels: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+            s.set_update_state(grammers_session::types::UpdateState::Channel { id: 999, pts: 42 })
+                .await
+                .unwrap();
+            s.set_update_state(grammers_session::types::UpdateState::Channel { id: 1000, pts: 7 })
+                .await
+                .unwrap();
+            let loaded = s.updates_state().await.unwrap();
+            assert_eq!(loaded.channels.len(), 2);
+        }
+        {
+            let s2 = SqliteSession::open(&path).await.unwrap();
+            let resumed = s2.updates_state().await.unwrap();
+            assert!(resumed.channels.iter().any(|c| c.id == 999 && c.pts == 42));
+            assert!(resumed.channels.iter().any(|c| c.id == 1000 && c.pts == 7));
+            s2.set_update_state(grammers_session::types::UpdateState::Channel { id: 999, pts: 43 })
+                .await
+                .unwrap();
+            let after = s2.updates_state().await.unwrap();
+            assert!(after.channels.iter().any(|c| c.id == 999 && c.pts == 43));
+        }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sqlite_message_box_load_resumes_from_persisted_state() {
+        let _guard = lock_env().await;
+        let dir = test_dir("state-mbox-resume");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let path = session_path("work");
+        {
+            let s = SqliteSession::open(&path).await.unwrap();
+            s.set_update_state(grammers_session::types::UpdateState::All(
+                grammers_session::types::UpdatesState {
+                    pts: 55,
+                    qts: 9,
+                    date: 12345,
+                    seq: 3,
+                    channels: vec![grammers_session::types::ChannelState { id: 777, pts: 11 }],
+                },
+            ))
+            .await
+            .unwrap();
+        }
+        {
+            let s2 = SqliteSession::open(&path).await.unwrap();
+            let state = s2.updates_state().await.unwrap();
+            let mbox = grammers_session::updates::MessageBoxes::load(state.clone());
+            assert!(!mbox.is_empty());
+            let back = mbox.session_state();
+            assert_eq!(back.pts, 55);
+            assert_eq!(back.qts, 9);
+            assert_eq!(back.date, 12345);
+            assert_eq!(back.seq, 3);
+            assert!(back.channels.iter().any(|c| c.id == 777 && c.pts == 11));
+            let empty = grammers_session::updates::MessageBoxes::new();
+            assert!(empty.is_empty());
+            assert_eq!(empty.session_state().pts, 0);
+        }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

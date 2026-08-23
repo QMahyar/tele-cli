@@ -1,6 +1,7 @@
 use clap::Parser;
 use grammers_client::tl;
 use grammers_client::update::Update;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -29,6 +30,50 @@ use crate::output;
 pub const SERVE_PROTOCOL: u32 = 1;
 
 const SERVE_EVENTS: &[&str] = &["NewMessage", "MessageEdited"];
+
+const SERVE_DEDUPE_CAP: usize = 10_000;
+
+pub(crate) struct ServeDedupe {
+    seen: HashMap<(i64, i32, i32), ()>,
+    order: VecDeque<(i64, i32, i32)>,
+}
+
+impl ServeDedupe {
+    pub(crate) fn new() -> Self {
+        Self {
+            seen: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+    pub(crate) fn check(&mut self, key: (i64, i32, i32)) -> bool {
+        if self.seen.contains_key(&key) {
+            return true;
+        }
+        if self.seen.len() >= SERVE_DEDUPE_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        self.seen.insert(key, ());
+        self.order.push_back(key);
+        false
+    }
+}
+
+pub(crate) fn dedupe_key(chat_id: Option<i64>, msg_id: i32, pts: i32) -> (i64, i32, i32) {
+    (chat_id.unwrap_or(0), msg_id, pts)
+}
+
+pub(crate) fn pts_from_state(state: &grammers_session::updates::State) -> i32 {
+    match &state.message_box {
+        Some(mb) => match mb {
+            grammers_session::updates::MessageBox::Common { pts } => *pts,
+            grammers_session::updates::MessageBox::Secondary { qts } => *qts,
+            grammers_session::updates::MessageBox::Channel { pts, .. } => *pts,
+        },
+        None => 0,
+    }
+}
 
 type ServeRunner = for<'a> fn(
     &'a ClientGuard,
@@ -60,6 +105,12 @@ pub struct ServeArgs {
         help = "events to stream (serve-A subset: NewMessage, MessageEdited)"
     )]
     events: Vec<String>,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "catch up from last persisted update state (replays missed history); default is live-only from now (no replay, no history)"
+    )]
+    catch_up: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -430,15 +481,18 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
     let mut failures: u32 = 0;
     let mut greeted = false;
+    let mut dedupe = ServeDedupe::new();
     loop {
         let eof = serve_connection(
             &name,
             &args.events,
+            args.catch_up,
             &creds,
             config_path.as_deref(),
             &mut rx,
             &mut failures,
             greeted,
+            &mut dedupe,
         )
         .await?;
         greeted = true;
@@ -452,11 +506,13 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn serve_connection(
     name: &str,
     events: &[String],
+    catch_up: bool,
     creds: &crate::config::Credentials,
     config_path: Option<&std::path::Path>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
     failures: &mut u32,
     greet: bool,
+    dedupe: &mut ServeDedupe,
 ) -> TeleResult<bool> {
     let mut guard = loop {
         match ClientGuard::connect(name, creds.api_id, config_path).await {
@@ -485,7 +541,7 @@ async fn serve_connection(
         .stream_updates(
             receiver,
             grammers_client::client::UpdatesConfiguration {
-                catch_up: true,
+                catch_up,
                 update_queue_limit: Some(1000),
             },
         )
@@ -553,6 +609,7 @@ async fn serve_connection(
             }
             Tick::Update(update) => {
                 *failures = 0;
+                let _ = stream.sync_update_state().await;
                 let Some(kind) = event_kind_allowed(&update, events) else {
                     continue;
                 };
@@ -563,8 +620,13 @@ async fn serve_connection(
                     Update::NewMessage(m) | Update::MessageEdited(m) => m,
                     _ => continue,
                 };
-                let row = crate::serialize::message_to_json(message)?;
                 let chat_id = update_peer(update.raw()).and_then(|p| p.bare_id());
+                let pts = pts_from_state(update.state());
+                let key = dedupe_key(chat_id, message.id(), pts);
+                if dedupe.check(key) {
+                    continue;
+                }
+                let row = crate::serialize::message_to_json(message)?;
                 emit(&event_row(kind, name, chat_id, None, Some(row)))?;
             }
         }
@@ -574,6 +636,7 @@ async fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grammers_session::Session;
 
     #[test]
     fn hello_roundtrip_parses_protocol() {
@@ -873,5 +936,137 @@ mod tests {
         assert_eq!(envelope["id"], 9);
         assert_eq!(envelope["error"]["name"], "FLOOD_WAIT");
         assert_eq!(envelope["error"]["seconds"], 17);
+    }
+
+    #[test]
+    fn serve_default_is_live_only_catch_up_off() {
+        let args = ServeArgs::try_parse_from(["serve"]).unwrap();
+        assert!(!args.catch_up);
+        let args2 = ServeArgs::try_parse_from(["serve", "--catch-up"]).unwrap();
+        assert!(args2.catch_up);
+    }
+
+    #[test]
+    fn serve_help_mentions_live_only_and_catch_up() {
+        use clap::CommandFactory;
+        let mut cmd = ServeArgs::command();
+        let mut buf = Vec::new();
+        cmd.write_help(&mut buf).unwrap();
+        let help = String::from_utf8(buf).unwrap();
+        assert!(help.contains("--catch-up"));
+        assert!(help.contains("live-only"));
+        assert!(help.contains("no replay"));
+    }
+
+    #[test]
+    fn serve_dedupe_suppresses_replay_and_bounces_flaky_reconnect() {
+        let mut d = ServeDedupe::new();
+        let k1 = dedupe_key(Some(123), 5, 10);
+        let k2 = dedupe_key(Some(123), 5, 11);
+        let k3 = dedupe_key(Some(456), 5, 10);
+        assert!(!d.check(k1));
+        assert!(d.check(k1));
+        assert!(!d.check(k2));
+        assert!(d.check(k2));
+        assert!(!d.check(k3));
+        assert!(d.check(k3));
+        assert!(!d.check(dedupe_key(None, 9, 0)));
+        assert!(d.check(dedupe_key(None, 9, 0)));
+    }
+
+    #[test]
+    fn serve_dedupe_evicts_oldest_beyond_cap() {
+        let mut d = ServeDedupe::new();
+        for i in 0..(SERVE_DEDUPE_CAP as i32) {
+            assert!(!d.check(dedupe_key(Some(1), i, i)));
+        }
+        assert_eq!(d.seen.len(), SERVE_DEDUPE_CAP);
+        let first = dedupe_key(Some(1), 0, 0);
+        assert!(d.check(first));
+        assert!(!d.check(dedupe_key(
+            Some(1),
+            SERVE_DEDUPE_CAP as i32,
+            SERVE_DEDUPE_CAP as i32
+        )));
+        assert_eq!(d.seen.len(), SERVE_DEDUPE_CAP);
+    }
+
+    #[test]
+    fn pts_from_state_reads_all_box_variants() {
+        use grammers_session::updates::{MessageBox, State};
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Common { pts: 42 }),
+        };
+        assert_eq!(pts_from_state(&s), 42);
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Secondary { qts: 43 }),
+        };
+        assert_eq!(pts_from_state(&s), 43);
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: Some(MessageBox::Channel {
+                channel_id: 9,
+                pts: 44,
+            }),
+        };
+        assert_eq!(pts_from_state(&s), 44);
+        let s = State {
+            date: 1,
+            seq: 2,
+            message_box: None,
+        };
+        assert_eq!(pts_from_state(&s), 0);
+    }
+
+    #[tokio::test]
+    async fn serve_state_persists_and_resumes_offline() {
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-serve-state-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        std::fs::write(dir.join("config.toml"), "[accounts.serve_test]\n").unwrap();
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        let path = crate::session::session_path("serve_test");
+        {
+            let sess = grammers_session::storages::SqliteSession::open(&path)
+                .await
+                .unwrap();
+            sess.set_update_state(grammers_session::types::UpdateState::All(
+                grammers_session::types::UpdatesState {
+                    pts: 77,
+                    qts: 0,
+                    date: 1000,
+                    seq: 1,
+                    channels: vec![],
+                },
+            ))
+            .await
+            .unwrap();
+            let state = sess.updates_state().await.unwrap();
+            let mbox = grammers_session::updates::MessageBoxes::load(state);
+            assert!(!mbox.is_empty());
+            assert_eq!(mbox.session_state().pts, 77);
+        }
+        {
+            let sess2 = grammers_session::storages::SqliteSession::open(&path)
+                .await
+                .unwrap();
+            let resumed = sess2.updates_state().await.unwrap();
+            assert_eq!(resumed.pts, 77);
+            let mbox2 = grammers_session::updates::MessageBoxes::load(resumed);
+            assert_eq!(mbox2.session_state().pts, 77);
+        }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
