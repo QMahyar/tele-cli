@@ -30,8 +30,11 @@ pub const REGISTERED: &[&str] = &[
     "channels.GetFullChannel",
     "contacts.DeleteByPhones",
     "contacts.Search",
+    "messages.AppendTodoList",
+    "messages.ComposeMessageWithAI",
     "messages.ExportChatInvite",
     "messages.GetAllDrafts",
+    "messages.GetAvailableEffects",
     "messages.GetDialogUnreadMarks",
     "messages.GetHistory",
     "messages.GetMessagesViews",
@@ -39,6 +42,10 @@ pub const REGISTERED: &[&str] = &[
     "messages.ReadMentions",
     "messages.ReadReactions",
     "messages.Search",
+    "messages.SendScheduledMessages",
+    "messages.ToggleTodoCompleted",
+    "messages.TranslateText",
+    "messages.TranscribeAudio",
     "stats.GetBroadcastStats",
     "stats.GetMegagroupStats",
     "users.GetUsers",
@@ -241,7 +248,7 @@ async fn dispatch(
                 .invoke(&tl::functions::messages::GetAllDrafts {})
                 .await
                 .map_err(tele_invocation)?;
-            Ok(all_drafts_summary(&r))
+            Ok(updates_summary(&r))
         }
         "stats.GetBroadcastStats" => {
             let chat =
@@ -480,6 +487,131 @@ async fn dispatch(
                 .map_err(tele_invocation)?;
             Ok(dialog_unread_marks_summary(&marks))
         }
+        "messages.AppendTodoList" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let msg_id = req_int_field(p, "msg_id")?;
+            let list = todo_items_field(p, "list")?;
+            let r: tl::enums::Updates = client
+                .invoke(&tl::functions::messages::AppendTodoList { peer, msg_id, list })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(updates_summary(&r))
+        }
+        "messages.ComposeMessageWithAI" => {
+            let text = tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                text: str_field(p, "text")?,
+                entities: Vec::new(),
+            });
+            let tone = compose_tone_field(p)?;
+            let r: tl::enums::messages::ComposedMessageWithAi = client
+                .invoke(&tl::functions::messages::ComposeMessageWithAi {
+                    proofread: bool_field(p, "proofread")?,
+                    emojify: bool_field(p, "emojify")?,
+                    text,
+                    translate_to_lang: opt_str_field(p, "translate_to_lang")?,
+                    tone,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(match r {
+                tl::enums::messages::ComposedMessageWithAi::Ai(c) => composed_message_summary(&c),
+            })
+        }
+        "messages.GetAvailableEffects" => {
+            let r: tl::enums::messages::AvailableEffects = client
+                .invoke(&tl::functions::messages::GetAvailableEffects {
+                    hash: opt_int_field(p, "hash")?.unwrap_or(0),
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(available_effects_summary(&r))
+        }
+        "messages.SendScheduledMessages" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let ids = int_list_field(p, "id")?;
+            if ids.is_empty() {
+                return Err(TeleError::Usage(
+                    "--args field \"id\" must be a non-empty array of message ids".to_string(),
+                ));
+            }
+            let r: tl::enums::Updates = client
+                .invoke(&tl::functions::messages::SendScheduledMessages { peer, id: ids })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(updates_summary(&r))
+        }
+        "messages.ToggleTodoCompleted" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let msg_id = req_int_field(p, "msg_id")?;
+            let completed = int_list_field(p, "completed")?;
+            let incompleted = int_list_field(p, "incompleted")?;
+            let r: tl::enums::Updates = client
+                .invoke(&tl::functions::messages::ToggleTodoCompleted {
+                    peer,
+                    msg_id,
+                    completed,
+                    incompleted,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(updates_summary(&r))
+        }
+        "messages.TranslateText" => {
+            let peer = match opt_str_field(p, "chat")? {
+                Some(target) => {
+                    let chat = crate::entities::resolve_peer(client, session, &target).await?;
+                    Some(
+                        crate::entities::input_peer(&chat)
+                            .await
+                            .map_err(tele_invocation)?,
+                    )
+                }
+                None => None,
+            };
+            let id = match p.get("id") {
+                Some(_) => Some(int_list_field(p, "id")?),
+                None => None,
+            };
+            let text = match p.get("text") {
+                Some(_) => Some(string_list_field(p, "text")?),
+                None => None,
+            };
+            if id.is_none() && text.is_none() {
+                return Err(TeleError::Usage(
+                    "--args field \"text\" (array of strings) or \"id\" (array of message ids) is required".to_string(),
+                ));
+            }
+            let r: tl::enums::messages::TranslatedText = client
+                .invoke(&tl::functions::messages::TranslateText {
+                    peer,
+                    id,
+                    text: text.map(|items| {
+                        items
+                            .iter()
+                            .map(|t| {
+                                tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                                    text: t.clone(),
+                                    entities: Vec::new(),
+                                })
+                            })
+                            .collect()
+                    }),
+                    to_lang: str_field(p, "to_lang")?,
+                    tone: opt_str_field(p, "tone")?,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(translated_text_summary(&r))
+        }
+        "messages.TranscribeAudio" => {
+            let peer = resolved_peer(client, session, p, "chat").await?;
+            let msg_id = req_int_field(p, "msg_id")?;
+            let r: tl::enums::messages::TranscribedAudio = client
+                .invoke(&tl::functions::messages::TranscribeAudio { peer, msg_id })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(transcribed_audio_summary(&r))
+        }
         "account.GetAuthorizations" => {
             let r: tl::enums::account::Authorizations = client
                 .invoke(&tl::functions::account::GetAuthorizations {})
@@ -544,7 +676,7 @@ fn str_field(p: &serde_json::Value, key: &str) -> TeleResult<String> {
         .to_string())
 }
 
-fn all_drafts_summary(r: &tl::enums::Updates) -> serde_json::Value {
+fn updates_summary(r: &tl::enums::Updates) -> serde_json::Value {
     match r {
         tl::enums::Updates::Updates(u) => serde_json::json!({
             "updates": u.updates.iter().map(update_summary).collect::<Vec<_>>(),
@@ -615,6 +747,85 @@ fn opt_int_field(p: &serde_json::Value, key: &str) -> TeleResult<Option<i32>> {
         .and_then(|v| v.as_i64())
         .map(|v| i32::try_from(v).map_err(|_| invalid_int(key, v)))
         .transpose()
+}
+
+fn req_int_field(p: &serde_json::Value, key: &str) -> TeleResult<i32> {
+    match p.get(key).and_then(|v| v.as_i64()) {
+        Some(v) => i32::try_from(v).map_err(|_| invalid_int(key, v)),
+        None => Err(TeleError::Usage(format!(
+            "--args field {key:?} is required (integer)"
+        ))),
+    }
+}
+
+fn todo_items_field(p: &serde_json::Value, key: &str) -> TeleResult<Vec<tl::enums::TodoItem>> {
+    fn item_error(key: &str, detail: &str) -> TeleError {
+        TeleError::Usage(format!("--args field {key:?} item {detail}"))
+    }
+    match p.get(key) {
+        Some(serde_json::Value::Array(items)) if !items.is_empty() => items
+            .iter()
+            .map(|v| {
+                let obj = v
+                    .as_object()
+                    .ok_or_else(|| item_error(key, "must be an object with \"id\" and \"text\""))?;
+                let id = obj
+                    .get("id")
+                    .and_then(|n| n.as_i64())
+                    .ok_or_else(|| item_error(key, "\"id\" must be an integer"))?;
+                let id = i32::try_from(id).map_err(|_| invalid_int("list.id", id))?;
+                let text = obj
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .ok_or_else(|| item_error(key, "\"text\" must be a string"))?;
+                Ok(tl::enums::TodoItem::Item(tl::types::TodoItem {
+                    id,
+                    title: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: text.to_string(),
+                        entities: Vec::new(),
+                    }),
+                }))
+            })
+            .collect(),
+        _ => Err(TeleError::Usage(format!(
+            "--args field {key:?} must be a non-empty array of {{\"id\", \"text\"}} objects"
+        ))),
+    }
+}
+
+fn compose_tone_field(p: &serde_json::Value) -> TeleResult<Option<tl::enums::InputAiComposeTone>> {
+    match p.get("tone") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+            Ok(Some(tl::enums::InputAiComposeTone::Default(
+                tl::types::InputAiComposeToneDefault { tone: s.clone() },
+            )))
+        }
+        Some(serde_json::Value::Object(map)) => {
+            let slug = map.get("slug").and_then(|s| s.as_str());
+            let named = map.get("tone").and_then(|s| s.as_str());
+            match (slug, named) {
+                (Some(slug), _) => Ok(Some(tl::enums::InputAiComposeTone::Slug(
+                    tl::types::InputAiComposeToneSlug {
+                        slug: slug.to_string(),
+                    },
+                ))),
+                (None, Some(named)) => Ok(Some(tl::enums::InputAiComposeTone::Default(
+                    tl::types::InputAiComposeToneDefault {
+                        tone: named.to_string(),
+                    },
+                ))),
+                _ => Err(TeleError::Usage(
+                    "--args field \"tone\" must be a string or {\"slug\": ...} or {\"tone\": ...}"
+                        .to_string(),
+                )),
+            }
+        }
+        Some(_) => Err(TeleError::Usage(
+            "--args field \"tone\" must be a string or {\"slug\": ...} or {\"tone\": ...}"
+                .to_string(),
+        )),
+    }
 }
 
 fn invalid_int(key: &str, v: i64) -> TeleError {
@@ -788,6 +999,68 @@ fn affected_history_summary(r: &tl::enums::messages::AffectedHistory) -> serde_j
             "pts_count": h.pts_count,
             "offset": h.offset,
         }),
+    }
+}
+
+fn available_effects_summary(r: &tl::enums::messages::AvailableEffects) -> serde_json::Value {
+    match r {
+        tl::enums::messages::AvailableEffects::Effects(e) => serde_json::json!({
+            "hash": e.hash,
+            "effects": e.effects.iter().map(effect_row).collect::<Vec<_>>(),
+            "documents": e.documents.len(),
+        }),
+        tl::enums::messages::AvailableEffects::NotModified => {
+            serde_json::json!({ "not_modified": true })
+        }
+    }
+}
+
+fn effect_row(e: &tl::enums::AvailableEffect) -> serde_json::Value {
+    match e {
+        tl::enums::AvailableEffect::Effect(a) => serde_json::json!({
+            "id": a.id,
+            "emoticon": a.emoticon,
+            "premium_required": a.premium_required,
+            "effect_sticker_id": a.effect_sticker_id,
+        }),
+    }
+}
+
+fn transcribed_audio_summary(r: &tl::enums::messages::TranscribedAudio) -> serde_json::Value {
+    match r {
+        tl::enums::messages::TranscribedAudio::Audio(a) => serde_json::json!({
+            "pending": a.pending,
+            "transcription_id": a.transcription_id,
+            "text": a.text,
+            "trial_remains_num": a.trial_remains_num,
+            "trial_remains_until_date": a.trial_remains_until_date,
+        }),
+    }
+}
+
+fn translated_text_summary(r: &tl::enums::messages::TranslatedText) -> serde_json::Value {
+    match r {
+        tl::enums::messages::TranslatedText::TranslateResult(res) => {
+            let translations = res
+                .result
+                .iter()
+                .map(text_with_entities_text)
+                .collect::<Vec<_>>();
+            serde_json::json!({ "count": translations.len(), "translations": translations })
+        }
+    }
+}
+
+fn composed_message_summary(c: &tl::types::messages::ComposedMessageWithAi) -> serde_json::Value {
+    serde_json::json!({
+        "result_text": text_with_entities_text(&c.result_text),
+        "diff_text": c.diff_text.as_ref().map(text_with_entities_text),
+    })
+}
+
+fn text_with_entities_text(t: &tl::enums::TextWithEntities) -> String {
+    match t {
+        tl::enums::TextWithEntities::Entities(x) => x.text.clone(),
     }
 }
 
@@ -1098,9 +1371,16 @@ mod tests {
         assert!(requires_explicit_account("account.SetAuthorizationTTL"));
         assert!(requires_explicit_account("contacts.DeleteByPhones"));
         assert!(requires_explicit_account("messages.ExportChatInvite"));
+        assert!(requires_explicit_account("messages.AppendTodoList"));
+        assert!(requires_explicit_account("messages.SendScheduledMessages"));
+        assert!(requires_explicit_account("messages.ToggleTodoCompleted"));
         assert!(!requires_explicit_account("messages.GetAllDrafts"));
         assert!(!requires_explicit_account("contacts.Search"));
         assert!(!requires_explicit_account("account.GetAuthorizations"));
+        assert!(!requires_explicit_account("messages.GetAvailableEffects"));
+        assert!(!requires_explicit_account("messages.TranslateText"));
+        assert!(!requires_explicit_account("messages.TranscribeAudio"));
+        assert!(!requires_explicit_account("messages.ComposeMessageWithAI"));
     }
 
     #[test]
@@ -1112,6 +1392,9 @@ mod tests {
                     | "account.SetAuthorizationTTL"
                     | "contacts.DeleteByPhones"
                     | "messages.ExportChatInvite"
+                    | "messages.AppendTodoList"
+                    | "messages.SendScheduledMessages"
+                    | "messages.ToggleTodoCompleted"
             );
             assert_eq!(requires_explicit_account(name), mutating, "{name}");
         }
@@ -1564,9 +1847,9 @@ mod tests {
     }
 
     #[test]
-    fn all_drafts_summary_never_emits_debug_strings() {
+    fn updates_summary_never_emits_debug_strings() {
         let too_long = tl::enums::Updates::TooLong;
-        let v = all_drafts_summary(&too_long);
+        let v = updates_summary(&too_long);
         assert_eq!(v["kind"], serde_json::json!("other"));
         assert!(!v.to_string().contains("UpdatesTooLong"));
 
@@ -1578,8 +1861,299 @@ mod tests {
             seq_start: 0,
             seq: 0,
         });
-        let v = all_drafts_summary(&combined);
+        let v = updates_summary(&combined);
         assert_eq!(v["kind"], serde_json::json!("Combined"));
         assert!(!v.to_string().contains("UpdatesCombined"));
+    }
+
+    #[test]
+    fn new_batch_validate_params_happy_and_sad_paths() {
+        assert!(matches!(
+            validate_params("messages.SendScheduledMessages", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_params(
+                "messages.SendScheduledMessages",
+                &serde_json::json!({"chat": "@x"})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_params(
+            "messages.SendScheduledMessages",
+            &serde_json::json!({"chat": "@x", "id": [1, 2]})
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_params("messages.AppendTodoList", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_params(
+            "messages.AppendTodoList",
+            &serde_json::json!({"chat": "@x", "msg_id": 5, "list": [{"id": 1, "text": "a"}]})
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_params(
+                "messages.ToggleTodoCompleted",
+                &serde_json::json!({"chat": "@x", "msg_id": 5})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_params(
+            "messages.ToggleTodoCompleted",
+            &serde_json::json!({"chat": "@x", "msg_id": 5, "completed": [1], "incompleted": []})
+        )
+        .is_ok());
+        assert!(validate_params("messages.GetAvailableEffects", &serde_json::json!({})).is_ok());
+        assert!(validate_params(
+            "messages.GetAvailableEffects",
+            &serde_json::json!({"hash": 5})
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_params("messages.TranscribeAudio", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_params(
+            "messages.TranscribeAudio",
+            &serde_json::json!({"chat": "@x", "msg_id": 7})
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_params("messages.TranslateText", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_params(
+                "messages.TranslateText",
+                &serde_json::json!({"to_lang": ""})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_params(
+            "messages.TranslateText",
+            &serde_json::json!({"to_lang": "fa", "text": ["hi"]})
+        )
+        .is_ok());
+        assert!(validate_params(
+            "messages.TranslateText",
+            &serde_json::json!({"to_lang": "fa", "id": [3], "tone": "formal"})
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_params("messages.ComposeMessageWithAI", &serde_json::json!({})),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_params(
+                "messages.ComposeMessageWithAI",
+                &serde_json::json!({"proofread": true})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_params(
+            "messages.ComposeMessageWithAI",
+            &serde_json::json!({"text": "draft text", "proofread": true, "emojify": false})
+        )
+        .is_ok());
+        assert!(validate_params(
+            "messages.ComposeMessageWithAI",
+            &serde_json::json!({
+                "text": "draft text",
+                "translate_to_lang": "en",
+                "tone": {"slug": "formal"}
+            })
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn new_batch_rejects_unknown_keys() {
+        assert!(matches!(
+            validate_params(
+                "messages.SendScheduledMessages",
+                &serde_json::json!({"chat": "@x", "id": [1], "schedule": "daily"})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            validate_params(
+                "messages.ComposeMessageWithAI",
+                &serde_json::json!({"text": "x", "send": true})
+            ),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn todo_items_field_parses_objects_and_rejects_bad_shapes() {
+        let items = todo_items_field(
+            &serde_json::json!({"list": [
+                {"id": 1, "text": "buy milk"},
+                {"id": 2, "text": "ship it"}
+            ]}),
+            "list",
+        )
+        .unwrap();
+        assert_eq!(items.len(), 2);
+        match &items[0] {
+            tl::enums::TodoItem::Item(item) => {
+                assert_eq!(item.id, 1);
+                match &item.title {
+                    tl::enums::TextWithEntities::Entities(t) => {
+                        assert_eq!(t.text, "buy milk");
+                        assert!(t.entities.is_empty());
+                    }
+                }
+            }
+        }
+        assert!(todo_items_field(&serde_json::json!({"list": []}), "list").is_err());
+        assert!(todo_items_field(&serde_json::json!({}), "list").is_err());
+        assert!(todo_items_field(&serde_json::json!({"list": ["x"]}), "list").is_err());
+        assert!(todo_items_field(&serde_json::json!({"list": [{"text": "x"}]}), "list").is_err());
+        assert!(todo_items_field(&serde_json::json!({"list": [{"id": 1}]}), "list").is_err());
+        assert!(todo_items_field(
+            &serde_json::json!({"list": [{"id": "1", "text": "x"}]}),
+            "list"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn compose_tone_field_maps_string_slug_object_and_rejects_garbage() {
+        assert!(compose_tone_field(&serde_json::json!({}))
+            .unwrap()
+            .is_none());
+        match compose_tone_field(&serde_json::json!({"tone": "friendly"})).unwrap() {
+            Some(tl::enums::InputAiComposeTone::Default(t)) => assert_eq!(t.tone, "friendly"),
+            other => panic!("string tone should map to Default, got {other:?}"),
+        }
+        match compose_tone_field(&serde_json::json!({"tone": {"slug": "formal"}})).unwrap() {
+            Some(tl::enums::InputAiComposeTone::Slug(t)) => assert_eq!(t.slug, "formal"),
+            other => panic!("slug object should map to Slug, got {other:?}"),
+        }
+        match compose_tone_field(&serde_json::json!({"tone": {"tone": "calm"}})).unwrap() {
+            Some(tl::enums::InputAiComposeTone::Default(t)) => assert_eq!(t.tone, "calm"),
+            other => panic!("named object should map to Default, got {other:?}"),
+        }
+        assert!(compose_tone_field(&serde_json::json!({"tone": {}})).is_err());
+        assert!(compose_tone_field(&serde_json::json!({"tone": 5})).is_err());
+    }
+
+    #[test]
+    fn available_effects_summary_shapes_effects_and_not_modified() {
+        let effects =
+            tl::enums::messages::AvailableEffects::Effects(tl::types::messages::AvailableEffects {
+                hash: 3,
+                effects: vec![tl::enums::AvailableEffect::Effect(
+                    tl::types::AvailableEffect {
+                        premium_required: true,
+                        id: 7,
+                        emoticon: "fire".to_string(),
+                        static_icon_id: None,
+                        effect_sticker_id: 99,
+                        effect_animation_id: Some(5),
+                    },
+                )],
+                documents: Vec::new(),
+            });
+        let v = available_effects_summary(&effects);
+        assert_eq!(v["hash"], serde_json::json!(3));
+        assert_eq!(v["effects"][0]["id"], serde_json::json!(7));
+        assert_eq!(v["effects"][0]["emoticon"], serde_json::json!("fire"));
+        assert_eq!(v["effects"][0]["premium_required"], serde_json::json!(true));
+        assert_eq!(v["documents"], serde_json::json!(0));
+
+        let not_modified = tl::enums::messages::AvailableEffects::NotModified;
+        let v = available_effects_summary(&not_modified);
+        assert_eq!(v["not_modified"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn transcribed_audio_summary_carries_transcription_fields() {
+        let audio =
+            tl::enums::messages::TranscribedAudio::Audio(tl::types::messages::TranscribedAudio {
+                pending: true,
+                transcription_id: 1_234_567_890_123,
+                text: "transcribed words".to_string(),
+                trial_remains_num: Some(2),
+                trial_remains_until_date: Some(1_700_000_000),
+            });
+        let v = transcribed_audio_summary(&audio);
+        assert_eq!(v["pending"], serde_json::json!(true));
+        assert_eq!(
+            v["transcription_id"],
+            serde_json::json!(1_234_567_890_123i64)
+        );
+        assert_eq!(v["text"], serde_json::json!("transcribed words"));
+        assert_eq!(v["trial_remains_num"], serde_json::json!(2));
+        assert_eq!(
+            v["trial_remains_until_date"],
+            serde_json::json!(1_700_000_000)
+        );
+
+        let plain =
+            tl::enums::messages::TranscribedAudio::Audio(tl::types::messages::TranscribedAudio {
+                pending: false,
+                transcription_id: 9,
+                text: String::new(),
+                trial_remains_num: None,
+                trial_remains_until_date: None,
+            });
+        let v = transcribed_audio_summary(&plain);
+        assert_eq!(v["pending"], serde_json::json!(false));
+        assert!(v["trial_remains_num"].is_null());
+    }
+
+    #[test]
+    fn translated_text_summary_extracts_plain_strings() {
+        let result = tl::enums::messages::TranslatedText::TranslateResult(
+            tl::types::messages::TranslateResult {
+                result: vec![
+                    tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: "hola".to_string(),
+                        entities: Vec::new(),
+                    }),
+                    tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                        text: "mundo".to_string(),
+                        entities: Vec::new(),
+                    }),
+                ],
+            },
+        );
+        let v = translated_text_summary(&result);
+        assert_eq!(v["count"], serde_json::json!(2));
+        assert_eq!(v["translations"], serde_json::json!(["hola", "mundo"]));
+    }
+
+    #[test]
+    fn composed_message_summary_includes_optional_diff() {
+        let with_diff = tl::types::messages::ComposedMessageWithAi {
+            result_text: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                text: "polished draft".to_string(),
+                entities: Vec::new(),
+            }),
+            diff_text: Some(tl::enums::TextWithEntities::Entities(
+                tl::types::TextWithEntities {
+                    text: "- old\n+ polished draft".to_string(),
+                    entities: Vec::new(),
+                },
+            )),
+        };
+        let v = composed_message_summary(&with_diff);
+        assert_eq!(v["result_text"], serde_json::json!("polished draft"));
+        assert_eq!(v["diff_text"], serde_json::json!("- old\n+ polished draft"));
+
+        let no_diff = tl::types::messages::ComposedMessageWithAi {
+            result_text: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+                text: "plain".to_string(),
+                entities: Vec::new(),
+            }),
+            diff_text: None,
+        };
+        let v = composed_message_summary(&no_diff);
+        assert_eq!(v["result_text"], serde_json::json!("plain"));
+        assert!(v["diff_text"].is_null());
     }
 }

@@ -1364,6 +1364,16 @@ fn raw_registry_names_are_offline_usable() {
         "messages.GetMessagesViews" => "{\"chat\":\"me\",\"id\":[1],\"increment\":false}",
         "messages.ReadReactions" | "messages.ReadMentions" => "{\"chat\":\"me\"}",
         "contacts.DeleteByPhones" => "{\"phones\":[\"+15550100\"]}",
+        "messages.AppendTodoList" => {
+            "{\"chat\":\"me\",\"msg_id\":1,\"list\":[{\"id\":1,\"text\":\"x\"}]}"
+        }
+        "messages.ComposeMessageWithAI" => "{\"text\":\"hi\"}",
+        "messages.SendScheduledMessages" => "{\"chat\":\"me\",\"id\":[1]}",
+        "messages.ToggleTodoCompleted" => {
+            "{\"chat\":\"me\",\"msg_id\":1,\"completed\":[],\"incompleted\":[]}"
+        }
+        "messages.TranscribeAudio" => "{\"chat\":\"me\",\"msg_id\":1}",
+        "messages.TranslateText" => "{\"to_lang\":\"en\",\"text\":[\"hi\"]}",
         _ => "{}",
     };
     let dir = isolated_appdir("rawreg2");

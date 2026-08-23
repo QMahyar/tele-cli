@@ -14,8 +14,11 @@ const REGISTRY: &[&str] = &[
     "channels.GetFullChannel",
     "contacts.DeleteByPhones",
     "contacts.Search",
+    "messages.AppendTodoList",
+    "messages.ComposeMessageWithAI",
     "messages.ExportChatInvite",
     "messages.GetAllDrafts",
+    "messages.GetAvailableEffects",
     "messages.GetDialogUnreadMarks",
     "messages.GetHistory",
     "messages.GetMessagesViews",
@@ -23,6 +26,10 @@ const REGISTRY: &[&str] = &[
     "messages.ReadMentions",
     "messages.ReadReactions",
     "messages.Search",
+    "messages.SendScheduledMessages",
+    "messages.ToggleTodoCompleted",
+    "messages.TranslateText",
+    "messages.TranscribeAudio",
     "stats.GetBroadcastStats",
     "stats.GetMegagroupStats",
     "users.GetUsers",
@@ -30,6 +37,7 @@ const REGISTRY: &[&str] = &[
 
 const NEEDS_PEER_RESOLVE: &[&str] = &[
     "channels.GetFullChannel",
+    "messages.AppendTodoList",
     "messages.ExportChatInvite",
     "messages.GetHistory",
     "messages.GetMessagesViews",
@@ -37,6 +45,10 @@ const NEEDS_PEER_RESOLVE: &[&str] = &[
     "messages.ReadMentions",
     "messages.ReadReactions",
     "messages.Search",
+    "messages.SendScheduledMessages",
+    "messages.ToggleTodoCompleted",
+    "messages.TranslateText",
+    "messages.TranscribeAudio",
     "stats.GetBroadcastStats",
     "stats.GetMegagroupStats",
     "users.GetUsers",
@@ -51,6 +63,11 @@ const PARAM_ALIASES: &[(&str, &str, &str)] = &[
     ("messages.GetMessagesViews", "peer", "chat"),
     ("messages.ReadReactions", "peer", "chat"),
     ("messages.ReadMentions", "peer", "chat"),
+    ("messages.AppendTodoList", "peer", "chat"),
+    ("messages.SendScheduledMessages", "peer", "chat"),
+    ("messages.ToggleTodoCompleted", "peer", "chat"),
+    ("messages.TranslateText", "peer", "chat"),
+    ("messages.TranscribeAudio", "peer", "chat"),
 ];
 
 fn main() {
@@ -282,7 +299,7 @@ fn main() {
     .unwrap();
     writeln!(
         f,
-        "    matches!(method, \"account.UpdateProfile\" | \"account.SetAuthorizationTTL\" | \"contacts.DeleteByPhones\" | \"messages.ExportChatInvite\")"
+        "    matches!(method, \"account.UpdateProfile\" | \"account.SetAuthorizationTTL\" | \"contacts.DeleteByPhones\" | \"messages.ExportChatInvite\" | \"messages.AppendTodoList\" | \"messages.SendScheduledMessages\" | \"messages.ToggleTodoCompleted\")"
     )
     .unwrap();
     writeln!(f, "}}").unwrap();
