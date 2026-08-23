@@ -20,6 +20,7 @@ clap_complete = "4"
 comfy-table = "7"
 grammers-client = { version = "0.10", features = ["proxy", "parse_invite_link", "markdown", "fs"] }
 grammers-session = { version = "0.10", features = ["sqlite-storage"] }
+libsql = { version = "=0.9.30", default-features = false, features = ["core"] }
 log = "0.4"
 qrcode = "0.14"
 serde = { version = "1", features = ["derive"] }

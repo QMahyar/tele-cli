@@ -2753,12 +2753,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telethon_import_surfaces_blocker_without_side_effects() {
-        let dir = std::env::temp_dir().join(format!("telecli-imp-tgblock-{}", std::process::id()));
+    async fn telethon_import_via_command_layer_converts_and_roundtrips() {
+        use grammers_client::session::types::PeerId;
+        use grammers_client::session::Session as _;
+
+        let dir = std::env::temp_dir().join(format!("telecli-imp-tgok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("telethon.session");
-        std::fs::write(&src, b"SQLite format 3\x00").unwrap();
+        {
+            let db = libsql::Builder::new_local(&src).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute("CREATE TABLE version (number INTEGER PRIMARY KEY)", ())
+                .await
+                .unwrap();
+            conn.execute("INSERT INTO version VALUES (6)", ())
+                .await
+                .unwrap();
+            conn.execute(
+                "CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, server_address TEXT, port INTEGER, auth_key BLOB, takeout_id BLOB, user_id INTEGER)",
+                (),
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                &format!(
+                    "INSERT INTO sessions VALUES (2, '149.154.167.51', 443, X'{}', NULL, 8675309)",
+                    "5C".repeat(256)
+                ),
+                (),
+            )
+            .await
+            .unwrap();
+        }
+        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        seed_test_env(&dir);
+        let flags = test_flags(
+            "account import-session",
+            true,
+            false,
+            &dir.join("config.toml"),
+        );
+        let code = import_session(
+            &import_args(src.to_str().unwrap(), None, false, true),
+            &flags,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(session::session_path("telethon").exists());
+        {
+            let reopened = session::open_session("telethon").await.unwrap();
+            assert_eq!(reopened.session.home_dc_id().unwrap(), 2);
+            let option = reopened.session.dc_option(2).unwrap().expect("dc option");
+            assert_eq!(option.auth_key, Some([0x5Cu8; 256]));
+            let myself = reopened.session.peer(PeerId::self_user()).await.unwrap();
+            match myself.expect("cached self user") {
+                grammers_client::session::types::PeerInfo::User { id, .. } => {
+                    assert_eq!(id, 867_5309)
+                }
+                other => panic!("expected self user, got {other:?}"),
+            }
+        }
+        let payload = import_data(&session::ImportedSession {
+            account: "telethon".to_string(),
+            path: session::session_path("telethon"),
+            bytes: 4096,
+        })
+        .to_string();
+        assert!(!payload.contains("auth_key"), "{payload}");
+        assert!(!payload.contains("92,"), "{payload}");
+        session::remove_session("telethon").unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        drop(_guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_import_rejects_foreign_schema_without_side_effects() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-imp-tgforeign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("telethon.session");
+        let scaffold = grammers_client::session::storages::SqliteSession::open(&src)
+            .await
+            .unwrap();
+        drop(scaffold);
         let _guard = crate::config::TEST_ENV_LOCK.lock().await;
         seed_test_env(&dir);
         let flags = test_flags(
@@ -2774,13 +2855,12 @@ mod tests {
         .await
         .unwrap_err();
         let msg = err.message();
-        assert!(msg.contains("rusqlite"), "{msg}");
-        assert!(msg.contains("libsql"), "{msg}");
-        assert!(msg.contains("dependency approval"), "{msg}");
+        assert!(msg.contains("sessions"), "{msg}");
+        assert!(msg.to_lowercase().contains("not a telethon"), "{msg}");
         assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
         assert!(
             !dir.join("sessions").exists(),
-            "blocked conversion must not scaffold anything"
+            "rejected conversion must not scaffold anything"
         );
         std::env::remove_var("TELE_APP_DIR");
         drop(_guard);
