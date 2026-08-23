@@ -7,6 +7,7 @@ use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
 use std::io::{IsTerminal, Write};
+use std::sync::Arc;
 
 fn redact_phone(phone: &str) -> String {
     let phone = phone.trim();
@@ -55,6 +56,11 @@ pub struct LoginArgs {
     show_token: bool,
     #[arg(long, default_value_t = DEFAULT_QR_TIMEOUT_SECS, help = "overall QR login deadline in seconds")]
     qr_timeout_secs: u64,
+    #[arg(
+        long,
+        help = "run code login stepwise across invocations: begin | code | status | cancel"
+    )]
+    stage: Option<String>,
 }
 
 const DEFAULT_QR_TIMEOUT_SECS: u64 = 300;
@@ -308,6 +314,30 @@ fn resolve_phone(explicit: Option<&str>) -> Option<String> {
 async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let phone = resolve_phone(args.phone.as_deref());
     session::validate_name(&args.name).map_err(TeleError::Usage)?;
+    let stage = match args.stage.as_deref() {
+        Some(raw) => Some(validate_staged(&args.method, raw, phone.as_deref())?),
+        None => None,
+    };
+    if let Some(stage) = stage {
+        if let Some(message) =
+            argv_phone_warning(args.phone.as_deref(), std::io::stderr().is_terminal())
+        {
+            log_line("warn", message);
+        }
+        if flags.dry_run {
+            log_line("info", "[dry-run] would run staged login");
+            let would = format!(
+                "run the {} stage of code login for account {}",
+                stage.as_str(),
+                args.name
+            );
+            return crate::executor::finish(
+                flags,
+                &dry_run_envelope(&args.name, &would, &flags.command),
+            );
+        }
+        return staged_login(args, flags, stage, phone).await;
+    }
     validate_login(&args.method, phone.as_deref(), args.qr_timeout_secs)?;
     if let Some(message) =
         argv_phone_warning(args.phone.as_deref(), std::io::stderr().is_terminal())
@@ -371,6 +401,495 @@ fn cleanup_partial_session(name: &str) {
             &format!("login failed; could not remove partial session files: {e:#}"),
         ),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginStage {
+    Begin,
+    Code,
+    Status,
+    Cancel,
+}
+
+impl LoginStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            LoginStage::Begin => "begin",
+            LoginStage::Code => "code",
+            LoginStage::Status => "status",
+            LoginStage::Cancel => "cancel",
+        }
+    }
+}
+
+fn parse_login_stage(raw: &str) -> TeleResult<LoginStage> {
+    match raw.trim() {
+        "begin" => Ok(LoginStage::Begin),
+        "code" => Ok(LoginStage::Code),
+        "status" => Ok(LoginStage::Status),
+        "cancel" => Ok(LoginStage::Cancel),
+        other => Err(TeleError::Usage(format!(
+            "unknown --stage {other} (use begin, code, status or cancel)"
+        ))),
+    }
+}
+
+fn validate_staged(method: &str, raw_stage: &str, phone: Option<&str>) -> TeleResult<LoginStage> {
+    let stage = parse_login_stage(raw_stage)?;
+    if method != "code" {
+        return Err(TeleError::Usage(
+            "--stage supports code login only; drop --method or set it to code".to_string(),
+        ));
+    }
+    if stage == LoginStage::Begin && phone.is_none() {
+        return Err(TeleError::Usage(
+            "--phone required for --stage begin (or set TELE_PHONE)".to_string(),
+        ));
+    }
+    Ok(stage)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PendingLogin {
+    version: u32,
+    account: String,
+    phone: String,
+    phone_code_hash: String,
+    created_at: String,
+}
+
+const PENDING_LOGIN_VERSION: u32 = 1;
+
+impl PendingLogin {
+    fn new(account: &str, phone: &str, phone_code_hash: String) -> Self {
+        Self {
+            version: PENDING_LOGIN_VERSION,
+            account: account.to_string(),
+            phone: phone.to_string(),
+            phone_code_hash,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+fn pending_dir_under(base: &std::path::Path) -> std::path::PathBuf {
+    base.join("pending")
+}
+
+fn pending_path_under(base: &std::path::Path, name: &str) -> std::path::PathBuf {
+    pending_dir_under(base).join(format!("{name}.login.json"))
+}
+
+fn save_pending(pending: &PendingLogin) -> TeleResult<()> {
+    save_pending_under(&config::app_data_dir(), pending)
+}
+
+fn save_pending_under(base: &std::path::Path, pending: &PendingLogin) -> TeleResult<()> {
+    let dir = pending_dir_under(base);
+    crate::fs_util::create_dir_private(&dir)
+        .map_err(|e| TeleError::Other(format!("failed to create {}: {e}", dir.display())))?;
+    let path = pending_path_under(base, &pending.account);
+    let text = serde_json::to_string_pretty(pending)?;
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp_path = std::path::PathBuf::from(tmp_name);
+    let result = std::fs::write(&tmp_path, "")
+        .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
+        .and_then(|()| std::fs::write(&tmp_path, text))
+        .and_then(|()| {
+            #[cfg(windows)]
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+            }
+            std::fs::rename(&tmp_path, &path)
+        });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result.map_err(|e| TeleError::Other(format!("failed to write {}: {e}", path.display())))
+}
+
+fn load_pending(name: &str) -> TeleResult<Option<PendingLogin>> {
+    load_pending_under(&config::app_data_dir(), name)
+}
+
+fn load_pending_under(base: &std::path::Path, name: &str) -> TeleResult<Option<PendingLogin>> {
+    match std::fs::read_to_string(pending_path_under(base, name)) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| TeleError::Other(format!(
+                "pending login state for {name} is corrupt ({e}); run tele account login --stage begin again"
+            ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(TeleError::Other(format!(
+            "failed to read pending login state for {name}: {e}"
+        ))),
+    }
+}
+
+fn require_pending(name: &str) -> TeleResult<PendingLogin> {
+    require_pending_under(&config::app_data_dir(), name)
+}
+
+fn require_pending_under(base: &std::path::Path, name: &str) -> TeleResult<PendingLogin> {
+    load_pending_under(base, name)?.ok_or_else(|| {
+        TeleError::Usage(format!(
+            "no pending login for account {name}; run tele account login --name {name} --stage begin first"
+        ))
+    })
+}
+
+fn remove_pending(name: &str) -> TeleResult<bool> {
+    remove_pending_under(&config::app_data_dir(), name)
+}
+
+fn remove_pending_under(base: &std::path::Path, name: &str) -> TeleResult<bool> {
+    match std::fs::remove_file(pending_path_under(base, name)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(TeleError::Other(format!(
+            "failed to remove pending login state for {name}: {e}"
+        ))),
+    }
+}
+
+fn stage_status_data(pending: Option<&PendingLogin>) -> serde_json::Value {
+    match pending {
+        Some(p) => serde_json::json!({
+            "stage": "status",
+            "pending": true,
+            "account": p.account,
+            "phone": redact_phone(&p.phone),
+            "created_at": p.created_at,
+        }),
+        None => serde_json::json!({"stage": "status", "pending": false}),
+    }
+}
+
+fn stage_cancel_data(cancelled: bool) -> serde_json::Value {
+    serde_json::json!({"stage": "cancel", "cancelled": cancelled})
+}
+
+fn stage_status_line(pending: Option<&PendingLogin>, name: &str) -> String {
+    match pending {
+        Some(p) => format!(
+            "pending login for account {name}: run tele account login --name {name} --stage code (requested {})",
+            p.created_at
+        ),
+        None => format!("no pending login for account {name}"),
+    }
+}
+
+async fn staged_login(
+    args: &LoginArgs,
+    flags: &GlobalFlags,
+    stage: LoginStage,
+    phone: Option<String>,
+) -> TeleResult<i32> {
+    match stage {
+        LoginStage::Status => {
+            let pending = load_pending(&args.name)?;
+            if !output::machine_mode(flags.json, flags.jsonl) {
+                output::print_line(&stage_status_line(pending.as_ref(), &args.name))?;
+            }
+            crate::executor::finish(
+                flags,
+                &action_envelope(
+                    &args.name,
+                    stage_status_data(pending.as_ref()),
+                    flags.dry_run,
+                    &flags.command,
+                ),
+            )
+        }
+        LoginStage::Cancel => {
+            let cancelled = remove_pending(&args.name)?;
+            if !output::machine_mode(flags.json, flags.jsonl) {
+                if cancelled {
+                    output::print_line(&format!(
+                        "discarded pending login for account {}",
+                        args.name
+                    ))?;
+                } else {
+                    output::print_line(&format!("no pending login for account {}", args.name))?;
+                }
+            }
+            crate::executor::finish(
+                flags,
+                &action_envelope(
+                    &args.name,
+                    stage_cancel_data(cancelled),
+                    flags.dry_run,
+                    &flags.command,
+                ),
+            )
+        }
+        LoginStage::Begin => staged_begin(args, flags, phone.as_deref()).await,
+        LoginStage::Code => staged_code(args, flags).await,
+    }
+}
+
+async fn staged_begin(
+    args: &LoginArgs,
+    flags: &GlobalFlags,
+    phone: Option<&str>,
+) -> TeleResult<i32> {
+    let phone = phone.ok_or_else(|| {
+        TeleError::Usage("--phone required for --stage begin (or set TELE_PHONE)".to_string())
+    })?;
+    let credentials = creds()?;
+    ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
+    let session_existed_before = session::session_path(&args.name)
+        .try_exists()
+        .unwrap_or(false);
+    let guard =
+        match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(e) => {
+                if !session_existed_before {
+                    cleanup_partial_session(&args.name);
+                }
+                return Err(e.into());
+            }
+        };
+    let result = staged_begin_flow(&guard, &credentials, &args.name, phone, flags).await;
+    drop(guard);
+    if result.is_err() && !session_existed_before {
+        cleanup_partial_session(&args.name);
+    }
+    result
+}
+
+async fn staged_begin_flow(
+    guard: &ClientGuard,
+    credentials: &crate::config::Credentials,
+    name: &str,
+    phone: &str,
+    flags: &GlobalFlags,
+) -> TeleResult<i32> {
+    guard.rate_limiter.acquire().await;
+    let authorized = guard
+        .client
+        .is_authorized()
+        .await
+        .map_err(tele_invocation)?;
+    if authorized {
+        let _ = remove_pending(name);
+        log_line("info", "account already authorized");
+        let data = serde_json::json!({"authorized": true, "method": "code"});
+        return crate::executor::finish(flags, &action_envelope(name, data, false, &flags.command));
+    }
+    let sent = send_login_code(
+        &guard.client,
+        &guard.session,
+        phone,
+        credentials.api_id,
+        &credentials.api_hash,
+    )
+    .await?;
+    save_pending(&PendingLogin::new(name, phone, sent.phone_code_hash))?;
+    log_line(
+        "info",
+        &format!(
+            "login code sent to {}; finish with tele account login --name {name} --stage code",
+            redact_phone(phone)
+        ),
+    );
+    crate::executor::finish(
+        flags,
+        &action_envelope(
+            name,
+            serde_json::json!({"stage": "begin", "pending": true}),
+            false,
+            &flags.command,
+        ),
+    )
+}
+
+async fn send_login_code(
+    client: &grammers_client::Client,
+    storage: &Arc<grammers_client::session::storages::SqliteSession>,
+    phone: &str,
+    api_id: i32,
+    api_hash: &str,
+) -> TeleResult<grammers_client::tl::types::auth::SentCode> {
+    use grammers_client::{session::Session as _, tl};
+    let request = tl::functions::auth::SendCode {
+        phone_number: phone.to_string(),
+        api_id,
+        api_hash: api_hash.to_string(),
+        settings: tl::types::CodeSettings {
+            allow_flashcall: false,
+            current_number: false,
+            allow_app_hash: false,
+            allow_missed_call: false,
+            allow_firebase: false,
+            logout_tokens: None,
+            token: None,
+            app_sandbox: None,
+            unknown_number: false,
+        }
+        .into(),
+    };
+    match client.invoke(&request).await {
+        Ok(tl::enums::auth::SentCode::Code(code)) => Ok(code),
+        Ok(tl::enums::auth::SentCode::Success(_)) => Err(TeleError::Auth(
+            "server reports the account is already signed in".to_string(),
+        )),
+        Ok(tl::enums::auth::SentCode::PaymentRequired(x)) => Err(TeleError::Other(format!(
+            "login requires paid verification (product {})",
+            x.store_product
+        ))),
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 303 => {
+            let dc_id = rpc
+                .value
+                .map(|v| i32::try_from(v).unwrap_or_default())
+                .ok_or_else(|| {
+                    TeleError::Other("DC migration hint arrived without a target DC".to_string())
+                })?;
+            storage.set_home_dc_id(dc_id).await.map_err(|e| {
+                TeleError::Other(format!("failed to switch home DC to {dc_id}: {e}"))
+            })?;
+            match client.invoke(&request).await {
+                Ok(tl::enums::auth::SentCode::Code(code)) => Ok(code),
+                Ok(_) => Err(TeleError::Other(
+                    "unexpected response after DC migration".to_string(),
+                )),
+                Err(e) => Err(tele_invocation(e)),
+            }
+        }
+        Err(e) => Err(tele_invocation(e)),
+    }
+}
+
+async fn staged_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let pending = require_pending(&args.name)?;
+    let credentials = creds()?;
+    ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
+    let session_existed_before = session::session_path(&args.name)
+        .try_exists()
+        .unwrap_or(false);
+    let guard =
+        match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(e) => {
+                if !session_existed_before {
+                    cleanup_partial_session(&args.name);
+                }
+                return Err(e.into());
+            }
+        };
+    let result = staged_code_flow(&guard, &pending, flags).await;
+    drop(guard);
+    if result.is_err() && !session_existed_before {
+        cleanup_partial_session(&args.name);
+    }
+    result
+}
+
+async fn staged_code_flow(
+    guard: &ClientGuard,
+    pending: &PendingLogin,
+    flags: &GlobalFlags,
+) -> TeleResult<i32> {
+    guard.rate_limiter.acquire().await;
+    let already = guard
+        .client
+        .is_authorized()
+        .await
+        .map_err(tele_invocation)?;
+    if already {
+        let _ = remove_pending(&pending.account);
+        log_line("info", "account already authorized");
+        return code_envelope(flags, pending, true);
+    }
+    let mut stdin = std::io::stdin().lock();
+    let mut stderr = std::io::stderr();
+    let prompt = code_prompt(Some(&pending.phone), stderr.is_terminal());
+    for attempt in 1..=MAX_CODE_ATTEMPTS {
+        let Some(code_line) = prompt_line(&prompt, &mut stdin, &mut stderr)? else {
+            return Err(TeleError::Usage(
+                "no code entered (stdin closed)".to_string(),
+            ));
+        };
+        let code = code_line.trim().to_string();
+        match raw_sign_in(&guard.client, pending, &code).await {
+            StagedSignIn::SignedIn(auth) => {
+                complete_staged_login(guard, *auth).await?;
+                let _ = remove_pending(&pending.account);
+                log_line(
+                    "info",
+                    &format!(
+                        "account {} logged in ({})",
+                        pending.account,
+                        redact_phone(&pending.phone)
+                    ),
+                );
+                return code_envelope(flags, pending, true);
+            }
+            StagedSignIn::PasswordNeeded => {
+                if !std::io::stdin().is_terminal() {
+                    return Err(TeleError::Auth(
+                        "2FA password required; re-run this command in an interactive terminal"
+                            .to_string(),
+                    ));
+                }
+                let pw_token = refresh_password_token(&guard.client).await?;
+                password_flow(&guard.client, pw_token, &mut stdin, &mut stderr).await?;
+                let _ = remove_pending(&pending.account);
+                log_line(
+                    "info",
+                    &format!(
+                        "account {} logged in ({})",
+                        pending.account,
+                        redact_phone(&pending.phone)
+                    ),
+                );
+                return code_envelope(flags, pending, true);
+            }
+            StagedSignIn::InvalidCode => {
+                if attempt >= MAX_CODE_ATTEMPTS {
+                    return Err(TeleError::Usage(
+                        "invalid code: attempts exhausted; re-run tele account login --stage code (or --stage begin if the code expired)"
+                            .to_string(),
+                    ));
+                }
+                log_line("warn", "invalid code; try again");
+            }
+            StagedSignIn::CodeExpired => {
+                let _ = remove_pending(&pending.account);
+                return Err(TeleError::Auth(
+                    "login code expired; discarded pending state; re-run tele account login --stage begin"
+                        .to_string(),
+                ));
+            }
+            StagedSignIn::SignUpRequired => {
+                return Err(TeleError::Usage(
+                    "sign up with an official client first".to_string(),
+                ));
+            }
+            StagedSignIn::Failed(e) => return Err(e),
+        }
+    }
+    Err(TeleError::Usage(
+        "invalid code: attempts exhausted".to_string(),
+    ))
+}
+
+fn code_envelope(flags: &GlobalFlags, pending: &PendingLogin, authorized: bool) -> TeleResult<i32> {
+    let data = serde_json::json!({
+        "stage": "code",
+        "authorized": authorized,
+        "method": "code",
+    });
+    crate::executor::finish(
+        flags,
+        &action_envelope(&pending.account, data, false, &flags.command),
+    )
 }
 
 async fn login_flow(
@@ -545,6 +1064,97 @@ async fn refresh_password_token(
         .map_err(tele_invocation)?;
     let enums::account::Password::Password(password) = response;
     Ok(grammers_client::client::PasswordToken::new(password))
+}
+
+enum StagedSignIn {
+    SignedIn(Box<grammers_client::tl::types::auth::Authorization>),
+    PasswordNeeded,
+    InvalidCode,
+    CodeExpired,
+    SignUpRequired,
+    Failed(TeleError),
+}
+
+async fn raw_sign_in(
+    client: &grammers_client::Client,
+    pending: &PendingLogin,
+    code: &str,
+) -> StagedSignIn {
+    use grammers_client::tl;
+    let request = tl::functions::auth::SignIn {
+        phone_number: pending.phone.clone(),
+        phone_code_hash: pending.phone_code_hash.clone(),
+        phone_code: Some(code.to_string()),
+        email_verification: None,
+    };
+    match client.invoke(&request).await {
+        Ok(tl::enums::auth::Authorization::Authorization(x)) => StagedSignIn::SignedIn(Box::new(x)),
+        Ok(tl::enums::auth::Authorization::SignUpRequired(_)) => StagedSignIn::SignUpRequired,
+        Err(grammers_client::InvocationError::Rpc(rpc))
+            if rpc.name == "SESSION_PASSWORD_NEEDED" =>
+        {
+            StagedSignIn::PasswordNeeded
+        }
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.name == "PHONE_CODE_EXPIRED" => {
+            StagedSignIn::CodeExpired
+        }
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.name.starts_with("PHONE_CODE_") => {
+            StagedSignIn::InvalidCode
+        }
+        Err(e) => StagedSignIn::Failed(tele_invocation(e)),
+    }
+}
+
+async fn complete_staged_login(
+    guard: &ClientGuard,
+    auth: grammers_client::tl::types::auth::Authorization,
+) -> TeleResult<()> {
+    use grammers_client::{
+        session::{
+            types::{PeerAuth, PeerInfo, UpdateState, UpdatesState},
+            Session as _,
+        },
+        tl,
+    };
+    let user = match auth.user {
+        tl::enums::User::User(user) => user,
+        tl::enums::User::Empty(_) => {
+            return Err(TeleError::Other(
+                "server returned an empty user after sign in".to_string(),
+            ));
+        }
+    };
+    guard
+        .session
+        .cache_peer(&PeerInfo::User {
+            id: user.id,
+            auth: user
+                .access_hash
+                .filter(|_| !user.min)
+                .map(PeerAuth::from_hash),
+            bot: Some(user.bot),
+            is_self: Some(true),
+        })
+        .await
+        .map_err(|e| TeleError::Other(format!("failed to cache signed-in user: {e}")))?;
+    if let Ok(tl::enums::updates::State::State(state)) = guard
+        .client
+        .invoke(&tl::functions::updates::GetState {})
+        .await
+    {
+        guard
+            .session
+            .set_update_state(UpdateState::All(UpdatesState {
+                pts: state.pts,
+                qts: state.qts,
+                date: state.date,
+                seq: state.seq,
+                channels: Vec::new(),
+            }))
+            .await
+            .map_err(|e| TeleError::Other(format!("failed to store update state: {e}")))?;
+    }
+    Ok(())
 }
 async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if flags.dry_run {
@@ -1241,7 +1851,53 @@ mod tests {
             phone: phone.map(str::to_string),
             show_token: false,
             qr_timeout_secs: DEFAULT_QR_TIMEOUT_SECS,
+            stage: None,
         }
+    }
+
+    fn staged_args(method: &str, phone: Option<&str>, stage: Option<&str>) -> LoginArgs {
+        LoginArgs {
+            stage: stage.map(str::to_string),
+            ..login_args(method, phone)
+        }
+    }
+
+    fn pending_fixture(account: &str) -> PendingLogin {
+        PendingLogin::new(account, "+15551234567", "hash-token-123".to_string())
+    }
+
+    fn staged_temp_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("telecli-staged-{}-{seq}", std::process::id()))
+    }
+
+    async fn with_pending_env<F, T>(f: impl FnOnce(std::path::PathBuf) -> F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let dir = staged_temp_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        f(dir).await
+    }
+
+    async fn with_tele_app_env<F, T>(f: impl FnOnce(std::path::PathBuf) -> F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let dir = staged_temp_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = crate::config::TEST_ENV_LOCK.lock().await;
+        std::env::set_var("TELE_APP_DIR", &dir);
+        std::env::remove_var(TELE_PHONE_ENV);
+        let result = f(dir.clone()).await;
+        std::env::remove_var("TELE_APP_DIR");
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+        result
     }
 
     fn test_flags(
@@ -2224,5 +2880,202 @@ mod tests {
         std::env::remove_var("TELE_APP_DIR");
         drop(_guard);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_login_stage_accepts_documented_modes_only() {
+        assert_eq!(parse_login_stage("begin").unwrap(), LoginStage::Begin);
+        assert_eq!(parse_login_stage("code").unwrap(), LoginStage::Code);
+        assert_eq!(parse_login_stage("status").unwrap(), LoginStage::Status);
+        assert_eq!(parse_login_stage("cancel").unwrap(), LoginStage::Cancel);
+        for bad in ["", "restart", "BEGIN"] {
+            assert!(
+                matches!(parse_login_stage(bad), Err(TeleError::Usage(_))),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_rejects_non_code_method_before_dry_run() {
+        let dir = staged_temp_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account login", false, true, &dir.join("config.toml"));
+        let err = login(&staged_args("qr", None, Some("begin")), &flags)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn staged_unknown_value_is_usage() {
+        let dir = staged_temp_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account login", false, true, &dir.join("config.toml"));
+        let err = login(
+            &staged_args("code", Some("+15551234567"), Some("restart")),
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{err}");
+        assert!(err.message().contains("--stage"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn staged_begin_requires_phone_and_writes_nothing() {
+        with_tele_app_env(|dir| async move {
+            let flags = test_flags("account login", false, false, &dir.join("config.toml"));
+            let err = login(&staged_args("code", None, Some("begin")), &flags)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{err}");
+            assert!(!dir.join("pending").exists());
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn staged_begin_dry_run_writes_no_state() {
+        with_tele_app_env(|dir| async move {
+            let flags = test_flags("account login", false, true, &dir.join("config.toml"));
+            let code = login(
+                &staged_args("code", Some("+15551234567"), Some("begin")),
+                &flags,
+            )
+            .await
+            .unwrap();
+            assert_eq!(code, 0);
+            assert!(!dir.join("pending").exists());
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn code_stage_requires_prior_begin_state() {
+        with_pending_env(|dir| async move {
+            let err = require_pending_under(&dir, "ghost").unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{err}");
+            assert!(err.message().contains("--stage begin"), "{err}");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn status_reports_pending_with_redacted_phone() {
+        with_pending_env(|dir| async move {
+            save_pending_under(&dir, &pending_fixture("work")).unwrap();
+            let loaded = load_pending_under(&dir, "work")
+                .unwrap()
+                .expect("pending must load");
+            assert_eq!(loaded.phone_code_hash, "hash-token-123");
+            let data = stage_status_data(Some(&loaded));
+            assert_eq!(data["stage"], serde_json::json!("status"));
+            assert_eq!(data["pending"], serde_json::json!(true));
+            assert_eq!(data["phone"], serde_json::json!("+1***567"));
+            assert!(!data["created_at"].as_str().unwrap_or_default().is_empty());
+            remove_pending_under(&dir, "work").unwrap();
+        })
+        .await;
+    }
+
+    #[test]
+    fn status_without_pending_reports_absent() {
+        let data = stage_status_data(None);
+        assert_eq!(data["stage"], serde_json::json!("status"));
+        assert_eq!(data["pending"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn cancel_discards_pending_then_reports_clean() {
+        with_pending_env(|dir| async move {
+            save_pending_under(&dir, &pending_fixture("work")).unwrap();
+            assert!(pending_path_under(&dir, "work").exists());
+            assert!(remove_pending_under(&dir, "work").unwrap());
+            assert!(!pending_path_under(&dir, "work").exists());
+            assert!(load_pending_under(&dir, "work").unwrap().is_none());
+            assert!(!remove_pending_under(&dir, "work").unwrap());
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn pending_state_file_never_contains_secret_fields() {
+        with_pending_env(|dir| async move {
+            save_pending_under(&dir, &pending_fixture("work")).unwrap();
+            let text = std::fs::read_to_string(pending_path_under(&dir, "work")).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let mut keys: Vec<String> = value
+                .as_object()
+                .expect("state must be an object")
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                vec![
+                    "account".to_string(),
+                    "created_at".to_string(),
+                    "phone".to_string(),
+                    "phone_code_hash".to_string(),
+                    "version".to_string(),
+                ]
+            );
+            assert_eq!(value["version"], serde_json::json!(1));
+            assert_eq!(
+                value["phone_code_hash"],
+                serde_json::json!("hash-token-123")
+            );
+            assert!(
+                !text.contains("password"),
+                "state leaked password key: {text}"
+            );
+            assert!(!text.contains("\"code\""), "state leaked code key: {text}");
+        })
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pending_state_files_are_owner_restricted() {
+        use std::os::unix::fs::PermissionsExt;
+        with_pending_env(|dir| async move {
+            save_pending_under(&dir, &pending_fixture("work")).unwrap();
+            let file_mode = std::fs::metadata(pending_path_under(&dir, "work"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(file_mode, 0o600, "pending state file must be owner-only");
+            let dir_mode = std::fs::metadata(dir.join("pending"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700, "pending dir must be owner-only");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn staged_status_via_login_needs_no_network() {
+        with_tele_app_env(|dir| async move {
+            save_pending_under(&dir, &pending_fixture("work")).unwrap();
+            let flags = test_flags("account login", true, false, &dir.join("config.toml"));
+            let code = login(&staged_args("code", None, Some("status")), &flags)
+                .await
+                .unwrap();
+            assert_eq!(code, 0);
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
     }
 }
