@@ -400,6 +400,8 @@ pub(crate) fn serve_op_routes() -> Vec<OpRoute> {
     routes.extend(crate::commands::stickers::stickers_serve_routes());
     routes.extend(crate::commands::stories::stories_serve_routes());
     routes.extend(crate::commands::raw::raw_serve_routes());
+    routes.extend(crate::commands::chat::chat_serve_routes());
+    routes.extend(crate::commands::account::account_serve_routes());
     routes
 }
 

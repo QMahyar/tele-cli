@@ -3711,6 +3711,10 @@ fn admin_action_display(action: &serde_json::Value) -> String {
     }
 }
 
+pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

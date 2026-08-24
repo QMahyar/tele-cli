@@ -3605,6 +3605,10 @@ fn should_print_token(show_token: bool, stderr_is_terminal: bool) -> bool {
     show_token || stderr_is_terminal
 }
 
+pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
