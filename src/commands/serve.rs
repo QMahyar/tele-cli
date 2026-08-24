@@ -106,6 +106,12 @@ pub(crate) struct OpRoute {
     pub(crate) runner: ServeRunner,
 }
 
+enum ConnExit {
+    Eof,
+    StreamDown,
+    Resync,
+}
+
 #[derive(Parser)]
 pub struct ServeArgs {
     #[arg(
@@ -184,18 +190,88 @@ pub fn parse_incoming(line: &str) -> Result<ServeIn, serde_json::Value> {
     Ok(ServeIn::Action { id, op, params })
 }
 
-pub fn hello_out(account: &str, identity: Option<serde_json::Value>) -> serde_json::Value {
+pub fn hello_out(
+    account: &str,
+    identity: Option<serde_json::Value>,
+    last_seq: Option<u64>,
+) -> serde_json::Value {
     let mut out = serde_json::json!({
         "type": "hello",
         "protocol": SERVE_PROTOCOL,
         "min_protocol": SERVE_PROTOCOL_MIN,
         "max_protocol": SERVE_PROTOCOL,
         "account": account,
+        "last_seq": last_seq,
     });
     if let Some(identity) = identity {
         out["identity"] = identity;
     }
     out
+}
+
+pub(crate) fn apply_seq(row: &mut serde_json::Value, counter: &mut u64) -> u64 {
+    *counter += 1;
+    row["seq"] = serde_json::json!(*counter);
+    *counter
+}
+
+fn last_seq_of(seq: &u64) -> Option<u64> {
+    if *seq == 0 {
+        None
+    } else {
+        Some(*seq)
+    }
+}
+
+pub(crate) struct DeserFailure {
+    pub(crate) message: String,
+    pub(crate) param: Option<String>,
+}
+
+fn field_from_serde_message(msg: &str) -> Option<String> {
+    for pat in ["unknown field `", "missing field `", "duplicate field `"] {
+        if let Some((_, rest)) = msg.split_once(pat) {
+            if let Some(name) = rest.split('`').next() {
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_type_error(msg: &str) -> bool {
+    msg.contains("invalid type") || msg.contains("invalid value")
+}
+
+fn probe_typed_offender<P: serde::de::DeserializeOwned>(raw: &serde_json::Value) -> Option<String> {
+    let obj = raw.as_object()?;
+    for key in obj.keys() {
+        let mut probe = obj.clone();
+        probe.remove(key);
+        let blames_key = match P::deserialize(&serde_json::Value::Object(probe)) {
+            Ok(_) => true,
+            Err(e) => !is_type_error(&e.to_string()),
+        };
+        if blames_key {
+            return Some(key.clone());
+        }
+    }
+    None
+}
+
+pub(crate) fn deser_params<P: serde::de::DeserializeOwned>(
+    raw: &serde_json::Value,
+) -> Result<P, DeserFailure> {
+    P::deserialize(raw).map_err(|e| {
+        let message = e.to_string();
+        let mut param = field_from_serde_message(&message);
+        if param.is_none() && is_type_error(&message) {
+            param = probe_typed_offender::<P>(raw);
+        }
+        DeserFailure { message, param }
+    })
 }
 
 pub fn response_ok(id: u64, data: serde_json::Value) -> serde_json::Value {
@@ -249,8 +325,15 @@ macro_rules! serve_runner {
             raw: serde_json::Value,
         ) -> $crate::commands::serve::ServeFuture {
             Box::pin(async move {
-                let params: $params = serde_json::from_value(raw).map_err(|e| {
-                    $crate::commands::serve::err_json("ServeError", format!("params: {e}"))
+                let params: $params = $crate::commands::serve::deser_params(&raw).map_err(|f| {
+                    let mut err = $crate::commands::serve::err_json(
+                        "ServeError",
+                        format!("params: {}", f.message),
+                    );
+                    if let Some(p) = f.param {
+                        err["param"] = serde_json::Value::from(p);
+                    }
+                    err
                 })?;
                 $core(&shares, params).await.map_err(|e| e.as_json())
             })
@@ -298,8 +381,16 @@ pub(crate) fn prep<P: serde::de::DeserializeOwned>(
     op: &str,
     raw: serde_json::Value,
 ) -> Result<P, serde_json::Value> {
-    serde_json::from_value(raw)
-        .map_err(|e| err_json("ServeError", format!("op {op}: invalid params: {e}")))
+    deser_params(&raw).map_err(|f| {
+        let mut err = err_json(
+            "ServeError",
+            format!("op {op}: invalid params: {}", f.message),
+        );
+        if let Some(p) = f.param {
+            err["param"] = serde_json::Value::from(p);
+        }
+        err
+    })
 }
 
 fn known_op_names() -> String {
@@ -313,7 +404,7 @@ fn not_implemented(op: &str) -> serde_json::Value {
     let ops = known_op_names();
     err_json(
         "NotImplemented",
-        format!("unknown op {op}; supported ops: ping, {ops}"),
+        format!("unknown op {op}; supported ops: ping, stream.resync, {ops}"),
     )
 }
 
@@ -371,6 +462,15 @@ fn job_queue(receiver: tokio::sync::mpsc::Receiver<Job>) -> JobQueue {
     std::sync::Arc::new(tokio::sync::Mutex::new(receiver))
 }
 
+fn validate_resync_params(params: &serde_json::Value) -> Result<(), serde_json::Value> {
+    let empty = params.as_object().map(|o| o.is_empty()).unwrap_or(false);
+    if empty {
+        Ok(())
+    } else {
+        Err(err_json("ServeError", "stream.resync takes no parameters"))
+    }
+}
+
 async fn dispatch_action(
     shares: &ServeShares,
     mutations: &tokio::sync::mpsc::Sender<Job>,
@@ -378,9 +478,17 @@ async fn dispatch_action(
     id: u64,
     op: &str,
     params: serde_json::Value,
+    resync_requested: &mut bool,
 ) -> TeleResult<()> {
     if op == "ping" {
         return emit(&response_ok(id, serde_json::json!({ "pong": true })));
+    }
+    if op == "stream.resync" {
+        if let Err(error) = validate_resync_params(&params) {
+            return emit(&response_err(Some(id), error));
+        }
+        *resync_requested = true;
+        return emit(&response_ok(id, serde_json::json!({ "resync": "started" })));
     }
     let Some(route) = find_route(op) else {
         return emit(&response_err(Some(id), not_implemented(op)));
@@ -474,23 +582,33 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let mut failures: u32 = 0;
     let mut greeted = false;
     let mut dedupe = ServeDedupe::new();
+    let mut seq: u64 = 0;
+    let mut resync_pending = false;
     loop {
-        let eof = serve_connection(
+        let catch_up_now = args.catch_up || resync_pending;
+        resync_pending = false;
+        match serve_connection(
             &name,
             &args.events,
-            args.catch_up,
+            catch_up_now,
             &creds,
             config_path.as_deref(),
             &mut rx,
             &mut failures,
             greeted,
             &mut dedupe,
+            &mut seq,
         )
-        .await?;
-        greeted = true;
-        if eof {
-            return Ok(EXIT_OK);
+        .await?
+        {
+            ConnExit::Eof => return Ok(EXIT_OK),
+            ConnExit::StreamDown => {}
+            ConnExit::Resync => {
+                resync_pending = true;
+                output::log_line("info", "serve: stream.resync — rebuilding with catch-up");
+            }
         }
+        greeted = true;
     }
 }
 
@@ -505,7 +623,8 @@ async fn serve_connection(
     failures: &mut u32,
     greet: bool,
     dedupe: &mut ServeDedupe,
-) -> TeleResult<bool> {
+    seq: &mut u64,
+) -> TeleResult<ConnExit> {
     let mut guard = loop {
         match crate::client::ClientGuard::connect(name, creds.api_id, config_path).await {
             Ok(guard) => break guard,
@@ -531,7 +650,7 @@ async fn serve_connection(
             return Err(err);
         }
         handle_stream_failure(name, err, failures, None).await?;
-        return Ok(false);
+        return Ok(ConnExit::StreamDown);
     }
     let receiver = std::mem::replace(&mut guard.updates, tokio::sync::mpsc::unbounded_channel().1);
     let mut stream = guard
@@ -548,9 +667,11 @@ async fn serve_connection(
     *failures = 0;
     if greet {
         output::log_line("info", "serve: reconnected");
-        emit(&event_row("Reconnected", name, None, None, None))?;
+        let mut row = event_row("Reconnected", name, None, None, None);
+        apply_seq(&mut row, seq);
+        emit(&row)?;
     } else {
-        emit(&hello_out(name, Some(identity)))?;
+        emit(&hello_out(name, Some(identity.clone()), last_seq_of(seq)))?;
     }
     let shares = guard.shares();
     let (mutations, mutation_rx) = tokio::sync::mpsc::channel::<Job>(MUTATE_QUEUE_CAPACITY);
@@ -570,6 +691,7 @@ async fn serve_connection(
         )));
     }
     drop(response_tx);
+    let mut resync_requested = false;
     loop {
         enum Tick {
             Line(String),
@@ -609,15 +731,28 @@ async fn serve_connection(
                     emit(&value)?;
                 }
                 guard.close().await;
-                return Ok(true);
+                return Ok(ConnExit::Eof);
             }
             Tick::Line(line) => match parse_incoming(&line) {
                 Err(error) => emit(&response_err(None, error))?,
                 Ok(ServeIn::Hello { protocol }) => {
                     let _ = protocol;
+                    emit(&hello_out(name, Some(identity.clone()), last_seq_of(seq)))?;
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
-                    dispatch_action(&shares, &mutations, &reads, id, &op, params).await?
+                    dispatch_action(
+                        &shares,
+                        &mutations,
+                        &reads,
+                        id,
+                        &op,
+                        params,
+                        &mut resync_requested,
+                    )
+                    .await?;
+                    if resync_requested {
+                        break;
+                    }
                 }
             },
             Tick::Response(value) => emit(&value)?,
@@ -627,7 +762,7 @@ async fn serve_connection(
                 }
                 handle_stream_failure(name, crate::error::invocation_error(e), failures, None)
                     .await?;
-                return Ok(false);
+                return Ok(ConnExit::StreamDown);
             }
             Tick::Update(update) => {
                 *failures = 0;
@@ -652,10 +787,13 @@ async fn serve_connection(
                 let mut row = crate::serialize::message_to_json(message)?;
                 crate::serialize::enrich_message_row(&mut row, message);
                 crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
-                emit(&event_row(kind, name, chat_id, None, Some(row)))?;
+                let mut ev = event_row(kind, name, chat_id, None, Some(row));
+                apply_seq(&mut ev, seq);
+                emit(&ev)?;
             }
         }
     }
+    Ok(ConnExit::Resync)
 }
 
 #[cfg(test)]
@@ -752,6 +890,7 @@ mod tests {
         let hello = hello_out(
             "work",
             Some(serde_json::json!({"user_id": 7, "username": "w"})),
+            None,
         );
         assert_eq!(hello["type"], "hello");
         assert_eq!(hello["protocol"], SERVE_PROTOCOL);
@@ -760,8 +899,35 @@ mod tests {
         assert_eq!(hello["account"], "work");
         assert_eq!(hello["identity"]["user_id"], 7);
 
-        let bare = hello_out("work", None);
+        let bare = hello_out("work", None, None);
         assert!(bare.get("identity").is_none());
+    }
+
+    #[test]
+    fn hello_out_echoes_last_seq_null_then_value() {
+        let first = hello_out("work", None, last_seq_of(&0));
+        assert_eq!(first["last_seq"], serde_json::Value::Null);
+        let later = hello_out("work", None, last_seq_of(&7));
+        assert_eq!(later["last_seq"], 7);
+    }
+
+    #[test]
+    fn apply_seq_stamps_monotonic_per_connection_counter() {
+        let mut counter = 0u64;
+        let mut row = event_row("NewMessage", "work", Some(123), None, None);
+        assert_eq!(apply_seq(&mut row, &mut counter), 1);
+        assert_eq!(row["seq"], 1);
+        let mut edited = event_row("MessageEdited", "work", Some(123), None, None);
+        assert_eq!(apply_seq(&mut edited, &mut counter), 2);
+        assert_eq!(edited["seq"], 2);
+        let mut reconn = event_row("Reconnected", "work", None, None, None);
+        assert_eq!(apply_seq(&mut reconn, &mut counter), 3);
+        assert_eq!(reconn["seq"], 3);
+        assert_eq!(counter, 3);
+        let mut fresh_counter = 0u64;
+        let mut other = serde_json::json!({});
+        assert_eq!(apply_seq(&mut other, &mut fresh_counter), 1);
+        assert_eq!(other["seq"], 1);
     }
 
     #[test]
@@ -810,6 +976,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stream_resync_parses_with_empty_or_missing_params() {
+        for line in [
+            r#"{"id":3,"op":"stream.resync"}"#,
+            r#"{"id":3,"op":"stream.resync","params":{}}"#,
+        ] {
+            match parse_incoming(line).unwrap() {
+                ServeIn::Action { id, op, params } => {
+                    assert_eq!((id, op.as_str()), (3, "stream.resync"));
+                    assert_eq!(params, serde_json::json!({}));
+                }
+                other => panic!("expected action for {line}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn resync_rejects_non_empty_params_with_serve_error() {
+        assert!(validate_resync_params(&serde_json::json!({})).is_ok());
+        let err = validate_resync_params(&serde_json::json!({"force": true})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err["message"].as_str().unwrap().contains("no parameters"));
+    }
+
     fn plan_for(op: &str, params: serde_json::Value) -> Result<Plan, serde_json::Value> {
         let route = find_route(op).unwrap_or_else(|| panic!("route missing for {op}"));
         let planner = route.planner;
@@ -848,12 +1038,14 @@ mod tests {
         assert!(find_route("msg.send").is_none());
         assert!(find_route("chat join").is_none());
         assert!(find_route("ping").is_none());
+        assert!(find_route("stream.resync").is_none());
         let err = not_implemented("msg.send");
         assert_eq!(err["type"], "NotImplemented");
         let msg = err["message"].as_str().unwrap();
         assert!(msg.contains("msg.send"), "{msg}");
         assert!(msg.contains("msg send"), "{msg}");
         assert!(msg.contains("ping"), "{msg}");
+        assert!(msg.contains("stream.resync"), "{msg}");
     }
 
     #[test]
@@ -917,6 +1109,74 @@ mod tests {
         let msg = err["message"].as_str().unwrap();
         assert!(msg.contains("unknown field"), "{msg}");
         assert!(msg.contains("mesage"), "{msg}");
+    }
+
+    #[test]
+    fn field_from_serde_message_extracts_backtick_patterns_only() {
+        assert_eq!(
+            field_from_serde_message("unknown field `mesage`, expected one of `chat`, `text`"),
+            Some("mesage".to_string())
+        );
+        assert_eq!(
+            field_from_serde_message("missing field `id`"),
+            Some("id".to_string())
+        );
+        assert_eq!(
+            field_from_serde_message("duplicate field `chat`"),
+            Some("chat".to_string())
+        );
+        assert_eq!(
+            field_from_serde_message(r#"invalid type: string "abc", expected i32"#),
+            None
+        );
+        assert_eq!(field_from_serde_message("boom"), None);
+    }
+
+    #[test]
+    fn param_key_extracted_for_unknown_missing_and_type_errors() {
+        let err = plan_for(
+            "msg edit",
+            serde_json::json!({"chat": "@x", "id": 1, "text": "t", "extra": true}),
+        )
+        .unwrap_err();
+        assert_eq!(err["param"], "extra");
+
+        let err = plan_for("msg edit", serde_json::json!({"chat": "@x"})).unwrap_err();
+        assert_eq!(err["param"], "id");
+
+        let err = plan_for(
+            "msg edit",
+            serde_json::json!({"chat": "@x", "id": "abc", "text": "t"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["param"], "id");
+
+        let err = plan_for(
+            "msg get",
+            serde_json::json!({"chat": "@x", "limit": "many"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["param"], "limit");
+    }
+
+    #[test]
+    fn param_key_absent_when_no_offending_field_is_parsable() {
+        let err = plan_for(
+            "msg edit",
+            serde_json::json!({"chat": "@x", "id": "a", "text": []}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err.get("param").is_none(), "{}", err);
+
+        let ok_shape = prep::<EditLikeProbe>("op", serde_json::json!([1, 2])).unwrap_err();
+        assert!(ok_shape.get("param").is_none());
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct EditLikeProbe {
+        #[allow(dead_code)]
+        chat: String,
     }
 
     #[test]
