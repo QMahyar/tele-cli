@@ -262,7 +262,13 @@ Round 2 (2026-08-23, after LIVE fixes):
 - [x] dialog list, sticker list, story list read-only
 - [x] device echo empty {} when unconfigured (correct)
 
-Still deferred pending explicit user go: password --remove (destructive), sessions --terminate (destructive), story send (public post), staged login begin (sends SMS), sticker install/remove roundtrip (touches live sticker sets), Telethon import (needs source .session).
+Round 3 (2026-08-23, after ACCT-1/ACCT-2):
+- [x] password --status live: has_password:false, has_recovery:false, pending_reset_date:null (clean post-app-disable state)
+- [x] account ttl get live: ttl_days=548
+- [x] sessions --web live on accounts 1+2 (0 web authorizations — correct for these accounts)
+- [x] proxy removed from config.toml (system VPN routes Telegram directly; Throne backup at config.toml.with-proxy)
+
+ACCT-1 + ACCT-2 shipped & pushed. Remaining backlog (user-approved "keep on backlog"): email-verify login purposes, phone verify/confirm, updateStatus, contact-signup notifications — reachable via tele raw.
 
 ## Delegation waves — implement every remaining want (2026-08-23)
 
