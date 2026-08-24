@@ -1039,6 +1039,18 @@ mod tests {
             "profile get",
             "profile photo",
             "profile set",
+            "raw",
+            "sticker install",
+            "sticker list",
+            "sticker remove",
+            "sticker search",
+            "sticker show",
+            "story delete",
+            "story list",
+            "story pin",
+            "story read",
+            "story send",
+            "story unpin",
             "topic close",
             "topic create",
             "topic delete",
@@ -1057,6 +1069,9 @@ mod tests {
                 || op.starts_with("profile ")
                 || op.starts_with("privacy ")
                 || op.starts_with("contact ")
+                || op.starts_with("sticker ")
+                || op.starts_with("story ")
+                || op == "raw"
         };
         assert!(serve_op_routes().iter().all(|r| {
             group_ok(r.op)
@@ -1456,8 +1471,8 @@ mod tests {
             ("msg forward", Lane::Mutate, Some(30)),
             ("msg get", Lane::Read, Some(120)),
             ("msg pin", Lane::Mutate, Some(30)),
-            ("msg read", Lane::Mutate, Some(30)),
             ("msg react", Lane::Mutate, Some(30)),
+            ("msg read", Lane::Mutate, Some(30)),
             ("msg search", Lane::Read, Some(120)),
             ("msg send", Lane::Mutate, Some(30)),
             ("msg typing", Lane::Mutate, Some(30)),
@@ -1468,6 +1483,18 @@ mod tests {
             ("profile get", Lane::Read, Some(120)),
             ("profile photo", Lane::Mutate, Some(30)),
             ("profile set", Lane::Mutate, Some(30)),
+            ("raw", Lane::Mutate, Some(120)),
+            ("sticker install", Lane::Mutate, Some(30)),
+            ("sticker list", Lane::Read, Some(120)),
+            ("sticker remove", Lane::Mutate, Some(30)),
+            ("sticker search", Lane::Read, Some(120)),
+            ("sticker show", Lane::Read, Some(120)),
+            ("story delete", Lane::Mutate, Some(30)),
+            ("story list", Lane::Read, Some(120)),
+            ("story pin", Lane::Mutate, Some(30)),
+            ("story read", Lane::Mutate, Some(30)),
+            ("story send", Lane::Mutate, Some(600)),
+            ("story unpin", Lane::Mutate, Some(30)),
             ("topic close", Lane::Mutate, Some(30)),
             ("topic create", Lane::Mutate, Some(30)),
             ("topic delete", Lane::Mutate, Some(30)),

@@ -56,12 +56,10 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let params: serde_json::Value = serde_json::from_str(&args.args)
         .map_err(|e| TeleError::Usage(format!("invalid --args JSON: {e}")))?;
     let name = args.name.clone();
-    if !registry::lookup(&name).is_some() {
-        return Err(TeleError::Usage(format!(
-            "raw method not in registry; add an arm in src/commands/raw.rs (registered: {REGISTERED:?})"
-        )));
-    }
-    generated::validate_params(&name, &params)?;
+    validate_raw(&RawCall {
+        method: name.clone(),
+        args: params.clone(),
+    })?;
     if !flags.dry_run && generated::requires_explicit_account(&name) && flags.account.is_empty() {
         return Err(TeleError::Usage(format!(
             "raw method {name} mutates account data — pass --account explicitly"
@@ -110,9 +108,92 @@ fn raw_dry_run_payload(name: &str, params: &serde_json::Value) -> serde_json::Va
     })
 }
 
-pub(crate) fn raw_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawParams {
+    method: String,
+    #[serde(default = "default_raw_args")]
+    args: serde_json::Value,
+    #[serde(default)]
+    dry_run: bool,
 }
+
+fn default_raw_args() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawCall {
+    pub(crate) method: String,
+    #[serde(default = "default_raw_args")]
+    pub(crate) args: serde_json::Value,
+}
+
+impl From<&RawParams> for RawCall {
+    fn from(p: &RawParams) -> Self {
+        Self {
+            method: p.method.clone(),
+            args: p.args.clone(),
+        }
+    }
+}
+
+impl From<&RawCall> for RawParams {
+    fn from(c: &RawCall) -> Self {
+        Self {
+            method: c.method.clone(),
+            args: c.args.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+pub(crate) fn validate_raw(call: &RawCall) -> TeleResult<()> {
+    if registry::lookup(&call.method).is_none() {
+        return Err(TeleError::Usage(format!(
+            "raw method not in registry: {}; add an arm in src/commands/raw.rs (registered: {REGISTERED:?})",
+            call.method
+        )));
+    }
+    generated::validate_params(&call.method, &call.args)
+}
+
+pub(crate) fn raw_serve_dry_run(args: &RawCall) -> TeleResult<serde_json::Value> {
+    Ok(raw_dry_run_payload(&args.method, &args.args))
+}
+
+pub(crate) async fn raw_core(
+    shares: &crate::client::ServeShares,
+    params: RawParams,
+) -> TeleResult<serde_json::Value> {
+    let call = RawCall::from(&params);
+    validate_raw(&call)?;
+    shares.rate_limiter.acquire().await;
+    dispatch(
+        &shares.client,
+        shares.session.as_ref(),
+        &call.method,
+        &call.args,
+    )
+    .await
+}
+
+pub(crate) fn raw_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    use crate::commands::serve::Lane;
+    vec![crate::serve_route!(
+        "raw",
+        Lane::Mutate,
+        Some(std::time::Duration::from_secs(120)),
+        RawParams,
+        RawCall,
+        validate_raw,
+        raw_serve_dry_run,
+        run_invoke
+    )]
+}
+
+crate::serve_runner!(run_invoke, raw_core, RawParams);
 
 #[cfg(test)]
 fn requires_explicit_account(method: &str) -> bool {
@@ -2196,5 +2277,131 @@ mod tests {
         let v = composed_message_summary(&no_diff);
         assert_eq!(v["result_text"], serde_json::json!("plain"));
         assert!(v["diff_text"].is_null());
+    }
+
+    fn plan_for(
+        op: &str,
+        params: serde_json::Value,
+    ) -> Result<crate::commands::serve::Plan, serde_json::Value> {
+        let routes = raw_serve_routes();
+        let route = routes
+            .iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    #[test]
+    fn raw_serve_route_is_single_mutate_op_with_long_timeout() {
+        use crate::commands::serve::Lane;
+        let routes = raw_serve_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].op, "raw");
+        assert_eq!(routes[0].lane, Lane::Mutate);
+        assert_eq!(routes[0].timeout, Some(std::time::Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn missing_method_and_unknown_fields_yield_serve_error() {
+        let err = plan_for("raw", serde_json::json!({})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("method"), "{msg}");
+
+        let err = plan_for(
+            "raw",
+            serde_json::json!({"method": "contacts.Search", "methd": "typo"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err["message"].as_str().unwrap().contains("methd"));
+    }
+
+    #[test]
+    fn wrong_typed_method_yields_serve_error() {
+        let err = plan_for("raw", serde_json::json!({"method": 5})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("invalid type"), "{msg}");
+    }
+
+    #[test]
+    fn unknown_method_yields_usage_error_naming_it() {
+        let err = plan_for(
+            "raw",
+            serde_json::json!({"method": "messages.FooBar", "args": {}}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("messages.FooBar"), "{msg}");
+        assert!(msg.contains("not in registry"), "{msg}");
+    }
+
+    #[test]
+    fn missing_args_fields_yield_usage_error_from_generated_gates() {
+        for call in [
+            serde_json::json!({"method": "contacts.Search"}),
+            serde_json::json!({"method": "contacts.Search", "args": {}}),
+            serde_json::json!({"method": "stats.GetBroadcastStats", "args": {"channel": "  "}}),
+        ] {
+            let err = plan_for("raw", call.clone()).unwrap_err();
+            assert_eq!(err["type"], "UsageError", "{call}");
+            let msg = err["message"].as_str().unwrap().to_string();
+            assert!(
+                msg.contains("--args") || msg.contains("--chat") || msg.contains("--channel"),
+                "{call}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_object_args_yield_usage_error() {
+        let err = plan_for(
+            "raw",
+            serde_json::json!({"method": "messages.GetAllDrafts", "args": [1, 2]}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("JSON object"));
+    }
+
+    #[test]
+    fn registered_read_only_method_passes_all_gates_and_dry_runs_like_cli() {
+        let plan = plan_for(
+            "raw",
+            serde_json::json!({"method": "messages.GetAllDrafts", "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(data) = plan else {
+            panic!("expected dry run");
+        };
+        assert_eq!(
+            data,
+            raw_dry_run_payload("messages.GetAllDrafts", &serde_json::json!({}))
+        );
+        assert_eq!(
+            data["would"],
+            serde_json::json!("invoke raw method messages.GetAllDrafts")
+        );
+
+        let raw = serde_json::json!({"method": "messages.GetAllDrafts"});
+        let plan = plan_for("raw", raw.clone()).unwrap();
+        match plan {
+            crate::commands::serve::Plan::Execute(passed) => assert_eq!(passed, raw),
+            other => panic!("expected execute plan, got {other:?}"),
+        }
+
+        let with_args = serde_json::json!({"q": "ducks", "limit": 10});
+        let plan = plan_for(
+            "raw",
+            serde_json::json!({"method": "contacts.Search", "args": with_args, "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(data) = plan else {
+            panic!("expected dry run");
+        };
+        assert_eq!(data["args"], with_args);
     }
 }
