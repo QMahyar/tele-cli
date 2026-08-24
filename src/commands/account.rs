@@ -3404,6 +3404,16 @@ fn map_update_password_error(e: grammers_client::InvocationError) -> TeleError {
         if rpc.name == "PASSWORD_HASH_INVALID" {
             return TeleError::Auth("invalid cloud password; nothing was changed".to_string());
         }
+        if matches!(
+            rpc.name.as_str(),
+            "NEW_SETTINGS_EMPTY" | "INPUT_FETCH_ERROR" | "INPUT_CONSTRUCTOR_INVALID"
+        ) {
+            return TeleError::Other(format!(
+                "{e} — Telegram rejected this payload (known grammers TL limitation for \
+UpdatePasswordSettings); disable/change via an official app: Settings → Privacy and Security → \
+Two-Step Verification"
+            ));
+        }
     }
     tele_invocation(e)
 }
@@ -3469,7 +3479,7 @@ async fn remove_cloud_password(guard: &ClientGuard) -> TeleResult<()> {
         password: proof,
         new_settings: enums::account::PasswordInputSettings::Settings(
             tl::types::account::PasswordInputSettings {
-                new_algo: None,
+                new_algo: Some(grammers_client::tl::enums::PasswordKdfAlgo::Unknown),
                 new_password_hash: None,
                 hint: None,
                 email: None,
