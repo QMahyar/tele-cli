@@ -21,12 +21,18 @@ comfy-table = "7"
 grammers-client = { version = "0.10", features = ["proxy", "parse_invite_link", "markdown", "fs"] }
 grammers-crypto = "0.10"
 grammers-session = { version = "0.10", features = ["sqlite-storage"] }
+getrandom = { version = "0.2" }
+hmac = { version = "0.13", default-features = false }
+rand = "0.10"
 libsql = { version = "=0.9.30", default-features = false, features = ["core"] }
 log = "0.4"
+num-bigint = "0.4"
+pbkdf2 = { version = "0.13", default-features = false }
 qrcode = "0.14"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = { version = "0.11", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "signal"] }
 toml = "0.8"
 toml_edit = "0.22"

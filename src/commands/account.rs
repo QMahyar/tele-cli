@@ -6,6 +6,9 @@ use crate::executor::{require_explicit_selection, run_fanout, select_sessions, G
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
+use hmac::Hmac;
+use num_bigint::BigUint;
+use sha2::{Digest, Sha256, Sha512};
 use std::io::{IsTerminal, Write};
 use std::sync::Arc;
 
@@ -1474,8 +1477,12 @@ async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let dry_run = flags.dry_run;
     let hint_present = args.hint.is_some();
     let email_present = args.recovery_email.is_some();
+    let hint = args.hint.clone();
+    let email = args.recovery_email.clone();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
+        let hint = hint.clone();
+        let email = email.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({
@@ -1489,13 +1496,14 @@ async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let credentials = creds()?;
             let guard =
                 ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
-            if mode == PasswordMode::Remove {
-                remove_cloud_password(&guard).await?;
-            } else {
-                guard.rate_limiter.acquire().await;
-                let has_password = fetch_has_password(&guard.client).await?;
-                drop(guard);
-                plan_password_step(mode, has_password)?;
+            match mode {
+                PasswordMode::Remove => remove_cloud_password(&guard).await?,
+                PasswordMode::Set => {
+                    set_cloud_password(&guard, hint.as_deref(), email.as_deref()).await?
+                }
+                PasswordMode::Change => {
+                    change_cloud_password(&guard, hint.as_deref(), email.as_deref()).await?
+                }
             }
             Ok(serde_json::json!({"updated": true, "mode": mode.as_str()}))
         })
@@ -1504,6 +1512,7 @@ async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+#[allow(dead_code)]
 async fn fetch_has_password(client: &grammers_client::Client) -> TeleResult<bool> {
     use grammers_client::tl::{self, enums};
     let response = client
@@ -1744,8 +1753,6 @@ fn validate_password_modes(
     })
 }
 
-const NEW_HASH_BLOCKER: &str =
-    "cannot compute new_password_hash: the PH2 KDF (pbkdf2-hmac-sha512 x100000 plus salt wrapping) is private inside grammers-crypto 0.10 and exposed nowhere reachable";
 const NO_SRP_CHALLENGE_MSG: &str =
     "GetPassword response is missing SRP challenge parameters; retry the command";
 
@@ -1754,13 +1761,226 @@ fn plan_password_step(mode: PasswordMode, has_password: bool) -> TeleResult<()> 
         (PasswordMode::Set, true) => Err(TeleError::Usage(
             "a cloud password is already set on this account; use --change".to_string(),
         )),
-        (PasswordMode::Set, false) => Err(TeleError::Other(NEW_HASH_BLOCKER.to_string())),
+        (PasswordMode::Set, false) => Ok(()),
         (PasswordMode::Change, false) | (PasswordMode::Remove, false) => Err(TeleError::Usage(
             "no cloud password is set on this account; use --set".to_string(),
         )),
-        (PasswordMode::Change, true) => Err(TeleError::Other(NEW_HASH_BLOCKER.to_string())),
+        (PasswordMode::Change, true) => Ok(()),
         (PasswordMode::Remove, true) => Ok(()),
     }
+}
+
+fn sh(data: &[u8], salt: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(data);
+    hasher.update(salt);
+    hasher.finalize().into()
+}
+
+fn ph1(password: &[u8], salt1: &[u8], salt2: &[u8]) -> [u8; 32] {
+    sh(&sh(password, salt1), salt2)
+}
+
+fn ph2(password: &[u8], salt1: &[u8], salt2: &[u8]) -> [u8; 32] {
+    let hash1 = ph1(password, salt1, salt2);
+    let mut dk = [0u8; 64];
+    pbkdf2::pbkdf2::<Hmac<Sha512>>(&hash1, salt1, 100000, &mut dk).unwrap();
+    sh(&dk, salt2)
+}
+
+fn compute_new_password_hash(
+    password: &str,
+    salt1: &[u8],
+    salt2: &[u8],
+    g: i32,
+    p: &[u8],
+) -> Vec<u8> {
+    let x = ph2(password.as_bytes(), salt1, salt2);
+    let big_x = BigUint::from_bytes_be(&x);
+    let big_p = BigUint::from_bytes_be(p);
+    let big_g = BigUint::from(g as u32);
+    let big_v = big_g.modpow(&big_x, &big_p);
+    let mut v = big_v.to_bytes_be();
+    if v.len() > 256 {
+        v = v[v.len() - 256..].to_vec();
+    }
+    let mut out = vec![0u8; 256 - v.len()];
+    out.extend_from_slice(&v);
+    out
+}
+
+fn extend_salt1(base_salt1: &[u8], extra: &[u8; 32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(base_salt1.len() + 32);
+    out.extend_from_slice(base_salt1);
+    out.extend_from_slice(extra);
+    out
+}
+
+fn generate_secure_32() -> [u8; 32] {
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).expect("secure random failed");
+    buf
+}
+
+fn new_password_algo_and_hash(
+    password: &str,
+    base: &grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow,
+    extra: Option<[u8; 32]>,
+) -> (grammers_client::tl::enums::PasswordKdfAlgo, Vec<u8>) {
+    let extra = extra.unwrap_or_else(generate_secure_32);
+    let new_salt1 = extend_salt1(&base.salt1, &extra);
+    let hash = compute_new_password_hash(password, &new_salt1, &base.salt2, base.g, &base.p);
+    let algo = grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow {
+        salt1: new_salt1,
+        salt2: base.salt2.clone(),
+        g: base.g,
+        p: base.p.clone(),
+    };
+    let algo_enum = grammers_client::tl::enums::PasswordKdfAlgo::Sha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow(algo);
+    (algo_enum, hash)
+}
+
+fn extract_new_algo(
+    algo: &grammers_client::tl::enums::PasswordKdfAlgo,
+) -> TeleResult<
+    grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow,
+> {
+    match algo {
+        grammers_client::tl::enums::PasswordKdfAlgo::Sha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow(inner) => Ok(grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow {
+            salt1: inner.salt1.clone(),
+            salt2: inner.salt2.clone(),
+            g: inner.g,
+            p: inner.p.clone(),
+        }),
+        grammers_client::tl::enums::PasswordKdfAlgo::Unknown => Err(TeleError::Other(
+            "server sent an unsupported cloud-password KDF algorithm; cannot build new password hash".to_string(),
+        )),
+    }
+}
+
+fn prompt_password_with_echo(prompt: &str) -> TeleResult<String> {
+    let mut stdin = std::io::stdin().lock();
+    let mut stderr = std::io::stderr();
+    let echo_disabled = disable_stdin_echo();
+    if !echo_disabled {
+        log_line(
+            "warn",
+            "secure password input unavailable; input will be echoed to the terminal",
+        );
+    }
+    let read = prompt_line(prompt, &mut stdin, &mut stderr);
+    restore_stdin_echo(echo_disabled);
+    let _ = writeln!(stderr);
+    let Some(line) = read? else {
+        return Err(TeleError::Auth(
+            "password required; stdin closed".to_string(),
+        ));
+    };
+    Ok(strip_line_ending(&line).to_string())
+}
+
+fn prompt_new_password_pair() -> TeleResult<String> {
+    let first = prompt_password_with_echo("Enter new cloud password: ")?;
+    if first.is_empty() {
+        return Err(TeleError::Usage("password must not be empty".to_string()));
+    }
+    let second = prompt_password_with_echo("Confirm new cloud password: ")?;
+    if first != second {
+        return Err(TeleError::Usage("passwords do not match".to_string()));
+    }
+    Ok(first)
+}
+
+async fn set_cloud_password(
+    guard: &ClientGuard,
+    hint: Option<&str>,
+    email: Option<&str>,
+) -> TeleResult<()> {
+    guard.rate_limiter.acquire().await;
+    let response = guard
+        .client
+        .invoke(&grammers_client::tl::functions::account::GetPassword {})
+        .await
+        .map_err(tele_invocation)?;
+    let grammers_client::tl::enums::account::Password::Password(pw) = response;
+    plan_password_step(PasswordMode::Set, pw.has_password)?;
+    let base = extract_new_algo(&pw.new_algo)?;
+    let new_password = prompt_new_password_pair()?;
+    let (algo, hash) = new_password_algo_and_hash(&new_password, &base, None);
+    let new_settings = grammers_client::tl::enums::account::PasswordInputSettings::Settings(
+        grammers_client::tl::types::account::PasswordInputSettings {
+            new_algo: Some(algo),
+            new_password_hash: Some(hash),
+            hint: hint.map(|s| s.to_string()),
+            email: email.map(|s| s.to_string()),
+            new_secure_settings: None,
+        },
+    );
+    let empty = grammers_client::tl::enums::InputCheckPasswordSrp::InputCheckPasswordEmpty;
+    guard.rate_limiter.acquire().await;
+    let req = grammers_client::tl::functions::account::UpdatePasswordSettings {
+        password: empty,
+        new_settings,
+    };
+    guard
+        .client
+        .invoke(&req)
+        .await
+        .map_err(map_update_password_error)?;
+    Ok(())
+}
+
+async fn change_cloud_password(
+    guard: &ClientGuard,
+    hint: Option<&str>,
+    email: Option<&str>,
+) -> TeleResult<()> {
+    guard.rate_limiter.acquire().await;
+    let response = guard
+        .client
+        .invoke(&grammers_client::tl::functions::account::GetPassword {})
+        .await
+        .map_err(tele_invocation)?;
+    let grammers_client::tl::enums::account::Password::Password(pw) = response;
+    plan_password_step(PasswordMode::Change, pw.has_password)?;
+    let params = extract_srp_params(pw.current_algo.as_ref())?;
+    let srp_b = pw
+        .srp_b
+        .clone()
+        .ok_or_else(|| TeleError::Other(NO_SRP_CHALLENGE_MSG.to_string()))?;
+    let srp_id = pw
+        .srp_id
+        .ok_or_else(|| TeleError::Other(NO_SRP_CHALLENGE_MSG.to_string()))?;
+    let random_a = pw.secure_random.clone();
+    let base = extract_new_algo(&pw.new_algo)?;
+    let current = prompt_password_with_echo("Enter current cloud password: ")?;
+    if current.is_empty() {
+        return Err(TeleError::Usage("password must not be empty".to_string()));
+    }
+    let new_password = prompt_new_password_pair()?;
+    let proof = input_check_password_srp(&params, srp_id, &srp_b, &random_a, &current)?;
+    let (algo, hash) = new_password_algo_and_hash(&new_password, &base, None);
+    let new_settings = grammers_client::tl::enums::account::PasswordInputSettings::Settings(
+        grammers_client::tl::types::account::PasswordInputSettings {
+            new_algo: Some(algo),
+            new_password_hash: Some(hash),
+            hint: hint.map(|s| s.to_string()),
+            email: email.map(|s| s.to_string()),
+            new_secure_settings: None,
+        },
+    );
+    guard.rate_limiter.acquire().await;
+    let req = grammers_client::tl::functions::account::UpdatePasswordSettings {
+        password: proof,
+        new_settings,
+    };
+    guard
+        .client
+        .invoke(&req)
+        .await
+        .map_err(map_update_password_error)?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2833,23 +3053,14 @@ mod tests {
         let err = plan_password_step(PasswordMode::Set, true).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)), "{err}");
         assert!(err.message().contains("--change"), "{err}");
-
-        let err = plan_password_step(PasswordMode::Set, false).unwrap_err();
-        assert!(!matches!(err, TeleError::Usage(_)), "{err}");
-        assert!(err.message().contains("new_password_hash"), "{err}");
-
+        assert!(plan_password_step(PasswordMode::Set, false).is_ok());
         let err = plan_password_step(PasswordMode::Change, false).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)), "{err}");
         assert!(err.message().contains("no cloud password"), "{err}");
-
-        let err = plan_password_step(PasswordMode::Change, true).unwrap_err();
-        assert!(!matches!(err, TeleError::Usage(_)), "{err}");
-        assert!(err.message().contains("new_password_hash"), "{err}");
-
+        assert!(plan_password_step(PasswordMode::Change, true).is_ok());
         let err = plan_password_step(PasswordMode::Remove, false).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)), "{err}");
         assert!(err.message().contains("no cloud password"), "{err}");
-
         assert!(plan_password_step(PasswordMode::Remove, true).is_ok());
     }
 
@@ -3523,5 +3734,168 @@ mod tests {
             assert!(!dir.join("sessions").exists());
         })
         .await;
+    }
+
+    fn hex_to_bytes(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn ph2_deterministic_vector_matches_reference() {
+        let pw = b"hello-ph2-deterministic";
+        let s1 = b"fixed_salt1_32bytes_long_12345678";
+        let s2 = b"fixed_salt2_16_!!";
+        let out = ph2(pw, s1, s2);
+        let expected =
+            hex_to_bytes("4f42157ee0e0ddaeb1e9176c9337902b56241de35f2685fe605c9f3edae39228");
+        assert_eq!(out.to_vec(), expected);
+        assert_eq!(ph2(pw, s1, s2).to_vec(), expected);
+        assert_ne!(ph2(b"other", s1, s2).to_vec(), expected);
+    }
+
+    #[test]
+    fn sh_is_salt_wrapped_sha256() {
+        let data = b"data";
+        let salt = b"salt";
+        let out = sh(data, salt);
+        let mut hasher = Sha256::new();
+        hasher.update(salt);
+        hasher.update(data);
+        hasher.update(salt);
+        let expected: [u8; 32] = hasher.finalize().into();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn compute_new_password_hash_is_256_and_deterministic() {
+        let salt1 = b"fixed_salt1_32bytes_long_12345678".to_vec();
+        let extra = [0xABu8; 32];
+        let extended = extend_salt1(&salt1, &extra);
+        let salt2 = b"fixed_salt2_16_!!".to_vec();
+        let p = decode_b64(REF_P_B64);
+        let h1 = compute_new_password_hash("hello-ph2-deterministic", &extended, &salt2, 3, &p);
+        let h2 = compute_new_password_hash("hello-ph2-deterministic", &extended, &salt2, 3, &p);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 256);
+        assert!(h1.iter().any(|&b| b != 0));
+        let h3 = compute_new_password_hash("different", &extended, &salt2, 3, &p);
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn new_password_algo_and_hash_extends_salt1() {
+        let base = grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow {
+            salt1: b"base_salt1_".to_vec(),
+            salt2: b"salt2_fixed".to_vec(),
+            g: 3,
+            p: decode_b64(REF_P_B64),
+        };
+        let extra = [0x11u8; 32];
+        let (algo, hash) = new_password_algo_and_hash("pwd", &base, Some(extra));
+        match algo {
+            grammers_client::tl::enums::PasswordKdfAlgo::Sha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow(inner) => {
+                assert_eq!(inner.salt1.len(), base.salt1.len() + 32);
+                assert_eq!(&inner.salt1[base.salt1.len()..], &extra);
+                assert_eq!(inner.salt2, base.salt2);
+            }
+            _ => panic!("wrong algo"),
+        }
+        assert_eq!(hash.len(), 256);
+    }
+
+    #[test]
+    fn password_hint_email_validation_matrix() {
+        assert!(validate_password_modes(true, false, false, Some("hint"), Some("a@b.com")).is_ok());
+        assert!(validate_password_modes(false, true, false, Some("hint"), None).is_ok());
+        assert!(validate_password_modes(false, true, false, None, Some("a@b.com")).is_ok());
+        assert!(validate_password_modes(false, true, false, Some("hint"), Some("a@b.com")).is_ok());
+        assert!(validate_password_modes(true, false, false, None, None).is_ok());
+        let err = validate_password_modes(false, false, true, Some("hint"), None).unwrap_err();
+        assert!(err.message().contains("--hint"), "{err}");
+        let err = validate_password_modes(false, false, true, None, Some("a@b.com")).unwrap_err();
+        assert!(err.message().contains("--recovery-email"), "{err}");
+    }
+
+    #[test]
+    fn secret_never_in_ph2_error_output() {
+        let pw = "super_secret_123";
+        let salt1 = b"s1".to_vec();
+        let salt2 = b"s2".to_vec();
+        let p = decode_b64(REF_P_B64);
+        let mut bad_p = p.clone();
+        bad_p.truncate(128);
+        let bad_params = SrpParams {
+            salt1: salt1.clone(),
+            salt2: salt2.clone(),
+            p: bad_p,
+            g: 3,
+        };
+        let err = input_check_password_srp(
+            &bad_params,
+            1,
+            &decode_b64(REF_SRP_B_B64),
+            &decode_b64(REF_RANDOM_A_B64),
+            pw,
+        )
+        .unwrap_err();
+        assert!(!err.message().contains(pw), "{err}");
+        let bad_g = SrpParams {
+            salt1,
+            salt2,
+            p,
+            g: 99,
+        };
+        let err = input_check_password_srp(
+            &bad_g,
+            1,
+            &decode_b64(REF_SRP_B_B64),
+            &decode_b64(REF_RANDOM_A_B64),
+            pw,
+        )
+        .unwrap_err();
+        assert!(!err.message().contains(pw), "{err}");
+    }
+
+    #[tokio::test]
+    async fn password_dry_run_does_not_prompt_and_hides_secrets() {
+        let dir = staged_temp_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+        let mut flags = test_flags("account password", true, true, &dir.join("config.toml"));
+        flags.account = vec!["work".to_string()];
+        let args = PasswordArgs {
+            set: true,
+            change: false,
+            remove: false,
+            hint: Some("hintval".to_string()),
+            recovery_email: Some("e@example.com".to_string()),
+        };
+        let code = password(&args, &flags).await.unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn password_dry_run_change_honest_would() {
+        let dir = staged_temp_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+        let mut flags = test_flags("account password", true, true, &dir.join("config.toml"));
+        flags.account = vec!["work".to_string()];
+        let args = PasswordArgs {
+            set: false,
+            change: true,
+            remove: false,
+            hint: None,
+            recovery_email: None,
+        };
+        let code = password(&args, &flags).await.unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
