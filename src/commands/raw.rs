@@ -174,7 +174,6 @@ fn render_value(v: &serde_json::Value) -> String {
     }
 }
 
-
 #[cfg(test)]
 fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
     generated::validate_params(name, p)
@@ -1750,7 +1749,7 @@ mod tests {
         assert_eq!(v["participants_count"], serde_json::Value::Null);
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     fn notify_settings_fixture() -> tl::enums::PeerNotifySettings {
         tl::enums::PeerNotifySettings::Settings(tl::types::PeerNotifySettings {
             show_previews: None,

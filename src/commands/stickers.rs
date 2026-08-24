@@ -803,4 +803,3 @@ mod tests {
         assert!(matches!(err, TeleError::Usage(_)));
     }
 }
-

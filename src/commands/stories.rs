@@ -1211,4 +1211,3 @@ mod tests {
         assert_eq!(STORY_COLUMNS[6], "views");
     }
 }
-
