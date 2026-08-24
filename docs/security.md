@@ -40,6 +40,7 @@ Assets: live user sessions (full account), `TELE_API_HASH`, phone numbers, 2FA p
   no-echo input (`SetConsoleMode`); other platforms print a warning that the
   typed password may be visible. Passwords are never accepted on argv on any
   platform.
+- Cloud password `--set`/`--change` use local PH2 (pbkdf2-hmac-sha512 ×100000 with 32-byte secure_random salt extension, replicated from grammers-crypto 0.10 `two_factor_auth.rs:134-154`); passwords never logged, never appear in `--json` output, never in process title; `--dry-run` returns an honest `would` row with `hint`/`recovery_email` presence booleans and never prompts for secrets.
 
 ## Windows permission model
 

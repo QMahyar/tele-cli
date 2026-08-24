@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- `tele account password --set` and `--change` via local PH2 (pbkdf2-hmac-sha512 ×100000, salt1 extended with 32-byte secure_random, `PasswordKdfAlgo` + `new_password_hash = pow(g, PH2) mod p` replicated from `grammers-crypto 0.10` `src/two_factor_auth.rs:134-154`; `hint`/`recovery_email` ride same `account.UpdatePasswordSettings` call, no extra RPC; `--remove` remains via SRP proof). Dry-run returns honest `would` + `hint`/`recovery_email` booleans and never prompts.
+
 ## [0.4.0] - 2026-08-22
 
 ### Added

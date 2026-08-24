@@ -19,7 +19,7 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | auth.session-ttl | Session TTL / auth settings | `account.setAuthorizationTTL` | raw | `tele raw` account.SetAuthorizationTTL | done |
 | auth.passkey | Passkeys | `/api/passkeys` (Layer 219, present in vendored 227) — WebAuthn ceremony + RP-ID=telegram.org ban for unofficial apps | none friendly | impractical: requires browser/platform authenticator; raw TL alone insufficient | never |
 | auth.bot-token | Bot token login | `auth.importBotAuthorization` | `bot_sign_in` | not a product path | never |
-| auth.password-manage | Cloud password verify/remove shipped (`--remove` via grammers-crypto SRP proof, deterministic reference-vector test); `--set`/`--change` blocked upstream: PH2 pbkdf2 hashing is private in grammers-crypto 0.10 (blocker error names the gap; no hand-rolled crypto) | `account.{GetPassword,UpdatePasswordSettings}` + `grammers_crypto::two_factor_auth::calculate_2fa` | raw | `tele account password --remove` done; set/change pending upstream | want |
+| auth.password-manage | Cloud password set/change/remove: SRP proof via `grammers_crypto::two_factor_auth::calculate_2fa`; set/change via local PH2 (pbkdf2-hmac-sha512 ×100k, replicated from grammers-crypto 0.10; remove via SRP) | `account.{GetPassword,UpdatePasswordSettings}` + `grammers_crypto::two_factor_auth::calculate_2fa` + local PH2 | `tele account password --set --change --remove` (no-echo prompts, hint/email ride same UpdatePasswordSettings, dry-run honest) | done |
 | auth.sessions-manage | List + terminate other sessions/devices | `account.{GetAuthorizations,ResetAuthorization}` | raw | `tele account sessions [--terminate HASH]` (own current-hash refusal; live verify pending) | done |
 
 ## Messages
