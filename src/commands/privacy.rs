@@ -15,7 +15,7 @@ pub enum PrivacyCmd {
     Set(SetArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct GetArgs {
     #[arg(
         long,
@@ -24,7 +24,7 @@ pub struct GetArgs {
     key: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct SetArgs {
     #[arg(long, help = "privacy key to change")]
     key: String,
@@ -130,46 +130,19 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let jsonl = flags.jsonl;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let key_filter = args.key.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(dry_run_get_data(key_filter));
+                return get_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            let mut rows = Vec::new();
-            let mut table_rows = Vec::new();
-            for key in keys() {
-                if let Some(filter) = &key_filter {
-                    if key != filter {
-                        continue;
-                    }
-                }
-                let Some(tl_key) = key_to_tl(key) else {
-                    continue;
-                };
-                guard.rate_limiter.acquire().await;
-                let rules = fetch_privacy_rules(&guard.client, &tl_key).await?;
-                let summary = rules
-                    .iter()
-                    .map(privacy_rule_summary)
-                    .collect::<Vec<serde_json::Value>>();
-                rows.push(serde_json::json!({
-                    "key": key,
-                    "rules": summary,
-                }));
-                if !output::machine_mode(json, jsonl) {
-                    for rule in &rules {
-                        let (kind, peers) = privacy_rule_display(rule);
-                        table_rows.push(vec![key.to_string(), kind, peers]);
-                    }
-                }
-            }
+            let data = get_core(&guard.shares(), GetParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
-                output::print_table(&["key", "rule", "peers"], &table_rows)?;
+                output::print_table(&["key", "rule", "peers"], &privacy_table_rows(&data))?;
             }
-            Ok(serde_json::json!({"privacy": rows}))
+            Ok(data)
         })
     })
     .await?;
@@ -288,67 +261,20 @@ fn reject_allow_deny_overlap(args: &SetArgs) -> TeleResult<()> {
 }
 
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let tl_key = validate_set(&args)?;
+    validate_set(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let key_name = args.key.clone();
-        let allow = args.allow.clone().unwrap_or_default();
-        let allow_chat = args.allow_chat.clone().unwrap_or_default();
-        let deny = args.deny.clone().unwrap_or_default();
-        let deny_chat = args.deny_chat.clone().unwrap_or_default();
-        let tl_key = tl_key.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "key": key_name,
-                    "would": format!(
-                        "set privacy rules for key {key_name} (allow {} users + {} chats, deny {} users + {} chats)",
-                        allow.len(),
-                        allow_chat.len(),
-                        deny.len(),
-                        deny_chat.len()
-                    )
-                }));
+                return set_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let mut allow_users = Vec::new();
-            for target in &allow {
-                let peer =
-                    entities::resolve_peer(&guard.client, guard.session.as_ref(), target).await?;
-                allow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
-            }
-            let mut disallow_users = Vec::new();
-            for target in &deny {
-                let peer =
-                    entities::resolve_peer(&guard.client, guard.session.as_ref(), target).await?;
-                disallow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
-            }
-            let base = fetch_privacy_rules(&guard.client, &tl_key).await?;
-            let targets = PrivacyTargets {
-                allow_users,
-                allow_chats: allow_chat,
-                disallow_users,
-                disallow_chats: deny_chat,
-            };
-            let rules = merge_privacy_rules(&base, &targets);
-            let _: tl::enums::account::PrivacyRules = guard
-                .client
-                .invoke(&tl::functions::account::SetPrivacy { key: tl_key, rules })
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({
-                "key": key_name,
-                "allow": allow,
-                "allow_chats": targets.allow_chats,
-                "deny": deny,
-                "deny_chats": targets.disallow_chats,
-            }))
+            set_core(&guard.shares(), SetParams::from(&args)).await
         })
     })
     .await?;
@@ -519,66 +445,211 @@ fn merge_privacy_rules(
     merged
 }
 
-fn privacy_rule_display(rule: &tl::enums::PrivacyRule) -> (String, String) {
-    match rule {
-        tl::enums::PrivacyRule::PrivacyValueAllowAll => ("allow_all".to_string(), String::new()),
-        tl::enums::PrivacyRule::PrivacyValueDisallowAll => {
-            ("disallow_all".to_string(), String::new())
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GetParams {
+    #[serde(default)]
+    pub(crate) key: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&GetArgs> for GetParams {
+    fn from(a: &GetArgs) -> Self {
+        Self {
+            key: a.key.clone(),
+            dry_run: false,
         }
-        tl::enums::PrivacyRule::PrivacyValueAllowContacts => {
-            ("allow_contacts".to_string(), String::new())
-        }
-        tl::enums::PrivacyRule::PrivacyValueDisallowContacts => {
-            ("disallow_contacts".to_string(), String::new())
-        }
-        tl::enums::PrivacyRule::PrivacyValueAllowCloseFriends => {
-            ("allow_close_friends".to_string(), String::new())
-        }
-        tl::enums::PrivacyRule::PrivacyValueAllowPremium => {
-            ("allow_premium".to_string(), String::new())
-        }
-        tl::enums::PrivacyRule::PrivacyValueAllowBots => ("allow_bots".to_string(), String::new()),
-        tl::enums::PrivacyRule::PrivacyValueDisallowBots => {
-            ("disallow_bots".to_string(), String::new())
-        }
-        tl::enums::PrivacyRule::PrivacyValueAllowUsers(v) => (
-            "allow_users".to_string(),
-            v.users
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-        ),
-        tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => (
-            "disallow_users".to_string(),
-            v.users
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-        ),
-        tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(v) => (
-            "allow_chats".to_string(),
-            v.chats
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-        ),
-        tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(v) => (
-            "disallow_chats".to_string(),
-            v.chats
-                .iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-        ),
     }
 }
 
-pub(crate) fn privacy_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+impl From<&GetParams> for GetArgs {
+    fn from(p: &GetParams) -> Self {
+        Self { key: p.key.clone() }
+    }
 }
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SetParams {
+    pub(crate) key: String,
+    pub(crate) allow: Option<Vec<String>>,
+    pub(crate) allow_chat: Option<Vec<i64>>,
+    pub(crate) deny: Option<Vec<String>>,
+    pub(crate) deny_chat: Option<Vec<i64>>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&SetArgs> for SetParams {
+    fn from(a: &SetArgs) -> Self {
+        Self {
+            key: a.key.clone(),
+            allow: a.allow.clone(),
+            allow_chat: a.allow_chat.clone(),
+            deny: a.deny.clone(),
+            deny_chat: a.deny_chat.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&SetParams> for SetArgs {
+    fn from(p: &SetParams) -> Self {
+        Self {
+            key: p.key.clone(),
+            allow: p.allow.clone(),
+            allow_chat: p.allow_chat.clone(),
+            deny: p.deny.clone(),
+            deny_chat: p.deny_chat.clone(),
+        }
+    }
+}
+
+fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value> {
+    Ok(dry_run_get_data(args.key.clone()))
+}
+
+fn set_serve_dry_run(args: &SetArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "key": args.key,
+        "would": format!(
+            "set privacy rules for key {} (allow {} users + {} chats, deny {} users + {} chats)",
+            args.key,
+            args.allow.as_ref().map_or(0, Vec::len),
+            args.allow_chat.as_ref().map_or(0, Vec::len),
+            args.deny.as_ref().map_or(0, Vec::len),
+            args.deny_chat.as_ref().map_or(0, Vec::len),
+        )
+    }))
+}
+
+fn summary_display(rule: &serde_json::Value) -> (String, String) {
+    if let Some(kind) = rule.as_str() {
+        return (kind.to_string(), String::new());
+    }
+    let kind = rule["kind"].as_str().unwrap_or_default().to_string();
+    let peers = rule["ids"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    (kind, peers)
+}
+
+fn privacy_table_rows(data: &serde_json::Value) -> Vec<Vec<String>> {
+    let mut table_rows = Vec::new();
+    for row in data["privacy"].as_array().unwrap_or(&Vec::new()) {
+        let key = row["key"].as_str().unwrap_or_default().to_string();
+        for rule in row["rules"].as_array().unwrap_or(&Vec::new()) {
+            let (kind, peers) = summary_display(rule);
+            table_rows.push(vec![key.clone(), kind, peers]);
+        }
+    }
+    table_rows
+}
+
+pub(crate) async fn get_core(
+    shares: &crate::client::ServeShares,
+    params: GetParams,
+) -> TeleResult<serde_json::Value> {
+    let mut rows = Vec::new();
+    for key in keys() {
+        if let Some(filter) = &params.key {
+            if key != filter {
+                continue;
+            }
+        }
+        let Some(tl_key) = key_to_tl(key) else {
+            continue;
+        };
+        shares.rate_limiter.acquire().await;
+        let rules = fetch_privacy_rules(&shares.client, &tl_key).await?;
+        let summary = rules
+            .iter()
+            .map(privacy_rule_summary)
+            .collect::<Vec<serde_json::Value>>();
+        rows.push(serde_json::json!({
+            "key": key,
+            "rules": summary,
+        }));
+    }
+    Ok(serde_json::json!({"privacy": rows}))
+}
+
+pub(crate) async fn set_core(
+    shares: &crate::client::ServeShares,
+    params: SetParams,
+) -> TeleResult<serde_json::Value> {
+    let tl_key = set_key(&params.key)?;
+    let allow = params.allow.clone().unwrap_or_default();
+    let deny = params.deny.clone().unwrap_or_default();
+    shares.rate_limiter.acquire().await;
+    let mut allow_users = Vec::new();
+    for target in &allow {
+        let peer = entities::resolve_peer(&shares.client, shares.session.as_ref(), target).await?;
+        allow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
+    }
+    let mut disallow_users = Vec::new();
+    for target in &deny {
+        let peer = entities::resolve_peer(&shares.client, shares.session.as_ref(), target).await?;
+        disallow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
+    }
+    let base = fetch_privacy_rules(&shares.client, &tl_key).await?;
+    let targets = PrivacyTargets {
+        allow_users,
+        allow_chats: params.allow_chat.unwrap_or_default(),
+        disallow_users,
+        disallow_chats: params.deny_chat.unwrap_or_default(),
+    };
+    let rules = merge_privacy_rules(&base, &targets);
+    let _: tl::enums::account::PrivacyRules = shares
+        .client
+        .invoke(&tl::functions::account::SetPrivacy { key: tl_key, rules })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "key": params.key,
+        "allow": allow,
+        "allow_chats": targets.allow_chats,
+        "deny": deny,
+        "deny_chats": targets.disallow_chats,
+    }))
+}
+
+pub(crate) fn privacy_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "privacy get",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            GetParams,
+            GetArgs,
+            validate_get,
+            get_serve_dry_run,
+            run_get
+        ),
+        crate::serve_route!(
+            "privacy set",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            SetParams,
+            SetArgs,
+            validate_set,
+            set_serve_dry_run,
+            run_set
+        ),
+    ]
+}
+
+crate::serve_runner!(run_get, get_core, GetParams);
+crate::serve_runner!(run_set, set_core, SetParams);
 
 #[cfg(test)]
 mod tests {
@@ -1261,7 +1332,306 @@ mod tests {
             assert_eq!(args.deny_chat, Some(vec![300]));
             assert!(validate_set(&args).is_ok());
         } else {
-            panic!("parse failed");
+            panic!("privacy set with chat flags failed to parse");
+        }
+    }
+
+    fn plan_for(
+        op: &str,
+        params: serde_json::Value,
+    ) -> Result<crate::commands::serve::Plan, serde_json::Value> {
+        let routes = privacy_serve_routes();
+        let route = routes
+            .iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    fn privacy_rule_display(rule: &tl::enums::PrivacyRule) -> (String, String) {
+        match rule {
+            tl::enums::PrivacyRule::PrivacyValueAllowAll => {
+                ("allow_all".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowAll => {
+                ("disallow_all".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueAllowContacts => {
+                ("allow_contacts".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowContacts => {
+                ("disallow_contacts".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueAllowCloseFriends => {
+                ("allow_close_friends".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueAllowPremium => {
+                ("allow_premium".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueAllowBots => {
+                ("allow_bots".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowBots => {
+                ("disallow_bots".to_string(), String::new())
+            }
+            tl::enums::PrivacyRule::PrivacyValueAllowUsers(v) => (
+                "allow_users".to_string(),
+                v.users
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            ),
+            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => (
+                "disallow_users".to_string(),
+                v.users
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            ),
+            tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(v) => (
+                "allow_chats".to_string(),
+                v.chats
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            ),
+            tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(v) => (
+                "disallow_chats".to_string(),
+                v.chats
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            ),
+        }
+    }
+
+    #[test]
+    fn serve_routes_declare_lanes_and_timeouts() {
+        use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+        let routes = privacy_serve_routes();
+        let want: Vec<(&str, Lane, Option<std::time::Duration>)> = vec![
+            ("privacy get", Lane::Read, Some(OP_TIMEOUT_PAGINATED)),
+            ("privacy set", Lane::Mutate, Some(OP_TIMEOUT_SIMPLE)),
+        ];
+        assert_eq!(routes.len(), want.len());
+        for (op, lane, timeout) in want {
+            let route = routes
+                .iter()
+                .find(|r| r.op == op)
+                .unwrap_or_else(|| panic!("{op}"));
+            assert_eq!(route.lane, lane, "{op}");
+            assert_eq!(route.timeout, timeout, "{op}");
+        }
+    }
+
+    #[test]
+    fn serve_missing_required_field_yields_serve_error() {
+        let err = plan_for("privacy set", serde_json::json!({})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("privacy set"), "{msg}");
+        assert!(msg.contains("key"), "{msg}");
+        assert!(msg.contains("missing field"), "{msg}");
+    }
+
+    #[test]
+    fn serve_wrong_type_param_yields_serve_error() {
+        for (op, params, fragment) in [
+            (
+                "privacy get",
+                serde_json::json!({"key": 5}),
+                "expected a string",
+            ),
+            (
+                "privacy set",
+                serde_json::json!({"key": "status", "allow": "@alice"}),
+                "expected a sequence",
+            ),
+            (
+                "privacy set",
+                serde_json::json!({"key": "status", "allow_chat": ["x"]}),
+                "i64",
+            ),
+            (
+                "privacy set",
+                serde_json::json!({"key": "status", "deny_chat": -3}),
+                "expected a sequence",
+            ),
+        ] {
+            let err = plan_for(op, params).unwrap_err();
+            assert_eq!(err["type"], "ServeError", "{op}");
+            let msg = err["message"].as_str().unwrap();
+            assert!(msg.contains(op), "{op}: {msg}");
+            assert!(msg.contains(fragment), "{op}: {msg}");
+        }
+    }
+
+    #[test]
+    fn serve_unknown_param_yields_serve_error() {
+        let err = plan_for(
+            "privacy set",
+            serde_json::json!({"key": "status", "denyy": ["@x"]}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("denyy"), "{msg}");
+    }
+
+    #[test]
+    fn serve_validation_usage_errors_stay_pure() {
+        let err = plan_for("privacy get", serde_json::json!({"key": "shoe_size"})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for("privacy set", serde_json::json!({"key": "nope"})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for("privacy set", serde_json::json!({"key": "status"})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("--allow"));
+
+        let err = plan_for(
+            "privacy set",
+            serde_json::json!({"key": "status", "allow": []}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for(
+            "privacy set",
+            serde_json::json!({"key": "calls", "deny_chat": [0]}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+    }
+
+    #[test]
+    fn serve_overlap_rejection_stays_pure_through_planner() {
+        for params in [
+            serde_json::json!({"key": "status", "allow": ["@alice"], "deny": ["alice"]}),
+            serde_json::json!({"key": "status", "allow": ["@Alice"], "deny": ["https://t.me/alice"]}),
+            serde_json::json!({"key": "status", "allow_chat": [777], "deny_chat": [777]}),
+            serde_json::json!({"key": "status", "allow": ["12345"], "deny_chat": [12345]}),
+        ] {
+            let err = plan_for("privacy set", params).unwrap_err();
+            assert_eq!(err["type"], "UsageError");
+            let msg = err["message"].as_str().unwrap();
+            assert!(msg.contains("both the allow side"), "{}", msg);
+        }
+    }
+
+    #[test]
+    fn serve_dry_run_payloads_match_cli_shapes() {
+        let plan = plan_for("privacy get", serde_json::json!({"dry_run": true})).unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "dry_run": true,
+                "key": null,
+                "would": "get privacy rules for all keys"
+            })
+        );
+
+        let plan = plan_for(
+            "privacy get",
+            serde_json::json!({"key": "status", "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "dry_run": true,
+                "key": "status",
+                "would": "get privacy rules for key status"
+            })
+        );
+
+        let plan = plan_for(
+            "privacy set",
+            serde_json::json!({
+                "key": "status",
+                "allow": ["@alice"],
+                "allow_chat": [10, 20],
+                "deny": ["@bob"],
+                "dry_run": true
+            }),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "dry_run": true,
+                "key": "status",
+                "would": "set privacy rules for key status (allow 1 users + 2 chats, deny 1 users + 0 chats)"
+            })
+        );
+    }
+
+    #[test]
+    fn serve_execute_plan_passes_raw_params_through() {
+        for (op, raw) in [
+            ("privacy get", serde_json::json!({})),
+            ("privacy get", serde_json::json!({"key": "calls"})),
+            (
+                "privacy set",
+                serde_json::json!({"key": "status", "allow": ["@alice"]}),
+            ),
+            (
+                "privacy set",
+                serde_json::json!({"key": "birthday", "deny_chat": [55]}),
+            ),
+        ] {
+            let plan = plan_for(op, raw.clone()).unwrap();
+            match plan {
+                crate::commands::serve::Plan::Execute(passed) => {
+                    assert_eq!(passed, raw, "{op}")
+                }
+                other => panic!("expected execute plan for {op}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn summary_display_matches_rule_display_for_all_variants() {
+        use tl::enums::PrivacyRule as R;
+        let rules: Vec<R> = vec![
+            R::PrivacyValueAllowAll,
+            R::PrivacyValueDisallowAll,
+            R::PrivacyValueAllowContacts,
+            R::PrivacyValueDisallowContacts,
+            R::PrivacyValueAllowCloseFriends,
+            R::PrivacyValueAllowPremium,
+            R::PrivacyValueAllowBots,
+            R::PrivacyValueDisallowBots,
+            R::PrivacyValueAllowUsers(tl::types::PrivacyValueAllowUsers { users: vec![1, 2] }),
+            R::PrivacyValueDisallowUsers(tl::types::PrivacyValueDisallowUsers { users: vec![3] }),
+            R::PrivacyValueAllowChatParticipants(tl::types::PrivacyValueAllowChatParticipants {
+                chats: vec![7],
+            }),
+            R::PrivacyValueDisallowChatParticipants(
+                tl::types::PrivacyValueDisallowChatParticipants { chats: vec![9] },
+            ),
+        ];
+        for rule in &rules {
+            assert_eq!(
+                summary_display(&privacy_rule_summary(rule)),
+                privacy_rule_display(rule),
+                "{rule:?}"
+            );
         }
     }
 }

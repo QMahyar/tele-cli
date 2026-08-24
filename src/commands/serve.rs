@@ -819,6 +819,11 @@ mod tests {
     #[test]
     fn routes_table_is_locked_command_path_form() {
         let expected = [
+            "contact add",
+            "contact block",
+            "contact list",
+            "contact remove",
+            "contact unblock",
             "msg click",
             "msg delete",
             "msg download",
@@ -832,15 +837,27 @@ mod tests {
             "msg send",
             "msg typing",
             "msg vote",
+            "privacy get",
+            "privacy set",
+            "profile emoji-status",
+            "profile get",
+            "profile photo",
+            "profile set",
         ];
         let mut actual: Vec<String> = serve_op_routes().iter().map(|r| r.op.to_string()).collect();
         actual.sort_unstable();
         assert_eq!(actual, expected);
-        assert!(serve_op_routes().iter().all(|r| r.op.starts_with("msg ")
-            && !r.op.contains('.')
-            && r.op
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == ' ' || c.is_ascii_digit())));
+        assert!(serve_op_routes().iter().all(|r| {
+            let grouped = r.op.starts_with("msg ")
+                || r.op.starts_with("profile ")
+                || r.op.starts_with("privacy ")
+                || r.op.starts_with("contact ");
+            grouped
+                && !r.op.contains('.')
+                && r.op
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == ' ' || c == '-' || c.is_ascii_digit())
+        }));
     }
 
     #[test]
@@ -1144,6 +1161,11 @@ mod tests {
     #[test]
     fn lane_and_timeout_table_is_locked() {
         let expected: &[(&str, Lane, Option<u64>)] = &[
+            ("contact add", Lane::Mutate, Some(30)),
+            ("contact block", Lane::Mutate, Some(30)),
+            ("contact list", Lane::Read, Some(120)),
+            ("contact remove", Lane::Mutate, Some(30)),
+            ("contact unblock", Lane::Mutate, Some(30)),
             ("msg click", Lane::Mutate, Some(30)),
             ("msg delete", Lane::Mutate, Some(30)),
             ("msg download", Lane::Read, None),
@@ -1157,6 +1179,12 @@ mod tests {
             ("msg send", Lane::Mutate, Some(30)),
             ("msg typing", Lane::Mutate, Some(30)),
             ("msg vote", Lane::Mutate, Some(30)),
+            ("privacy get", Lane::Read, Some(120)),
+            ("privacy set", Lane::Mutate, Some(30)),
+            ("profile emoji-status", Lane::Mutate, Some(30)),
+            ("profile get", Lane::Read, Some(120)),
+            ("profile photo", Lane::Mutate, Some(30)),
+            ("profile set", Lane::Mutate, Some(30)),
         ];
         assert_eq!(serve_op_routes().len(), expected.len());
         for (op, lane, secs) in expected {
