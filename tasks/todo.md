@@ -312,3 +312,38 @@ Wave plan:
 - [ ] W3: T10 serve-B `_core` extraction + dispatch (touches many files — SOLO wave) · T11 serve-C hardening
 - [ ] W4: T12 raw-registry batch: effect/checklist/translate/transcribe/ai-compose/schedule-repeat · T13 stickers.manage · T14 stories.*
 - [ ] Final: contract test sweep + full suite + live verification checklist refresh
+
+## SERVE-PLATFORM program (2026-08-24) — five-agent research synthesis
+
+Goal: tele serve becomes the full account-control surface for agent apps — observe events + execute every capability over one duplex JSONL pipe. Research verdicts: typed-op table wins (generic cmd op blocked by session lock/stdout/prompts); ops must leave the select loop (two-lane executor); protocol must self-describe before 59 ops exist; hard exclusions = login/logout/remove/password/delete/takeout-export (session-file conflicts + prompt state machines).
+
+### Phase 0 — protocol hardening (before any op expansion)
+- [x] 0a. Poll enrichment on serve events (parity with listen) — f6ae22d
+- [x] 0b. deny_unknown_fields on all 13 *Params structs + unknown_param contract test — f6ae22d
+- [ ] 0c. hello v2: negotiated version range (min/max instead of strict equality), resolved identity via get_me (user_id/username/first_name/phone_masked), Reconnected event on stdout (currently stderr-only)
+- [ ] 0d. Two-lane executor: mutations serial lane, reads pool (2-3), responses via mpsc single-writer stdout; ServeRunner -> 'static shares (client clone + Arc<SqliteSession> + Arc<RateLimiter>); bounded stdin channel (~64) backpressure; per-class timeouts (30s simple / 120s paginated / opt-in heavy); keep rate_limiter.acquire() inside cores; do NOT wrap serve task in AbortOnDrop (todo.md:222 landmine)
+- [ ] 0e. Event seq numbers (monotonic per connection) + stream.resync op (rebuild stream with catch_up:true; dedupe already suppresses replay dupes)
+- [ ] 0f. error.param key parsed from serde errors in prep()/serve_runner (additive envelope field)
+- [ ] 0g. ops.list op: entries {op, summary, group, read_only, destructive, retry_safe, params_schema(JSON Schema), result_example}; hints as data per route row
+- [ ] 0h. confirm:true planner gate for Tier-1 destructive (msg delete all:true, dialog delete, topic delete, story delete, contact remove, sticker remove, chat kick/leave): first call returns ConfirmRequired with would-payload; resend identical params+confirm:true
+- [ ] 0i. cli-contract.md: full tele serve section (hello/envelopes/errors/op table/dry-run/confirm dance/pagination convention next_offset_id)
+- [ ] 0j. Gates: clippy -D warnings + fmt + full suite green; commit feat: serve phase 0...
+
+### Phase 1 — reads + raw escape hatch (~12 ops)
+dialog list, dialog drafts, profile get, privacy get, chat participants, chat admin-log, chat stats, topic list, sticker list/search/show, raw <method> (1 route unlocks 25 registry methods). Extraction template = send_core signature (guard, XParams) -> TeleResult<Value>. Start with contact.rs? no — contact is Phase 2; Phase 1 starts dialog.rs (pure builders already extracted).
+
+### Phase 2 — lite writes (~14 ops)
+dialog draft/pin/archive/delete(confirm-gated), topic create/close/reopen/edit/delete/pin, contact add/remove(confirm-gated)/block/unblock
+
+### Phase 3 — chat moderation & membership (~13 ops)
+chat join/leave(confirm)/create/settings/edit/link/kick(confirm)/admin/invite/requests/participants-write
+
+### Phase 4 — self-mutation (~12 ops)
+profile set/photo/emoji-status, privacy set, story list/read/delete(confirm)/pin/unpin/send(validate_upload_path in core)
+
+### Phase 5 — guarded account reads (riskiest; scope tight)
+account status, ttl get/set, sessions list; takeout start/finish/status ONLY if state files proven safe beside live stream; takeout export stays CLI-only (hours-long, starves loop). login/logout/remove/password/delete NEVER over pipe — documented exclusion row.
+
+### Definition of done (whole program)
+SERVE_OPS covers every non-excluded group; route-lock test pins final table; every mutating op dry-runs without connecting; FLOOD_WAIT seconds everywhere; uploads validate paths in-core; zero prompts reachable from runners (grep gate); cli-contract.md complete; live verify: hello -> dialog list -> msg send/edit/get/delete -> chat participants -> privacy get -> raw contacts.Search with cross-account event arriving mid-burst (no starvation); matrix rows annotated "also exposed as serve op"; v0.6.0 release.
+
