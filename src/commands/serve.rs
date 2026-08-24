@@ -10,19 +10,6 @@ use crate::commands::listen::{
     event_row, getstate_probe_error, handle_stream_failure, is_empty_update, poll_timeout,
     update_peer,
 };
-use crate::commands::msg::{
-    click_core, click_serve_dry_run, delete_core, delete_serve_dry_run, download_core,
-    download_serve_dry_run, edit_core, edit_serve_dry_run, forward_core, forward_serve_dry_run,
-    get_core, get_serve_dry_run, pin_core, pin_serve_dry_run, react_core, react_serve_dry_run,
-    read_core, read_serve_dry_run, search_core, search_serve_dry_run, send_core,
-    send_serve_dry_run, typing_core, typing_serve_dry_run, validate_click, validate_delete,
-    validate_download, validate_edit, validate_forward, validate_get, validate_pin, validate_react,
-    validate_read, validate_search, validate_send, validate_typing, validate_vote, vote_core,
-    vote_serve_dry_run, ClickArgs, ClickParams, DeleteArgs, DeleteParams, DownloadArgs,
-    DownloadParams, EditArgs, EditParams, ForwardArgs, ForwardParams, GetArgs, GetParams, PinArgs,
-    PinParams, ReactArgs, ReactParams, ReadArgs, ReadParams, SearchArgs, SearchParams, SendArgs,
-    SendParams, TypingArgs, TypingParams, VoteArgs, VoteParams,
-};
 use crate::error::{TeleError, TeleResult, EXIT_OK};
 use crate::executor::GlobalFlags;
 use crate::output;
@@ -40,8 +27,8 @@ const MUTATE_QUEUE_CAPACITY: usize = 64;
 const READ_QUEUE_CAPACITY: usize = 64;
 const READ_POOL_SIZE: usize = 2;
 
-const OP_TIMEOUT_SIMPLE: Duration = Duration::from_secs(30);
-const OP_TIMEOUT_PAGINATED: Duration = Duration::from_secs(120);
+pub(crate) const OP_TIMEOUT_SIMPLE: Duration = Duration::from_secs(30);
+pub(crate) const OP_TIMEOUT_PAGINATED: Duration = Duration::from_secs(120);
 
 pub(crate) struct ServeDedupe {
     seen: HashMap<(i64, i32, i32), ()>,
@@ -85,21 +72,21 @@ pub(crate) fn pts_from_state(state: &grammers_session::updates::State) -> i32 {
     }
 }
 
-type ServeFuture =
+pub(crate) type ServeFuture =
     Pin<Box<dyn Future<Output = Result<serde_json::Value, serde_json::Value>> + Send>>;
 
-type ServeRunner = fn(ServeShares, serde_json::Value) -> ServeFuture;
+pub(crate) type ServeRunner = fn(ServeShares, serde_json::Value) -> ServeFuture;
 
 type Planner = fn(&str, serde_json::Value) -> Result<Plan, serde_json::Value>;
 
 #[derive(Debug)]
-enum Plan {
+pub(crate) enum Plan {
     DryRun(serde_json::Value),
     Execute(serde_json::Value),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Lane {
+pub(crate) enum Lane {
     Mutate,
     Read,
 }
@@ -111,12 +98,12 @@ struct Job {
     future: ServeFuture,
 }
 
-struct OpRoute {
-    op: &'static str,
-    lane: Lane,
-    timeout: Option<Duration>,
-    planner: Planner,
-    runner: ServeRunner,
+pub(crate) struct OpRoute {
+    pub(crate) op: &'static str,
+    pub(crate) lane: Lane,
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) planner: Planner,
+    pub(crate) runner: ServeRunner,
 }
 
 #[derive(Parser)]
@@ -148,7 +135,7 @@ pub enum ServeIn {
     },
 }
 
-fn err_json(kind: &str, message: impl Into<String>) -> serde_json::Value {
+pub(crate) fn err_json(kind: &str, message: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "type": kind, "message": message.into() })
 }
 
@@ -254,186 +241,60 @@ fn emit(value: &serde_json::Value) -> TeleResult<()> {
     output::print_json(value)
 }
 
+#[macro_export]
 macro_rules! serve_runner {
     ($name:ident, $core:path, $params:ty) => {
-        fn $name(shares: ServeShares, raw: serde_json::Value) -> ServeFuture {
+        fn $name(
+            shares: $crate::client::ServeShares,
+            raw: serde_json::Value,
+        ) -> $crate::commands::serve::ServeFuture {
             Box::pin(async move {
-                let params: $params = serde_json::from_value(raw)
-                    .map_err(|e| err_json("ServeError", format!("params: {e}")))?;
+                let params: $params = serde_json::from_value(raw).map_err(|e| {
+                    $crate::commands::serve::err_json("ServeError", format!("params: {e}"))
+                })?;
                 $core(&shares, params).await.map_err(|e| e.as_json())
             })
         }
     };
 }
 
-serve_runner!(run_send, send_core, SendParams);
-serve_runner!(run_edit, edit_core, EditParams);
-serve_runner!(run_delete, delete_core, DeleteParams);
-serve_runner!(run_forward, forward_core, ForwardParams);
-serve_runner!(run_pin, pin_core, PinParams);
-serve_runner!(run_get, get_core, GetParams);
-serve_runner!(run_read, read_core, ReadParams);
-serve_runner!(run_react, react_core, ReactParams);
-serve_runner!(run_search, search_core, SearchParams);
-serve_runner!(run_download, download_core, DownloadParams);
-serve_runner!(run_vote, vote_core, VoteParams);
-serve_runner!(run_typing, typing_core, TypingParams);
-serve_runner!(run_click, click_core, ClickParams);
-
+#[macro_export]
 macro_rules! serve_route {
     ($op:literal, $lane:expr, $timeout:expr, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr) => {
-        OpRoute {
+        $crate::commands::serve::OpRoute {
             op: $op,
             lane: $lane,
             timeout: $timeout,
             planner: |op: &str, raw: serde_json::Value| {
-                let parsed: $params = prep(op, raw.clone())?;
+                let parsed: $params = $crate::commands::serve::prep(op, raw.clone())?;
                 let args: $args = (&parsed).into();
                 $validate(&args).map_err(|e| e.as_json())?;
                 if parsed.dry_run {
-                    return Ok(Plan::DryRun($dry(&args).map_err(|e| e.as_json())?));
+                    return Ok($crate::commands::serve::Plan::DryRun(
+                        $dry(&args).map_err(|e| e.as_json())?,
+                    ));
                 }
-                Ok(Plan::Execute(raw))
+                Ok($crate::commands::serve::Plan::Execute(raw))
             },
             runner: $runner,
         }
     };
 }
 
-const SERVE_OPS: &[OpRoute] = &[
-    serve_route!(
-        "msg click",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        ClickParams,
-        ClickArgs,
-        validate_click,
-        click_serve_dry_run,
-        run_click
-    ),
-    serve_route!(
-        "msg delete",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        DeleteParams,
-        DeleteArgs,
-        validate_delete,
-        delete_serve_dry_run,
-        run_delete
-    ),
-    serve_route!(
-        "msg download",
-        Lane::Read,
-        None,
-        DownloadParams,
-        DownloadArgs,
-        validate_download,
-        download_serve_dry_run,
-        run_download
-    ),
-    serve_route!(
-        "msg edit",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        EditParams,
-        EditArgs,
-        validate_edit,
-        edit_serve_dry_run,
-        run_edit
-    ),
-    serve_route!(
-        "msg forward",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        ForwardParams,
-        ForwardArgs,
-        validate_forward,
-        forward_serve_dry_run,
-        run_forward
-    ),
-    serve_route!(
-        "msg get",
-        Lane::Read,
-        Some(OP_TIMEOUT_PAGINATED),
-        GetParams,
-        GetArgs,
-        validate_get,
-        get_serve_dry_run,
-        run_get
-    ),
-    serve_route!(
-        "msg pin",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        PinParams,
-        PinArgs,
-        validate_pin,
-        pin_serve_dry_run,
-        run_pin
-    ),
-    serve_route!(
-        "msg read",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        ReadParams,
-        ReadArgs,
-        validate_read,
-        read_serve_dry_run,
-        run_read
-    ),
-    serve_route!(
-        "msg react",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        ReactParams,
-        ReactArgs,
-        validate_react,
-        react_serve_dry_run,
-        run_react
-    ),
-    serve_route!(
-        "msg search",
-        Lane::Read,
-        Some(OP_TIMEOUT_PAGINATED),
-        SearchParams,
-        SearchArgs,
-        validate_search,
-        search_serve_dry_run,
-        run_search
-    ),
-    serve_route!(
-        "msg send",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        SendParams,
-        SendArgs,
-        validate_send,
-        send_serve_dry_run,
-        run_send
-    ),
-    serve_route!(
-        "msg typing",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        TypingParams,
-        TypingArgs,
-        validate_typing,
-        typing_serve_dry_run,
-        run_typing
-    ),
-    serve_route!(
-        "msg vote",
-        Lane::Mutate,
-        Some(OP_TIMEOUT_SIMPLE),
-        VoteParams,
-        VoteArgs,
-        validate_vote,
-        vote_serve_dry_run,
-        run_vote
-    ),
-];
+pub(crate) fn serve_op_routes() -> Vec<OpRoute> {
+    let mut routes = crate::commands::msg::msg_serve_routes();
+    routes.extend(crate::commands::dialog::dialog_serve_routes());
+    routes.extend(crate::commands::topic::topic_serve_routes());
+    routes.extend(crate::commands::profile::profile_serve_routes());
+    routes.extend(crate::commands::privacy::privacy_serve_routes());
+    routes.extend(crate::commands::contact::contact_serve_routes());
+    routes.extend(crate::commands::stickers::stickers_serve_routes());
+    routes.extend(crate::commands::stories::stories_serve_routes());
+    routes.extend(crate::commands::raw::raw_serve_routes());
+    routes
+}
 
-fn prep<P: serde::de::DeserializeOwned>(
+pub(crate) fn prep<P: serde::de::DeserializeOwned>(
     op: &str,
     raw: serde_json::Value,
 ) -> Result<P, serde_json::Value> {
@@ -442,7 +303,8 @@ fn prep<P: serde::de::DeserializeOwned>(
 }
 
 fn known_op_names() -> String {
-    let mut names: Vec<&str> = SERVE_OPS.iter().map(|r| r.op).collect();
+    let routes = serve_op_routes();
+    let mut names: Vec<String> = routes.iter().map(|r| r.op.to_string()).collect();
     names.sort_unstable();
     names.join(", ")
 }
@@ -455,8 +317,8 @@ fn not_implemented(op: &str) -> serde_json::Value {
     )
 }
 
-fn find_route(op: &str) -> Option<&'static OpRoute> {
-    SERVE_OPS.iter().find(|r| r.op == op)
+fn find_route(op: &str) -> Option<OpRoute> {
+    serve_op_routes().into_iter().find(|r| r.op == op)
 }
 
 async fn execute_job(job: Job) -> serde_json::Value {
@@ -971,10 +833,10 @@ mod tests {
             "msg typing",
             "msg vote",
         ];
-        let mut actual: Vec<&str> = SERVE_OPS.iter().map(|r| r.op).collect();
+        let mut actual: Vec<String> = serve_op_routes().iter().map(|r| r.op.to_string()).collect();
         actual.sort_unstable();
         assert_eq!(actual, expected);
-        assert!(SERVE_OPS.iter().all(|r| r.op.starts_with("msg ")
+        assert!(serve_op_routes().iter().all(|r| r.op.starts_with("msg ")
             && !r.op.contains('.')
             && r.op
                 .chars()
@@ -1275,7 +1137,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn route_for(op: &str) -> &'static OpRoute {
+    fn route_for(op: &str) -> OpRoute {
         find_route(op).unwrap_or_else(|| panic!("route missing for {op}"))
     }
 
@@ -1296,7 +1158,7 @@ mod tests {
             ("msg typing", Lane::Mutate, Some(30)),
             ("msg vote", Lane::Mutate, Some(30)),
         ];
-        assert_eq!(SERVE_OPS.len(), expected.len());
+        assert_eq!(serve_op_routes().len(), expected.len());
         for (op, lane, secs) in expected {
             let route = route_for(op);
             assert_eq!(route.lane, *lane, "lane for {op}");

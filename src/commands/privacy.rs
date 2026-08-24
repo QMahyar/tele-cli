@@ -576,6 +576,10 @@ fn privacy_rule_display(rule: &tl::enums::PrivacyRule) -> (String, String) {
     }
 }
 
+pub(crate) fn privacy_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1261,3 +1265,4 @@ mod tests {
         }
     }
 }
+

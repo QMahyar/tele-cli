@@ -775,6 +775,10 @@ async fn toggle_pinned(args: PinArgs, pinned: bool, flags: &GlobalFlags) -> Tele
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1207,3 +1211,4 @@ mod tests {
         assert_eq!(STORY_COLUMNS[6], "views");
     }
 }
+

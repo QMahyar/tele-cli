@@ -621,6 +621,10 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1218,3 +1222,4 @@ mod tests {
         dir
     }
 }
+

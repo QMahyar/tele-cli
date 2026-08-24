@@ -110,6 +110,10 @@ fn raw_dry_run_payload(name: &str, params: &serde_json::Value) -> serde_json::Va
     })
 }
 
+pub(crate) fn raw_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 fn requires_explicit_account(method: &str) -> bool {
     generated::requires_explicit_account(method)
@@ -169,6 +173,7 @@ fn render_value(v: &serde_json::Value) -> String {
         other => other.to_string(),
     }
 }
+
 
 #[cfg(test)]
 fn validate_params(name: &str, p: &serde_json::Value) -> TeleResult<()> {
@@ -1745,7 +1750,7 @@ mod tests {
         assert_eq!(v["participants_count"], serde_json::Value::Null);
     }
 
-    #[cfg(test)]
+#[cfg(test)]
     fn notify_settings_fixture() -> tl::enums::PeerNotifySettings {
         tl::enums::PeerNotifySettings::Settings(tl::types::PeerNotifySettings {
             show_previews: None,

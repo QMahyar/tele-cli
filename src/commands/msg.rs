@@ -5703,3 +5703,153 @@ mod tests {
         assert_eq!(plain["background"], serde_json::json!(false));
     }
 }
+
+pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "msg click",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            ClickParams,
+            ClickArgs,
+            validate_click,
+            click_serve_dry_run,
+            run_click
+        ),
+        crate::serve_route!(
+            "msg delete",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            DeleteParams,
+            DeleteArgs,
+            validate_delete,
+            delete_serve_dry_run,
+            run_delete
+        ),
+        crate::serve_route!(
+            "msg download",
+            Lane::Read,
+            None,
+            DownloadParams,
+            DownloadArgs,
+            validate_download,
+            download_serve_dry_run,
+            run_download
+        ),
+        crate::serve_route!(
+            "msg edit",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            EditParams,
+            EditArgs,
+            validate_edit,
+            edit_serve_dry_run,
+            run_edit
+        ),
+        crate::serve_route!(
+            "msg forward",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            ForwardParams,
+            ForwardArgs,
+            validate_forward,
+            forward_serve_dry_run,
+            run_forward
+        ),
+        crate::serve_route!(
+            "msg get",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            GetParams,
+            GetArgs,
+            validate_get,
+            get_serve_dry_run,
+            run_get
+        ),
+        crate::serve_route!(
+            "msg pin",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            PinParams,
+            PinArgs,
+            validate_pin,
+            pin_serve_dry_run,
+            run_pin
+        ),
+        crate::serve_route!(
+            "msg read",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            ReadParams,
+            ReadArgs,
+            validate_read,
+            read_serve_dry_run,
+            run_read
+        ),
+        crate::serve_route!(
+            "msg react",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            ReactParams,
+            ReactArgs,
+            validate_react,
+            react_serve_dry_run,
+            run_react
+        ),
+        crate::serve_route!(
+            "msg search",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            SearchParams,
+            SearchArgs,
+            validate_search,
+            search_serve_dry_run,
+            run_search
+        ),
+        crate::serve_route!(
+            "msg send",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            SendParams,
+            SendArgs,
+            validate_send,
+            send_serve_dry_run,
+            run_send
+        ),
+        crate::serve_route!(
+            "msg typing",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            TypingParams,
+            TypingArgs,
+            validate_typing,
+            typing_serve_dry_run,
+            run_typing
+        ),
+        crate::serve_route!(
+            "msg vote",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            VoteParams,
+            VoteArgs,
+            validate_vote,
+            vote_serve_dry_run,
+            run_vote
+        ),
+    ]
+}
+
+crate::serve_runner!(run_send, send_core, SendParams);
+crate::serve_runner!(run_edit, edit_core, EditParams);
+crate::serve_runner!(run_delete, delete_core, DeleteParams);
+crate::serve_runner!(run_forward, forward_core, ForwardParams);
+crate::serve_runner!(run_pin, pin_core, PinParams);
+crate::serve_runner!(run_get, get_core, GetParams);
+crate::serve_runner!(run_read, read_core, ReadParams);
+crate::serve_runner!(run_react, react_core, ReactParams);
+crate::serve_runner!(run_search, search_core, SearchParams);
+crate::serve_runner!(run_download, download_core, DownloadParams);
+crate::serve_runner!(run_vote, vote_core, VoteParams);
+crate::serve_runner!(run_typing, typing_core, TypingParams);
+crate::serve_runner!(run_click, click_core, ClickParams);

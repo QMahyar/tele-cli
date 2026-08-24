@@ -561,6 +561,10 @@ fn topic_row(topic: &tl::enums::ForumTopic) -> Option<serde_json::Value> {
     }
 }
 
+pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -999,3 +1003,4 @@ mod tests {
         );
     }
 }
+

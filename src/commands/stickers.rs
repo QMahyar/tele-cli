@@ -471,6 +471,10 @@ async fn remove(args: RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,3 +803,4 @@ mod tests {
         assert!(matches!(err, TeleError::Usage(_)));
     }
 }
+

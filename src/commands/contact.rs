@@ -351,6 +351,10 @@ fn sent_display_name(first: &str, last: &str) -> String {
     format!("{first} {last}").trim().to_string()
 }
 
+pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,3 +503,4 @@ mod tests {
         );
     }
 }
+

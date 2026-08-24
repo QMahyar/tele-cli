@@ -567,6 +567,10 @@ async fn emoji_status(args: EmojiStatusArgs, flags: &GlobalFlags) -> TeleResult<
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,3 +926,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
