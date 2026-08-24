@@ -3,7 +3,7 @@ use grammers_client::tl;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
-use crate::commands::require_chat_target;
+use crate::commands::{require_chat_target, validate_limit};
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -25,7 +25,7 @@ pub enum DialogCmd {
     Delete(DeleteArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ListArgs {
     #[arg(long, default_value_t = 20, help = "max dialogs to list (1-10000)")]
     limit: u32,
@@ -33,7 +33,7 @@ pub struct ListArgs {
     folder: Option<i32>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ArchiveArgs {
     #[arg(
         long,
@@ -53,7 +53,7 @@ pub struct ChatArgs {
     chat: String,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct DraftArgs {
     #[arg(
         long,
@@ -69,7 +69,7 @@ pub struct DraftArgs {
     clear: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct PinArgs {
     #[arg(
         long,
@@ -80,7 +80,7 @@ pub struct PinArgs {
     unpin: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct DeleteArgs {
     #[arg(
         long,
@@ -106,70 +106,29 @@ pub async fn run(cmd: DialogCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
-    let limit = args.limit;
-    let folder_arg = args.folder;
-    let folder = folder_arg.unwrap_or(0);
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
+        let args = args.clone();
 
         Box::pin(async move {
             if dry_run {
-                return Ok(list_dry_run_data(limit, folder_arg));
+                return Ok(list_dry_run_data(args.limit, args.folder));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let mut iter = guard.client.iter_dialogs();
-            let mut rows = Vec::new();
-            let mut count = 0u32;
-            let mut seen = 0usize;
-            while count < limit {
-                match iter.next().await.map_err(tele_invocation)? {
-                    Some(dialog) => {
-                        seen += 1;
-                        guard.rate_limiter.acquire_for_items(seen).await;
-                        if !is_dialog_row(&dialog.raw) {
-                            continue;
-                        }
-                        let d = match &dialog.raw {
-                            tl::enums::Dialog::Dialog(d) => d,
-                            tl::enums::Dialog::Folder(_) => continue,
-                        };
-                        let draft = match &d.draft {
-                            Some(tl::enums::DraftMessage::Message(dm)) => dm.message.clone(),
-                            _ => String::new(),
-                        };
-                        if !matches_folder(&dialog.raw, folder) {
-                            continue;
-                        }
-                        let last = dialog
-                            .last_message
-                            .as_ref()
-                            .map(|m| m.text().to_string())
-                            .unwrap_or_default();
-                        let last_message_date =
-                            dialog.last_message.as_ref().map(|m| m.date().to_rfc3339());
-                        rows.push(dialog_row(
-                            d,
-                            crate::serialize::peer_key(&dialog.peer),
-                            draft,
-                            last,
-                            last_message_date,
-                        ));
-                        count += 1;
-                    }
-                    None => break,
-                }
-            }
+            let result = dialog_list_core(&guard.shares(), ListParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
-                let table_rows: Vec<Vec<String>> = rows
+                let empty = Vec::new();
+                let table_rows: Vec<Vec<String>> = result["dialogs"]
+                    .as_array()
+                    .unwrap_or(&empty)
                     .iter()
                     .map(|r| {
                         vec![
@@ -191,11 +150,61 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     &table_rows,
                 )?;
             }
-            Ok(serde_json::json!({"dialogs": rows}))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_list_core(
+    shares: &crate::client::ServeShares,
+    params: ListParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let folder = params.folder.unwrap_or(0);
+    let mut iter = shares.client.iter_dialogs();
+    let mut rows = Vec::new();
+    let mut count = 0u32;
+    let mut seen = 0usize;
+    while count < params.limit {
+        match iter.next().await.map_err(tele_invocation)? {
+            Some(dialog) => {
+                seen += 1;
+                shares.rate_limiter.acquire_for_items(seen).await;
+                if !is_dialog_row(&dialog.raw) {
+                    continue;
+                }
+                let d = match &dialog.raw {
+                    tl::enums::Dialog::Dialog(d) => d,
+                    tl::enums::Dialog::Folder(_) => continue,
+                };
+                let draft = match &d.draft {
+                    Some(tl::enums::DraftMessage::Message(dm)) => dm.message.clone(),
+                    _ => String::new(),
+                };
+                if !matches_folder(&dialog.raw, folder) {
+                    continue;
+                }
+                let last = dialog
+                    .last_message
+                    .as_ref()
+                    .map(|m| m.text().to_string())
+                    .unwrap_or_default();
+                let last_message_date = dialog.last_message.as_ref().map(|m| m.date().to_rfc3339());
+                rows.push(dialog_row(
+                    d,
+                    crate::serialize::peer_key(&dialog.peer),
+                    draft,
+                    last,
+                    last_message_date,
+                ));
+                count += 1;
+            }
+            None => break,
+        }
+    }
+    Ok(serde_json::json!({"dialogs": rows}))
 }
 
 async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -204,49 +213,28 @@ async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             "--folder is not supported for dialog drafts".to_string(),
         ));
     }
-    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
-    let limit = args.limit as usize;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(drafts_dry_run_data(limit));
+                return Ok(drafts_dry_run_data(args.limit as usize));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let updates: tl::enums::Updates = guard
-                .client
-                .invoke(&tl::functions::messages::GetAllDrafts {})
-                .await
-                .map_err(tele_invocation)?;
-            let mut rows = Vec::new();
-            for update in collect_updates(&updates) {
-                if let tl::enums::Update::DraftMessage(u) = update {
-                    if let tl::enums::DraftMessage::Message(d) = &u.draft {
-                        let id = match &u.peer {
-                            tl::enums::Peer::User(p) => p.user_id,
-                            tl::enums::Peer::Chat(p) => -p.chat_id,
-                            tl::enums::Peer::Channel(p) => -p.channel_id,
-                        };
-                        rows.push(serde_json::json!({
-                            "id": id,
-                            "draft": d.message.clone(),
-                        }));
-                        if rows.len() >= limit {
-                            break;
-                        }
-                    }
-                }
-            }
+            let result = dialog_drafts_core(&guard.shares(), DraftsParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
-                let table_rows: Vec<Vec<String>> = rows
+                let empty = Vec::new();
+                let table_rows: Vec<Vec<String>> = result["drafts"]
+                    .as_array()
+                    .unwrap_or(&empty)
                     .iter()
                     .map(|r| {
                         vec![
@@ -262,11 +250,43 @@ async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     .collect();
                 output::print_account_table(&name, multi, &["id", "draft"], &table_rows)?;
             }
-            Ok(serde_json::json!({"drafts": rows}))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_drafts_core(
+    shares: &crate::client::ServeShares,
+    params: DraftsParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let updates: tl::enums::Updates = shares
+        .client
+        .invoke(&tl::functions::messages::GetAllDrafts {})
+        .await
+        .map_err(tele_invocation)?;
+    let mut rows = Vec::new();
+    for update in collect_updates(&updates) {
+        if let tl::enums::Update::DraftMessage(u) = update {
+            if let tl::enums::DraftMessage::Message(d) = &u.draft {
+                let id = match &u.peer {
+                    tl::enums::Peer::User(p) => p.user_id,
+                    tl::enums::Peer::Chat(p) => -p.chat_id,
+                    tl::enums::Peer::Channel(p) => -p.channel_id,
+                };
+                rows.push(serde_json::json!({
+                    "id": id,
+                    "draft": d.message.clone(),
+                }));
+                if rows.len() >= params.limit as usize {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({"drafts": rows}))
 }
 
 fn list_dry_run_data(limit: u32, folder: Option<i32>) -> serde_json::Value {
@@ -333,44 +353,54 @@ async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let unarchive = args.unarchive;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = args.chat.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": target,
-                    "archive": !unarchive,
-                    "would": format!("{} chat {target}", if unarchive { "unarchive" } else { "archive" }),
-                }));
+                return Ok(archive_dry_run_data(&args.chat, args.unarchive));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &target)
-                .await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let folder_id = if unarchive { 0 } else { 1 };
-            let _: tl::enums::Updates = guard
-                .client
-                .invoke(&tl::functions::folders::EditPeerFolders {
-                    folder_peers: vec![tl::enums::InputFolderPeer::Peer(
-                        tl::types::InputFolderPeer { peer, folder_id },
-                    )],
-                })
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({
-                "chat": target,
-                "archive": !unarchive,
-            }))
+            dialog_archive_core(&guard.shares(), ArchiveParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn archive_dry_run_data(target: &str, unarchive: bool) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": target,
+        "archive": !unarchive,
+        "would": format!("{} chat {target}", if unarchive { "unarchive" } else { "archive" }),
+    })
+}
+
+pub(crate) async fn dialog_archive_core(
+    shares: &crate::client::ServeShares,
+    params: ArchiveParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let folder_id = if params.unarchive { 0 } else { 1 };
+    let _: tl::enums::Updates = shares
+        .client
+        .invoke(&tl::functions::folders::EditPeerFolders {
+            folder_peers: vec![tl::enums::InputFolderPeer::Peer(
+                tl::types::InputFolderPeer { peer, folder_id },
+            )],
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "archive": !params.unarchive,
+    }))
 }
 
 #[derive(Clone, Debug)]
@@ -455,32 +485,38 @@ async fn draft(args: DraftArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let cleared = matches!(action, DraftAction::Clear);
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let target = args.chat.clone();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = target.clone();
-        let action = action.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(draft_dry_run_data(&target, cleared));
+                return Ok(draft_dry_run_data(&args.chat, cleared));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let _: bool = guard
-                .client
-                .invoke(&draft_request(peer, &action))
-                .await
-                .map_err(tele_invocation)?;
-            Ok(draft_result(&target, &action))
+            dialog_draft_core(&guard.shares(), DraftParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_draft_core(
+    shares: &crate::client::ServeShares,
+    params: DraftParams,
+) -> TeleResult<serde_json::Value> {
+    let action = draft_action(&params.text, params.clear)?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let _: bool = shares
+        .client
+        .invoke(&draft_request(peer, &action))
+        .await
+        .map_err(tele_invocation)?;
+    Ok(draft_result(&params.chat, &action))
 }
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -488,34 +524,40 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let pinned = !args.unpin;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let target = args.chat.clone();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = target.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(pin_dry_run_data(&target, pinned));
+                return Ok(pin_dry_run_data(&args.chat, pinned));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let _: bool = guard
-                .client
-                .invoke(&pin_request(peer, pinned))
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({
-                "chat": target,
-                "pinned": pinned,
-            }))
+            dialog_pin_core(&guard.shares(), PinParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_pin_core(
+    shares: &crate::client::ServeShares,
+    params: PinParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let _: bool = shares
+        .client
+        .invoke(&pin_request(peer, !params.unpin))
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "pinned": !params.unpin,
+    }))
 }
 
 fn draft_result(target: &str, action: &DraftAction) -> serde_json::Value {
@@ -573,62 +615,638 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let revoke = args.revoke;
-    let target = args.chat.clone();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = target.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(delete_dry_run_data(&target, revoke));
+                return Ok(delete_dry_run_data(&args.chat, args.revoke));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            match delete_route(&peer) {
-                DeleteRoute::HistoryClear => {
-                    let _: tl::enums::messages::AffectedHistory = guard
-                        .client
-                        .invoke(&tl::functions::messages::DeleteHistory {
-                            just_clear: false,
-                            revoke,
-                            peer,
-                            max_id: 0,
-                            min_date: None,
-                            max_date: None,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                    Ok(delete_result(&target, false, true))
-                }
-                DeleteRoute::Leave => {
-                    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-                    guard
-                        .client
-                        .delete_dialog(chat_ref)
-                        .await
-                        .map_err(tele_invocation)?;
-                    Ok(delete_result(&target, true, false))
-                }
-            }
+            dialog_delete_core(&guard.shares(), DeleteParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+pub(crate) async fn dialog_delete_core(
+    shares: &crate::client::ServeShares,
+    params: DeleteParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    match delete_route(&peer) {
+        DeleteRoute::HistoryClear => {
+            let _: tl::enums::messages::AffectedHistory = shares
+                .client
+                .invoke(&tl::functions::messages::DeleteHistory {
+                    just_clear: false,
+                    revoke: params.revoke,
+                    peer,
+                    max_id: 0,
+                    min_date: None,
+                    max_date: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(delete_result(&params.chat, false, true))
+        }
+        DeleteRoute::Leave => {
+            let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+            shares
+                .client
+                .delete_dialog(chat_ref)
+                .await
+                .map_err(tele_invocation)?;
+            Ok(delete_result(&params.chat, true, false))
+        }
+    }
 }
+
+fn default_dialog_limit() -> u32 {
+    20
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ListParams {
+    #[serde(default = "default_dialog_limit")]
+    pub(crate) limit: u32,
+    pub(crate) folder: Option<i32>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ListArgs> for ListParams {
+    fn from(a: &ListArgs) -> Self {
+        Self {
+            limit: a.limit,
+            folder: a.folder,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ListParams> for ListArgs {
+    fn from(p: &ListParams) -> Self {
+        Self {
+            limit: p.limit,
+            folder: p.folder,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DraftsParams {
+    #[serde(default = "default_dialog_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ListArgs> for DraftsParams {
+    fn from(a: &ListArgs) -> Self {
+        Self {
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&DraftsParams> for ListArgs {
+    fn from(p: &DraftsParams) -> Self {
+        Self {
+            limit: p.limit,
+            folder: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DraftParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) text: Option<String>,
+    #[serde(default)]
+    pub(crate) clear: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&DraftArgs> for DraftParams {
+    fn from(a: &DraftArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            text: a.text.clone(),
+            clear: a.clear,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&DraftParams> for DraftArgs {
+    fn from(p: &DraftParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            text: p.text.clone(),
+            clear: p.clear,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ArchiveParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) unarchive: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ArchiveArgs> for ArchiveParams {
+    fn from(a: &ArchiveArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            unarchive: a.unarchive,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ArchiveParams> for ArchiveArgs {
+    fn from(p: &ArchiveParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            unarchive: p.unarchive,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PinParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) unpin: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&PinArgs> for PinParams {
+    fn from(a: &PinArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            unpin: a.unpin,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&PinParams> for PinArgs {
+    fn from(p: &PinParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            unpin: p.unpin,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeleteParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) revoke: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&DeleteArgs> for DeleteParams {
+    fn from(a: &DeleteArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            revoke: a.revoke,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&DeleteParams> for DeleteArgs {
+    fn from(p: &DeleteParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            revoke: p.revoke,
+        }
+    }
+}
+
+pub(crate) fn validate_list(args: &ListArgs) -> TeleResult<()> {
+    validate_limit(args.limit, 10_000, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn validate_drafts(args: &ListArgs) -> TeleResult<()> {
+    if args.folder.is_some() {
+        return Err(TeleError::Usage(
+            "--folder is not supported for dialog drafts".to_string(),
+        ));
+    }
+    validate_limit(args.limit, 10_000, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn validate_draft(args: &DraftArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    draft_action(&args.text, args.clear)?;
+    Ok(())
+}
+
+pub(crate) fn validate_archive(args: &ArchiveArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")
+}
+
+pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")
+}
+
+pub(crate) fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")
+}
+
+pub(crate) fn list_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {
+    Ok(list_dry_run_data(args.limit, args.folder))
+}
+
+pub(crate) fn drafts_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {
+    Ok(drafts_dry_run_data(args.limit as usize))
+}
+
+pub(crate) fn draft_serve_dry_run(args: &DraftArgs) -> TeleResult<serde_json::Value> {
+    Ok(draft_dry_run_data(&args.chat, args.clear))
+}
+
+pub(crate) fn archive_serve_dry_run(args: &ArchiveArgs) -> TeleResult<serde_json::Value> {
+    Ok(archive_dry_run_data(&args.chat, args.unarchive))
+}
+
+pub(crate) fn pin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Value> {
+    Ok(pin_dry_run_data(&args.chat, !args.unpin))
+}
+
+pub(crate) fn delete_serve_dry_run(args: &DeleteArgs) -> TeleResult<serde_json::Value> {
+    Ok(delete_dry_run_data(&args.chat, args.revoke))
+}
+
+pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "dialog archive",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            ArchiveParams,
+            ArchiveArgs,
+            validate_archive,
+            archive_serve_dry_run,
+            run_archive
+        ),
+        crate::serve_route!(
+            "dialog delete",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            DeleteParams,
+            DeleteArgs,
+            validate_delete,
+            delete_serve_dry_run,
+            run_delete
+        ),
+        crate::serve_route!(
+            "dialog draft",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            DraftParams,
+            DraftArgs,
+            validate_draft,
+            draft_serve_dry_run,
+            run_draft
+        ),
+        crate::serve_route!(
+            "dialog drafts",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            DraftsParams,
+            ListArgs,
+            validate_drafts,
+            drafts_serve_dry_run,
+            run_drafts
+        ),
+        crate::serve_route!(
+            "dialog list",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            ListParams,
+            ListArgs,
+            validate_list,
+            list_serve_dry_run,
+            run_list
+        ),
+        crate::serve_route!(
+            "dialog pin",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            PinParams,
+            PinArgs,
+            validate_pin,
+            pin_serve_dry_run,
+            run_pin
+        ),
+    ]
+}
+
+crate::serve_runner!(run_archive, dialog_archive_core, ArchiveParams);
+crate::serve_runner!(run_delete, dialog_delete_core, DeleteParams);
+crate::serve_runner!(run_draft, dialog_draft_core, DraftParams);
+crate::serve_runner!(run_drafts, dialog_drafts_core, DraftsParams);
+crate::serve_runner!(run_list, dialog_list_core, ListParams);
+crate::serve_runner!(run_pin, dialog_pin_core, PinParams);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::serve::{Lane, Plan};
     use crate::error::TeleError;
+
+    fn plan_dialog_op(op: &str, params: serde_json::Value) -> Result<Plan, serde_json::Value> {
+        let route = dialog_serve_routes()
+            .into_iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    fn serve_error_message(err: serde_json::Value) -> String {
+        assert_eq!(err["type"], "ServeError", "{err}");
+        err["message"].as_str().unwrap().to_string()
+    }
+
+    fn usage_error_message(err: serde_json::Value) -> String {
+        assert_eq!(err["type"], "UsageError", "{err}");
+        err["message"].as_str().unwrap().to_string()
+    }
+
+    fn expect_execute(plan: Plan, raw: &serde_json::Value) {
+        match plan {
+            Plan::Execute(passed) => assert_eq!(&passed, raw),
+            other => panic!("expected execute plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serve_dialog_list_plan_matrix() {
+        let msg = serve_error_message(
+            plan_dialog_op("dialog list", serde_json::json!({"limit": "many"})).unwrap_err(),
+        );
+        assert!(msg.contains("u32"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_dialog_op("dialog list", serde_json::json!({"limit": 10_001})).unwrap_err(),
+        );
+        assert!(msg.contains("--limit"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog list",
+            serde_json::json!({"limit": 7, "folder": 1, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, list_dry_run_data(7, Some(1))),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"folder": 0});
+        let plan = plan_dialog_op("dialog list", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_drafts_plan_matrix() {
+        let msg = serve_error_message(
+            plan_dialog_op("dialog drafts", serde_json::json!({"limit": true})).unwrap_err(),
+        );
+        assert!(msg.contains("u32"), "{msg}");
+
+        let msg = serve_error_message(
+            plan_dialog_op("dialog drafts", serde_json::json!({"folder": 1})).unwrap_err(),
+        );
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("folder"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_dialog_op("dialog drafts", serde_json::json!({"limit": 10_001})).unwrap_err(),
+        );
+        assert!(msg.contains("--limit"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog drafts",
+            serde_json::json!({"limit": 100, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, drafts_dry_run_data(100)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({});
+        let plan = plan_dialog_op("dialog drafts", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_draft_plan_matrix() {
+        let msg = serve_error_message(
+            plan_dialog_op(
+                "dialog draft",
+                serde_json::json!({"chat": "@x", "clear": "yes"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_dialog_op("dialog draft", serde_json::json!({"chat": "@x"})).unwrap_err(),
+        );
+        assert!(msg.contains("nothing to do"), "{msg}");
+        let msg = usage_error_message(
+            plan_dialog_op(
+                "dialog draft",
+                serde_json::json!({"chat": "@x", "text": "a", "clear": true}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("mutually exclusive"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog draft",
+            serde_json::json!({"chat": "@x", "text": "hi", "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, draft_dry_run_data("@x", false)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+        let plan = plan_dialog_op(
+            "dialog draft",
+            serde_json::json!({"chat": "@x", "clear": true, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, draft_dry_run_data("@x", true)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "@x", "text": "hi"});
+        let plan = plan_dialog_op("dialog draft", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_pin_plan_matrix() {
+        let msg = serve_error_message(
+            plan_dialog_op(
+                "dialog pin",
+                serde_json::json!({"chat": "@x", "unpin": "y"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_dialog_op("dialog pin", serde_json::json!({"chat": " "})).unwrap_err(),
+        );
+        assert!(msg.contains("--chat"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog pin",
+            serde_json::json!({"chat": "@x", "unpin": true, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, pin_dry_run_data("@x", false)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "@x", "unpin": true});
+        let plan = plan_dialog_op("dialog pin", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_archive_plan_matrix() {
+        let msg = serve_error_message(
+            plan_dialog_op(
+                "dialog archive",
+                serde_json::json!({"chat": "@x", "unarchive": 1}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_dialog_op("dialog archive", serde_json::json!({"chat": ""})).unwrap_err(),
+        );
+        assert!(msg.contains("--chat"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog archive",
+            serde_json::json!({"chat": "@x", "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, archive_dry_run_data("@x", false)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+        let plan = plan_dialog_op(
+            "dialog archive",
+            serde_json::json!({"chat": "@x", "unarchive": true, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, archive_dry_run_data("@x", true)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "@x", "unarchive": true});
+        let plan = plan_dialog_op("dialog archive", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_delete_plan_matrix() {
+        let msg = serve_error_message(
+            plan_dialog_op(
+                "dialog delete",
+                serde_json::json!({"chat": "@x", "revoke": "yes"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_dialog_op("dialog delete", serde_json::json!({"chat": ""})).unwrap_err(),
+        );
+        assert!(msg.contains("--chat"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog delete",
+            serde_json::json!({"chat": "@x", "revoke": true, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, delete_dry_run_data("@x", true)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "@x", "revoke": true});
+        let plan = plan_dialog_op("dialog delete", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn dialog_serve_lane_and_timeout_table_is_locked() {
+        let expected: &[(&str, Lane, Option<u64>)] = &[
+            ("dialog archive", Lane::Mutate, Some(30)),
+            ("dialog delete", Lane::Mutate, Some(30)),
+            ("dialog draft", Lane::Mutate, Some(30)),
+            ("dialog drafts", Lane::Read, Some(120)),
+            ("dialog list", Lane::Read, Some(120)),
+            ("dialog pin", Lane::Mutate, Some(30)),
+        ];
+        let routes = dialog_serve_routes();
+        assert_eq!(routes.len(), expected.len());
+        for (op, lane, secs) in expected {
+            let route = routes
+                .iter()
+                .find(|r| r.op == *op)
+                .unwrap_or_else(|| panic!("route missing for {op}"));
+            assert_eq!(route.lane, *lane, "lane for {op}");
+            assert_eq!(
+                route.timeout,
+                secs.map(std::time::Duration::from_secs),
+                "timeout for {op}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn drafts_rejects_over_limit() {

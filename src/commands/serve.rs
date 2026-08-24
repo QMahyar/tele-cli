@@ -1009,6 +1009,12 @@ mod tests {
     #[test]
     fn routes_table_is_locked_command_path_form() {
         let expected = [
+            "dialog archive",
+            "dialog delete",
+            "dialog draft",
+            "dialog drafts",
+            "dialog list",
+            "dialog pin",
             "msg click",
             "msg delete",
             "msg download",
@@ -1022,15 +1028,27 @@ mod tests {
             "msg send",
             "msg typing",
             "msg vote",
+            "topic close",
+            "topic create",
+            "topic delete",
+            "topic edit",
+            "topic list",
+            "topic pin",
+            "topic reopen",
         ];
         let mut actual: Vec<String> = serve_op_routes().iter().map(|r| r.op.to_string()).collect();
         actual.sort_unstable();
         assert_eq!(actual, expected);
-        assert!(serve_op_routes().iter().all(|r| r.op.starts_with("msg ")
-            && !r.op.contains('.')
-            && r.op
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == ' ' || c.is_ascii_digit())));
+        let group_ok = |op: &str| {
+            op.starts_with("msg ") || op.starts_with("dialog ") || op.starts_with("topic ")
+        };
+        assert!(serve_op_routes().iter().all(|r| {
+            group_ok(r.op)
+                && !r.op.contains('.')
+                && r.op
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == ' ' || c.is_ascii_digit())
+        }));
     }
 
     #[test]
@@ -1404,6 +1422,12 @@ mod tests {
     #[test]
     fn lane_and_timeout_table_is_locked() {
         let expected: &[(&str, Lane, Option<u64>)] = &[
+            ("dialog archive", Lane::Mutate, Some(30)),
+            ("dialog delete", Lane::Mutate, Some(30)),
+            ("dialog draft", Lane::Mutate, Some(30)),
+            ("dialog drafts", Lane::Read, Some(120)),
+            ("dialog list", Lane::Read, Some(120)),
+            ("dialog pin", Lane::Mutate, Some(30)),
             ("msg click", Lane::Mutate, Some(30)),
             ("msg delete", Lane::Mutate, Some(30)),
             ("msg download", Lane::Read, None),
@@ -1417,6 +1441,13 @@ mod tests {
             ("msg send", Lane::Mutate, Some(30)),
             ("msg typing", Lane::Mutate, Some(30)),
             ("msg vote", Lane::Mutate, Some(30)),
+            ("topic close", Lane::Mutate, Some(30)),
+            ("topic create", Lane::Mutate, Some(30)),
+            ("topic delete", Lane::Mutate, Some(30)),
+            ("topic edit", Lane::Mutate, Some(30)),
+            ("topic list", Lane::Read, Some(120)),
+            ("topic pin", Lane::Mutate, Some(30)),
+            ("topic reopen", Lane::Mutate, Some(30)),
         ];
         assert_eq!(serve_op_routes().len(), expected.len());
         for (op, lane, secs) in expected {
