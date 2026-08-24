@@ -344,6 +344,7 @@ pub struct ClickArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SendParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -430,6 +431,7 @@ impl From<&SendParams> for SendArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct EditParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -462,6 +464,7 @@ impl From<&EditParams> for EditArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeleteParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -499,6 +502,7 @@ impl From<&DeleteParams> for DeleteArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ForwardParams {
     #[serde(default)]
     pub(crate) from: String,
@@ -532,6 +536,7 @@ impl From<&ForwardParams> for ForwardArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PinParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -576,6 +581,7 @@ impl From<&PinParams> for PinArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct GetParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -616,6 +622,7 @@ impl From<&GetParams> for GetArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ReadParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -649,6 +656,7 @@ impl From<&ReadParams> for ReadArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ReactParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -684,6 +692,7 @@ impl From<&ReactParams> for ReactArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SearchParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -721,6 +730,7 @@ impl From<&SearchParams> for SearchArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DownloadParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -760,6 +770,7 @@ impl From<&DownloadParams> for DownloadArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct VoteParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -792,6 +803,7 @@ impl From<&VoteParams> for VoteArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TypingParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -820,6 +832,7 @@ impl From<&TypingParams> for TypingArgs {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ClickParams {
     #[serde(default)]
     pub(crate) chat: String,

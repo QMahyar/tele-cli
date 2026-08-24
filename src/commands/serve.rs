@@ -628,6 +628,7 @@ async fn serve_connection(
                     continue;
                 }
                 let mut row = crate::serialize::message_to_json(message)?;
+                crate::serialize::enrich_message_row(&mut row, message);
                 crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
                 emit(&event_row(kind, name, chat_id, None, Some(row)))?;
             }
@@ -852,6 +853,19 @@ mod tests {
         .unwrap_err();
         assert_eq!(err["type"], "ServeError");
         assert!(err["message"].as_str().unwrap().contains("u32"));
+    }
+
+    #[test]
+    fn unknown_param_yields_serve_error_naming_field() {
+        let err = plan_for(
+            "msg send",
+            serde_json::json!({"chat": "@x", "mesage": "typo"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("mesage"), "{msg}");
     }
 
     #[test]

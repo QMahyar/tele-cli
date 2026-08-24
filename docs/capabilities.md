@@ -31,7 +31,8 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 |---|---|---|---|---|---|
 | msg.send | Send text | `messages.sendMessage` | `send_message` | `tele msg send` | done |
 | msg.schedule | Scheduled send | `schedule_date` | raw (no friendly param) | `tele msg send --schedule` | done |
-| msg.schedule-repeat | Repeating scheduled | absent from layer 227 (no recurring-schedule method; `messages.SendScheduledMessages` sends existing scheduled messages now) | raw | `tele raw` messages.SendScheduledMessages | want |
+| msg.schedule-repeat | Repeating scheduled | absent from layer 227 (no recurring-schedule method; `messages.SendScheduledMessages` sends existing scheduled messages now) | raw | `tele raw` messages.SendScheduledMessages | later (upstream-blocked) |
+| msg.password-change-remove-remote | Password change/remove over RPC with SRP proof | server rejects well-formed TL (wire-dump verified; see round 5 notes) | grammers_crypto SRP + local PH2 | `tele account password --change/--remove` shipped but upstream-blocked until serialization/handshake expectations change | later (upstream-blocked) |
 | msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` | done |
 | msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` (partial reporting + `--self-only`) | done |
 | msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` (always silent via grammers; no `--silent` flag) | done |
