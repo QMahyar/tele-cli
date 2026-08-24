@@ -102,9 +102,31 @@ pub(crate) struct OpRoute {
     pub(crate) op: &'static str,
     pub(crate) lane: Lane,
     pub(crate) timeout: Option<Duration>,
+    pub(crate) read_only: bool,
+    pub(crate) destructive: bool,
+    pub(crate) retry_safe: bool,
+    pub(crate) summary: &'static str,
     pub(crate) planner: Planner,
     pub(crate) runner: ServeRunner,
 }
+
+const INLINE_OPS: &[(&str, &str, bool, bool, bool)] = &[
+    (
+        "ops.list",
+        "list every serve op with its hints and summary",
+        true,
+        false,
+        true,
+    ),
+    ("ping", "liveness probe returning pong", true, false, true),
+    (
+        "stream.resync",
+        "restart the update stream with catch-up replay",
+        true,
+        false,
+        true,
+    ),
+];
 
 enum ConnExit {
     Eof,
@@ -343,11 +365,15 @@ macro_rules! serve_runner {
 
 #[macro_export]
 macro_rules! serve_route {
-    ($op:literal, $lane:expr, $timeout:expr, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr) => {
+    ($op:literal, $lane:expr, $timeout:expr, $read_only:expr, $destructive:expr, $retry_safe:expr, $summary:literal, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr) => {
         $crate::commands::serve::OpRoute {
             op: $op,
             lane: $lane,
             timeout: $timeout,
+            read_only: $read_only,
+            destructive: $destructive,
+            retry_safe: $retry_safe,
+            summary: $summary,
             planner: |op: &str, raw: serde_json::Value| {
                 let parsed: $params = $crate::commands::serve::prep(op, raw.clone())?;
                 let args: $args = (&parsed).into();
@@ -404,7 +430,7 @@ fn not_implemented(op: &str) -> serde_json::Value {
     let ops = known_op_names();
     err_json(
         "NotImplemented",
-        format!("unknown op {op}; supported ops: ping, stream.resync, {ops}"),
+        format!("unknown op {op}; supported ops: ping, stream.resync, ops.list, {ops}"),
     )
 }
 
@@ -462,13 +488,93 @@ fn job_queue(receiver: tokio::sync::mpsc::Receiver<Job>) -> JobQueue {
     std::sync::Arc::new(tokio::sync::Mutex::new(receiver))
 }
 
-fn validate_resync_params(params: &serde_json::Value) -> Result<(), serde_json::Value> {
+fn validate_no_params(op: &str, params: &serde_json::Value) -> Result<(), serde_json::Value> {
     let empty = params.as_object().map(|o| o.is_empty()).unwrap_or(false);
     if empty {
         Ok(())
     } else {
-        Err(err_json("ServeError", "stream.resync takes no parameters"))
+        Err(err_json("ServeError", format!("{op} takes no parameters")))
     }
+}
+
+fn op_group(op: &str) -> &str {
+    if op.contains('.') {
+        "transport"
+    } else {
+        op.split(' ').next().unwrap_or(op)
+    }
+}
+
+pub(crate) fn ops_list_data() -> serde_json::Value {
+    let mut rows: Vec<(String, serde_json::Value)> = Vec::new();
+    for r in serve_op_routes() {
+        rows.push((
+            r.op.to_string(),
+            serde_json::json!({
+                "op": r.op,
+                "summary": r.summary,
+                "group": op_group(r.op),
+                "read_only": r.read_only,
+                "destructive": r.destructive,
+                "retry_safe": r.retry_safe,
+            }),
+        ));
+    }
+    for (op, summary, read_only, destructive, retry_safe) in INLINE_OPS {
+        rows.push((
+            (*op).to_string(),
+            serde_json::json!({
+                "op": op,
+                "summary": summary,
+                "group": "transport",
+                "read_only": read_only,
+                "destructive": destructive,
+                "retry_safe": retry_safe,
+            }),
+        ));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    serde_json::json!({ "ops": rows.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })
+}
+
+fn confirm_requested(raw: &serde_json::Value) -> bool {
+    matches!(raw.get("confirm"), Some(serde_json::Value::Bool(true)))
+}
+
+fn strip_confirm(raw: &mut serde_json::Value) {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.remove("confirm");
+    }
+}
+
+fn confirm_required_error(op: &str, would: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "ConfirmRequired",
+        "message": format!("op {op} is destructive and requires confirm:true"),
+        "would": would,
+    })
+}
+
+fn apply_confirm_gate(
+    op: &str,
+    destructive: bool,
+    planner: Planner,
+    raw: &mut serde_json::Value,
+) -> Result<(), serde_json::Value> {
+    if destructive && !confirm_requested(raw) {
+        let mut probe = raw.clone();
+        if let Some(obj) = probe.as_object_mut() {
+            obj.insert("dry_run".to_string(), serde_json::Value::Bool(true));
+        }
+        let would = match planner(op, probe) {
+            Ok(Plan::DryRun(data)) => data,
+            _ => serde_json::json!({}),
+        };
+        strip_confirm(raw);
+        return Err(confirm_required_error(op, would));
+    }
+    strip_confirm(raw);
+    Ok(())
 }
 
 async fn dispatch_action(
@@ -484,16 +590,26 @@ async fn dispatch_action(
         return emit(&response_ok(id, serde_json::json!({ "pong": true })));
     }
     if op == "stream.resync" {
-        if let Err(error) = validate_resync_params(&params) {
+        if let Err(error) = validate_no_params(op, &params) {
             return emit(&response_err(Some(id), error));
         }
         *resync_requested = true;
         return emit(&response_ok(id, serde_json::json!({ "resync": "started" })));
     }
+    if op == "ops.list" {
+        if let Err(error) = validate_no_params(op, &params) {
+            return emit(&response_err(Some(id), error));
+        }
+        return emit(&response_ok(id, ops_list_data()));
+    }
     let Some(route) = find_route(op) else {
         return emit(&response_err(Some(id), not_implemented(op)));
     };
-    match (route.planner)(op, params) {
+    let mut raw = params;
+    if let Err(error) = apply_confirm_gate(op, route.destructive, route.planner, &mut raw) {
+        return emit(&response_err(Some(id), error));
+    }
+    match (route.planner)(op, raw) {
         Err(error) => emit(&response_err(Some(id), error)),
         Ok(Plan::DryRun(data)) => emit(&response_ok(id, data)),
         Ok(Plan::Execute(raw)) => {
@@ -994,10 +1110,21 @@ mod tests {
 
     #[test]
     fn resync_rejects_non_empty_params_with_serve_error() {
-        assert!(validate_resync_params(&serde_json::json!({})).is_ok());
-        let err = validate_resync_params(&serde_json::json!({"force": true})).unwrap_err();
+        assert!(validate_no_params("stream.resync", &serde_json::json!({})).is_ok());
+        let err =
+            validate_no_params("stream.resync", &serde_json::json!({"force": true})).unwrap_err();
         assert_eq!(err["type"], "ServeError");
         assert!(err["message"].as_str().unwrap().contains("no parameters"));
+    }
+
+    #[test]
+    fn ops_list_rejects_non_empty_params_with_serve_error() {
+        assert!(validate_no_params("ops.list", &serde_json::json!({})).is_ok());
+        let err = validate_no_params("ops.list", &serde_json::json!({"lane": "read"})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("ops.list"), "{msg}");
+        assert!(msg.contains("no parameters"), "{msg}");
     }
 
     fn plan_for(op: &str, params: serde_json::Value) -> Result<Plan, serde_json::Value> {
@@ -1088,6 +1215,7 @@ mod tests {
         assert!(find_route("chat join").is_none());
         assert!(find_route("ping").is_none());
         assert!(find_route("stream.resync").is_none());
+        assert!(find_route("ops.list").is_none());
         let err = not_implemented("msg.send");
         assert_eq!(err["type"], "NotImplemented");
         let msg = err["message"].as_str().unwrap();
@@ -1095,6 +1223,7 @@ mod tests {
         assert!(msg.contains("msg send"), "{msg}");
         assert!(msg.contains("ping"), "{msg}");
         assert!(msg.contains("stream.resync"), "{msg}");
+        assert!(msg.contains("ops.list"), "{msg}");
     }
 
     #[test]
@@ -1513,6 +1642,288 @@ mod tests {
                 "timeout for {op}"
             );
         }
+    }
+
+    #[test]
+    fn route_hints_table_is_locked() {
+        let expected: &[(&str, bool, bool, bool)] = &[
+            ("contact add", false, false, true),
+            ("contact block", false, false, true),
+            ("contact list", true, false, true),
+            ("contact remove", false, true, true),
+            ("contact unblock", false, false, true),
+            ("dialog archive", false, false, true),
+            ("dialog delete", false, true, true),
+            ("dialog draft", false, false, true),
+            ("dialog drafts", true, false, true),
+            ("dialog list", true, false, true),
+            ("dialog pin", false, false, true),
+            ("msg click", false, false, false),
+            ("msg delete", false, true, true),
+            ("msg download", true, false, false),
+            ("msg edit", false, false, true),
+            ("msg forward", false, false, false),
+            ("msg get", true, false, true),
+            ("msg pin", false, false, true),
+            ("msg read", false, false, true),
+            ("msg react", false, false, true),
+            ("msg search", true, false, true),
+            ("msg send", false, false, false),
+            ("msg typing", false, false, true),
+            ("msg vote", false, false, false),
+            ("privacy get", true, false, true),
+            ("privacy set", false, false, true),
+            ("profile emoji-status", false, false, true),
+            ("profile get", true, false, true),
+            ("profile photo", false, false, true),
+            ("profile set", false, false, true),
+            ("raw", false, false, false),
+            ("sticker install", false, false, true),
+            ("sticker list", true, false, true),
+            ("sticker remove", false, true, true),
+            ("sticker search", true, false, true),
+            ("sticker show", true, false, true),
+            ("story delete", false, true, true),
+            ("story list", true, false, true),
+            ("story pin", false, false, true),
+            ("story read", false, false, true),
+            ("story send", false, false, true),
+            ("story unpin", false, false, true),
+            ("topic close", false, false, true),
+            ("topic create", false, false, true),
+            ("topic delete", false, true, true),
+            ("topic edit", false, false, true),
+            ("topic list", true, false, true),
+            ("topic pin", false, false, true),
+            ("topic reopen", false, false, true),
+        ];
+        let mut destructive: Vec<&str> = Vec::new();
+        let mut retry_unsafe: Vec<&str> = Vec::new();
+        for (op, read_only, is_destructive, retry_safe) in expected {
+            let route = route_for(op);
+            assert_eq!(route.read_only, *read_only, "read_only for {op}");
+            assert_eq!(route.destructive, *is_destructive, "destructive for {op}");
+            assert_eq!(route.retry_safe, *retry_safe, "retry_safe for {op}");
+            if *is_destructive {
+                destructive.push(op);
+            }
+            if !*retry_safe {
+                retry_unsafe.push(op);
+            }
+        }
+        assert_eq!(
+            destructive,
+            vec![
+                "contact remove",
+                "dialog delete",
+                "msg delete",
+                "sticker remove",
+                "story delete",
+                "topic delete"
+            ]
+        );
+        assert_eq!(
+            retry_unsafe,
+            vec![
+                "msg click",
+                "msg download",
+                "msg forward",
+                "msg send",
+                "msg vote",
+                "raw"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_route_carries_non_empty_summary() {
+        for route in serve_op_routes() {
+            assert!(!route.summary.is_empty(), "summary missing on {}", route.op);
+            assert!(
+                route.summary.chars().next().unwrap().is_ascii_lowercase(),
+                "summary not lowercase sentence on {}: {}",
+                route.op,
+                route.summary
+            );
+        }
+    }
+
+    fn ops_list_rows() -> Vec<serde_json::Value> {
+        ops_list_data()["ops"]
+            .as_array()
+            .cloned()
+            .expect("ops array")
+    }
+
+    #[test]
+    fn ops_list_covers_all_routes_plus_transport_inline_sorted() {
+        let rows = ops_list_rows();
+        let routed: Vec<String> = serve_op_routes().iter().map(|r| r.op.to_string()).collect();
+        assert_eq!(rows.len(), routed.len() + INLINE_OPS.len());
+        let names: Vec<String> = rows
+            .iter()
+            .map(|r| r["op"].as_str().unwrap().to_string())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(names, sorted, "ops.list must be sorted and unique");
+        for op in &routed {
+            assert!(names.contains(op), "ops.list missing routed op {op}");
+        }
+        for (op, _, _, _, _) in INLINE_OPS {
+            let name = op.to_string();
+            assert!(names.contains(&name), "ops.list missing inline op {op}");
+        }
+    }
+
+    #[test]
+    fn ops_list_row_hints_match_routes_and_transport_group() {
+        let by_op: std::collections::HashMap<String, serde_json::Value> = ops_list_rows()
+            .into_iter()
+            .map(|r| (r["op"].as_str().unwrap().to_string(), r))
+            .collect();
+        let spot = |op: &str, ro: bool, destr: bool, retry: bool, group: &str| {
+            let row = &by_op[op];
+            assert_eq!(row["read_only"], ro, "{op} read_only");
+            assert_eq!(row["destructive"], destr, "{op} destructive");
+            assert_eq!(row["retry_safe"], retry, "{op} retry_safe");
+            assert_eq!(row["group"], group, "{op} group");
+            assert!(!row["summary"].as_str().unwrap().is_empty(), "{op} summary");
+        };
+        spot("dialog delete", false, true, true, "dialog");
+        spot("dialog list", true, false, true, "dialog");
+        spot("msg delete", false, true, true, "msg");
+        spot("msg send", false, false, false, "msg");
+        spot("raw", false, false, false, "raw");
+        spot("contact remove", false, true, true, "contact");
+        spot("topic delete", false, true, true, "topic");
+        spot("story delete", false, true, true, "story");
+        spot("sticker remove", false, true, true, "sticker");
+        spot("ping", true, false, true, "transport");
+        spot("stream.resync", true, false, true, "transport");
+        spot("ops.list", true, false, true, "transport");
+    }
+
+    #[test]
+    fn destructive_without_confirm_yields_confirm_required_with_dry_would() {
+        let params = serde_json::json!({"chat": "@game", "all": true});
+        let mut raw = params.clone();
+        let err = apply_confirm_gate(
+            "msg delete",
+            true,
+            route_for("msg delete").planner,
+            &mut raw,
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ConfirmRequired");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("msg delete"), "{msg}");
+        assert!(msg.contains("requires confirm:true"), "{msg}");
+        let dry_via_planner = match plan_for(
+            "msg delete",
+            serde_json::json!({"chat": "@game", "all": true, "dry_run": true}),
+        )
+        .unwrap()
+        {
+            Plan::DryRun(data) => data,
+            other => panic!("expected dry run plan, got {other:?}"),
+        };
+        assert_eq!(err["would"], dry_via_planner);
+        assert_eq!(err["would"]["would"], "delete all messages in chat @game");
+    }
+
+    #[test]
+    fn destructive_with_confirm_executes_and_confirm_is_stripped() {
+        let mut raw = serde_json::json!({"chat": "@game", "all": true, "confirm": true});
+        apply_confirm_gate(
+            "msg delete",
+            true,
+            route_for("msg delete").planner,
+            &mut raw,
+        )
+        .unwrap_or_else(|e| panic!("gate should pass with confirm, got {e}"));
+        assert!(raw.get("confirm").is_none(), "confirm leaked into params");
+        match plan_for("msg delete", raw).unwrap() {
+            Plan::Execute(_) => {}
+            other => panic!("expected execute plan after confirm, got {other:?}"),
+        }
+
+        let mut raw = serde_json::json!({"chat": "@game", "all": true, "confirm": false});
+        let gate = apply_confirm_gate(
+            "msg delete",
+            true,
+            route_for("msg delete").planner,
+            &mut raw,
+        );
+        assert!(gate.is_err(), "confirm:false must not satisfy the gate");
+    }
+
+    #[test]
+    fn destructive_dry_run_still_requires_confirm_first() {
+        let mut raw = serde_json::json!({"chat": "@game", "all": true, "dry_run": true});
+        let err = apply_confirm_gate(
+            "msg delete",
+            true,
+            route_for("msg delete").planner,
+            &mut raw,
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ConfirmRequired");
+
+        let mut raw =
+            serde_json::json!({"chat": "@game", "all": true, "dry_run": true, "confirm": true});
+        apply_confirm_gate(
+            "msg delete",
+            true,
+            route_for("msg delete").planner,
+            &mut raw,
+        )
+        .unwrap();
+        assert!(raw.get("confirm").is_none());
+        match plan_for("msg delete", raw).unwrap() {
+            Plan::DryRun(data) => assert_eq!(data["dry_run"], true),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirm_key_never_leaks_into_params_parsing() {
+        let mut raw = serde_json::json!({"chat": "@x", "text": "hi", "confirm": true});
+        apply_confirm_gate("msg send", false, route_for("msg send").planner, &mut raw).unwrap();
+        assert!(raw.get("confirm").is_none());
+        match plan_for("msg send", raw).unwrap() {
+            Plan::Execute(_) => {}
+            other => panic!("expected execute plan, got {other:?}"),
+        }
+
+        let mut raw = serde_json::json!({"chat": "@x", "id": 1, "text": "t", "confirm": true});
+        apply_confirm_gate("msg edit", false, route_for("msg edit").planner, &mut raw).unwrap();
+        assert!(raw.get("confirm").is_none());
+
+        let unstripped = serde_json::json!({"chat": "@x", "text": "hi", "confirm": true});
+        let err = plan_for("msg send", unstripped).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err["message"].as_str().unwrap().contains("unknown field"));
+    }
+
+    #[test]
+    fn non_destructive_ops_pass_gate_unchanged_without_confirm() {
+        let mut raw = serde_json::json!({"chat": "@game", "id": 5, "reaction": "+1"});
+        let before = raw.clone();
+        apply_confirm_gate("msg react", false, route_for("msg react").planner, &mut raw).unwrap();
+        assert_eq!(raw, before);
+
+        let mut raw = serde_json::json!({"chat": "@game"});
+        let before = raw.clone();
+        apply_confirm_gate(
+            "dialog archive",
+            false,
+            route_for("dialog archive").planner,
+            &mut raw,
+        )
+        .unwrap();
+        assert_eq!(raw, before);
     }
 
     fn scripted_job(id: u64, delay_ms: u64, timeout: Option<Duration>) -> Job {
