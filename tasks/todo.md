@@ -324,12 +324,12 @@ Goal: tele serve becomes the full account-control surface for agent apps — obs
 
 ### Phase 0 execution plan — delegated slices (manager merges; 2026-08-24)
 - [x] **S-exec** MERGED (5cb6dc7, 1200 green) = 0d two-lane executor. Branch feat/serve-executor, worktree tele-wt\exec. ServeRunner -> 'static shares; mutations serial lane + reads pool(2); responses via mpsc single-writer stdout; bounded stdin chan(~64); per-op lane+timeout in OpRoute (get/search/download = Read/long, rest = Mutate/30s); ping inline. No AbortOnDrop on serve task.
-- [ ] **S-meta** (after S-exec) = 0e + 0f. Branch feat/serve-proto-meta. Monotonic event seq + stream.resync op (catch_up rebuild; dedupe already suppresses replays) + error.param parsed from serde errors in prep().
+- [x] **S-meta** MERGED (30570c2, 1207 green) = 0e + 0f. Branch feat/serve-proto-meta. Monotonic event seq + stream.resync op (catch_up rebuild; dedupe already suppresses replays) + error.param parsed from serde errors in prep().
 - [ ] **S-selfdesc** (after S-meta) = 0g + 0h. Branch feat/serve-selfdescribe. ops.list entries {op,summary,group,read_only,destructive,retry_safe,params_schema,result_example}; hints per route row; confirm:true planner dance for Tier-1 destructive (msg delete all:true, dialog delete, topic delete, story delete, contact remove, sticker remove, chat kick/leave) -> ConfirmRequired envelope with would-payload.
-- [ ] **P1a/P1b/P1c + P2-chat** (parallel after S-selfdesc; disjoint module files, tiny route-row conflicts resolved at merge):
-  - P1a dialog+topic (feat/srv-dialog-topic): list/drafts/draft/pin/archive/delete(C)/create/close/reopen/edit/delete(C)/pin
-  - P1b profile+privacy+contact (feat/srv-profile-contact): get/set/photo/emoji-status/get/set/list/add/remove(C)/block/unblock
-  - P1c stickers+stories+raw (feat/srv-stickers-stories-raw): list/search/show/install/remove(C)/send/read/delete(C)/pin/unpin + raw <method> passthrough
+- [x] **P1a** MERGED (ff9cd79) dialog+topic 13 ops`n- [x] **P1b** MERGED (7986802) profile+privacy+contact 11 ops`n- [x] **P1c** MERGED (f59b727) stickers+stories+raw 12 ops`n- Merged as a0088f1/a0088f1/454a587 with locked-table unions; 1269 green. P2-chat below still pending:
+  - DONE P1a dialog+topic (feat/srv-dialog-topic): list/drafts/draft/pin/archive/delete(C)/create/close/reopen/edit/delete(C)/pin
+  - DONE P1b profile+privacy+contact (feat/srv-profile-contact): get/set/photo/emoji-status/get/set/list/add/remove(C)/block/unblock
+  - DONE P1c stickers+stories+raw (feat/srv-stickers-stories-raw): list/search/show/install/remove(C)/send/read/delete(C)/pin/unpin + raw <method> passthrough
   - P2-chat chat group (feat/srv-chat): join/leave(C)/create/settings/edit/link/kick(C)/admin/invite/requests/admin-log/stats/participants
 - [ ] **S-acct** (last, riskiest) = account reads guarded: status/ttl get+set/sessions list; takeout start/finish/status only if state files proven safe beside live stream; export stays CLI-only. login/logout/remove/password/delete NEVER over pipe.
 - [ ] **S-docs** (near end) = cli-contract.md full serve section + capabilities.md annotations ("also exposed as serve op") + matrix row updates.
