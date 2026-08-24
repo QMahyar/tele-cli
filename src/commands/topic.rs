@@ -21,7 +21,7 @@ pub enum TopicCmd {
     Pin(LifecycleArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct CreateArgs {
     #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
     chat: String,
@@ -34,7 +34,7 @@ pub struct CreateArgs {
     emoji: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ListArgs {
     #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
     chat: String,
@@ -42,7 +42,7 @@ pub struct ListArgs {
     limit: u32,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct LifecycleArgs {
     #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
     chat: String,
@@ -50,7 +50,7 @@ pub struct LifecycleArgs {
     topic: String,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct EditArgs {
     #[arg(long, help = "forum group: @username, numeric ID, +phone, or me")]
     chat: String,
@@ -94,51 +94,62 @@ pub async fn run(cmd: TopicCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let icon_emoji_id = validate_emoji(args.emoji.as_deref())?;
+    validate_emoji(args.emoji.as_deref())?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = args.chat.clone();
-        let title = args.title.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "chat": target,
-                    "title": title,
-                    "would": format!("create topic \"{title}\" in chat {target}")
-                }));
+                return Ok(create_dry_run_payload(&args.chat, &args.title));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let _: tl::enums::Updates = guard
-                .client
-                .invoke(&tl::functions::messages::CreateForumTopic {
-                    title_missing: false,
-                    peer,
-                    title: title.clone(),
-                    icon_color: None,
-                    icon_emoji_id,
-                    random_id: rand_seed(),
-                    send_as: None,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            Ok(serde_json::json!({
-                "chat": target,
-                "title": title,
-                "ok": true,
-            }))
+            topic_create_core(&guard.shares(), CreateParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+fn create_dry_run_payload(target: &str, title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": target,
+        "title": title,
+        "would": format!("create topic \"{title}\" in chat {target}")
+    })
+}
+
+pub(crate) async fn topic_create_core(
+    shares: &crate::client::ServeShares,
+    params: CreateParams,
+) -> TeleResult<serde_json::Value> {
+    let icon_emoji_id = validate_emoji(params.emoji.as_deref())?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let _: tl::enums::Updates = shares
+        .client
+        .invoke(&tl::functions::messages::CreateForumTopic {
+            title_missing: false,
+            peer,
+            title: params.title.clone(),
+            icon_color: None,
+            icon_emoji_id,
+            random_id: rand_seed(),
+            send_as: None,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "title": params.title,
+        "ok": true,
+    }))
 }
 
 async fn simple_action(
@@ -147,121 +158,151 @@ async fn simple_action(
     kind: ActionKind,
 ) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
-    let topic_id = parse_topic_id(&args.topic)?;
+    parse_topic_id(&args.topic)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let chat_target = args.chat.clone();
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = chat_target.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(lifecycle_dry_run_payload(
-                    &chat_target,
-                    topic_id,
-                    kind.name(),
-                ));
+                return lifecycle_serve_dry_run_kind(&args, kind.name());
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            match kind {
-                ActionKind::Close | ActionKind::Reopen => {
-                    let _: tl::enums::Updates = guard
-                        .client
-                        .invoke(&tl::functions::messages::EditForumTopic {
-                            peer,
-                            topic_id,
-                            title: None,
-                            icon_emoji_id: None,
-                            closed: Some(kind == ActionKind::Close),
-                            hidden: None,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                }
-                ActionKind::Delete => {
-                    let _: tl::enums::messages::AffectedHistory = guard
-                        .client
-                        .invoke(&tl::functions::messages::DeleteTopicHistory {
-                            peer,
-                            top_msg_id: topic_id,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                }
-                ActionKind::Pin => {
-                    let _: tl::enums::Updates = guard
-                        .client
-                        .invoke(&tl::functions::messages::UpdatePinnedForumTopic {
-                            peer,
-                            topic_id,
-                            pinned: true,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                }
-            }
-            Ok(serde_json::json!({
-                "chat": chat_target,
-                "topic": topic_id,
-                "ok": true,
-            }))
+            topic_action_core(&guard.shares(), LifecycleParams::from(&args), kind).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) async fn topic_close_core(
+    shares: &crate::client::ServeShares,
+    params: LifecycleParams,
+) -> TeleResult<serde_json::Value> {
+    topic_action_core(shares, params, ActionKind::Close).await
+}
+
+pub(crate) async fn topic_reopen_core(
+    shares: &crate::client::ServeShares,
+    params: LifecycleParams,
+) -> TeleResult<serde_json::Value> {
+    topic_action_core(shares, params, ActionKind::Reopen).await
+}
+
+pub(crate) async fn topic_pin_core(
+    shares: &crate::client::ServeShares,
+    params: LifecycleParams,
+) -> TeleResult<serde_json::Value> {
+    topic_action_core(shares, params, ActionKind::Pin).await
+}
+
+pub(crate) async fn topic_delete_core(
+    shares: &crate::client::ServeShares,
+    params: LifecycleParams,
+) -> TeleResult<serde_json::Value> {
+    topic_action_core(shares, params, ActionKind::Delete).await
+}
+
+async fn topic_action_core(
+    shares: &crate::client::ServeShares,
+    params: LifecycleParams,
+    kind: ActionKind,
+) -> TeleResult<serde_json::Value> {
+    let topic_id = parse_topic_id(&params.topic)?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    match kind {
+        ActionKind::Close | ActionKind::Reopen => {
+            let _: tl::enums::Updates = shares
+                .client
+                .invoke(&tl::functions::messages::EditForumTopic {
+                    peer,
+                    topic_id,
+                    title: None,
+                    icon_emoji_id: None,
+                    closed: Some(kind == ActionKind::Close),
+                    hidden: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        ActionKind::Delete => {
+            let _: tl::enums::messages::AffectedHistory = shares
+                .client
+                .invoke(&tl::functions::messages::DeleteTopicHistory {
+                    peer,
+                    top_msg_id: topic_id,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        ActionKind::Pin => {
+            let _: tl::enums::Updates = shares
+                .client
+                .invoke(&tl::functions::messages::UpdatePinnedForumTopic {
+                    peer,
+                    topic_id,
+                    pinned: true,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+    }
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "topic": topic_id,
+        "ok": true,
+    }))
+}
+
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     require_chat_target(&args.chat, "chat")?;
-    let topic_id = parse_topic_id(&args.topic)?;
-    validate_edit(args.title.as_deref(), args.closed)?;
+    parse_topic_id(&args.topic)?;
+    validate_edit_changes(args.title.as_deref(), args.closed)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let chat_target = args.chat.clone();
-    let title = args.title.clone();
-    let closed = args.closed;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let chat_target = chat_target.clone();
-        let title = title.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(edit_dry_run_payload(
-                    &chat_target,
-                    topic_id,
-                    title.as_deref(),
-                    closed,
-                ));
+                return edit_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let request = build_edit_request(peer, topic_id, title.as_deref(), closed);
-            let _: tl::enums::Updates = guard
-                .client
-                .invoke(&request)
-                .await
-                .map_err(tele_invocation)?;
-            Ok(edit_report(
-                &chat_target,
-                topic_id,
-                title.as_deref(),
-                closed,
-            ))
+            topic_edit_core(&guard.shares(), EditParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn topic_edit_core(
+    shares: &crate::client::ServeShares,
+    params: EditParams,
+) -> TeleResult<serde_json::Value> {
+    let topic_id = parse_topic_id(&params.topic)?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let request = build_edit_request(peer, topic_id, params.title.as_deref(), params.closed);
+    let _: tl::enums::Updates = shares
+        .client
+        .invoke(&request)
+        .await
+        .map_err(tele_invocation)?;
+    Ok(edit_report(
+        &params.chat,
+        topic_id,
+        params.title.as_deref(),
+        params.closed,
+    ))
 }
 
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -270,53 +311,23 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
-    let limit = args.limit;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = args.chat.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(list_dry_run_payload(&target));
+                return Ok(list_dry_run_payload(&args.chat));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let chat =
-                entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
-            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            let topics = {
-                let guard_ref = &guard;
-                let peer_ref = &peer;
-                collect_forum_topics(limit, move |cursor, page_limit| async move {
-                    let results: tl::enums::messages::ForumTopics = guard_ref
-                        .client
-                        .invoke(&tl::functions::messages::GetForumTopics {
-                            peer: (*peer_ref).clone(),
-                            q: None,
-                            offset_date: cursor.date,
-                            offset_id: cursor.message_id,
-                            offset_topic: cursor.topic_id,
-                            limit: page_limit as i32,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                    let tl::enums::messages::ForumTopics::Topics(topics) = results;
-                    Ok(ForumTopicsPage {
-                        topics: topics.topics,
-                    })
-                })
-            }
-            .await?;
-            let mut rows = Vec::new();
-            for topic in topics {
-                if let Some(row) = topic_row(&topic) {
-                    rows.push(row);
-                }
-            }
+            let result = topic_list_core(&guard.shares(), ListParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
-                let table_rows: Vec<Vec<String>> = rows
+                let empty = Vec::new();
+                let table_rows: Vec<Vec<String>> = result["topics"]
+                    .as_array()
+                    .unwrap_or(&empty)
                     .iter()
                     .map(|r| {
                         vec![
@@ -335,11 +346,50 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     &table_rows,
                 )?;
             }
-            Ok(serde_json::json!({"topics": rows}))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn topic_list_core(
+    shares: &crate::client::ServeShares,
+    params: ListParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let topics = {
+        let client_ref = &shares.client;
+        let peer_ref = &peer;
+        collect_forum_topics(params.limit, move |cursor, page_limit| async move {
+            let results: tl::enums::messages::ForumTopics = client_ref
+                .invoke(&tl::functions::messages::GetForumTopics {
+                    peer: (*peer_ref).clone(),
+                    q: None,
+                    offset_date: cursor.date,
+                    offset_id: cursor.message_id,
+                    offset_topic: cursor.topic_id,
+                    limit: page_limit as i32,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            let tl::enums::messages::ForumTopics::Topics(topics) = results;
+            Ok(ForumTopicsPage {
+                topics: topics.topics,
+            })
+        })
+    }
+    .await?;
+    let mut rows = Vec::new();
+    for topic in topics {
+        if let Some(row) = topic_row(&topic) {
+            rows.push(row);
+        }
+    }
+    Ok(serde_json::json!({"topics": rows}))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -477,7 +527,7 @@ fn parse_topic_id(raw: &str) -> TeleResult<i32> {
     Ok(id)
 }
 
-fn validate_edit(title: Option<&str>, closed: Option<bool>) -> TeleResult<()> {
+fn validate_edit_changes(title: Option<&str>, closed: Option<bool>) -> TeleResult<()> {
     if title.is_none() && closed.is_none() {
         return Err(TeleError::Usage(
             "nothing to change: pass --title and/or --closed".to_string(),
@@ -561,14 +611,537 @@ fn topic_row(topic: &tl::enums::ForumTopic) -> Option<serde_json::Value> {
     }
 }
 
-pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+fn default_topic_limit() -> u32 {
+    20
 }
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CreateParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) title: String,
+    pub(crate) emoji: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&CreateArgs> for CreateParams {
+    fn from(a: &CreateArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            title: a.title.clone(),
+            emoji: a.emoji.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&CreateParams> for CreateArgs {
+    fn from(p: &CreateParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            title: p.title.clone(),
+            emoji: p.emoji.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ListParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default = "default_topic_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ListArgs> for ListParams {
+    fn from(a: &ListArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ListParams> for ListArgs {
+    fn from(p: &ListParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            limit: p.limit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LifecycleParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) topic: String,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&LifecycleArgs> for LifecycleParams {
+    fn from(a: &LifecycleArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            topic: a.topic.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&LifecycleParams> for LifecycleArgs {
+    fn from(p: &LifecycleParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            topic: p.topic.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EditParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) topic: String,
+    pub(crate) title: Option<String>,
+    pub(crate) closed: Option<bool>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&EditArgs> for EditParams {
+    fn from(a: &EditArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            topic: a.topic.clone(),
+            title: a.title.clone(),
+            closed: a.closed,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&EditParams> for EditArgs {
+    fn from(p: &EditParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            topic: p.topic.clone(),
+            title: p.title.clone(),
+            closed: p.closed,
+        }
+    }
+}
+
+pub(crate) fn validate_topic_id(id: i32) -> TeleResult<()> {
+    if id <= 0 {
+        return Err(TeleError::Usage(format!(
+            "--topic {id} must be a positive topic id (see tele topic list)"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_create(args: &CreateArgs) -> TeleResult<()> {
+    validate_emoji(args.emoji.as_deref())?;
+    Ok(())
+}
+
+pub(crate) fn validate_list(args: &ListArgs) -> TeleResult<()> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn validate_lifecycle(args: &LifecycleArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    validate_topic_id(parse_topic_id(&args.topic)?)?;
+    Ok(())
+}
+
+pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    validate_topic_id(parse_topic_id(&args.topic)?)?;
+    validate_edit_changes(args.title.as_deref(), args.closed)?;
+    Ok(())
+}
+
+pub(crate) fn create_serve_dry_run(args: &CreateArgs) -> TeleResult<serde_json::Value> {
+    Ok(create_dry_run_payload(&args.chat, &args.title))
+}
+
+pub(crate) fn list_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {
+    Ok(list_dry_run_payload(&args.chat))
+}
+
+fn lifecycle_serve_dry_run_kind(
+    args: &LifecycleArgs,
+    action: &str,
+) -> TeleResult<serde_json::Value> {
+    Ok(lifecycle_dry_run_payload(
+        &args.chat,
+        parse_topic_id(&args.topic)?,
+        action,
+    ))
+}
+
+pub(crate) fn close_serve_dry_run(args: &LifecycleArgs) -> TeleResult<serde_json::Value> {
+    lifecycle_serve_dry_run_kind(args, "close")
+}
+
+pub(crate) fn reopen_serve_dry_run(args: &LifecycleArgs) -> TeleResult<serde_json::Value> {
+    lifecycle_serve_dry_run_kind(args, "reopen")
+}
+
+pub(crate) fn pin_serve_dry_run(args: &LifecycleArgs) -> TeleResult<serde_json::Value> {
+    lifecycle_serve_dry_run_kind(args, "pin")
+}
+
+pub(crate) fn delete_serve_dry_run(args: &LifecycleArgs) -> TeleResult<serde_json::Value> {
+    lifecycle_serve_dry_run_kind(args, "delete")
+}
+
+pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Value> {
+    Ok(edit_dry_run_payload(
+        &args.chat,
+        parse_topic_id(&args.topic)?,
+        args.title.as_deref(),
+        args.closed,
+    ))
+}
+
+pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "topic close",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            LifecycleParams,
+            LifecycleArgs,
+            validate_lifecycle,
+            close_serve_dry_run,
+            run_close
+        ),
+        crate::serve_route!(
+            "topic create",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            CreateParams,
+            CreateArgs,
+            validate_create,
+            create_serve_dry_run,
+            run_create
+        ),
+        crate::serve_route!(
+            "topic delete",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            LifecycleParams,
+            LifecycleArgs,
+            validate_lifecycle,
+            delete_serve_dry_run,
+            run_delete
+        ),
+        crate::serve_route!(
+            "topic edit",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            EditParams,
+            EditArgs,
+            validate_edit,
+            edit_serve_dry_run,
+            run_edit
+        ),
+        crate::serve_route!(
+            "topic list",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            ListParams,
+            ListArgs,
+            validate_list,
+            list_serve_dry_run,
+            run_list
+        ),
+        crate::serve_route!(
+            "topic pin",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            LifecycleParams,
+            LifecycleArgs,
+            validate_lifecycle,
+            pin_serve_dry_run,
+            run_pin
+        ),
+        crate::serve_route!(
+            "topic reopen",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            LifecycleParams,
+            LifecycleArgs,
+            validate_lifecycle,
+            reopen_serve_dry_run,
+            run_reopen
+        ),
+    ]
+}
+
+crate::serve_runner!(run_close, topic_close_core, LifecycleParams);
+crate::serve_runner!(run_create, topic_create_core, CreateParams);
+crate::serve_runner!(run_delete, topic_delete_core, LifecycleParams);
+crate::serve_runner!(run_edit, topic_edit_core, EditParams);
+crate::serve_runner!(run_list, topic_list_core, ListParams);
+crate::serve_runner!(run_pin, topic_pin_core, LifecycleParams);
+crate::serve_runner!(run_reopen, topic_reopen_core, LifecycleParams);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::serve::{Lane, Plan};
+    use crate::error::TeleError;
     use crate::error::EXIT_USAGE;
+
+    fn plan_topic_op(op: &str, params: serde_json::Value) -> Result<Plan, serde_json::Value> {
+        let route = topic_serve_routes()
+            .into_iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    fn serve_error_message(err: serde_json::Value) -> String {
+        assert_eq!(err["type"], "ServeError", "{err}");
+        err["message"].as_str().unwrap().to_string()
+    }
+
+    fn usage_error_message(err: serde_json::Value) -> String {
+        assert_eq!(err["type"], "UsageError", "{err}");
+        err["message"].as_str().unwrap().to_string()
+    }
+
+    fn expect_execute(plan: Plan, raw: &serde_json::Value) {
+        match plan {
+            Plan::Execute(passed) => assert_eq!(&passed, raw),
+            other => panic!("expected execute plan, got {other:?}"),
+        }
+    }
+
+    fn lifecycle_matrix(op: &str, action: &str) {
+        let msg = serve_error_message(
+            plan_topic_op(op, serde_json::json!({"chat": "work"})).unwrap_err(),
+        );
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("topic"), "{msg}");
+
+        let msg = serve_error_message(
+            plan_topic_op(op, serde_json::json!({"chat": "work", "topic": 5})).unwrap_err(),
+        );
+        assert!(msg.contains("string"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_topic_op(op, serde_json::json!({"chat": "work", "topic": "0"})).unwrap_err(),
+        );
+        assert!(msg.contains("positive"), "{msg}");
+
+        let plan = plan_topic_op(
+            op,
+            serde_json::json!({"chat": "work", "topic": "5", "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, lifecycle_dry_run_payload("work", 5, action)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "work", "topic": "5"});
+        let plan = plan_topic_op(op, raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_topic_create_plan_matrix() {
+        let msg = serve_error_message(
+            plan_topic_op("topic create", serde_json::json!({"chat": "work"})).unwrap_err(),
+        );
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("title"), "{msg}");
+
+        let msg = serve_error_message(
+            plan_topic_op(
+                "topic create",
+                serde_json::json!({"chat": "work", "title": "T", "emoji": 5}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("string"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_topic_op(
+                "topic create",
+                serde_json::json!({"chat": "work", "title": "T", "emoji": "ab"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(
+            msg.contains("custom-emoji document IDs are not supported"),
+            "{msg}"
+        );
+
+        let plan = plan_topic_op(
+            "topic create",
+            serde_json::json!({"chat": "work", "title": "T", "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, create_dry_run_payload("work", "T")),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+        let plan = plan_topic_op(
+            "topic create",
+            serde_json::json!({"chat": "work", "title": "T", "emoji": "\u{1F600}", "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data["dry_run"], serde_json::json!(true)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "work", "title": "T"});
+        let plan = plan_topic_op("topic create", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_topic_list_plan_matrix() {
+        let msg = serve_error_message(
+            plan_topic_op("topic list", serde_json::json!({"limit": "many"})).unwrap_err(),
+        );
+        assert!(msg.contains("u32"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_topic_op("topic list", serde_json::json!({"limit": 10_001})).unwrap_err(),
+        );
+        assert!(msg.contains("--limit"), "{msg}");
+
+        let plan = plan_topic_op(
+            "topic list",
+            serde_json::json!({"chat": "work", "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, list_dry_run_payload("work")),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "work"});
+        let plan = plan_topic_op("topic list", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_topic_edit_plan_matrix() {
+        let msg = serve_error_message(
+            plan_topic_op("topic edit", serde_json::json!({"chat": "work"})).unwrap_err(),
+        );
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("topic"), "{msg}");
+
+        let msg = serve_error_message(
+            plan_topic_op(
+                "topic edit",
+                serde_json::json!({"chat": "work", "topic": "5", "closed": "yes"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg = usage_error_message(
+            plan_topic_op(
+                "topic edit",
+                serde_json::json!({"chat": "work", "topic": "5"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("nothing to change"), "{msg}");
+        let msg = usage_error_message(
+            plan_topic_op(
+                "topic edit",
+                serde_json::json!({"chat": "work", "topic": "-1", "title": "n"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("positive"), "{msg}");
+
+        let plan = plan_topic_op(
+            "topic edit",
+            serde_json::json!({"chat": "work", "topic": "5", "closed": true, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => {
+                assert_eq!(data, edit_dry_run_payload("work", 5, None, Some(true)))
+            }
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "work", "topic": "5", "title": "n"});
+        let plan = plan_topic_op("topic edit", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_topic_close_plan_matrix() {
+        lifecycle_matrix("topic close", "close");
+    }
+
+    #[test]
+    fn serve_topic_reopen_plan_matrix() {
+        lifecycle_matrix("topic reopen", "reopen");
+    }
+
+    #[test]
+    fn serve_topic_pin_plan_matrix() {
+        lifecycle_matrix("topic pin", "pin");
+    }
+
+    #[test]
+    fn serve_topic_delete_plan_matrix() {
+        lifecycle_matrix("topic delete", "delete");
+    }
+
+    #[test]
+    fn topic_serve_lane_and_timeout_table_is_locked() {
+        let expected: &[(&str, Lane, Option<u64>)] = &[
+            ("topic close", Lane::Mutate, Some(30)),
+            ("topic create", Lane::Mutate, Some(30)),
+            ("topic delete", Lane::Mutate, Some(30)),
+            ("topic edit", Lane::Mutate, Some(30)),
+            ("topic list", Lane::Read, Some(120)),
+            ("topic pin", Lane::Mutate, Some(30)),
+            ("topic reopen", Lane::Mutate, Some(30)),
+        ];
+        let routes = topic_serve_routes();
+        assert_eq!(routes.len(), expected.len());
+        for (op, lane, secs) in expected {
+            let route = routes
+                .iter()
+                .find(|r| r.op == *op)
+                .unwrap_or_else(|| panic!("route missing for {op}"));
+            assert_eq!(route.lane, *lane, "lane for {op}");
+            assert_eq!(
+                route.timeout,
+                secs.map(std::time::Duration::from_secs),
+                "timeout for {op}"
+            );
+        }
+    }
 
     #[test]
     fn list_dry_run_payload_marks_dry_run_with_chat() {
@@ -602,7 +1175,7 @@ mod tests {
 
     #[test]
     fn edit_requires_title_or_closed() {
-        let err = validate_edit(None, None).unwrap_err();
+        let err = validate_edit_changes(None, None).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert_eq!(err.exit_code(), EXIT_USAGE);
         assert!(err.message().contains("nothing to change"));
@@ -611,12 +1184,12 @@ mod tests {
     #[test]
     fn edit_rejects_blank_title_but_accepts_valid_combos() {
         assert!(matches!(
-            validate_edit(Some("   "), None),
+            validate_edit_changes(Some("   "), None),
             Err(TeleError::Usage(_))
         ));
-        assert!(validate_edit(Some("new"), None).is_ok());
-        assert!(validate_edit(None, Some(true)).is_ok());
-        assert!(validate_edit(Some("new"), Some(false)).is_ok());
+        assert!(validate_edit_changes(Some("new"), None).is_ok());
+        assert!(validate_edit_changes(None, Some(true)).is_ok());
+        assert!(validate_edit_changes(Some("new"), Some(false)).is_ok());
     }
 
     fn empty_peer() -> tl::enums::InputPeer {
