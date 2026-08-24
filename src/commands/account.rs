@@ -83,6 +83,28 @@ pub struct PasswordArgs {
     change: bool,
     #[arg(long, help = "remove the cloud password")]
     remove: bool,
+    #[arg(
+        long,
+        value_name = "CODE",
+        help = "confirm the pending recovery-email code"
+    )]
+    confirm_email: Option<String>,
+    #[arg(long, help = "resend the pending recovery-email code")]
+    resend_email: bool,
+    #[arg(long, help = "cancel pending recovery-email setup")]
+    cancel_email: bool,
+    #[arg(
+        long,
+        help = "show cloud password state (recovery email, pending reset)"
+    )]
+    status: bool,
+    #[arg(long, help = "start the 7-day password reset countdown")]
+    reset_start: bool,
+    #[arg(
+        long,
+        help = "cancel a pending 7-day reset (prompts for the current password)"
+    )]
+    decline_reset: bool,
     #[arg(long, help = "password hint (only with --set or --change)")]
     hint: Option<String>,
     #[arg(long, help = "recovery email (only with --set or --change)")]
@@ -102,6 +124,31 @@ impl PasswordMode {
             PasswordMode::Set => "set",
             PasswordMode::Change => "change",
             PasswordMode::Remove => "remove",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum PasswordAction {
+    Mode(PasswordMode),
+    ConfirmEmail(String),
+    ResendEmail,
+    CancelEmail,
+    Status,
+    ResetStart,
+    DeclineReset,
+}
+
+impl PasswordAction {
+    fn describe(&self) -> String {
+        match self {
+            PasswordAction::Mode(m) => format!("{} cloud password", m.as_str()),
+            PasswordAction::ConfirmEmail(_) => "confirm recovery-email code".to_string(),
+            PasswordAction::ResendEmail => "resend recovery-email code".to_string(),
+            PasswordAction::CancelEmail => "cancel pending recovery-email setup".to_string(),
+            PasswordAction::Status => "show cloud password state".to_string(),
+            PasswordAction::ResetStart => "start 7-day password reset countdown".to_string(),
+            PasswordAction::DeclineReset => "cancel pending password reset".to_string(),
         }
     }
 }
@@ -1465,10 +1512,16 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let mode = validate_password_modes(
+    let action = validate_password_modes(
         args.set,
         args.change,
         args.remove,
+        args.confirm_email.as_deref(),
+        args.resend_email,
+        args.cancel_email,
+        args.status,
+        args.reset_start,
+        args.decline_reset,
         args.hint.as_deref(),
         args.recovery_email.as_deref(),
     )?;
@@ -1483,12 +1536,13 @@ async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let config_path = config_path.clone();
         let hint = hint.clone();
         let email = email.clone();
+        let action = action.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(serde_json::json!({
                     "dry_run": true,
-                    "mode": mode.as_str(),
-                    "would": format!("{} cloud password", mode.as_str()),
+                    "action": action.describe(),
+                    "would": action.describe(),
                     "hint": hint_present,
                     "recovery_email": email_present,
                 }));
@@ -1496,20 +1550,47 @@ async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let credentials = creds()?;
             let guard =
                 ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
-            match mode {
-                PasswordMode::Remove => remove_cloud_password(&guard).await?,
-                PasswordMode::Set => {
-                    set_cloud_password(&guard, hint.as_deref(), email.as_deref()).await?
-                }
-                PasswordMode::Change => {
-                    change_cloud_password(&guard, hint.as_deref(), email.as_deref()).await?
-                }
-            }
-            Ok(serde_json::json!({"updated": true, "mode": mode.as_str()}))
+            execute_password_action(&guard, &action, hint.as_deref(), email.as_deref()).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+async fn execute_password_action(
+    guard: &ClientGuard,
+    action: &PasswordAction,
+    hint: Option<&str>,
+    email: Option<&str>,
+) -> TeleResult<serde_json::Value> {
+    match action {
+        PasswordAction::Mode(mode) => {
+            match mode {
+                PasswordMode::Remove => remove_cloud_password(guard).await?,
+                PasswordMode::Set => set_cloud_password(guard, hint, email).await?,
+                PasswordMode::Change => change_cloud_password(guard, hint, email).await?,
+            }
+            Ok(serde_json::json!({"updated": true, "mode": mode.as_str()}))
+        }
+        PasswordAction::ConfirmEmail(code) => {
+            confirm_password_email(guard, code).await?;
+            Ok(serde_json::json!({"confirmed": true}))
+        }
+        PasswordAction::ResendEmail => {
+            resend_password_email(guard).await?;
+            Ok(serde_json::json!({"resent": true}))
+        }
+        PasswordAction::CancelEmail => {
+            cancel_password_email(guard).await?;
+            Ok(serde_json::json!({"cancelled": true}))
+        }
+        PasswordAction::Status => password_status(guard).await,
+        PasswordAction::ResetStart => start_password_reset(guard).await,
+        PasswordAction::DeclineReset => {
+            decline_password_reset(guard).await?;
+            Ok(serde_json::json!({"declined": true}))
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -1706,22 +1787,37 @@ fn terminate_decision(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_password_modes(
     set: bool,
     change: bool,
     remove: bool,
+    confirm_email: Option<&str>,
+    resend_email: bool,
+    cancel_email: bool,
+    status: bool,
+    reset_start: bool,
+    decline_reset: bool,
     hint: Option<&str>,
     recovery_email: Option<&str>,
-) -> TeleResult<PasswordMode> {
-    let chosen = usize::from(set) + usize::from(change) + usize::from(remove);
-    if chosen == 0 {
+) -> TeleResult<PasswordAction> {
+    let primary = usize::from(set)
+        + usize::from(change)
+        + usize::from(remove)
+        + usize::from(confirm_email.is_some())
+        + usize::from(resend_email)
+        + usize::from(cancel_email)
+        + usize::from(status)
+        + usize::from(reset_start)
+        + usize::from(decline_reset);
+    if primary == 0 {
         return Err(TeleError::Usage(
-            "choose exactly one of --set, --change or --remove".to_string(),
+            "choose exactly one of --set, --change, --remove, --confirm-email, --resend-email, --cancel-email, --status, --reset-start or --decline-reset".to_string(),
         ));
     }
-    if chosen > 1 {
+    if primary > 1 {
         return Err(TeleError::Usage(
-            "--set, --change and --remove are mutually exclusive".to_string(),
+            "password mode flags are mutually exclusive".to_string(),
         ));
     }
     if hint.is_some_and(|h| h.trim().is_empty()) {
@@ -1732,7 +1828,8 @@ fn validate_password_modes(
             "--recovery-email must not be empty".to_string(),
         ));
     }
-    if remove {
+    let set_or_change = set || change;
+    if !set_or_change {
         if hint.is_some() {
             return Err(TeleError::Usage(
                 "--hint only applies to --set or --change".to_string(),
@@ -1744,13 +1841,36 @@ fn validate_password_modes(
             ));
         }
     }
-    Ok(if set {
-        PasswordMode::Set
-    } else if change {
-        PasswordMode::Change
-    } else {
-        PasswordMode::Remove
-    })
+    if let Some(code) = confirm_email {
+        if code.trim().is_empty() {
+            return Err(TeleError::Usage(
+                "--confirm-email must not be empty".to_string(),
+            ));
+        }
+        return Ok(PasswordAction::ConfirmEmail(code.trim().to_string()));
+    }
+    if resend_email {
+        return Ok(PasswordAction::ResendEmail);
+    }
+    if cancel_email {
+        return Ok(PasswordAction::CancelEmail);
+    }
+    if status {
+        return Ok(PasswordAction::Status);
+    }
+    if reset_start {
+        return Ok(PasswordAction::ResetStart);
+    }
+    if decline_reset {
+        return Ok(PasswordAction::DeclineReset);
+    }
+    if set {
+        return Ok(PasswordAction::Mode(PasswordMode::Set));
+    }
+    if change {
+        return Ok(PasswordAction::Mode(PasswordMode::Change));
+    }
+    Ok(PasswordAction::Mode(PasswordMode::Remove))
 }
 
 const NO_SRP_CHALLENGE_MSG: &str =
@@ -1918,14 +2038,173 @@ async fn set_cloud_password(
         },
     );
     let empty = grammers_client::tl::enums::InputCheckPasswordSrp::InputCheckPasswordEmpty;
+    update_settings_with_email_loop(guard, empty, new_settings).await
+}
+
+async fn update_settings_with_email_loop(
+    guard: &ClientGuard,
+    proof: grammers_client::tl::enums::InputCheckPasswordSrp,
+    new_settings: grammers_client::tl::enums::account::PasswordInputSettings,
+) -> TeleResult<()> {
+    for attempt in 1..=MAX_CODE_ATTEMPTS {
+        guard.rate_limiter.acquire().await;
+        let req = grammers_client::tl::functions::account::UpdatePasswordSettings {
+            password: proof.clone(),
+            new_settings: new_settings.clone(),
+        };
+        match guard.client.invoke(&req).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if !is_email_unconfirmed(&e) || attempt == MAX_CODE_ATTEMPTS {
+                    return Err(map_update_password_error(e));
+                }
+                confirm_pending_password_email(guard).await?;
+            }
+        }
+    }
+    Err(TeleError::Other(
+        "recovery-email confirmation did not complete".to_string(),
+    ))
+}
+
+fn is_email_unconfirmed(e: &grammers_client::InvocationError) -> bool {
+    e.to_string().contains("EMAIL_UNCONFIRMED")
+}
+
+async fn fetch_password(
+    guard: &ClientGuard,
+) -> TeleResult<grammers_client::tl::types::account::Password> {
     guard.rate_limiter.acquire().await;
-    let req = grammers_client::tl::functions::account::UpdatePasswordSettings {
-        password: empty,
-        new_settings,
-    };
+    let response = guard
+        .client
+        .invoke(&grammers_client::tl::functions::account::GetPassword {})
+        .await
+        .map_err(tele_invocation)?;
+    match response {
+        grammers_client::tl::enums::account::Password::Password(pw) => Ok(pw),
+    }
+}
+
+async fn confirm_pending_password_email(guard: &ClientGuard) -> TeleResult<()> {
+    let pw = fetch_password(guard).await?;
+    if let Some(pattern) = &pw.email_unconfirmed_pattern {
+        output::log_line(
+            "info",
+            &format!("confirmation code sent to email matching {pattern}"),
+        );
+    }
+    let code = prompt_plain_line("Enter the code sent to that email: ")?;
+    guard.rate_limiter.acquire().await;
     guard
         .client
-        .invoke(&req)
+        .invoke(&grammers_client::tl::functions::account::ConfirmPasswordEmail { code })
+        .await
+        .map_err(map_update_password_error)?;
+    Ok(())
+}
+
+fn prompt_plain_line(prompt: &str) -> TeleResult<String> {
+    let mut stdin = std::io::stdin().lock();
+    let mut stderr = std::io::stderr();
+    let read = prompt_line(prompt, &mut stdin, &mut stderr);
+    let _ = writeln!(stderr);
+    let Some(line) = read? else {
+        return Err(TeleError::Usage("input required; stdin closed".to_string()));
+    };
+    Ok(strip_line_ending(&line).to_string())
+}
+
+async fn confirm_password_email(guard: &ClientGuard, code: &str) -> TeleResult<()> {
+    guard.rate_limiter.acquire().await;
+    guard
+        .client
+        .invoke(
+            &grammers_client::tl::functions::account::ConfirmPasswordEmail {
+                code: code.to_string(),
+            },
+        )
+        .await
+        .map_err(map_update_password_error)?;
+    Ok(())
+}
+
+async fn resend_password_email(guard: &ClientGuard) -> TeleResult<()> {
+    guard.rate_limiter.acquire().await;
+    guard
+        .client
+        .invoke(&grammers_client::tl::functions::account::ResendPasswordEmail {})
+        .await
+        .map_err(map_update_password_error)?;
+    Ok(())
+}
+
+async fn cancel_password_email(guard: &ClientGuard) -> TeleResult<()> {
+    guard.rate_limiter.acquire().await;
+    guard
+        .client
+        .invoke(&grammers_client::tl::functions::account::CancelPasswordEmail {})
+        .await
+        .map_err(map_update_password_error)?;
+    Ok(())
+}
+
+async fn password_status(guard: &ClientGuard) -> TeleResult<serde_json::Value> {
+    let pw = fetch_password(guard).await?;
+    Ok(serde_json::json!({
+        "has_password": pw.has_password,
+        "has_recovery": pw.has_recovery,
+        "hint": pw.hint,
+        "email_unconfirmed_pattern": pw.email_unconfirmed_pattern,
+        "pending_reset_date": pw.pending_reset_date.map(|d| {
+            chrono::DateTime::from_timestamp(d as i64, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default()
+        }),
+    }))
+}
+
+async fn start_password_reset(guard: &ClientGuard) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let result = guard
+        .client
+        .invoke(&grammers_client::tl::functions::account::ResetPassword {})
+        .await
+        .map_err(tele_invocation)?;
+    let value = match result {
+        grammers_client::tl::enums::account::ResetPasswordResult::ResetPasswordOk => {
+            serde_json::json!({"result": "reset"})
+        }
+        grammers_client::tl::enums::account::ResetPasswordResult::ResetPasswordRequestedWait(w) => {
+            serde_json::json!({
+                "result": "wait",
+                "until_date": chrono::DateTime::from_timestamp(w.until_date as i64, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+            })
+        }
+        grammers_client::tl::enums::account::ResetPasswordResult::ResetPasswordFailedWait(w) => {
+            serde_json::json!({
+                "result": "failed_wait",
+                "retry_date": chrono::DateTime::from_timestamp(w.retry_date as i64, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+            })
+        }
+    };
+    Ok(value)
+}
+
+async fn decline_password_reset(guard: &ClientGuard) -> TeleResult<()> {
+    let pw = fetch_password(guard).await?;
+    if !pw.has_password {
+        return Err(TeleError::Usage(
+            "no cloud password is set on this account".to_string(),
+        ));
+    }
+    guard.rate_limiter.acquire().await;
+    guard
+        .client
+        .invoke(&grammers_client::tl::functions::account::DeclinePasswordReset {})
         .await
         .map_err(map_update_password_error)?;
     Ok(())
@@ -1971,16 +2250,7 @@ async fn change_cloud_password(
         },
     );
     guard.rate_limiter.acquire().await;
-    let req = grammers_client::tl::functions::account::UpdatePasswordSettings {
-        password: proof,
-        new_settings,
-    };
-    guard
-        .client
-        .invoke(&req)
-        .await
-        .map_err(map_update_password_error)?;
-    Ok(())
+    update_settings_with_email_loop(guard, proof, new_settings).await
 }
 
 #[derive(Debug)]
@@ -2068,6 +2338,7 @@ fn prompt_current_password_proof(
     srp_id: i64,
     srp_b: &[u8],
     random_a: &[u8],
+    prompt: &str,
 ) -> TeleResult<grammers_client::tl::enums::InputCheckPasswordSrp> {
     let mut stdin = std::io::stdin().lock();
     let mut stderr = std::io::stderr();
@@ -2078,11 +2349,7 @@ fn prompt_current_password_proof(
             "secure password input unavailable; input will be echoed to the terminal",
         );
     }
-    let read = prompt_line(
-        "Enter the current cloud password to remove it: ",
-        &mut stdin,
-        &mut stderr,
-    );
+    let read = prompt_line(prompt, &mut stdin, &mut stderr);
     restore_stdin_echo(echo_disabled);
     let Some(password_line) = read? else {
         return Err(TeleError::Auth(
@@ -2115,7 +2382,13 @@ async fn remove_cloud_password(guard: &ClientGuard) -> TeleResult<()> {
     let srp_id = password
         .srp_id
         .ok_or_else(|| TeleError::Other(NO_SRP_CHALLENGE_MSG.to_string()))?;
-    let proof = prompt_current_password_proof(&params, srp_id, &srp_b, &password.secure_random)?;
+    let proof = prompt_current_password_proof(
+        &params,
+        srp_id,
+        &srp_b,
+        &password.secure_random,
+        "Enter the current cloud password to remove it: ",
+    )?;
     guard.rate_limiter.acquire().await;
     let request = tl::functions::account::UpdatePasswordSettings {
         password: proof,
@@ -2985,30 +3258,38 @@ mod tests {
     #[test]
     fn password_mode_requires_exactly_one_flag() {
         assert!(usage(validate_password_modes(
-            false, false, false, None, None
+            false, false, false, None, false, false, false, false, false, None, None
         )));
         assert!(usage(validate_password_modes(
-            true, true, false, None, None
+            true, true, false, None, false, false, false, false, false, None, None
         )));
         assert!(usage(validate_password_modes(
-            true, false, true, None, None
+            true, false, true, None, false, false, false, false, false, None, None
         )));
         assert!(usage(validate_password_modes(
-            false, true, true, None, None
+            false, true, true, None, false, false, false, false, false, None, None
         )));
-        assert!(usage(validate_password_modes(true, true, true, None, None)));
-        assert_eq!(
-            validate_password_modes(true, false, false, None, None).unwrap(),
-            PasswordMode::Set
-        );
-        assert_eq!(
-            validate_password_modes(false, true, false, None, None).unwrap(),
-            PasswordMode::Change
-        );
-        assert_eq!(
-            validate_password_modes(false, false, true, None, None).unwrap(),
-            PasswordMode::Remove
-        );
+        assert!(usage(validate_password_modes(
+            true, true, true, None, false, false, false, false, false, None, None
+        )));
+        assert!(matches!(
+            validate_password_modes(
+                true, false, false, None, false, false, false, false, false, None, None
+            ),
+            Ok(PasswordAction::Mode(PasswordMode::Set))
+        ));
+        assert!(matches!(
+            validate_password_modes(
+                false, true, false, None, false, false, false, false, false, None, None
+            ),
+            Ok(PasswordAction::Mode(PasswordMode::Change))
+        ));
+        assert!(matches!(
+            validate_password_modes(
+                false, false, true, None, false, false, false, false, false, None, None
+            ),
+            Ok(PasswordAction::Mode(PasswordMode::Remove))
+        ));
     }
 
     #[test]
@@ -3017,6 +3298,12 @@ mod tests {
             false,
             false,
             true,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
             Some("hint"),
             None
         )));
@@ -3025,10 +3312,22 @@ mod tests {
             false,
             true,
             None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
             Some("me@example.com")
         )));
         assert!(usage(validate_password_modes(
             true,
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
             false,
             false,
             Some("   "),
@@ -3039,13 +3338,42 @@ mod tests {
             true,
             false,
             None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
             Some("")
         )));
-        assert!(
-            validate_password_modes(true, false, false, Some("hint"), Some("me@example.com"))
-                .is_ok()
-        );
-        assert!(validate_password_modes(false, true, false, Some("hint"), None).is_ok());
+        assert!(validate_password_modes(
+            true,
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some("hint"),
+            Some("me@example.com")
+        )
+        .is_ok());
+        assert!(validate_password_modes(
+            false,
+            true,
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some("hint"),
+            None
+        )
+        .is_ok());
     }
 
     #[test]
@@ -3808,15 +4136,213 @@ mod tests {
 
     #[test]
     fn password_hint_email_validation_matrix() {
-        assert!(validate_password_modes(true, false, false, Some("hint"), Some("a@b.com")).is_ok());
-        assert!(validate_password_modes(false, true, false, Some("hint"), None).is_ok());
-        assert!(validate_password_modes(false, true, false, None, Some("a@b.com")).is_ok());
-        assert!(validate_password_modes(false, true, false, Some("hint"), Some("a@b.com")).is_ok());
-        assert!(validate_password_modes(true, false, false, None, None).is_ok());
-        let err = validate_password_modes(false, false, true, Some("hint"), None).unwrap_err();
+        assert!(validate_password_modes(
+            true,
+            false,
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some("hint"),
+            Some("a@b.com")
+        )
+        .is_ok());
+        assert!(validate_password_modes(
+            false,
+            true,
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some("hint"),
+            None
+        )
+        .is_ok());
+        assert!(validate_password_modes(
+            false,
+            true,
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some("a@b.com")
+        )
+        .is_ok());
+        assert!(validate_password_modes(
+            false,
+            true,
+            false,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some("hint"),
+            Some("a@b.com")
+        )
+        .is_ok());
+        assert!(validate_password_modes(
+            true, false, false, None, false, false, false, false, false, None, None
+        )
+        .is_ok());
+        let err = validate_password_modes(
+            false,
+            false,
+            true,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some("hint"),
+            None,
+        )
+        .unwrap_err();
         assert!(err.message().contains("--hint"), "{err}");
-        let err = validate_password_modes(false, false, true, None, Some("a@b.com")).unwrap_err();
+        let err = validate_password_modes(
+            false,
+            false,
+            true,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some("a@b.com"),
+        )
+        .unwrap_err();
         assert!(err.message().contains("--recovery-email"), "{err}");
+    }
+
+    #[test]
+    fn password_email_and_lifecycle_mode_matrix() {
+        type FlagSet = (
+            bool,
+            bool,
+            bool,
+            Option<&'static str>,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+        );
+        let one_each: [FlagSet; 6] = [
+            (
+                false,
+                false,
+                false,
+                Some("123456"),
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (false, false, false, None, true, false, false, false, false),
+            (false, false, false, None, false, true, false, false, false),
+            (false, false, false, None, false, false, true, false, false),
+            (false, false, false, None, false, false, false, true, false),
+            (false, false, false, None, false, false, false, false, true),
+        ];
+        for (set, change, remove, confirm, resend, cancel, status, reset_start, decline) in one_each
+        {
+            assert!(
+                validate_password_modes(
+                    set,
+                    change,
+                    remove,
+                    confirm,
+                    resend,
+                    cancel,
+                    status,
+                    reset_start,
+                    decline,
+                    None,
+                    None
+                )
+                .is_ok(),
+                "single primary flag must pass"
+            );
+        }
+        assert!(validate_password_modes(
+            true, false, false, None, true, false, false, false, false, None, None
+        )
+        .is_err());
+        assert!(validate_password_modes(
+            false, false, false, None, false, false, false, false, false, None, None
+        )
+        .is_err());
+        assert!(validate_password_modes(
+            true,
+            false,
+            false,
+            Some("   "),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None
+        )
+        .is_err());
+        let a = validate_password_modes(
+            false,
+            false,
+            false,
+            Some(" 123 "),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        match a {
+            PasswordAction::ConfirmEmail(code) => assert_eq!(code, "123"),
+            other => panic!("expected confirm email action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn password_action_describe_covers_all_variants() {
+        for (action, needle) in [
+            (PasswordAction::Mode(PasswordMode::Set), "set"),
+            (PasswordAction::Mode(PasswordMode::Change), "change"),
+            (PasswordAction::Mode(PasswordMode::Remove), "remove"),
+            (PasswordAction::ConfirmEmail("1".into()), "confirm"),
+            (PasswordAction::ResendEmail, "resend"),
+            (PasswordAction::CancelEmail, "cancel"),
+            (PasswordAction::Status, "state"),
+            (PasswordAction::ResetStart, "reset countdown"),
+            (
+                PasswordAction::DeclineReset,
+                "cancel pending password reset",
+            ),
+        ] {
+            assert!(
+                action.describe().contains(needle),
+                "{needle}: {}",
+                action.describe()
+            );
+        }
     }
 
     #[test]
@@ -3871,6 +4397,12 @@ mod tests {
             set: true,
             change: false,
             remove: false,
+            confirm_email: None,
+            resend_email: false,
+            cancel_email: false,
+            status: false,
+            reset_start: false,
+            decline_reset: false,
             hint: Some("hintval".to_string()),
             recovery_email: Some("e@example.com".to_string()),
         };
@@ -3891,6 +4423,12 @@ mod tests {
             set: false,
             change: true,
             remove: false,
+            confirm_email: None,
+            resend_email: false,
+            cancel_email: false,
+            status: false,
+            reset_start: false,
+            decline_reset: false,
             hint: None,
             recovery_email: None,
         };
