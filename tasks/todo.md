@@ -320,7 +320,23 @@ Goal: tele serve becomes the full account-control surface for agent apps — obs
 ### Phase 0 — protocol hardening (before any op expansion)
 - [x] 0a. Poll enrichment on serve events (parity with listen) — f6ae22d
 - [x] 0b. deny_unknown_fields on all 13 *Params structs + unknown_param contract test — f6ae22d
-- [ ] 0c. hello v2: negotiated version range (min/max instead of strict equality), resolved identity via get_me (user_id/username/first_name/phone_masked), Reconnected event on stdout (currently stderr-only)
+- [x] 0c. hello v2: negotiated version range (min/max instead of strict equality), resolved identity via get_me (user_id/username/first_name/phone_masked), Reconnected event on stdout — 8267139
+
+### Phase 0 execution plan — delegated slices (manager merges; 2026-08-24)
+- [ ] **S-exec** (SOLO first, everything depends on it) = 0d two-lane executor. Branch feat/serve-executor, worktree tele-wt\exec. ServeRunner -> 'static shares; mutations serial lane + reads pool(2); responses via mpsc single-writer stdout; bounded stdin chan(~64); per-op lane+timeout in OpRoute (get/search/download = Read/long, rest = Mutate/30s); ping inline. No AbortOnDrop on serve task.
+- [ ] **S-meta** (after S-exec) = 0e + 0f. Branch feat/serve-proto-meta. Monotonic event seq + stream.resync op (catch_up rebuild; dedupe already suppresses replays) + error.param parsed from serde errors in prep().
+- [ ] **S-selfdesc** (after S-meta) = 0g + 0h. Branch feat/serve-selfdescribe. ops.list entries {op,summary,group,read_only,destructive,retry_safe,params_schema,result_example}; hints per route row; confirm:true planner dance for Tier-1 destructive (msg delete all:true, dialog delete, topic delete, story delete, contact remove, sticker remove, chat kick/leave) -> ConfirmRequired envelope with would-payload.
+- [ ] **P1a/P1b/P1c + P2-chat** (parallel after S-selfdesc; disjoint module files, tiny route-row conflicts resolved at merge):
+  - P1a dialog+topic (feat/srv-dialog-topic): list/drafts/draft/pin/archive/delete(C)/create/close/reopen/edit/delete(C)/pin
+  - P1b profile+privacy+contact (feat/srv-profile-contact): get/set/photo/emoji-status/get/set/list/add/remove(C)/block/unblock
+  - P1c stickers+stories+raw (feat/srv-stickers-stories-raw): list/search/show/install/remove(C)/send/read/delete(C)/pin/unpin + raw <method> passthrough
+  - P2-chat chat group (feat/srv-chat): join/leave(C)/create/settings/edit/link/kick(C)/admin/invite/requests/admin-log/stats/participants
+- [ ] **S-acct** (last, riskiest) = account reads guarded: status/ttl get+set/sessions list; takeout start/finish/status only if state files proven safe beside live stream; export stays CLI-only. login/logout/remove/password/delete NEVER over pipe.
+- [ ] **S-docs** (near end) = cli-contract.md full serve section + capabilities.md annotations ("also exposed as serve op") + matrix row updates.
+- [ ] Live verify whole program: hello -> dialog list -> msg send/edit/get/delete -> chat participants -> privacy get -> raw contacts.Search with cross-account event mid-burst (no starvation); then v0.6.0.
+
+### Phase 0 — original checklist (superseded by slice plan above)
+- [x] 0d..0i tracked as slices S-exec/S-meta/S-selfdesc/S-docs above
 - [ ] 0d. Two-lane executor: mutations serial lane, reads pool (2-3), responses via mpsc single-writer stdout; ServeRunner -> 'static shares (client clone + Arc<SqliteSession> + Arc<RateLimiter>); bounded stdin channel (~64) backpressure; per-class timeouts (30s simple / 120s paginated / opt-in heavy); keep rate_limiter.acquire() inside cores; do NOT wrap serve task in AbortOnDrop (todo.md:222 landmine)
 - [ ] 0e. Event seq numbers (monotonic per connection) + stream.resync op (rebuild stream with catch_up:true; dedupe already suppresses replay dupes)
 - [ ] 0f. error.param key parsed from serde errors in prep()/serve_runner (additive envelope field)
