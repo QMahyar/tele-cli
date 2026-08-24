@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- 	ele account ttl get|set --days N (inactive-account self-destruct timer) and 	ele account delete --reason R --yes (SRP-protected, explicit --account + --yes required).
+- Web-session management: sessions --web, --terminate-web HASH, --terminate-all-web, --change-flags HASH --disable-encrypted/--disable-call-requests.
+- 	ele account phone --change-phone +XXX / phone --confirm-code NNN --phone-hash H (staged phone change).
+- Staged login --stage resend (auth.resendCode) and --stage cancel-code (auth.cancelCode + local state clear).
 
 - Recovery-email lifecycle for cloud password: `--confirm-email CODE`, `--resend-email`, `--cancel-email`; set/change auto-prompt for the emailed code on `EMAIL_UNCONFIRMED` (max 3 attempts) after showing the masked inbox pattern. Plus `--status` (has_password / has_recovery / hint / pending_reset_date), `--reset-start` and `--decline-reset.
 - 	ele account password --set and --change via local PH2 (pbkdf2-hmac-sha512 ×100000, salt1 extended with 32-byte secure_random, `PasswordKdfAlgo` + `new_password_hash = pow(g, PH2) mod p` replicated from `grammers-crypto 0.10` `src/two_factor_auth.rs:134-154`; `hint`/`recovery_email` ride same `account.UpdatePasswordSettings` call, no extra RPC; `--remove` remains via SRP proof). Dry-run returns honest `would` + `hint`/`recovery_email` booleans and never prompts.
