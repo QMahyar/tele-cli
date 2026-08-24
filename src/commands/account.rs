@@ -39,6 +39,9 @@ pub enum AccountCmd {
     Password(PasswordArgs),
     ExportSession(ExportSessionArgs),
     ImportSession(ImportSessionArgs),
+    Ttl(TtlArgs),
+    Delete(DeleteArgs),
+    Phone(PhoneArgs),
 }
 #[derive(Args)]
 pub struct AddArgs {
@@ -59,21 +62,48 @@ pub struct LoginArgs {
     show_token: bool,
     #[arg(long, default_value_t = DEFAULT_QR_TIMEOUT_SECS, help = "overall QR login deadline in seconds")]
     qr_timeout_secs: u64,
-    #[arg(
-        long,
-        help = "run code login stepwise across invocations: begin | code | status | cancel"
-    )]
+    #[arg(long, help = STAGE_HELP)]
     stage: Option<String>,
 }
+
+const STAGE_HELP: &str = "run code login stepwise across invocations: begin | code | status | cancel | resend | cancel-code (cancel discards the local pending state only; cancel-code also asks the server to invalidate the sent code)";
 
 const DEFAULT_QR_TIMEOUT_SECS: u64 = 300;
 const TELE_PHONE_ENV: &str = "TELE_PHONE";
 const MAX_CODE_ATTEMPTS: usize = 3;
 const MAX_PASSWORD_ATTEMPTS: usize = 3;
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct SessionsArgs {
     #[arg(long, help = "terminate the device session with this hash")]
     terminate: Option<i64>,
+    #[arg(long, help = "list web login sessions instead of device sessions")]
+    web: bool,
+    #[arg(
+        long,
+        value_name = "HASH",
+        help = "terminate the web login session with this hash"
+    )]
+    terminate_web: Option<i64>,
+    #[arg(long, help = "terminate every web login session on this account")]
+    terminate_all_web: bool,
+    #[arg(
+        long,
+        value_name = "HASH",
+        help = "update per-web-session settings; combine with --disable-encrypted or --disable-call-requests"
+    )]
+    change_flags: Option<i64>,
+    #[arg(
+        long,
+        value_name = "TRUE|FALSE",
+        help = "with --change-flags: disable encrypted requests for that web session"
+    )]
+    disable_encrypted: Option<String>,
+    #[arg(
+        long,
+        value_name = "TRUE|FALSE",
+        help = "with --change-flags: disable call requests for that web session"
+    )]
+    disable_call_requests: Option<String>,
 }
 #[derive(Args)]
 pub struct PasswordArgs {
@@ -183,6 +213,55 @@ pub struct ImportSessionArgs {
     #[arg(long, help = "source is a Telethon SQLite session to convert")]
     from_telethon: bool,
 }
+
+#[derive(Args)]
+pub struct TtlArgs {
+    #[arg(long, help = "show the current inactive-account self-destruct TTL")]
+    get: bool,
+    #[arg(long, help = "set the inactive-account self-destruct TTL")]
+    set: bool,
+    #[arg(
+        long,
+        value_name = "DAYS",
+        help = "days of inactivity before the account self-destructs, 1..=365 (required with --set)"
+    )]
+    days: Option<i64>,
+}
+
+#[derive(Args)]
+pub struct DeleteArgs {
+    #[arg(long, value_name = "REASON", help = "why the account is being deleted")]
+    reason: String,
+    #[arg(long, help = "confirm permanent deletion of this Telegram account")]
+    yes: bool,
+}
+
+#[derive(Args)]
+pub struct PhoneArgs {
+    #[arg(
+        long,
+        value_name = "+PHONE",
+        help = "send the change-phone code to this new number"
+    )]
+    change_phone: Option<String>,
+    #[arg(
+        long,
+        help = "allow flash-call verification when sending the change-phone code"
+    )]
+    allow_flashcall: bool,
+    #[arg(
+        long,
+        value_name = "CODE",
+        help = "confirm the pending phone change with this code"
+    )]
+    confirm_code: Option<String>,
+    #[arg(
+        long,
+        value_name = "HASH",
+        help = "phone_code_hash printed by --change-phone"
+    )]
+    phone_hash: Option<String>,
+}
 pub async fn run(cmd: AccountCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         AccountCmd::List => list(flags).await,
@@ -195,6 +274,9 @@ pub async fn run(cmd: AccountCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         AccountCmd::Password(args) => password(&args, flags).await,
         AccountCmd::ExportSession(args) => export_session(&args, flags).await,
         AccountCmd::ImportSession(args) => import_session(&args, flags).await,
+        AccountCmd::Ttl(args) => ttl(&args, flags).await,
+        AccountCmd::Delete(args) => delete(&args, flags).await,
+        AccountCmd::Phone(args) => phone(&args, flags).await,
     }
 }
 async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
@@ -492,6 +574,8 @@ enum LoginStage {
     Code,
     Status,
     Cancel,
+    Resend,
+    CancelCode,
 }
 
 impl LoginStage {
@@ -501,6 +585,8 @@ impl LoginStage {
             LoginStage::Code => "code",
             LoginStage::Status => "status",
             LoginStage::Cancel => "cancel",
+            LoginStage::Resend => "resend",
+            LoginStage::CancelCode => "cancel-code",
         }
     }
 }
@@ -511,8 +597,10 @@ fn parse_login_stage(raw: &str) -> TeleResult<LoginStage> {
         "code" => Ok(LoginStage::Code),
         "status" => Ok(LoginStage::Status),
         "cancel" => Ok(LoginStage::Cancel),
+        "resend" => Ok(LoginStage::Resend),
+        "cancel-code" => Ok(LoginStage::CancelCode),
         other => Err(TeleError::Usage(format!(
-            "unknown --stage {other} (use begin, code, status or cancel)"
+            "unknown --stage {other} (use begin, code, status, cancel, resend or cancel-code)"
         ))),
     }
 }
@@ -559,20 +647,19 @@ fn pending_dir_under(base: &std::path::Path) -> std::path::PathBuf {
     base.join("pending")
 }
 
-fn pending_path_under(base: &std::path::Path, name: &str) -> std::path::PathBuf {
-    pending_dir_under(base).join(format!("{name}.login.json"))
+fn login_pending_file(name: &str) -> String {
+    format!("{name}.login.json")
 }
 
-fn save_pending(pending: &PendingLogin) -> TeleResult<()> {
-    save_pending_under(&config::app_data_dir(), pending)
+fn phone_pending_file(name: &str) -> String {
+    format!("{name}.phone.json")
 }
 
-fn save_pending_under(base: &std::path::Path, pending: &PendingLogin) -> TeleResult<()> {
+fn save_pending_document_under(base: &std::path::Path, file: &str, text: &str) -> TeleResult<()> {
     let dir = pending_dir_under(base);
     crate::fs_util::create_dir_private(&dir)
         .map_err(|e| TeleError::Other(format!("failed to create {}: {e}", dir.display())))?;
-    let path = pending_path_under(base, &pending.account);
-    let text = serde_json::to_string_pretty(pending)?;
+    let path = pending_dir_under(base).join(file);
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
@@ -592,21 +679,48 @@ fn save_pending_under(base: &std::path::Path, pending: &PendingLogin) -> TeleRes
     result.map_err(|e| TeleError::Other(format!("failed to write {}: {e}", path.display())))
 }
 
+fn load_pending_document_under(base: &std::path::Path, file: &str) -> TeleResult<Option<String>> {
+    match std::fs::read_to_string(pending_dir_under(base).join(file)) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(TeleError::Other(format!(
+            "failed to read pending state {}: {e}",
+            pending_dir_under(base).join(file).display()
+        ))),
+    }
+}
+
+fn remove_pending_document_under(base: &std::path::Path, file: &str) -> TeleResult<bool> {
+    match std::fs::remove_file(pending_dir_under(base).join(file)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(TeleError::Other(format!(
+            "failed to remove pending state {file}: {e}"
+        ))),
+    }
+}
+
+fn save_pending(pending: &PendingLogin) -> TeleResult<()> {
+    save_pending_under(&config::app_data_dir(), pending)
+}
+
+fn save_pending_under(base: &std::path::Path, pending: &PendingLogin) -> TeleResult<()> {
+    let text = serde_json::to_string_pretty(pending)?;
+    save_pending_document_under(base, &login_pending_file(&pending.account), &text)
+}
+
 fn load_pending(name: &str) -> TeleResult<Option<PendingLogin>> {
     load_pending_under(&config::app_data_dir(), name)
 }
 
 fn load_pending_under(base: &std::path::Path, name: &str) -> TeleResult<Option<PendingLogin>> {
-    match std::fs::read_to_string(pending_path_under(base, name)) {
-        Ok(text) => serde_json::from_str(&text)
+    match load_pending_document_under(base, &login_pending_file(name))? {
+        Some(text) => serde_json::from_str(&text)
             .map(Some)
             .map_err(|e| TeleError::Other(format!(
                 "pending login state for {name} is corrupt ({e}); run tele account login --stage begin again"
             ))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(TeleError::Other(format!(
-            "failed to read pending login state for {name}: {e}"
-        ))),
+        None => Ok(None),
     }
 }
 
@@ -627,13 +741,77 @@ fn remove_pending(name: &str) -> TeleResult<bool> {
 }
 
 fn remove_pending_under(base: &std::path::Path, name: &str) -> TeleResult<bool> {
-    match std::fs::remove_file(pending_path_under(base, name)) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(TeleError::Other(format!(
-            "failed to remove pending login state for {name}: {e}"
-        ))),
+    remove_pending_document_under(base, &login_pending_file(name))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PendingPhone {
+    version: u32,
+    account: String,
+    phone: String,
+    phone_code_hash: String,
+    created_at: String,
+}
+
+const PENDING_PHONE_VERSION: u32 = 1;
+
+impl PendingPhone {
+    fn new(account: &str, phone: &str, phone_code_hash: String) -> Self {
+        Self {
+            version: PENDING_PHONE_VERSION,
+            account: account.to_string(),
+            phone: phone.to_string(),
+            phone_code_hash,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
     }
+}
+
+fn save_pending_phone(pending: &PendingPhone) -> TeleResult<()> {
+    save_pending_phone_under(&config::app_data_dir(), pending)
+}
+
+fn save_pending_phone_under(base: &std::path::Path, pending: &PendingPhone) -> TeleResult<()> {
+    let text = serde_json::to_string_pretty(pending)?;
+    save_pending_document_under(base, &phone_pending_file(&pending.account), &text)
+}
+
+fn load_pending_phone_under(
+    base: &std::path::Path,
+    name: &str,
+) -> TeleResult<Option<PendingPhone>> {
+    match load_pending_document_under(base, &phone_pending_file(name))? {
+        Some(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| TeleError::Other(format!(
+                "pending phone-change state for {name} is corrupt ({e}); run tele account phone --change-phone again"
+            ))),
+        None => Ok(None),
+    }
+}
+
+fn require_pending_phone(name: &str) -> TeleResult<PendingPhone> {
+    require_pending_phone_under(&config::app_data_dir(), name)
+}
+
+fn require_pending_phone_under(base: &std::path::Path, name: &str) -> TeleResult<PendingPhone> {
+    load_pending_phone_under(base, name)?.ok_or_else(|| {
+        TeleError::Usage(format!(
+            "no pending phone change for account {name}; run tele account phone --change-phone first"
+        ))
+    })
+}
+
+fn remove_pending_phone(name: &str) -> TeleResult<bool> {
+    remove_pending_phone_under(&config::app_data_dir(), name)
+}
+
+fn remove_pending_phone_under(base: &std::path::Path, name: &str) -> TeleResult<bool> {
+    remove_pending_document_under(base, &phone_pending_file(name))
+}
+
+fn phone_hash_matches(pending: &PendingPhone, hash: &str) -> bool {
+    pending.phone_code_hash == hash.trim()
 }
 
 fn stage_status_data(pending: Option<&PendingLogin>) -> serde_json::Value {
@@ -709,6 +887,8 @@ async fn staged_login(
         }
         LoginStage::Begin => staged_begin(args, flags, phone.as_deref()).await,
         LoginStage::Code => staged_code(args, flags).await,
+        LoginStage::Resend => staged_resend(args, flags).await,
+        LoginStage::CancelCode => staged_cancel_code(args, flags).await,
     }
 }
 
@@ -973,6 +1153,142 @@ fn code_envelope(flags: &GlobalFlags, pending: &PendingLogin, authorized: bool) 
         flags,
         &action_envelope(&pending.account, data, false, &flags.command),
     )
+}
+
+async fn staged_resend(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let pending = require_pending(&args.name)?;
+    let credentials = creds()?;
+    ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
+    let session_existed_before = session::session_path(&args.name)
+        .try_exists()
+        .unwrap_or(false);
+    let guard =
+        match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(e) => {
+                if !session_existed_before {
+                    cleanup_partial_session(&args.name);
+                }
+                return Err(e.into());
+            }
+        };
+    let result = staged_resend_flow(&guard, &pending, flags).await;
+    drop(guard);
+    if result.is_err() && !session_existed_before {
+        cleanup_partial_session(&args.name);
+    }
+    result
+}
+
+async fn staged_resend_flow(
+    guard: &ClientGuard,
+    pending: &PendingLogin,
+    flags: &GlobalFlags,
+) -> TeleResult<i32> {
+    guard.rate_limiter.acquire().await;
+    let request = grammers_client::tl::functions::auth::ResendCode {
+        phone_number: pending.phone.clone(),
+        phone_code_hash: pending.phone_code_hash.clone(),
+        reason: None,
+    };
+    match guard.client.invoke(&request).await {
+        Ok(grammers_client::tl::enums::auth::SentCode::Code(code)) => {
+            let updated = PendingLogin {
+                phone_code_hash: code.phone_code_hash,
+                ..pending.clone()
+            };
+            save_pending(&updated)?;
+            log_line(
+                "info",
+                &format!(
+                    "login code resent to {}; finish with tele account login --name {} --stage code",
+                    redact_phone(&pending.phone),
+                    pending.account
+                ),
+            );
+            let data = serde_json::json!({"stage": "resend", "resent": true});
+            crate::executor::finish(
+                flags,
+                &action_envelope(&pending.account, data, flags.dry_run, &flags.command),
+            )
+        }
+        Ok(grammers_client::tl::enums::auth::SentCode::Success(_)) => {
+            let _ = remove_pending(&pending.account);
+            log_line("info", "server reports the account is already signed in");
+            let data = serde_json::json!({"stage": "resend", "authorized": true});
+            crate::executor::finish(
+                flags,
+                &action_envelope(&pending.account, data, flags.dry_run, &flags.command),
+            )
+        }
+        Ok(grammers_client::tl::enums::auth::SentCode::PaymentRequired(x)) => {
+            Err(TeleError::Other(format!(
+                "login requires paid verification (product {})",
+                x.store_product
+            )))
+        }
+        Err(e) => Err(tele_invocation(e)),
+    }
+}
+
+async fn staged_cancel_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let pending = require_pending(&args.name)?;
+    let credentials = creds()?;
+    ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
+    let session_existed_before = session::session_path(&args.name)
+        .try_exists()
+        .unwrap_or(false);
+    let guard =
+        match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(e) => {
+                if !session_existed_before {
+                    cleanup_partial_session(&args.name);
+                }
+                return Err(e.into());
+            }
+        };
+    let result = staged_cancel_code_flow(&guard, &pending).await;
+    drop(guard);
+    if result.is_err() && !session_existed_before {
+        cleanup_partial_session(&args.name);
+    }
+    match result {
+        Ok(data) => crate::executor::finish(
+            flags,
+            &action_envelope(&args.name, data, flags.dry_run, &flags.command),
+        ),
+        Err(e) => Err(e),
+    }
+}
+
+async fn staged_cancel_code_flow(
+    guard: &ClientGuard,
+    pending: &PendingLogin,
+) -> TeleResult<serde_json::Value> {
+    guard.rate_limiter.acquire().await;
+    let request = grammers_client::tl::functions::auth::CancelCode {
+        phone_number: pending.phone.clone(),
+        phone_code_hash: pending.phone_code_hash.clone(),
+    };
+    match guard.client.invoke(&request).await {
+        Ok(true) => {
+            remove_pending(&pending.account)?;
+            Ok(serde_json::json!({
+                "stage": "cancel-code",
+                "cancelled": true,
+                "server_notified": true,
+            }))
+        }
+        Ok(false) => Err(TeleError::Other(
+            "server refused to cancel the sent login code; local pending state kept".to_string(),
+        )),
+        Err(e) => Err(tele_invocation(e)),
+    }
 }
 
 async fn login_flow(
@@ -1408,6 +1724,456 @@ async fn finish_import(
         &action_envelope(&imported.account, data, false, &flags.command),
     )
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TtlAction {
+    Get,
+    Set(i32),
+}
+
+fn validate_ttl(get: bool, set: bool, days: Option<i64>) -> TeleResult<TtlAction> {
+    match (get, set) {
+        (false, false) => Err(TeleError::Usage("choose one of --get or --set".to_string())),
+        (true, true) => Err(TeleError::Usage(
+            "--get and --set are mutually exclusive".to_string(),
+        )),
+        (true, false) => {
+            if days.is_some() {
+                return Err(TeleError::Usage("--days only applies to --set".to_string()));
+            }
+            Ok(TtlAction::Get)
+        }
+        (false, true) => {
+            let raw =
+                days.ok_or_else(|| TeleError::Usage("--days required with --set".to_string()))?;
+            let parsed = i32::try_from(raw)
+                .map_err(|_| TeleError::Usage("--days must be between 1 and 365".to_string()))?;
+            if !(1..=365).contains(&parsed) {
+                return Err(TeleError::Usage(format!(
+                    "--days must be between 1 and 365, got {parsed}"
+                )));
+            }
+            Ok(TtlAction::Set(parsed))
+        }
+    }
+}
+
+fn ttl_data(days: i32) -> serde_json::Value {
+    serde_json::json!({"ttl_days": days})
+}
+
+fn ttl_set_data(days: i32) -> serde_json::Value {
+    serde_json::json!({"updated": true, "ttl_days": days})
+}
+
+fn ttl_dry_run_data(name: &str, action: &TtlAction) -> serde_json::Value {
+    let would = match action {
+        TtlAction::Get => format!("show the inactive-account TTL for {name}"),
+        TtlAction::Set(days) => format!("set the inactive-account TTL for {name} to {days} days"),
+    };
+    serde_json::json!({"dry_run": true, "would": would})
+}
+
+async fn execute_ttl_action(
+    guard: &ClientGuard,
+    action: TtlAction,
+) -> TeleResult<serde_json::Value> {
+    use grammers_client::tl::{self, enums};
+    guard.rate_limiter.acquire().await;
+    match action {
+        TtlAction::Get => {
+            let response = guard
+                .client
+                .invoke(&tl::functions::account::GetAccountTtl {})
+                .await
+                .map_err(tele_invocation)?;
+            let enums::AccountDaysTtl::Ttl(ttl) = response;
+            Ok(ttl_data(ttl.days))
+        }
+        TtlAction::Set(days) => {
+            let request = tl::functions::account::SetAccountTtl {
+                ttl: enums::AccountDaysTtl::Ttl(tl::types::AccountDaysTtl { days }),
+            };
+            let result = guard.client.invoke(&request).await;
+            match result {
+                Ok(true) => Ok(ttl_set_data(days)),
+                Ok(false) => Err(TeleError::Other(
+                    "server refused to update the account TTL".to_string(),
+                )),
+                Err(e) => Err(tele_invocation(e)),
+            }
+        }
+    }
+}
+
+async fn ttl(args: &TtlArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let action = validate_ttl(args.get, args.set, args.days)?;
+    require_explicit_selection("account ttl", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(ttl_dry_run_data(&name, &action));
+            }
+            let credentials = creds()?;
+            let guard =
+                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
+            execute_ttl_action(&guard, action).await
+        })
+    })
+    .await?;
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        for outcome in envelope.accounts.iter().filter(|o| o.ok) {
+            match action {
+                TtlAction::Get => {
+                    let days = outcome
+                        .data
+                        .as_ref()
+                        .and_then(|d| d["ttl_days"].as_i64())
+                        .unwrap_or_default();
+                    output::print_line(&format!(
+                        "account {}: session TTL {} days",
+                        outcome.account, days
+                    ))?;
+                }
+                TtlAction::Set(days) => {
+                    output::print_line(&format!(
+                        "account {}: session TTL set to {} days",
+                        outcome.account, days
+                    ))?;
+                }
+            }
+        }
+    }
+    crate::executor::finish(flags, &envelope)
+}
+
+fn validate_delete_reason(reason: &str) -> TeleResult<&str> {
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        return Err(TeleError::Usage("--reason must not be empty".to_string()));
+    }
+    Ok(trimmed)
+}
+
+fn delete_would(target: &str, reason: &str) -> String {
+    format!(
+        "permanently delete account {target}: profile, chats and messages will be destroyed (reason: {reason})"
+    )
+}
+
+fn delete_dry_run_data(name: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "action": "delete account",
+        "reason": reason,
+        "would": delete_would(name, reason),
+    })
+}
+
+async fn delete_proof(
+    guard: &ClientGuard,
+) -> TeleResult<grammers_client::tl::enums::InputCheckPasswordSrp> {
+    let password = fetch_password(guard).await?;
+    if !password.has_password {
+        return Ok(grammers_client::tl::enums::InputCheckPasswordSrp::InputCheckPasswordEmpty);
+    }
+    let params = extract_srp_params(password.current_algo.as_ref())?;
+    let srp_b = password
+        .srp_b
+        .clone()
+        .ok_or_else(|| TeleError::Other(NO_SRP_CHALLENGE_MSG.to_string()))?;
+    let srp_id = password
+        .srp_id
+        .ok_or_else(|| TeleError::Other(NO_SRP_CHALLENGE_MSG.to_string()))?;
+    prompt_current_password_proof(
+        &params,
+        srp_id,
+        &srp_b,
+        &password.secure_random,
+        "Enter the current cloud password to delete the account: ",
+    )
+}
+
+async fn delete(args: &DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let reason = validate_delete_reason(&args.reason)?;
+    require_explicit_selection("account delete", flags)?;
+    if !args.yes {
+        let targets = crate::executor::select_accounts(flags)?;
+        let list = targets.join(", ");
+        let would = delete_would(&list, reason);
+        log_line("info", &format!("[no-op] would {would}"));
+        return Err(TeleError::Usage(format!("--yes required: would {would}")));
+    }
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let reason = reason.to_string();
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let reason = reason.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(delete_dry_run_data(&name, &reason));
+            }
+            let credentials = creds()?;
+            let guard =
+                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
+            let proof = delete_proof(&guard).await?;
+            guard.rate_limiter.acquire().await;
+            let request = grammers_client::tl::functions::account::DeleteAccount {
+                reason: reason.clone(),
+                password: Some(proof),
+            };
+            let result = guard.client.invoke(&request).await;
+            drop(guard);
+            match result {
+                Ok(true) => Ok(serde_json::json!({"deleted": true})),
+                Ok(false) => Err(TeleError::Other(
+                    "server refused to delete the account".to_string(),
+                )),
+                Err(e) => Err(map_update_password_error(e)),
+            }
+        })
+    })
+    .await?;
+    if !output::machine_mode(flags.json, flags.jsonl) {
+        for outcome in envelope.accounts.iter().filter(|o| o.ok) {
+            output::log_line("info", &format!("account {} deleted", outcome.account));
+        }
+    }
+    crate::executor::finish(flags, &envelope)
+}
+
+#[derive(Debug, Clone)]
+enum PhoneAction {
+    Send { phone: String, flashcall: bool },
+    Confirm { code: String, hash: String },
+}
+
+impl PhoneAction {
+    fn describe(&self, name: &str) -> String {
+        match self {
+            PhoneAction::Send { phone, .. } => format!(
+                "send the change-phone code for account {} to {}",
+                name,
+                redact_phone(phone)
+            ),
+            PhoneAction::Confirm { code, hash } => format!(
+                "confirm the phone change for account {name} with code {code} using phone_code_hash {hash}"
+            ),
+        }
+    }
+}
+
+fn validate_phone_modes(args: &PhoneArgs) -> TeleResult<PhoneAction> {
+    let primaries =
+        usize::from(args.change_phone.is_some()) + usize::from(args.confirm_code.is_some());
+    if primaries == 0 {
+        return Err(TeleError::Usage(
+            "choose one of --change-phone or --confirm-code".to_string(),
+        ));
+    }
+    if primaries > 1 {
+        return Err(TeleError::Usage(
+            "--change-phone and --confirm-code are mutually exclusive".to_string(),
+        ));
+    }
+    if let Some(phone) = args.change_phone.as_deref() {
+        let phone = phone.trim();
+        if phone.is_empty() {
+            return Err(TeleError::Usage(
+                "--change-phone must not be empty".to_string(),
+            ));
+        }
+        if args.phone_hash.is_some() {
+            return Err(TeleError::Usage(
+                "--phone-hash only applies to --confirm-code".to_string(),
+            ));
+        }
+        return Ok(PhoneAction::Send {
+            phone: phone.to_string(),
+            flashcall: args.allow_flashcall,
+        });
+    }
+    if args.allow_flashcall {
+        return Err(TeleError::Usage(
+            "--allow-flashcall only applies to --change-phone".to_string(),
+        ));
+    }
+    let code = args
+        .confirm_code
+        .as_deref()
+        .ok_or_else(|| TeleError::Usage("--confirm-code required".to_string()))?
+        .trim();
+    if code.is_empty() {
+        return Err(TeleError::Usage(
+            "--confirm-code must not be empty".to_string(),
+        ));
+    }
+    let hash = args
+        .phone_hash
+        .as_deref()
+        .ok_or_else(|| TeleError::Usage("--phone-hash required with --confirm-code".to_string()))?
+        .trim();
+    if hash.is_empty() {
+        return Err(TeleError::Usage(
+            "--phone-hash must not be empty".to_string(),
+        ));
+    }
+    Ok(PhoneAction::Confirm {
+        code: code.to_string(),
+        hash: hash.to_string(),
+    })
+}
+
+fn phone_dry_run_data(name: &str, action: &PhoneAction) -> serde_json::Value {
+    match action {
+        PhoneAction::Send { phone, flashcall } => serde_json::json!({
+            "dry_run": true,
+            "flashcall": flashcall,
+            "would": PhoneAction::Send {
+                phone: phone.clone(),
+                flashcall: *flashcall,
+            }
+            .describe(name),
+        }),
+        other => serde_json::json!({
+            "dry_run": true,
+            "would": other.describe(name),
+        }),
+    }
+}
+
+async fn send_change_phone_code(
+    client: &grammers_client::Client,
+    phone: &str,
+    flashcall: bool,
+) -> TeleResult<String> {
+    use grammers_client::tl::{self};
+    let request = tl::functions::account::SendChangePhoneCode {
+        phone_number: phone.to_string(),
+        settings: tl::types::CodeSettings {
+            allow_flashcall: flashcall,
+            current_number: false,
+            allow_app_hash: false,
+            allow_missed_call: false,
+            allow_firebase: false,
+            logout_tokens: None,
+            token: None,
+            app_sandbox: None,
+            unknown_number: false,
+        }
+        .into(),
+    };
+    match client.invoke(&request).await {
+        Ok(tl::enums::auth::SentCode::Code(code)) => Ok(code.phone_code_hash),
+        Ok(tl::enums::auth::SentCode::Success(_)) => Err(TeleError::Auth(
+            "server reports the number is already active".to_string(),
+        )),
+        Ok(tl::enums::auth::SentCode::PaymentRequired(x)) => Err(TeleError::Other(format!(
+            "verification requires a paid product ({})",
+            x.store_product
+        ))),
+        Err(e) => Err(tele_invocation(e)),
+    }
+}
+
+async fn confirm_change_phone(
+    guard: &ClientGuard,
+    name: &str,
+    pending: &PendingPhone,
+    action: &PhoneAction,
+) -> TeleResult<serde_json::Value> {
+    let PhoneAction::Confirm { code, hash } = action else {
+        return Err(TeleError::Other(
+            "internal error: confirm called without a confirmation action".to_string(),
+        ));
+    };
+    if !phone_hash_matches(pending, hash) {
+        remove_pending_phone_under(&config::app_data_dir(), name).ok();
+        return Err(TeleError::Usage(
+            "--phone-hash does not match the pending change-phone request; run tele account phone --change-phone again"
+                .to_string(),
+        ));
+    }
+    guard.rate_limiter.acquire().await;
+    let request = grammers_client::tl::functions::account::ChangePhone {
+        phone_number: pending.phone.clone(),
+        phone_code_hash: pending.phone_code_hash.clone(),
+        phone_code: code.to_string(),
+    };
+    let response = guard.client.invoke(&request).await;
+    match response {
+        Ok(grammers_client::tl::enums::User::User(user)) => {
+            remove_pending_phone(name)?;
+            Ok(serde_json::json!({
+                "changed": true,
+                "user_id": user.id,
+                "username": user.username,
+            }))
+        }
+        Ok(grammers_client::tl::enums::User::Empty(_)) => Err(TeleError::Other(
+            "server returned an empty user after changing the phone".to_string(),
+        )),
+        Err(e) => Err(tele_invocation(e)),
+    }
+}
+
+async fn execute_phone_action(
+    guard: &ClientGuard,
+    name: &str,
+    action: &PhoneAction,
+) -> TeleResult<serde_json::Value> {
+    match action {
+        PhoneAction::Send { phone, flashcall } => {
+            guard.rate_limiter.acquire().await;
+            let phone_code_hash = send_change_phone_code(&guard.client, phone, *flashcall).await?;
+            save_pending_phone(&PendingPhone::new(name, phone, phone_code_hash.clone()))?;
+            log_line(
+                "info",
+                &format!(
+                    "change-phone code sent to {}; finish with tele account phone --confirm-code <CODE> --phone-hash {phone_code_hash}",
+                    redact_phone(phone)
+                ),
+            );
+            Ok(serde_json::json!({
+                "sent": true,
+                "to": redact_phone(phone),
+                "phone_code_hash": phone_code_hash,
+            }))
+        }
+        confirm @ PhoneAction::Confirm { .. } => {
+            let pending = require_pending_phone(name)?;
+            let value = confirm_change_phone(guard, name, &pending, confirm).await?;
+            log_line("info", &format!("phone changed for account {name}"));
+            Ok(value)
+        }
+    }
+}
+
+async fn phone(args: &PhoneArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    let action = validate_phone_modes(args)?;
+    require_explicit_selection("account phone", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let action = action.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(phone_dry_run_data(&name, &action));
+            }
+            let credentials = creds()?;
+            let guard =
+                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
+            execute_phone_action(&guard, &name, &action).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
 const SESSION_REMOVE_RETRIES: usize = 20;
 const SESSION_REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
 
@@ -1430,11 +2196,11 @@ async fn fetch_authorizations(
 }
 
 async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    if args.terminate.is_some() {
+    let mode = validate_sessions_modes(args)?;
+    if mode.is_mutator() {
         require_explicit_selection("account sessions", flags)?;
     }
     let credentials = creds()?;
-    let terminate = args.terminate;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -1442,45 +2208,151 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let credentials = credentials.clone();
         Box::pin(async move {
             if dry_run {
-                if let Some(hash) = terminate {
+                if let Some(would) = mode.dry_run_description() {
                     return Ok(serde_json::json!({
                         "dry_run": true,
-                        "hash": hash,
-                        "would": format!("terminate authorization {hash}"),
+                        "would": would,
                     }));
                 }
             }
-            let guard =
-                ClientGuard::connect(&name, credentials.api_id, config_path.as_deref()).await?;
-            guard.rate_limiter.acquire().await;
-            let authorizations = fetch_authorizations(&guard.client).await?;
-            if let Some(hash) = terminate {
-                guard.rate_limiter.acquire().await;
-                terminate_decision(hash, &authorizations)?;
-                let result = guard
-                    .client
-                    .invoke(&grammers_client::tl::functions::account::ResetAuthorization { hash })
-                    .await;
-                drop(guard);
-                match result {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        return Err(TeleError::Other(format!(
-                            "server refused to terminate authorization {hash}"
-                        )));
-                    }
-                    Err(e) => return Err(tele_invocation(e)),
+            match mode {
+                SessionsMode::List => {
+                    let guard =
+                        ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
+                            .await?;
+                    guard.rate_limiter.acquire().await;
+                    let authorizations = fetch_authorizations(&guard.client).await?;
+                    drop(guard);
+                    let rows: Vec<serde_json::Value> =
+                        authorizations.iter().map(authorization_row).collect();
+                    Ok(serde_json::json!({"count": rows.len(), "authorizations": rows}))
                 }
-                return Ok(serde_json::json!({ "terminated": true, "hash": hash }));
+                SessionsMode::ListWeb => {
+                    let guard =
+                        ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
+                            .await?;
+                    guard.rate_limiter.acquire().await;
+                    let webs = fetch_web_authorizations(&guard.client).await?;
+                    drop(guard);
+                    let rows: Vec<serde_json::Value> =
+                        webs.iter().map(web_authorization_row).collect();
+                    Ok(serde_json::json!({
+                        "count": rows.len(),
+                        "web": true,
+                        "authorizations": rows
+                    }))
+                }
+                SessionsMode::Terminate(hash) => {
+                    let guard =
+                        ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
+                            .await?;
+                    guard.rate_limiter.acquire().await;
+                    let authorizations = fetch_authorizations(&guard.client).await?;
+                    terminate_decision(hash, &authorizations)?;
+                    let result = guard
+                        .client
+                        .invoke(
+                            &grammers_client::tl::functions::account::ResetAuthorization { hash },
+                        )
+                        .await;
+                    drop(guard);
+                    match result {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return Err(TeleError::Other(format!(
+                                "server refused to terminate authorization {hash}"
+                            )));
+                        }
+                        Err(e) => return Err(tele_invocation(e)),
+                    }
+                    Ok(serde_json::json!({ "terminated": true, "hash": hash }))
+                }
+                SessionsMode::TerminateWeb(hash) => {
+                    let guard =
+                        ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
+                            .await?;
+                    guard.rate_limiter.acquire().await;
+                    let webs = fetch_web_authorizations(&guard.client).await?;
+                    web_hash_decision(hash, &webs)?;
+                    let result = guard
+                        .client
+                        .invoke(
+                            &grammers_client::tl::functions::account::ResetWebAuthorization {
+                                hash,
+                            },
+                        )
+                        .await;
+                    drop(guard);
+                    match result {
+                        Ok(true) => Ok(serde_json::json!({
+                            "terminated": true,
+                            "web": true,
+                            "hash": hash
+                        })),
+                        Ok(false) => Err(TeleError::Other(format!(
+                            "server refused to terminate web authorization {hash}"
+                        ))),
+                        Err(e) => Err(tele_invocation(e)),
+                    }
+                }
+                SessionsMode::TerminateAllWeb => {
+                    let guard =
+                        ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
+                            .await?;
+                    guard.rate_limiter.acquire().await;
+                    let result = guard
+                        .client
+                        .invoke(&grammers_client::tl::functions::account::ResetWebAuthorizations {})
+                        .await;
+                    drop(guard);
+                    match result {
+                        Ok(true) => Ok(serde_json::json!({ "terminated_all": true, "web": true })),
+                        Ok(false) => Err(TeleError::Other(
+                            "server refused to terminate web authorizations".to_string(),
+                        )),
+                        Err(e) => Err(tele_invocation(e)),
+                    }
+                }
+                SessionsMode::ChangeFlags {
+                    hash,
+                    encrypted_requests,
+                    call_requests,
+                } => {
+                    let guard =
+                        ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
+                            .await?;
+                    guard.rate_limiter.acquire().await;
+                    let webs = fetch_web_authorizations(&guard.client).await?;
+                    web_hash_decision(hash, &webs)?;
+                    let request =
+                        grammers_client::tl::functions::account::ChangeAuthorizationSettings {
+                            confirmed: false,
+                            hash,
+                            encrypted_requests_disabled: encrypted_requests,
+                            call_requests_disabled: call_requests,
+                        };
+                    let result = guard.client.invoke(&request).await;
+                    drop(guard);
+                    match result {
+                        Ok(true) => Ok(serde_json::json!({
+                            "updated": true,
+                            "web": true,
+                            "hash": hash,
+                            "encrypted_requests_disabled": encrypted_requests,
+                            "call_requests_disabled": call_requests,
+                        })),
+                        Ok(false) => Err(TeleError::Other(format!(
+                            "server refused to update web authorization {hash}"
+                        ))),
+                        Err(e) => Err(tele_invocation(e)),
+                    }
+                }
             }
-            drop(guard);
-            let rows: Vec<serde_json::Value> =
-                authorizations.iter().map(authorization_row).collect();
-            Ok(serde_json::json!({"count": rows.len(), "authorizations": rows}))
         })
     })
     .await?;
-    if terminate.is_none() && !output::machine_mode(flags.json, flags.jsonl) {
+    let human = !output::machine_mode(flags.json, flags.jsonl);
+    if mode == SessionsMode::List && human {
         let table_rows: Vec<Vec<String>> = envelope
             .accounts
             .iter()
@@ -1503,6 +2375,35 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             output::print_table(
                 &[
                     "account", "hash", "device", "app", "ip", "country", "date", "current",
+                ],
+                &table_rows,
+            )?;
+        }
+    }
+    if mode == SessionsMode::ListWeb && human {
+        let table_rows: Vec<Vec<String>> = envelope
+            .accounts
+            .iter()
+            .filter(|o| o.ok)
+            .flat_map(|o| {
+                o.data
+                    .as_ref()
+                    .and_then(|d| d["authorizations"].as_array())
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|row| web_table_cells(&o.account, row))
+                            .collect::<Vec<Vec<String>>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        if table_rows.is_empty() {
+            output::print_line("no active web sessions")?;
+        } else {
+            output::print_table(
+                &[
+                    "account", "hash", "domain", "browser", "platform", "region", "created",
+                    "active",
                 ],
                 &table_rows,
             )?;
@@ -1784,6 +2685,180 @@ fn terminate_decision(
         None => Err(TeleError::Usage(format!(
             "no active authorization with hash {hash}; run tele account sessions to list valid hashes"
         ))),
+    }
+}
+
+async fn fetch_web_authorizations(
+    client: &grammers_client::Client,
+) -> TeleResult<Vec<grammers_client::tl::types::WebAuthorization>> {
+    use grammers_client::tl::{self, enums};
+    let response = client
+        .invoke(&tl::functions::account::GetWebAuthorizations {})
+        .await
+        .map_err(tele_invocation)?;
+    let enums::account::WebAuthorizations::Authorizations(listed) = response;
+    Ok(listed
+        .authorizations
+        .into_iter()
+        .map(|auth| match auth {
+            enums::WebAuthorization::Authorization(inner) => inner,
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionsMode {
+    List,
+    ListWeb,
+    Terminate(i64),
+    TerminateWeb(i64),
+    TerminateAllWeb,
+    ChangeFlags {
+        hash: i64,
+        encrypted_requests: Option<bool>,
+        call_requests: Option<bool>,
+    },
+}
+
+impl SessionsMode {
+    fn is_mutator(self) -> bool {
+        !matches!(self, SessionsMode::List | SessionsMode::ListWeb)
+    }
+
+    fn dry_run_description(self) -> Option<String> {
+        match self {
+            SessionsMode::List | SessionsMode::ListWeb => None,
+            SessionsMode::Terminate(hash) => Some(format!("terminate authorization {hash}")),
+            SessionsMode::TerminateWeb(hash) => Some(format!("terminate web authorization {hash}")),
+            SessionsMode::TerminateAllWeb => Some("terminate all web authorizations".to_string()),
+            SessionsMode::ChangeFlags {
+                hash,
+                encrypted_requests,
+                call_requests,
+            } => {
+                let mut parts = Vec::new();
+                if let Some(v) = encrypted_requests {
+                    parts.push(format!("disable encrypted requests={v}"));
+                }
+                if let Some(v) = call_requests {
+                    parts.push(format!("disable call requests={v}"));
+                }
+                Some(format!(
+                    "update web authorization {hash} settings: {}",
+                    parts.join("; ")
+                ))
+            }
+        }
+    }
+}
+
+fn parse_bool_arg(value: &str, flag: &str) -> TeleResult<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(TeleError::Usage(format!(
+            "invalid {flag} value \"{other}\"; use true or false"
+        ))),
+    }
+}
+
+fn validate_sessions_modes(args: &SessionsArgs) -> TeleResult<SessionsMode> {
+    let primaries = usize::from(args.terminate.is_some())
+        + usize::from(args.terminate_web.is_some())
+        + usize::from(args.terminate_all_web)
+        + usize::from(args.change_flags.is_some());
+    if primaries > 1 || (primaries >= 1 && args.web) {
+        return Err(TeleError::Usage(
+            "--web, --terminate, --terminate-web, --terminate-all-web and --change-flags are mutually exclusive"
+                .to_string(),
+        ));
+    }
+    if let Some(hash) = args.change_flags {
+        let encrypted_requests = args
+            .disable_encrypted
+            .as_deref()
+            .map(|v| parse_bool_arg(v, "--disable-encrypted"))
+            .transpose()?;
+        let call_requests = args
+            .disable_call_requests
+            .as_deref()
+            .map(|v| parse_bool_arg(v, "--disable-call-requests"))
+            .transpose()?;
+        if encrypted_requests.is_none() && call_requests.is_none() {
+            return Err(TeleError::Usage(
+                "--change-flags needs --disable-encrypted and/or --disable-call-requests"
+                    .to_string(),
+            ));
+        }
+        return Ok(SessionsMode::ChangeFlags {
+            hash,
+            encrypted_requests,
+            call_requests,
+        });
+    }
+    if args.disable_encrypted.is_some() || args.disable_call_requests.is_some() {
+        return Err(TeleError::Usage(
+            "--disable-encrypted/--disable-call-requests only apply with --change-flags HASH"
+                .to_string(),
+        ));
+    }
+    if let Some(hash) = args.terminate_web {
+        return Ok(SessionsMode::TerminateWeb(hash));
+    }
+    if args.terminate_all_web {
+        return Ok(SessionsMode::TerminateAllWeb);
+    }
+    if let Some(hash) = args.terminate {
+        return Ok(SessionsMode::Terminate(hash));
+    }
+    if args.web {
+        return Ok(SessionsMode::ListWeb);
+    }
+    Ok(SessionsMode::List)
+}
+
+fn web_authorization_row(web: &grammers_client::tl::types::WebAuthorization) -> serde_json::Value {
+    let date = |ts: i32| {
+        chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_default()
+    };
+    serde_json::json!({
+        "hash": web.hash,
+        "bot_id": web.bot_id,
+        "domain": web.domain,
+        "browser": web.browser,
+        "platform": web.platform,
+        "ip": web.ip,
+        "region": web.region,
+        "date_created": date(web.date_created),
+        "date_active": date(web.date_active),
+    })
+}
+
+fn web_table_cells(account: &str, row: &serde_json::Value) -> Vec<String> {
+    vec![
+        account.to_string(),
+        row["hash"].to_string(),
+        row["domain"].as_str().unwrap_or_default().to_string(),
+        row["browser"].as_str().unwrap_or_default().to_string(),
+        row["platform"].as_str().unwrap_or_default().to_string(),
+        row["region"].as_str().unwrap_or_default().to_string(),
+        row["date_created"].as_str().unwrap_or_default().to_string(),
+        row["date_active"].as_str().unwrap_or_default().to_string(),
+    ]
+}
+
+fn web_hash_decision(
+    hash: i64,
+    webs: &[grammers_client::tl::types::WebAuthorization],
+) -> TeleResult<()> {
+    if webs.iter().any(|w| w.hash == hash) {
+        Ok(())
+    } else {
+        Err(TeleError::Usage(format!(
+            "no active web session with hash {hash}; run tele account sessions --web to list valid hashes"
+        )))
     }
 }
 
@@ -3981,9 +5056,13 @@ mod tests {
     async fn cancel_discards_pending_then_reports_clean() {
         with_pending_env(|dir| async move {
             save_pending_under(&dir, &pending_fixture("work")).unwrap();
-            assert!(pending_path_under(&dir, "work").exists());
+            assert!(pending_dir_under(&dir)
+                .join(login_pending_file("work"))
+                .exists());
             assert!(remove_pending_under(&dir, "work").unwrap());
-            assert!(!pending_path_under(&dir, "work").exists());
+            assert!(!pending_dir_under(&dir)
+                .join(login_pending_file("work"))
+                .exists());
             assert!(load_pending_under(&dir, "work").unwrap().is_none());
             assert!(!remove_pending_under(&dir, "work").unwrap());
             assert!(!dir.join("sessions").exists());
@@ -3995,7 +5074,9 @@ mod tests {
     async fn pending_state_file_never_contains_secret_fields() {
         with_pending_env(|dir| async move {
             save_pending_under(&dir, &pending_fixture("work")).unwrap();
-            let text = std::fs::read_to_string(pending_path_under(&dir, "work")).unwrap();
+            let text =
+                std::fs::read_to_string(pending_dir_under(&dir).join(login_pending_file("work")))
+                    .unwrap();
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();
             let mut keys: Vec<String> = value
                 .as_object()
@@ -4034,11 +5115,12 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         with_pending_env(|dir| async move {
             save_pending_under(&dir, &pending_fixture("work")).unwrap();
-            let file_mode = std::fs::metadata(pending_path_under(&dir, "work"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
+            let file_mode =
+                std::fs::metadata(pending_dir_under(&dir).join(login_pending_file("work")))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
             assert_eq!(file_mode, 0o600, "pending state file must be owner-only");
             let dir_mode = std::fs::metadata(dir.join("pending"))
                 .unwrap()
@@ -4435,5 +5517,497 @@ mod tests {
         let code = password(&args, &flags).await.unwrap();
         assert_eq!(code, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn ttl_args(get: bool, set: bool, days: Option<i64>) -> TtlArgs {
+        TtlArgs { get, set, days }
+    }
+
+    #[test]
+    fn ttl_mode_matrix_rejects_conflicts_and_bounds() {
+        assert!(usage(validate_ttl(false, false, None)));
+        assert!(usage(validate_ttl(true, true, Some(30))));
+        assert!(usage(validate_ttl(false, true, None)));
+        for bad in [0, 366, -5] {
+            let err = validate_ttl(false, true, Some(bad)).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad}: {err}");
+        }
+        assert!(usage(validate_ttl(true, false, Some(30))));
+        assert_eq!(
+            validate_ttl(false, true, Some(1)).unwrap(),
+            TtlAction::Set(1)
+        );
+        assert_eq!(
+            validate_ttl(false, true, Some(365)).unwrap(),
+            TtlAction::Set(365)
+        );
+        assert_eq!(
+            validate_ttl(false, true, Some(180)).unwrap(),
+            TtlAction::Set(180)
+        );
+        assert_eq!(validate_ttl(true, false, None).unwrap(), TtlAction::Get);
+    }
+
+    #[test]
+    fn ttl_row_carries_days_key() {
+        assert_eq!(ttl_data(42), serde_json::json!({"ttl_days": 42}));
+        assert_eq!(
+            ttl_set_data(180),
+            serde_json::json!({"updated": true, "ttl_days": 180})
+        );
+    }
+
+    #[tokio::test]
+    async fn ttl_dry_run_via_command_is_offline_noop() {
+        with_tele_app_env(|dir| async move {
+            std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+            let mut flags = test_flags("account ttl", true, true, &dir.join("config.toml"));
+            flags.account = vec!["work".to_string()];
+            let code = ttl(&ttl_args(false, true, Some(90)), &flags).await.unwrap();
+            assert_eq!(code, 0);
+            let code = ttl(&ttl_args(true, false, None), &flags).await.unwrap();
+            assert_eq!(code, 0);
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    fn delete_args(reason: &str, yes: bool) -> DeleteArgs {
+        DeleteArgs {
+            reason: reason.to_string(),
+            yes,
+        }
+    }
+
+    #[test]
+    fn delete_reason_must_not_be_blank() {
+        for bad in ["", "   "] {
+            let err = validate_delete_reason(bad).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+        }
+        validate_delete_reason("Delete my account").unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_without_yes_prints_would_and_exits_usage() {
+        with_tele_app_env(|dir| async move {
+            std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+            let mut flags = test_flags("account delete", true, false, &dir.join("config.toml"));
+            flags.account = vec!["work".to_string()];
+            let err = delete(&delete_args("Delete my account", false), &flags)
+                .await
+                .unwrap_err();
+            assert_eq!(err.exit_code(), crate::error::EXIT_USAGE, "{err}");
+            assert!(err.message().contains("--yes"), "{err}");
+            assert!(err.message().contains("would"), "{err}");
+            assert!(err.message().contains("work"), "{err}");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn delete_requires_explicit_account_selection() {
+        let dir = staged_temp_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flags = test_flags("account delete", false, false, &dir.join("config.toml"));
+        let err = delete(&delete_args("bye", true), &flags).await.unwrap_err();
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE, "{err}");
+        assert!(err.message().contains("--account"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn delete_dry_run_with_yes_is_offline_noop() {
+        with_tele_app_env(|dir| async move {
+            std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+            let mut flags = test_flags("account delete", true, true, &dir.join("config.toml"));
+            flags.account = vec!["work".to_string()];
+            let code = delete(&delete_args("Delete my account", true), &flags)
+                .await
+                .unwrap();
+            assert_eq!(code, 0);
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    #[test]
+    fn delete_dry_run_row_carries_would_and_reason() {
+        let row = delete_dry_run_data("work", "spam");
+        assert_eq!(row["dry_run"], serde_json::json!(true));
+        assert_eq!(row["reason"], serde_json::json!("spam"));
+        let would = row["would"].as_str().unwrap();
+        assert!(would.contains("permanently delete"), "{would}");
+        assert!(would.contains("work"), "{would}");
+        assert!(!would.contains("password"), "{would}");
+    }
+
+    #[test]
+    fn sessions_parse_bool_accepts_true_false_only() {
+        assert!(parse_bool_arg("true", "--disable-encrypted").unwrap());
+        assert!(!parse_bool_arg("FALSE", "--disable-encrypted").unwrap());
+        for bad in ["1", "", "yes", "maybe"] {
+            assert!(
+                matches!(
+                    parse_bool_arg(bad, "--disable-encrypted"),
+                    Err(TeleError::Usage(_))
+                ),
+                "{bad:?}"
+            );
+        }
+    }
+
+    fn base_sessions_args() -> SessionsArgs {
+        SessionsArgs {
+            terminate: None,
+            web: false,
+            terminate_web: None,
+            terminate_all_web: false,
+            change_flags: None,
+            disable_encrypted: None,
+            disable_call_requests: None,
+        }
+    }
+
+    #[test]
+    fn sessions_mode_matrix_rejects_conflicting_primaries() {
+        let ok_list = validate_sessions_modes(&base_sessions_args()).unwrap();
+        assert!(matches!(ok_list, SessionsMode::List));
+        let mut web_only = base_sessions_args();
+        web_only.web = true;
+        assert!(matches!(
+            validate_sessions_modes(&web_only).unwrap(),
+            SessionsMode::ListWeb
+        ));
+        let mut term_web = base_sessions_args();
+        term_web.terminate_web = Some(7);
+        assert!(matches!(
+            validate_sessions_modes(&term_web).unwrap(),
+            SessionsMode::TerminateWeb(7)
+        ));
+        let mut all_web = base_sessions_args();
+        all_web.terminate_all_web = true;
+        assert!(matches!(
+            validate_sessions_modes(&all_web).unwrap(),
+            SessionsMode::TerminateAllWeb
+        ));
+        let mut term = base_sessions_args();
+        term.terminate = Some(9);
+        assert!(matches!(
+            validate_sessions_modes(&term).unwrap(),
+            SessionsMode::Terminate(9)
+        ));
+        let mut web_plus_term = term.clone();
+        web_plus_term.web = true;
+        assert!(usage(validate_sessions_modes(&web_plus_term)));
+        let mut double = base_sessions_args();
+        double.terminate = Some(1);
+        double.terminate_all_web = true;
+        assert!(usage(validate_sessions_modes(&double)));
+        let mut triple = double.clone();
+        triple.terminate_web = Some(2);
+        assert!(usage(validate_sessions_modes(&triple)));
+    }
+
+    #[test]
+    fn sessions_change_flags_needs_at_least_one_toggle() {
+        let mut none = base_sessions_args();
+        none.change_flags = Some(5);
+        assert!(usage(validate_sessions_modes(&none)));
+        let mut both = none.clone();
+        both.disable_encrypted = Some("true".into());
+        both.disable_call_requests = Some("false".into());
+        match validate_sessions_modes(&both).unwrap() {
+            SessionsMode::ChangeFlags {
+                hash,
+                encrypted_requests,
+                call_requests,
+            } => {
+                assert_eq!(hash, 5);
+                assert_eq!(encrypted_requests, Some(true));
+                assert_eq!(call_requests, Some(false));
+            }
+            other => panic!("expected ChangeFlags, got {other:?}"),
+        }
+        let mut bad_value = none.clone();
+        bad_value.disable_encrypted = Some("1".into());
+        assert!(usage(validate_sessions_modes(&bad_value)));
+        assert!(base_sessions_args().disable_encrypted.is_none());
+    }
+
+    #[test]
+    fn sessions_toggles_require_change_flags_hash() {
+        let mut orphan = base_sessions_args();
+        orphan.disable_call_requests = Some("true".into());
+        assert!(usage(validate_sessions_modes(&orphan)));
+        let mut orphan_pair = base_sessions_args();
+        orphan_pair.disable_encrypted = Some("false".into());
+        orphan_pair.disable_call_requests = Some("true".into());
+        assert!(usage(validate_sessions_modes(&orphan_pair)));
+    }
+
+    fn web_fixture(hash: i64) -> grammers_client::tl::types::WebAuthorization {
+        grammers_client::tl::types::WebAuthorization {
+            hash,
+            bot_id: 4242,
+            domain: "web.example.org".to_string(),
+            browser: "Chrome 126".to_string(),
+            platform: "Linux".to_string(),
+            date_created: 1_700_000_100,
+            date_active: 1_750_000_200,
+            ip: "198.51.100.9".to_string(),
+            region: "".to_string(),
+        }
+    }
+
+    #[test]
+    fn web_authorization_row_fixture_shapes_expected_keys() {
+        let row = web_authorization_row(&web_fixture(1_234_567_890_124));
+        assert_eq!(row["hash"], serde_json::json!(1_234_567_890_124_i64));
+        assert_eq!(row["bot_id"], serde_json::json!(4242));
+        assert_eq!(row["domain"], serde_json::json!("web.example.org"));
+        assert_eq!(row["browser"], serde_json::json!("Chrome 126"));
+        assert_eq!(row["platform"], serde_json::json!("Linux"));
+        assert_eq!(row["ip"], serde_json::json!("198.51.100.9"));
+        assert_eq!(row["region"], serde_json::json!(""));
+        let created = chrono::DateTime::from_timestamp(1_700_000_100, 0)
+            .unwrap()
+            .to_rfc3339();
+        let active = chrono::DateTime::from_timestamp(1_750_000_200, 0)
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(row["date_created"], serde_json::json!(created));
+        assert_eq!(row["date_active"], serde_json::json!(active));
+        assert!(row.get("device_model").is_none());
+    }
+
+    #[test]
+    fn web_table_cells_flatten_specified_columns() {
+        let row = web_authorization_row(&web_fixture(8));
+        let cells = web_table_cells("work", &row);
+        assert_eq!(cells.len(), 8);
+        assert_eq!(cells[0], "work");
+        assert_eq!(cells[1], "8");
+        assert_eq!(cells[2], "web.example.org");
+        assert!(cells.last().unwrap().len() > 10);
+        let empty = web_table_cells("home", &serde_json::json!({}));
+        assert_eq!(empty[0], "home");
+        assert_eq!(empty[1], "null");
+        assert!(empty.iter().skip(2).all(|c| c.is_empty()));
+    }
+
+    #[test]
+    fn web_decision_rejects_unknown_hash_only() {
+        let rows = vec![web_fixture(111)];
+        assert!(usage(web_hash_decision(999, &rows)));
+        assert!(web_hash_decision(111, &rows).is_ok());
+    }
+
+    fn phone_args(
+        change: Option<&str>,
+        flashcall: bool,
+        code: Option<&str>,
+        hash: Option<&str>,
+    ) -> PhoneArgs {
+        PhoneArgs {
+            change_phone: change.map(str::to_string),
+            allow_flashcall: flashcall,
+            confirm_code: code.map(str::to_string),
+            phone_hash: hash.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn phone_action_validation_matrix() {
+        let none = validate_phone_modes(&phone_args(None, false, None, None)).unwrap_err();
+        assert!(matches!(none, TeleError::Usage(_)));
+        assert!(usage(validate_phone_modes(&phone_args(
+            Some("+15550001111"),
+            false,
+            Some("12345"),
+            Some("h")
+        ))));
+        assert!(usage(validate_phone_modes(&phone_args(
+            None,
+            false,
+            Some("123"),
+            None
+        ))));
+        assert!(usage(validate_phone_modes(&phone_args(
+            Some(""),
+            false,
+            None,
+            None
+        ))));
+        assert!(usage(validate_phone_modes(&phone_args(
+            Some("   "),
+            false,
+            None,
+            None
+        ))));
+        assert!(usage(validate_phone_modes(&phone_args(
+            None,
+            true,
+            Some("123"),
+            Some("h")
+        ))));
+        assert!(usage(validate_phone_modes(&phone_args(
+            None,
+            false,
+            Some("123"),
+            Some("")
+        ))));
+        assert!(usage(validate_phone_modes(&phone_args(
+            None,
+            false,
+            Some("   "),
+            Some("h")
+        ))));
+        match validate_phone_modes(&phone_args(Some(" +15550001111 "), true, None, None)).unwrap() {
+            PhoneAction::Send { phone, flashcall } => {
+                assert_eq!(phone, "+15550001111");
+                assert!(flashcall);
+            }
+            other => panic!("expected Send, got {other:?}"),
+        }
+        match validate_phone_modes(&phone_args(None, false, Some(" 54321 "), Some(" hash ")))
+            .unwrap()
+        {
+            PhoneAction::Confirm { code, hash } => {
+                assert_eq!(code, "54321");
+                assert_eq!(hash, "hash");
+            }
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn phone_pending_roundtrip_mismatch_and_missing_state() {
+        with_pending_env(|dir| async move {
+            let missing = require_pending_phone_under(&dir, "ghost").unwrap_err();
+            assert!(matches!(missing, TeleError::Usage(_)), "{missing}");
+            assert!(missing.message().contains("--change-phone"), "{missing}");
+            let pending = PendingPhone::new("work", "+15551234567", "hash-a".to_string());
+            save_pending_phone_under(&dir, &pending).unwrap();
+            let loaded = require_pending_phone_under(&dir, "work").unwrap();
+            assert_eq!(loaded.phone_code_hash, "hash-a");
+            assert!(phone_hash_matches(&loaded, "hash-a"));
+            assert!(!phone_hash_matches(&loaded, "hash-b"));
+            assert!(remove_pending_phone_under(&dir, "work").unwrap());
+            assert!(!remove_pending_phone_under(&dir, "work").unwrap());
+        })
+        .await;
+    }
+
+    #[test]
+    fn phone_dry_run_send_redacts_target_number() {
+        let send = phone_dry_run_data(
+            "work",
+            &PhoneAction::Send {
+                phone: "+15551234567".to_string(),
+                flashcall: true,
+            },
+        );
+        assert_eq!(send["dry_run"], serde_json::json!(true));
+        let would = send["would"].as_str().unwrap();
+        assert!(would.contains("+1***567"), "{would}");
+        assert!(!would.contains("+15551234567"), "{would}");
+        assert_eq!(send["flashcall"], serde_json::json!(true));
+        let confirm = phone_dry_run_data(
+            "work",
+            &PhoneAction::Confirm {
+                code: "54321".to_string(),
+                hash: "hash-a".to_string(),
+            },
+        );
+        let would = confirm["would"].as_str().unwrap();
+        assert!(would.contains("confirm"), "{would}");
+        assert!(would.contains("hash-a"), "{would}");
+    }
+
+    #[test]
+    fn parse_login_stage_supports_resend_and_cancel_code() {
+        assert_eq!(parse_login_stage("resend").unwrap(), LoginStage::Resend);
+        assert_eq!(
+            parse_login_stage("cancel-code").unwrap(),
+            LoginStage::CancelCode
+        );
+        assert_eq!(LoginStage::Resend.as_str(), "resend");
+        assert_eq!(LoginStage::CancelCode.as_str(), "cancel-code");
+        assert!(usage(parse_login_stage("resendnow")));
+        assert!(usage(parse_login_stage("CANCEL-CODE")));
+    }
+
+    #[test]
+    fn stage_help_documents_local_vs_server_cancel() {
+        assert!(STAGE_HELP.contains("resend"));
+        assert!(STAGE_HELP.contains("cancel-code"));
+        assert!(STAGE_HELP.contains("local"));
+        assert!(STAGE_HELP.contains("server"));
+    }
+
+    #[tokio::test]
+    async fn resend_stage_without_pending_state_is_usage() {
+        with_tele_app_env(|dir| async move {
+            std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+            let flags = test_flags("account login", false, false, &dir.join("config.toml"));
+            let err = login(&staged_args("code", None, Some("resend")), &flags)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{err}");
+            assert!(err.message().contains("--stage begin"), "{err}");
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cancel_code_stage_without_pending_state_is_usage() {
+        with_tele_app_env(|dir| async move {
+            std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+            let flags = test_flags("account login", false, false, &dir.join("config.toml"));
+            let err = login(&staged_args("code", None, Some("cancel-code")), &flags)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "{err}");
+            assert!(err.message().contains("--stage begin"), "{err}");
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn staged_resend_dry_run_writes_no_state() {
+        with_tele_app_env(|dir| async move {
+            std::fs::write(dir.join("config.toml"), "[accounts.work]\n").unwrap();
+            let flags = test_flags("account login", false, true, &dir.join("config.toml"));
+            let code = login(
+                &staged_args("code", Some("+15551234567"), Some("resend")),
+                &flags,
+            )
+            .await
+            .unwrap();
+            assert_eq!(code, 0);
+            assert!(!dir.join("pending").exists());
+            assert!(!dir.join("sessions").exists());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn pending_login_document_io_roundtrip() {
+        with_pending_env(|dir| async move {
+            let file = login_pending_file("work");
+            assert!(load_pending_document_under(&dir, &file).unwrap().is_none());
+            save_pending_under(&dir, &pending_fixture("work")).unwrap();
+            let text = load_pending_document_under(&dir, &file)
+                .unwrap()
+                .expect("document must exist");
+            assert!(text.contains("hash-token-123"));
+            assert!(remove_pending_document_under(&dir, &file).unwrap());
+            assert!(load_pending_under(&dir, "work").unwrap().is_none());
+        })
+        .await;
     }
 }
