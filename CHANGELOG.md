@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-23
 
 ### Added
 - 	ele account ttl get|set --days N (inactive-account self-destruct timer) and 	ele account delete --reason R --yes (SRP-protected, explicit --account + --yes required).

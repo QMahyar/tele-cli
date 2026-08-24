@@ -262,13 +262,33 @@ Round 2 (2026-08-23, after LIVE fixes):
 - [x] dialog list, sticker list, story list read-only
 - [x] device echo empty {} when unconfigured (correct)
 
-Round 3 (2026-08-23, after ACCT-1/ACCT-2):
-- [x] password --status live: has_password:false, has_recovery:false, pending_reset_date:null (clean post-app-disable state)
-- [x] account ttl get live: ttl_days=548
-- [x] sessions --web live on accounts 1+2 (0 web authorizations — correct for these accounts)
-- [x] proxy removed from config.toml (system VPN routes Telegram directly; Throne backup at config.toml.with-proxy)
+## Session close-out (2026-08-23) — implement-every-want + live verification COMPLETE
 
-ACCT-1 + ACCT-2 shipped & pushed. Remaining backlog (user-approved "keep on backlog"): email-verify login purposes, phone verify/confirm, updateStatus, contact-signup notifications — reachable via tele raw.
+Shipped this session (all on main, pushed through af1d717/b510b5d):
+- kernel.serve duplex runtime (A: hello/ping/events/EOF; B: 13 action ops via shared *_core cores; live-only default + state persistence + pts dedupe)
+- msg.buttons reply_markup JSON; listen --from/--in/--out/--pattern(repeatable)/--chat; Service/ChatAction/UserUpdate parsed events (+poll rows in streams)
+- chat invite --check; join-request list/approve/dismiss/bulk
+- auth: sessions manage, web sessions, ttl get/set, delete --yes guard, phone change staged, login staged begin/code/status/cancel/resend/cancel-code, password set (PH2) / status / confirm-email / resend-email / cancel-email / reset-start / decline-reset
+- session export/import + Telethon .session import (libsql); per-account device identity; t.me deep-link targets wired into msg get; raw registry batch (translate/transcribe/effects/todo/schedule-send/ai-compose); sticker group; story group
+- deps added by approval: regex, grammers-crypto, libsql (pinned to grammers' own), pbkdf2/hmac/sha2/getrandom/num-bigint (for PH2)
+
+Live verification (accounts 1+2 real): status/profile/sessions/ttl/web-sessions/dialog/sticker/story reads ✓; self-chat send→edit→get→delete ✓; serve duplex ping+pipe-send+cross-account event ✓; listen pattern filter live ✓; ttl roundtrip ✓; password set+status ✓.
+
+Bugs found & fixed during live testing:
+1. Stack overflow on serve heavy ops → runtime moved to 64MB-stack thread (9198058)
+2. Serve replayed full history each start + reconnect dupes → live-only default, state persisted per update, bounded dedupe (LIVE-1)
+3. Fresh-peer null in streamed rows → peer_id fallback + outer enrichment (LIVE-2)
+4. Raw validator accepted missing required ints → data-driven required_ints pre-connect check
+
+Known limitation (documented, upstream): password --change/--remove with SRP proof rejected server-side (NEW_SETTINGS_EMPTY/INPUT_FETCH_ERROR) despite provably well-formed TL (wire-dump evidence in round 5 notes). Set/status/confirm work. App-disable path documented in CLI error. Telethon #4649 corroborates tightening against third-party 2FA mutations.
+
+Cleanup done: all 71 merged feature branches deleted; temp takeout worktree removed; E:\Code\tele-wt emptied.
+
+Remaining want rows (honest): password change/remove (upstream), schedule-repeat (absent layer 227), mcp+skill (user gate), stories subset gaps (matrix row). Backlog niches via tele raw.
+
+Deferred pending user go: destructive live checks (sessions terminate, story send public post, staged login begin sends SMS), v0.5.0 tag/release.
+
+Round 3 quick checks (kept from prior note): ttl get live = 548 days ✓; sessions --web accounts 1+2 empty (correct); proxy removed from config.toml (system VPN routes Telegram; Throne backup at config.toml.with-proxy).
 
 Round 4 (2026-08-23): password set live ✓ (LiveRound3Pass!, hint live-r3); remove/change hit deterministic NEW_SETTINGS_EMPTY / INPUT_FETCH_ERROR / INPUT_CONSTRUCTOR_INVALID even with WRONG password (server never validates proof → request-bytes parse failure), while auth.CheckPassword with identical SRP struct works (login 2FA) and set with InputCheckPasswordEmpty + populated settings works. Conclusion: grammers-tl-gen serialization defect for UpdatePasswordSettings when password=InputCheckPasswordSrp — upstream issue. CLI now maps those three RPC names to an honest error directing to official-app disable. Account 1 currently has password `LiveRound3Pass!` (hint live-r3) — user must app-disable OR we retry after upstream fix.
 
