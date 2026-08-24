@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256, Sha512};
 use std::io::{IsTerminal, Write};
 use std::sync::Arc;
 
-fn redact_phone(phone: &str) -> String {
+pub(crate) fn redact_phone(phone: &str) -> String {
     let phone = phone.trim();
     if phone.len() <= 6 {
         return phone.to_string();

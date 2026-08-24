@@ -28,6 +28,7 @@ use crate::executor::GlobalFlags;
 use crate::output;
 
 pub const SERVE_PROTOCOL: u32 = 1;
+pub const SERVE_PROTOCOL_MIN: u32 = 1;
 
 const SERVE_EVENTS: &[&str] = &["NewMessage", "MessageEdited"];
 
@@ -147,9 +148,11 @@ pub fn parse_incoming(line: &str) -> Result<ServeIn, serde_json::Value> {
             .get("protocol")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| err_json("VersionMismatch", "hello requires an integer protocol"))?;
-        return Ok(ServeIn::Hello {
-            protocol: protocol as u32,
-        });
+        let protocol = protocol as u32;
+        if !(SERVE_PROTOCOL_MIN..=SERVE_PROTOCOL).contains(&protocol) {
+            return Err(version_error(protocol));
+        }
+        return Ok(ServeIn::Hello { protocol });
     }
     let id = obj
         .get("id")
@@ -172,12 +175,18 @@ pub fn parse_incoming(line: &str) -> Result<ServeIn, serde_json::Value> {
     Ok(ServeIn::Action { id, op, params })
 }
 
-pub fn hello_out(account: &str) -> serde_json::Value {
-    serde_json::json!({
+pub fn hello_out(account: &str, identity: Option<serde_json::Value>) -> serde_json::Value {
+    let mut out = serde_json::json!({
         "type": "hello",
         "protocol": SERVE_PROTOCOL,
+        "min_protocol": SERVE_PROTOCOL_MIN,
+        "max_protocol": SERVE_PROTOCOL,
         "account": account,
-    })
+    });
+    if let Some(identity) = identity {
+        out["identity"] = identity;
+    }
+    out
 }
 
 pub fn response_ok(id: u64, data: serde_json::Value) -> serde_json::Value {
@@ -203,8 +212,20 @@ pub fn response_err(id: Option<u64>, error: serde_json::Value) -> serde_json::Va
 fn version_error(theirs: u32) -> serde_json::Value {
     err_json(
         "VersionMismatch",
-        format!("script protocol {theirs} != serve protocol {SERVE_PROTOCOL}; update one side"),
+        format!(
+            "script protocol {theirs} outside serve range {SERVE_PROTOCOL_MIN}-{SERVE_PROTOCOL}; update one side"
+        ),
     )
+}
+
+fn identity_json(me: &grammers_client::peer::User) -> serde_json::Value {
+    let phone = me.phone().map(crate::commands::account::redact_phone);
+    serde_json::json!({
+        "user_id": me.id().bare_id(),
+        "username": me.username(),
+        "first_name": me.first_name(),
+        "phone_masked": phone,
+    })
 }
 
 fn emit(value: &serde_json::Value) -> TeleResult<()> {
@@ -523,6 +544,12 @@ async fn serve_connection(
         }
     };
     crate::client::authorize(&guard.client).await?;
+    let me = guard
+        .client
+        .get_me()
+        .await
+        .map_err(|e| TeleError::Other(format!("serve: get_me failed: {e}")))?;
+    let identity = identity_json(&me);
     if let Err(e) = guard
         .client
         .invoke(&tl::functions::updates::GetState {})
@@ -550,8 +577,9 @@ async fn serve_connection(
     *failures = 0;
     if greet {
         output::log_line("info", "serve: reconnected");
+        emit(&event_row("Reconnected", name, None, None, None))?;
     } else {
-        emit(&hello_out(name))?;
+        emit(&hello_out(name, Some(identity)))?;
     }
     loop {
         enum Tick {
@@ -584,16 +612,7 @@ async fn serve_connection(
             Tick::Line(line) => match parse_incoming(&line) {
                 Err(error) => emit(&response_err(None, error))?,
                 Ok(ServeIn::Hello { protocol }) => {
-                    if protocol != SERVE_PROTOCOL {
-                        emit(&response_err(None, version_error(protocol)))?;
-                        output::log_line(
-                            "error",
-                            &format!("serve: script spoke protocol {protocol}, serve speaks {SERVE_PROTOCOL}; stopping"),
-                        );
-                        return Err(TeleError::Usage(
-                            "serve protocol version mismatch".to_string(),
-                        ));
-                    }
+                    let _ = protocol;
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
                     handle_action(&guard, id, &op, params).await?
@@ -726,17 +745,46 @@ mod tests {
     }
 
     #[test]
-    fn hello_out_carries_protocol_and_account() {
-        let hello = hello_out("work");
+    fn hello_out_carries_protocol_account_range_and_identity() {
+        let hello = hello_out(
+            "work",
+            Some(serde_json::json!({"user_id": 7, "username": "w"})),
+        );
         assert_eq!(hello["type"], "hello");
         assert_eq!(hello["protocol"], SERVE_PROTOCOL);
+        assert_eq!(hello["min_protocol"], SERVE_PROTOCOL_MIN);
+        assert_eq!(hello["max_protocol"], SERVE_PROTOCOL);
         assert_eq!(hello["account"], "work");
+        assert_eq!(hello["identity"]["user_id"], 7);
+
+        let bare = hello_out("work", None);
+        assert!(bare.get("identity").is_none());
     }
 
     #[test]
-    fn version_mismatch_message_names_both_sides() {
-        let msg = version_error(2)["message"].as_str().unwrap().to_string();
-        assert!(msg.contains("2") && msg.contains(&SERVE_PROTOCOL.to_string()));
+    fn version_mismatch_message_names_range() {
+        let msg = version_error(SERVE_PROTOCOL + 1)["message"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            msg.contains(&SERVE_PROTOCOL_MIN.to_string())
+                && msg.contains(&SERVE_PROTOCOL.to_string())
+        );
+    }
+
+    #[test]
+    fn negotiated_hello_accepts_in_range_and_rejects_out_of_range() {
+        let in_range = parse_incoming(r#"{"type":"hello","protocol":1}"#).unwrap();
+        assert_eq!(in_range, ServeIn::Hello { protocol: 1 });
+        let too_old_and_too_new = [
+            r#"{"type":"hello","protocol":0}"#,
+            r#"{"type":"hello","protocol":99}"#,
+        ];
+        for line in too_old_and_too_new {
+            let err = parse_incoming(line).unwrap_err();
+            assert_eq!(err["type"], "VersionMismatch", "{line}");
+        }
     }
 
     #[test]
