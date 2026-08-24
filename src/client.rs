@@ -18,6 +18,23 @@ pub struct ClientGuard {
     _session_lock: crate::session::SessionLock,
 }
 
+#[derive(Clone)]
+pub struct ServeShares {
+    pub client: Client,
+    pub session: Arc<SqliteSession>,
+    pub rate_limiter: Arc<RateLimiter>,
+}
+
+impl ClientGuard {
+    pub(crate) fn shares(&self) -> ServeShares {
+        ServeShares {
+            client: self.client.clone(),
+            session: Arc::clone(&self.session),
+            rate_limiter: Arc::clone(&self.rate_limiter),
+        }
+    }
+}
+
 impl ClientGuard {
     pub async fn connect(
         name: &str,
