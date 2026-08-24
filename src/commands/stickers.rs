@@ -63,6 +63,142 @@ pub struct RemoveArgs {
     set: String,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ListParams {
+    #[serde(default = "default_list_limit")]
+    limit: u32,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn default_list_limit() -> u32 {
+    200
+}
+
+impl From<&ListArgs> for ListParams {
+    fn from(a: &ListArgs) -> Self {
+        Self {
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ListParams> for ListArgs {
+    fn from(p: &ListParams) -> Self {
+        Self { limit: p.limit }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SearchParams {
+    query: String,
+    #[serde(default = "default_search_limit")]
+    limit: u32,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn default_search_limit() -> u32 {
+    50
+}
+
+impl From<&SearchArgs> for SearchParams {
+    fn from(a: &SearchArgs) -> Self {
+        Self {
+            query: a.query.clone(),
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&SearchParams> for SearchArgs {
+    fn from(p: &SearchParams) -> Self {
+        Self {
+            query: p.query.clone(),
+            limit: p.limit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ShowParams {
+    set: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+impl From<&ShowArgs> for ShowParams {
+    fn from(a: &ShowArgs) -> Self {
+        Self {
+            set: a.set.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ShowParams> for ShowArgs {
+    fn from(p: &ShowParams) -> Self {
+        Self { set: p.set.clone() }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstallParams {
+    set: String,
+    #[serde(default)]
+    archive: bool,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+impl From<&InstallArgs> for InstallParams {
+    fn from(a: &InstallArgs) -> Self {
+        Self {
+            set: a.set.clone(),
+            archive: a.archive,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&InstallParams> for InstallArgs {
+    fn from(p: &InstallParams) -> Self {
+        Self {
+            set: p.set.clone(),
+            archive: p.archive,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RemoveParams {
+    set: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+impl From<&RemoveArgs> for RemoveParams {
+    fn from(a: &RemoveArgs) -> Self {
+        Self {
+            set: a.set.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&RemoveParams> for RemoveArgs {
+    fn from(p: &RemoveParams) -> Self {
+        Self { set: p.set.clone() }
+    }
+}
+
 pub async fn run(cmd: StickerCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         StickerCmd::List(a) => list(a, flags).await,
@@ -112,6 +248,32 @@ fn validate_query(query: &str) -> TeleResult<()> {
             "--query must not be empty; pass a title or keyword to search".to_string(),
         ));
     }
+    Ok(())
+}
+
+pub(crate) fn validate_list(args: &ListArgs) -> TeleResult<()> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
+    validate_query(&args.query)?;
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn validate_show(args: &ShowArgs) -> TeleResult<()> {
+    parse_set_ref(&args.set)?;
+    Ok(())
+}
+
+pub(crate) fn validate_install(args: &InstallArgs) -> TeleResult<()> {
+    parse_set_ref(&args.set)?;
+    Ok(())
+}
+
+pub(crate) fn validate_remove(args: &RemoveArgs) -> TeleResult<()> {
+    parse_set_ref(&args.set)?;
     Ok(())
 }
 
@@ -236,16 +398,40 @@ fn remove_dry_run_payload(short_name: &str) -> serde_json::Value {
     })
 }
 
+pub(crate) fn list_serve_dry_run(_args: &ListArgs) -> TeleResult<serde_json::Value> {
+    Ok(list_dry_run_payload())
+}
+
+pub(crate) fn search_serve_dry_run(args: &SearchArgs) -> TeleResult<serde_json::Value> {
+    Ok(search_dry_run_payload(args.query.trim()))
+}
+
+pub(crate) fn show_serve_dry_run(args: &ShowArgs) -> TeleResult<serde_json::Value> {
+    Ok(show_dry_run_payload(&parse_set_ref(&args.set)?))
+}
+
+pub(crate) fn install_serve_dry_run(args: &InstallArgs) -> TeleResult<serde_json::Value> {
+    Ok(install_dry_run_payload(
+        &parse_set_ref(&args.set)?,
+        args.archive,
+    ))
+}
+
+pub(crate) fn remove_serve_dry_run(args: &RemoveArgs) -> TeleResult<serde_json::Value> {
+    Ok(remove_dry_run_payload(&parse_set_ref(&args.set)?))
+}
+
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    validate_list(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
-    let limit = args.limit as usize;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let params = ListParams::from(&args);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
+        let params = params.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(list_dry_run_payload());
@@ -253,38 +439,47 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let resp: tl::enums::messages::AllStickers = guard
-                .client
-                .invoke(&tl::functions::messages::GetAllStickers { hash: 0 })
-                .await
-                .map_err(tele_invocation)?;
-            let mut rows = rows_from_all(resp);
-            rows.truncate(limit);
+            let result = list_core(&guard.shares(), params).await?;
             if !output::machine_mode(json, jsonl) {
+                let rows = result["sets"].as_array().cloned().unwrap_or_default();
                 let table_rows: Vec<Vec<String>> = rows.iter().map(table_row).collect();
                 output::print_account_table(&name, multi, &SET_COLUMNS, &table_rows)?;
             }
-            Ok(serde_json::json!({ "sets": rows }))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) async fn list_core(
+    shares: &crate::client::ServeShares,
+    params: ListParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let resp: tl::enums::messages::AllStickers = shares
+        .client
+        .invoke(&tl::functions::messages::GetAllStickers { hash: 0 })
+        .await
+        .map_err(tele_invocation)?;
+    let mut rows = rows_from_all(resp);
+    rows.truncate(params.limit as usize);
+    Ok(serde_json::json!({ "sets": rows }))
+}
+
 async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    validate_query(&args.query)?;
-    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    validate_search(&args)?;
     let query = args.query.trim().to_string();
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
-    let limit = args.limit as usize;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let params = SearchParams::from(&args);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let query = query.clone();
+        let params = params.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(search_dry_run_payload(&query));
@@ -292,39 +487,52 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let resp: tl::enums::messages::FoundStickerSets = guard
-                .client
-                .invoke(&tl::functions::messages::SearchStickerSets {
-                    exclude_featured: false,
-                    q: query.clone(),
-                    hash: 0,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            let mut rows = rows_from_found(resp);
-            rows.truncate(limit);
+            let result = search_core(&guard.shares(), params).await?;
             if !output::machine_mode(json, jsonl) {
+                let rows = result["sets"].as_array().cloned().unwrap_or_default();
                 let table_rows: Vec<Vec<String>> = rows.iter().map(table_row).collect();
                 output::print_account_table(&name, multi, &SET_COLUMNS, &table_rows)?;
             }
-            Ok(serde_json::json!({ "query": query, "sets": rows }))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) async fn search_core(
+    shares: &crate::client::ServeShares,
+    params: SearchParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let query = params.query.trim().to_string();
+    let resp: tl::enums::messages::FoundStickerSets = shares
+        .client
+        .invoke(&tl::functions::messages::SearchStickerSets {
+            exclude_featured: false,
+            q: query.clone(),
+            hash: 0,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let mut rows = rows_from_found(resp);
+    rows.truncate(params.limit as usize);
+    Ok(serde_json::json!({ "query": query, "sets": rows }))
+}
+
 async fn show(args: ShowArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_show(&args)?;
     let short_name = parse_set_ref(&args.set)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let params = ShowParams::from(&args);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let short_name = short_name.clone();
+        let params = params.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(show_dry_run_payload(&short_name));
@@ -332,26 +540,7 @@ async fn show(args: ShowArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let resp: tl::enums::messages::StickerSet = guard
-                .client
-                .invoke(&tl::functions::messages::GetStickerSet {
-                    stickerset: input_set(&short_name),
-                    hash: 0,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            let full = match resp {
-                tl::enums::messages::StickerSet::Set(full) => full,
-                tl::enums::messages::StickerSet::NotModified => {
-                    return Err(TeleError::Other(format!(
-                        "sticker set {short_name}: server reported no change (unexpected without a cache hash)"
-                    )));
-                }
-            };
-            let tl::enums::StickerSet::Set(set) = full.set;
-            let mut row = set_row(&set);
-            row["documents"] = serde_json::json!(full.documents.len());
+            let row = show_core(&guard.shares(), params).await?;
             if !output::machine_mode(json, jsonl) {
                 let mut columns: Vec<&str> = SET_COLUMNS.to_vec();
                 columns.insert(3, "documents");
@@ -374,18 +563,49 @@ async fn show(args: ShowArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) async fn show_core(
+    shares: &crate::client::ServeShares,
+    params: ShowParams,
+) -> TeleResult<serde_json::Value> {
+    let short_name = parse_set_ref(&params.set)?;
+    shares.rate_limiter.acquire().await;
+    let resp: tl::enums::messages::StickerSet = shares
+        .client
+        .invoke(&tl::functions::messages::GetStickerSet {
+            stickerset: input_set(&short_name),
+            hash: 0,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let full = match resp {
+        tl::enums::messages::StickerSet::Set(full) => full,
+        tl::enums::messages::StickerSet::NotModified => {
+            return Err(TeleError::Other(format!(
+                "sticker set {short_name}: server reported no change (unexpected without a cache hash)"
+            )));
+        }
+    };
+    let tl::enums::StickerSet::Set(set) = full.set;
+    let mut row = set_row(&set);
+    row["documents"] = serde_json::json!(full.documents.len());
+    Ok(row)
+}
+
 async fn install(args: InstallArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let short_name = parse_set_ref(&args.set)?;
+    validate_install(&args)?;
     require_explicit_selection("sticker install", flags)?;
+    let short_name = parse_set_ref(&args.set)?;
     let archive = args.archive;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let params = InstallParams::from(&args);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let short_name = short_name.clone();
+        let params = params.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(install_dry_run_payload(&short_name, archive));
@@ -393,17 +613,7 @@ async fn install(args: InstallArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let resp: tl::enums::messages::StickerSetInstallResult = guard
-                .client
-                .invoke(&tl::functions::messages::InstallStickerSet {
-                    stickerset: input_set(&short_name),
-                    archived: archive,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            let mut report = install_report(resp, &short_name);
-            report["archive"] = serde_json::json!(archive);
+            let report = install_core(&guard.shares(), params).await?;
             if !output::machine_mode(json, jsonl) {
                 let line = if archive {
                     format!("installed sticker set {short_name} (archived)")
@@ -424,17 +634,39 @@ async fn install(args: InstallArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) async fn install_core(
+    shares: &crate::client::ServeShares,
+    params: InstallParams,
+) -> TeleResult<serde_json::Value> {
+    let short_name = parse_set_ref(&params.set)?;
+    shares.rate_limiter.acquire().await;
+    let resp: tl::enums::messages::StickerSetInstallResult = shares
+        .client
+        .invoke(&tl::functions::messages::InstallStickerSet {
+            stickerset: input_set(&short_name),
+            archived: params.archive,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let mut report = install_report(resp, &short_name);
+    report["archive"] = serde_json::json!(params.archive);
+    Ok(report)
+}
+
 async fn remove(args: RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let short_name = parse_set_ref(&args.set)?;
+    validate_remove(&args)?;
     require_explicit_selection("sticker remove", flags)?;
+    let short_name = parse_set_ref(&args.set)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let params = RemoveParams::from(&args);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let short_name = short_name.clone();
+        let params = params.clone();
         Box::pin(async move {
             if dry_run {
                 return Ok(remove_dry_run_payload(&short_name));
@@ -442,19 +674,7 @@ async fn remove(args: RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let removed: bool = guard
-                .client
-                .invoke(&tl::functions::messages::UninstallStickerSet {
-                    stickerset: input_set(&short_name),
-                })
-                .await
-                .map_err(tele_invocation)?;
-            if !removed {
-                return Err(TeleError::Other(format!(
-                    "Telegram returned false uninstalling sticker set {short_name}"
-                )));
-            }
+            let result = remove_core(&guard.shares(), params).await?;
             if !output::machine_mode(json, jsonl) {
                 let line = format!("removed sticker set {short_name}");
                 let line = if multi {
@@ -464,16 +684,95 @@ async fn remove(args: RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 };
                 output::print_line(&line)?;
             }
-            Ok(serde_json::json!({ "set": short_name, "removed": true }))
+            Ok(result)
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+pub(crate) async fn remove_core(
+    shares: &crate::client::ServeShares,
+    params: RemoveParams,
+) -> TeleResult<serde_json::Value> {
+    let short_name = parse_set_ref(&params.set)?;
+    shares.rate_limiter.acquire().await;
+    let removed: bool = shares
+        .client
+        .invoke(&tl::functions::messages::UninstallStickerSet {
+            stickerset: input_set(&short_name),
+        })
+        .await
+        .map_err(tele_invocation)?;
+    if !removed {
+        return Err(TeleError::Other(format!(
+            "Telegram returned false uninstalling sticker set {short_name}"
+        )));
+    }
+    Ok(serde_json::json!({ "set": short_name, "removed": true }))
 }
+
+pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "sticker install",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            InstallParams,
+            InstallArgs,
+            validate_install,
+            install_serve_dry_run,
+            run_install
+        ),
+        crate::serve_route!(
+            "sticker list",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            ListParams,
+            ListArgs,
+            validate_list,
+            list_serve_dry_run,
+            run_list
+        ),
+        crate::serve_route!(
+            "sticker remove",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            RemoveParams,
+            RemoveArgs,
+            validate_remove,
+            remove_serve_dry_run,
+            run_remove
+        ),
+        crate::serve_route!(
+            "sticker search",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            SearchParams,
+            SearchArgs,
+            validate_search,
+            search_serve_dry_run,
+            run_search
+        ),
+        crate::serve_route!(
+            "sticker show",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            ShowParams,
+            ShowArgs,
+            validate_show,
+            show_serve_dry_run,
+            run_show
+        ),
+    ]
+}
+
+crate::serve_runner!(run_install, install_core, InstallParams);
+crate::serve_runner!(run_list, list_core, ListParams);
+crate::serve_runner!(run_remove, remove_core, RemoveParams);
+crate::serve_runner!(run_search, search_core, SearchParams);
+crate::serve_runner!(run_show, show_core, ShowParams);
 
 #[cfg(test)]
 mod tests {
@@ -801,5 +1100,168 @@ mod tests {
 
         let err = validate_query("   ").unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
+    }
+
+    fn plan_for(
+        op: &str,
+        params: serde_json::Value,
+    ) -> Result<crate::commands::serve::Plan, serde_json::Value> {
+        let routes = stickers_serve_routes();
+        let route = routes
+            .iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    #[test]
+    fn sticker_serve_lanes_and_timeouts_are_locked() {
+        use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+        let routes = stickers_serve_routes();
+        assert_eq!(routes.len(), 5);
+        for route in &routes {
+            match route.op {
+                "sticker list" | "sticker search" | "sticker show" => {
+                    assert_eq!(route.lane, Lane::Read, "{}", route.op);
+                    assert_eq!(route.timeout, Some(OP_TIMEOUT_PAGINATED), "{}", route.op);
+                }
+                "sticker install" | "sticker remove" => {
+                    assert_eq!(route.lane, Lane::Mutate, "{}", route.op);
+                    assert_eq!(route.timeout, Some(OP_TIMEOUT_SIMPLE), "{}", route.op);
+                }
+                other => panic!("unexpected sticker op {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn missing_required_params_yield_serve_error_naming_field() {
+        for (op, params) in [
+            ("sticker show", serde_json::json!({})),
+            ("sticker install", serde_json::json!({})),
+            ("sticker remove", serde_json::json!({})),
+            ("sticker search", serde_json::json!({"limit": 5})),
+        ] {
+            let err = plan_for(op, params).unwrap_err();
+            assert_eq!(err["type"], "ServeError", "{op}");
+            let msg = err["message"].as_str().unwrap();
+            assert!(msg.contains(op), "{op}: {msg}");
+            assert!(msg.contains("missing field"), "{op}: {msg}");
+        }
+    }
+
+    #[test]
+    fn wrong_typed_params_yield_serve_error_with_serde_detail() {
+        let err = plan_for(
+            "sticker search",
+            serde_json::json!({"query": "cats", "limit": "many"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("invalid type"), "{msg}");
+        assert!(msg.contains("u32"), "{msg}");
+
+        let err = plan_for("sticker show", serde_json::json!({"set": 7})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err["message"].as_str().unwrap().contains("string"));
+    }
+
+    #[test]
+    fn unknown_params_yield_serve_error_naming_field() {
+        let err = plan_for("sticker list", serde_json::json!({"lim": 5})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("lim"), "{msg}");
+    }
+
+    #[test]
+    fn invalid_values_yield_usage_error_envelope() {
+        for (op, params) in [
+            ("sticker search", serde_json::json!({"query": "   "})),
+            ("sticker show", serde_json::json!({"set": "a/b"})),
+            ("sticker remove", serde_json::json!({"set": ""})),
+            (
+                "sticker install",
+                serde_json::json!({"set": "t.me/somechannel"}),
+            ),
+            ("sticker list", serde_json::json!({"limit": 20_000})),
+        ] {
+            let err = plan_for(op, params).unwrap_err();
+            assert_eq!(err["type"], "UsageError", "{op}");
+        }
+    }
+
+    #[test]
+    fn dry_run_payloads_match_cli_shapes_exactly() {
+        let plan = plan_for(
+            "sticker search",
+            serde_json::json!({"query": "  cats  ", "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(data) = plan else {
+            panic!("expected dry run");
+        };
+        assert_eq!(data, search_dry_run_payload("cats"));
+
+        let plan = plan_for(
+            "sticker show",
+            serde_json::json!({"set": "t.me/addstickers/ducks", "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(data) = plan else {
+            panic!("expected dry run");
+        };
+        assert_eq!(data, show_dry_run_payload("ducks"));
+
+        let plan = plan_for(
+            "sticker install",
+            serde_json::json!({"set": "ducks", "archive": true, "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(data) = plan else {
+            panic!("expected dry run");
+        };
+        assert_eq!(data, install_dry_run_payload("ducks", true));
+
+        for (op, params, expected) in [
+            (
+                "sticker list",
+                serde_json::json!({"dry_run": true}),
+                list_dry_run_payload(),
+            ),
+            (
+                "sticker remove",
+                serde_json::json!({"set": "ducks", "dry_run": true}),
+                remove_dry_run_payload("ducks"),
+            ),
+        ] {
+            let plan = plan_for(op, params).unwrap();
+            let crate::commands::serve::Plan::DryRun(data) = plan else {
+                panic!("expected dry run for {op}");
+            };
+            assert_eq!(data, expected, "{op}");
+        }
+    }
+
+    #[test]
+    fn execute_plans_carry_raw_params_through_to_runner() {
+        for (op, raw) in [
+            ("sticker list", serde_json::json!({"limit": 7})),
+            ("sticker search", serde_json::json!({"query": "cats"})),
+            ("sticker show", serde_json::json!({"set": "ducks"})),
+            (
+                "sticker install",
+                serde_json::json!({"set": "ducks", "archive": true}),
+            ),
+            ("sticker remove", serde_json::json!({"set": "ducks"})),
+        ] {
+            let plan = plan_for(op, raw.clone()).unwrap();
+            match plan {
+                crate::commands::serve::Plan::Execute(passed) => assert_eq!(passed, raw, "{op}"),
+                other => panic!("{op}: expected execute plan, got {other:?}"),
+            }
+        }
     }
 }

@@ -832,15 +832,32 @@ mod tests {
             "msg send",
             "msg typing",
             "msg vote",
+            "raw",
+            "sticker install",
+            "sticker list",
+            "sticker remove",
+            "sticker search",
+            "sticker show",
+            "story delete",
+            "story list",
+            "story pin",
+            "story read",
+            "story send",
+            "story unpin",
         ];
         let mut actual: Vec<String> = serve_op_routes().iter().map(|r| r.op.to_string()).collect();
         actual.sort_unstable();
         assert_eq!(actual, expected);
-        assert!(serve_op_routes().iter().all(|r| r.op.starts_with("msg ")
-            && !r.op.contains('.')
-            && r.op
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == ' ' || c.is_ascii_digit())));
+        assert!(serve_op_routes().iter().all(|r| {
+            (r.op.starts_with("msg ")
+                || r.op.starts_with("sticker ")
+                || r.op.starts_with("story ")
+                || r.op == "raw")
+                && !r.op.contains('.')
+                && r.op
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == ' ' || c.is_ascii_digit())
+        }));
     }
 
     #[test]
@@ -1151,12 +1168,24 @@ mod tests {
             ("msg forward", Lane::Mutate, Some(30)),
             ("msg get", Lane::Read, Some(120)),
             ("msg pin", Lane::Mutate, Some(30)),
-            ("msg read", Lane::Mutate, Some(30)),
             ("msg react", Lane::Mutate, Some(30)),
+            ("msg read", Lane::Mutate, Some(30)),
             ("msg search", Lane::Read, Some(120)),
             ("msg send", Lane::Mutate, Some(30)),
             ("msg typing", Lane::Mutate, Some(30)),
             ("msg vote", Lane::Mutate, Some(30)),
+            ("raw", Lane::Mutate, Some(120)),
+            ("sticker install", Lane::Mutate, Some(30)),
+            ("sticker list", Lane::Read, Some(120)),
+            ("sticker remove", Lane::Mutate, Some(30)),
+            ("sticker search", Lane::Read, Some(120)),
+            ("sticker show", Lane::Read, Some(120)),
+            ("story delete", Lane::Mutate, Some(30)),
+            ("story list", Lane::Read, Some(120)),
+            ("story pin", Lane::Mutate, Some(30)),
+            ("story read", Lane::Mutate, Some(30)),
+            ("story send", Lane::Mutate, Some(600)),
+            ("story unpin", Lane::Mutate, Some(30)),
         ];
         assert_eq!(serve_op_routes().len(), expected.len());
         for (op, lane, secs) in expected {
