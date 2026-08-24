@@ -1416,7 +1416,7 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            send_core(&guard, SendParams::from(&args)).await
+            send_core(&guard.shares(), SendParams::from(&args)).await
         })
     })
     .await?;
@@ -1424,10 +1424,10 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn send_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: SendParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let chat_target = params.chat.clone();
     let text = params.text.clone();
     let caption = params.caption.clone();
@@ -1445,7 +1445,8 @@ pub(crate) async fn send_core(
     let kind = params.kind.clone();
     let copy_from = params.copy_from.clone();
     let copy_id = params.copy_id;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &chat_target).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     let apply_common = |msg: InputMessage| -> InputMessage {
         let mut msg = msg.reply_to(reply);
@@ -1463,9 +1464,9 @@ pub(crate) async fn send_core(
     if let Some(src_chat) = &copy_from {
         let id = copy_id
             .ok_or_else(|| TeleError::Usage("copy-id required with copy-from".to_string()))?;
-        let src = entities::resolve_peer(&guard.client, guard.session.as_ref(), src_chat).await?;
+        let src = entities::resolve_peer(&shares.client, shares.session.as_ref(), src_chat).await?;
         let src_ref = entities::peer_ref(&src).await.map_err(tele_invocation)?;
-        let found = guard
+        let found = shares
             .client
             .get_messages_by_id(src_ref, &[id])
             .await
@@ -1485,7 +1486,7 @@ pub(crate) async fn send_core(
             _ => InputMessage::new().copy_media(&media),
         };
         let base = base.link_preview(preview);
-        let sent = guard
+        let sent = shares
             .client
             .send_message(chat_ref, apply_common(base))
             .await
@@ -1506,7 +1507,7 @@ pub(crate) async fn send_core(
             base
         };
         let base = base.link_preview(preview);
-        let sent = guard
+        let sent = shares
             .client
             .send_message(chat_ref, apply_common(base))
             .await
@@ -1516,7 +1517,11 @@ pub(crate) async fn send_core(
     if files.len() > 1 {
         let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
         for path in &files {
-            let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+            let uploaded = shares
+                .client
+                .upload_file(path)
+                .await
+                .map_err(upload_error)?;
             let mut media = match looks_like_image(path) {
                 true => grammers_client::media::InputMedia::new().photo(uploaded),
                 false => grammers_client::media::InputMedia::new().document(uploaded),
@@ -1528,7 +1533,7 @@ pub(crate) async fn send_core(
             media = media.reply_to(reply);
             medias.push(media);
         }
-        let sent_album = guard
+        let sent_album = shares
             .client
             .send_album(chat_ref, medias)
             .await
@@ -1540,13 +1545,17 @@ pub(crate) async fn send_core(
         return Ok(serde_json::json!({"album": rows}));
     }
     let mut msg = if let Some(path) = files.first() {
-        let uploaded = guard.client.upload_file(path).await.map_err(upload_error)?;
+        let uploaded = shares
+            .client
+            .upload_file(path)
+            .await
+            .map_err(upload_error)?;
         let mut base = match format.as_str() {
             "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
             _ => InputMessage::new().text(caption.unwrap_or_default()),
         };
         if let Some(thumb_path) = &thumbnail {
-            let thumb_uploaded = guard
+            let thumb_uploaded = shares
                 .client
                 .upload_file(thumb_path)
                 .await
@@ -1563,7 +1572,7 @@ pub(crate) async fn send_core(
         if noforwards {
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
             return send_noforwards_text(
-                &guard.client,
+                &shares.client,
                 peer,
                 RawTextSend {
                     text,
@@ -1592,7 +1601,7 @@ pub(crate) async fn send_core(
         }
     }
     msg = apply_common(msg);
-    let sent = guard
+    let sent = shares
         .client
         .send_message(chat_ref, msg)
         .await
@@ -1637,7 +1646,7 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            edit_core(&guard, EditParams::from(&args)).await
+            edit_core(&guard.shares(), EditParams::from(&args)).await
         })
     })
     .await?;
@@ -1645,13 +1654,14 @@ async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn edit_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: EditParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-    guard
+    shares
         .client
         .edit_message(chat_ref, params.id, InputMessage::new().text(params.text))
         .await
@@ -1720,7 +1730,7 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            delete_core(&guard, DeleteParams::from(&args)).await
+            delete_core(&guard.shares(), DeleteParams::from(&args)).await
         })
     })
     .await?;
@@ -1728,17 +1738,18 @@ async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn delete_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: DeleteParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let all = params.all;
     let ids = params.ids;
     let self_only = params.self_only;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     if all {
-        let mut iter = guard.client.iter_messages(chat_ref);
+        let mut iter = shares.client.iter_messages(chat_ref);
         let mut count = 0usize;
         let mut requested = 0usize;
         let mut batch: Vec<i32> = Vec::with_capacity(100);
@@ -1746,7 +1757,7 @@ pub(crate) async fn delete_core(
             requested += 1;
             batch.push(msg.id());
             if batch.len() >= 100 {
-                guard
+                shares
                     .client
                     .delete_messages(chat_ref, &batch)
                     .await
@@ -1756,7 +1767,7 @@ pub(crate) async fn delete_core(
             }
         }
         if !batch.is_empty() {
-            guard
+            shares
                 .client
                 .delete_messages(chat_ref, &batch)
                 .await
@@ -1780,7 +1791,7 @@ pub(crate) async fn delete_core(
             ));
         }
         for chunk in batches(&ids) {
-            guard
+            shares
                 .client
                 .invoke(&grammers_client::tl::functions::messages::DeleteMessages {
                     revoke: false,
@@ -1792,7 +1803,7 @@ pub(crate) async fn delete_core(
         }
     } else {
         for chunk in batches(&ids) {
-            guard
+            shares
                 .client
                 .delete_messages(chat_ref, chunk)
                 .await
@@ -1843,7 +1854,7 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            forward_core(&guard, ForwardParams::from(&args)).await
+            forward_core(&guard.shares(), ForwardParams::from(&args)).await
         })
     })
     .await?;
@@ -1851,20 +1862,21 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn forward_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: ForwardParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let ids = params.ids;
-    let from = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.from).await?;
-    let to = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.to).await?;
+    let from =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.from).await?;
+    let to = entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.to).await?;
     let from_ref = entities::peer_ref(&from).await.map_err(tele_invocation)?;
     let to_ref = entities::peer_ref(&to).await.map_err(tele_invocation)?;
     let mut forwarded: Vec<serde_json::Value> = Vec::new();
     let mut dropped: Vec<i32> = Vec::new();
     let mut failed: Vec<i32> = Vec::new();
     for chunk in batches(&ids) {
-        let sent = guard
+        let sent = shares
             .client
             .forward_messages(to_ref, chunk, from_ref)
             .await
@@ -1970,7 +1982,7 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            pin_core(&guard, PinParams::from(&args)).await
+            pin_core(&guard.shares(), PinParams::from(&args)).await
         })
     })
     .await?;
@@ -1978,14 +1990,15 @@ async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn pin_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: PinParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     if params.show {
-        let pinned = guard
+        let pinned = shares
             .client
             .get_pinned_message(chat_ref)
             .await
@@ -1998,7 +2011,7 @@ pub(crate) async fn pin_core(
         }));
     }
     if params.all {
-        guard
+        shares
             .client
             .unpin_all_messages(chat_ref)
             .await
@@ -2010,10 +2023,10 @@ pub(crate) async fn pin_core(
         .ok_or_else(|| TeleError::Usage("--id required (or use --show / --all)".to_string()))?;
     use grammers_client::tl;
     let result: std::result::Result<(), grammers_client::InvocationError> = if params.unpin {
-        guard.client.unpin_message(chat_ref, id).await
+        shares.client.unpin_message(chat_ref, id).await
     } else if params.notify {
         let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-        guard
+        shares
             .client
             .invoke(&tl::functions::messages::UpdatePinnedMessage {
                 silent: false,
@@ -2025,7 +2038,7 @@ pub(crate) async fn pin_core(
             .await
             .map(drop)
     } else {
-        guard.client.pin_message(chat_ref, id).await
+        shares.client.pin_message(chat_ref, id).await
     };
     result.map_err(tele_invocation)?;
     Ok(serde_json::json!({"id": id, "pinned": !params.unpin}))
@@ -2144,7 +2157,7 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            let result = get_core(&guard, GetParams::from(&args)).await?;
+            let result = get_core(&guard.shares(), GetParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
                 let empty = Vec::new();
                 output::print_account_table(
@@ -2162,15 +2175,16 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn get_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: GetParams,
 ) -> TeleResult<serde_json::Value> {
     let target_message = get_target_message_id(&params)?;
-    guard.rate_limiter.acquire().await;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     if let Some(target) = target_message {
-        let fetched = guard
+        let fetched = shares
             .client
             .get_messages_by_id(chat_ref, &[target])
             .await
@@ -2181,7 +2195,7 @@ pub(crate) async fn get_core(
         }
         return Ok(serde_json::json!({"messages": rows}));
     }
-    let mut iter = guard.client.iter_messages(chat_ref);
+    let mut iter = shares.client.iter_messages(chat_ref);
     if let Some(offset) = params.offset_id {
         iter = iter.offset_id(offset);
     }
@@ -2194,7 +2208,7 @@ pub(crate) async fn get_core(
     let mut served = 0usize;
     while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
         served += 1;
-        guard.rate_limiter.acquire_for_items(served).await;
+        shares.rate_limiter.acquire_for_items(served).await;
         push_message_row(&mut rows, &msg)?;
     }
     Ok(serde_json::json!({"messages": rows}))
@@ -2253,7 +2267,7 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            read_core(&guard, ReadParams::from(&args)).await
+            read_core(&guard.shares(), ReadParams::from(&args)).await
         })
     })
     .await?;
@@ -2261,14 +2275,15 @@ async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn read_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: ReadParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     if params.mentions {
         let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-        guard
+        shares
             .client
             .clear_mentions(chat_ref)
             .await
@@ -2279,7 +2294,7 @@ pub(crate) async fn read_core(
         let dialog = grammers_client::tl::enums::InputDialogPeer::Peer(
             grammers_client::tl::types::InputDialogPeer { peer },
         );
-        guard
+        shares
             .client
             .invoke(
                 &grammers_client::tl::functions::messages::MarkDialogUnread {
@@ -2292,7 +2307,7 @@ pub(crate) async fn read_core(
             .map_err(tele_invocation)?;
     } else {
         let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-        guard
+        shares
             .client
             .mark_as_read(chat_ref)
             .await
@@ -2342,7 +2357,7 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            react_core(&guard, ReactParams::from(&args)).await
+            react_core(&guard.shares(), ReactParams::from(&args)).await
         })
     })
     .await?;
@@ -2350,11 +2365,12 @@ async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn react_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: ReactParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     use grammers_client::message::InputReactions;
     let input = if params.remove {
@@ -2366,7 +2382,7 @@ pub(crate) async fn react_core(
             "--reaction <emoji> or --remove required".to_string(),
         ));
     };
-    guard
+    shares
         .client
         .send_reactions(chat_ref, params.id, input)
         .await
@@ -2469,7 +2485,7 @@ async fn vote(args: VoteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            vote_core(&guard, VoteParams::from(&args)).await
+            vote_core(&guard.shares(), VoteParams::from(&args)).await
         })
     })
     .await?;
@@ -2477,17 +2493,18 @@ async fn vote(args: VoteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn vote_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: VoteParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let id = params.id;
     let chat_target = params.chat.clone();
     let option_indexes = parse_vote_options(&params.option)?;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &chat_target).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-    let found = guard
+    let found = shares
         .client
         .get_messages_by_id(chat_ref, &[id])
         .await
@@ -2507,7 +2524,7 @@ pub(crate) async fn vote_core(
     let answers = crate::serialize::poll_answers(&poll);
     let options = resolve_vote_options(&answers, &option_indexes)?;
     use grammers_client::tl;
-    guard
+    shares
         .client
         .invoke(&tl::functions::messages::SendVote {
             peer: input_peer,
@@ -2623,7 +2640,7 @@ async fn typing(args: TypingArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            typing_core(&guard, TypingParams::from(&args)).await
+            typing_core(&guard.shares(), TypingParams::from(&args)).await
         })
     })
     .await?;
@@ -2631,14 +2648,15 @@ async fn typing(args: TypingArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn typing_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: TypingParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let choice = typing_action(params.action.as_deref())?;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-    let sender = guard.client.action(chat_ref);
+    let sender = shares.client.action(chat_ref);
     match choice {
         TypingChoice::Cancel => sender.cancel().await,
         other => sender.oneshot(other.action()).await,
@@ -2855,7 +2873,7 @@ async fn click(args: ClickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            click_core(&guard, ClickParams::from(&args)).await
+            click_core(&guard.shares(), ClickParams::from(&args)).await
         })
     })
     .await?;
@@ -2863,17 +2881,18 @@ async fn click(args: ClickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn click_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: ClickParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let id = params.id;
     let chat_target = params.chat.clone();
     let selector = click_selector(&ClickArgs::from(&params));
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &chat_target).await?;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &chat_target).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-    let found = guard
+    let found = shares
         .client
         .get_messages_by_id(chat_ref, &[id])
         .await
@@ -2895,7 +2914,7 @@ pub(crate) async fn click_core(
         )));
     }
     use grammers_client::tl;
-    let answer: tl::enums::messages::BotCallbackAnswer = guard
+    let answer: tl::enums::messages::BotCallbackAnswer = shares
         .client
         .invoke(&tl::functions::messages::GetBotCallbackAnswer {
             game: false,
@@ -2956,7 +2975,7 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            let result = search_core(&guard, SearchParams::from(&args)).await?;
+            let result = search_core(&guard.shares(), SearchParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
                 let empty = Vec::new();
                 output::print_account_table(
@@ -2974,36 +2993,36 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn search_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: SearchParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut served = 0usize;
     let limit = params.limit as usize;
     if params.global {
-        let mut iter = guard
+        let mut iter = shares
             .client
             .search_all_messages()
             .query(&params.query)
             .limit(limit);
         while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
             served += 1;
-            guard.rate_limiter.acquire_for_items(served).await;
+            shares.rate_limiter.acquire_for_items(served).await;
             push_message_row(&mut rows, &msg)?;
         }
     } else {
         let chat =
-            entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+            entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
         let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-        let mut iter = guard
+        let mut iter = shares
             .client
             .search_messages(chat_ref)
             .query(&params.query)
             .limit(limit);
         while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
             served += 1;
-            guard.rate_limiter.acquire_for_items(served).await;
+            shares.rate_limiter.acquire_for_items(served).await;
             push_message_row(&mut rows, &msg)?;
         }
     }
@@ -3032,7 +3051,7 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            download_core(&guard, DownloadParams::from(&args)).await
+            download_core(&guard.shares(), DownloadParams::from(&args)).await
         })
     })
     .await?;
@@ -3040,16 +3059,17 @@ async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) async fn download_core(
-    guard: &crate::client::ClientGuard,
+    shares: &crate::client::ServeShares,
     params: DownloadParams,
 ) -> TeleResult<serde_json::Value> {
-    guard.rate_limiter.acquire().await;
+    shares.rate_limiter.acquire().await;
     let id = params.id;
     let out_dir = params.dir.clone();
     let chunk_size_kb = params.chunk_size_kb;
-    let chat = entities::resolve_peer(&guard.client, guard.session.as_ref(), &params.chat).await?;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-    let found = guard
+    let found = shares
         .client
         .get_messages_by_id(chat_ref, &[id])
         .await
@@ -3084,7 +3104,7 @@ pub(crate) async fn download_core(
     let ok = match chunk_size_kb {
         Some(kb) => {
             let media = msg.media().expect("media checked above");
-            let mut iter = guard
+            let mut iter = shares
                 .client
                 .iter_download(&media)
                 .chunk_size((kb * 1024) as i32);

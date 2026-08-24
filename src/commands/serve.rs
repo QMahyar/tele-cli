@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::client::ClientGuard;
+use crate::client::ServeShares;
 use crate::commands::listen::{
     event_row, getstate_probe_error, handle_stream_failure, is_empty_update, poll_timeout,
     update_peer,
@@ -26,6 +26,7 @@ use crate::commands::msg::{
 use crate::error::{TeleError, TeleResult, EXIT_OK};
 use crate::executor::GlobalFlags;
 use crate::output;
+use std::time::Duration;
 
 pub const SERVE_PROTOCOL: u32 = 1;
 pub const SERVE_PROTOCOL_MIN: u32 = 1;
@@ -33,6 +34,14 @@ pub const SERVE_PROTOCOL_MIN: u32 = 1;
 const SERVE_EVENTS: &[&str] = &["NewMessage", "MessageEdited"];
 
 const SERVE_DEDUPE_CAP: usize = 10_000;
+
+const SERVE_INTAKE_CAPACITY: usize = 64;
+const MUTATE_QUEUE_CAPACITY: usize = 64;
+const READ_QUEUE_CAPACITY: usize = 64;
+const READ_POOL_SIZE: usize = 2;
+
+const OP_TIMEOUT_SIMPLE: Duration = Duration::from_secs(30);
+const OP_TIMEOUT_PAGINATED: Duration = Duration::from_secs(120);
 
 pub(crate) struct ServeDedupe {
     seen: HashMap<(i64, i32, i32), ()>,
@@ -76,12 +85,10 @@ pub(crate) fn pts_from_state(state: &grammers_session::updates::State) -> i32 {
     }
 }
 
-type ServeRunner = for<'a> fn(
-    &'a ClientGuard,
-    serde_json::Value,
-) -> Pin<
-    Box<dyn Future<Output = Result<serde_json::Value, serde_json::Value>> + Send + 'a>,
->;
+type ServeFuture =
+    Pin<Box<dyn Future<Output = Result<serde_json::Value, serde_json::Value>> + Send>>;
+
+type ServeRunner = fn(ServeShares, serde_json::Value) -> ServeFuture;
 
 type Planner = fn(&str, serde_json::Value) -> Result<Plan, serde_json::Value>;
 
@@ -91,8 +98,23 @@ enum Plan {
     Execute(serde_json::Value),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lane {
+    Mutate,
+    Read,
+}
+
+struct Job {
+    id: u64,
+    op: &'static str,
+    timeout: Option<Duration>,
+    future: ServeFuture,
+}
+
 struct OpRoute {
     op: &'static str,
+    lane: Lane,
+    timeout: Option<Duration>,
     planner: Planner,
     runner: ServeRunner,
 }
@@ -234,15 +256,11 @@ fn emit(value: &serde_json::Value) -> TeleResult<()> {
 
 macro_rules! serve_runner {
     ($name:ident, $core:path, $params:ty) => {
-        fn $name<'a>(
-            guard: &'a ClientGuard,
-            raw: serde_json::Value,
-        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, serde_json::Value>> + Send + 'a>>
-        {
+        fn $name(shares: ServeShares, raw: serde_json::Value) -> ServeFuture {
             Box::pin(async move {
                 let params: $params = serde_json::from_value(raw)
                     .map_err(|e| err_json("ServeError", format!("params: {e}")))?;
-                $core(guard, params).await.map_err(|e| e.as_json())
+                $core(&shares, params).await.map_err(|e| e.as_json())
             })
         }
     };
@@ -263,9 +281,11 @@ serve_runner!(run_typing, typing_core, TypingParams);
 serve_runner!(run_click, click_core, ClickParams);
 
 macro_rules! serve_route {
-    ($op:literal, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr) => {
+    ($op:literal, $lane:expr, $timeout:expr, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr) => {
         OpRoute {
             op: $op,
+            lane: $lane,
+            timeout: $timeout,
             planner: |op: &str, raw: serde_json::Value| {
                 let parsed: $params = prep(op, raw.clone())?;
                 let args: $args = (&parsed).into();
@@ -283,6 +303,8 @@ macro_rules! serve_route {
 const SERVE_OPS: &[OpRoute] = &[
     serve_route!(
         "msg click",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         ClickParams,
         ClickArgs,
         validate_click,
@@ -291,6 +313,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg delete",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         DeleteParams,
         DeleteArgs,
         validate_delete,
@@ -299,6 +323,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg download",
+        Lane::Read,
+        None,
         DownloadParams,
         DownloadArgs,
         validate_download,
@@ -307,6 +333,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg edit",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         EditParams,
         EditArgs,
         validate_edit,
@@ -315,6 +343,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg forward",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         ForwardParams,
         ForwardArgs,
         validate_forward,
@@ -323,6 +353,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg get",
+        Lane::Read,
+        Some(OP_TIMEOUT_PAGINATED),
         GetParams,
         GetArgs,
         validate_get,
@@ -331,6 +363,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg pin",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         PinParams,
         PinArgs,
         validate_pin,
@@ -339,6 +373,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg read",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         ReadParams,
         ReadArgs,
         validate_read,
@@ -347,6 +383,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg react",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         ReactParams,
         ReactArgs,
         validate_react,
@@ -355,6 +393,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg search",
+        Lane::Read,
+        Some(OP_TIMEOUT_PAGINATED),
         SearchParams,
         SearchArgs,
         validate_search,
@@ -363,6 +403,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg send",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         SendParams,
         SendArgs,
         validate_send,
@@ -371,6 +413,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg typing",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         TypingParams,
         TypingArgs,
         validate_typing,
@@ -379,6 +423,8 @@ const SERVE_OPS: &[OpRoute] = &[
     ),
     serve_route!(
         "msg vote",
+        Lane::Mutate,
+        Some(OP_TIMEOUT_SIMPLE),
         VoteParams,
         VoteArgs,
         validate_vote,
@@ -413,8 +459,60 @@ fn find_route(op: &str) -> Option<&'static OpRoute> {
     SERVE_OPS.iter().find(|r| r.op == op)
 }
 
-async fn handle_action(
-    guard: &ClientGuard,
+async fn execute_job(job: Job) -> serde_json::Value {
+    let Job {
+        id,
+        op,
+        timeout,
+        future,
+    } = job;
+    let outcome = match timeout {
+        Some(limit) => match tokio::time::timeout(limit, future).await {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                return response_err(
+                    Some(id),
+                    err_json("Timeout", format!("op {op} timed out after {limit:?}")),
+                )
+            }
+        },
+        None => future.await,
+    };
+    match outcome {
+        Ok(data) => response_ok(id, data),
+        Err(error) => response_err(Some(id), error),
+    }
+}
+
+type JobQueue = std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Job>>>;
+
+async fn job_worker(
+    jobs: JobQueue,
+    responses: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+) {
+    loop {
+        let next = {
+            let mut queue = jobs.lock().await;
+            queue.recv().await
+        };
+        let Some(job) = next else {
+            break;
+        };
+        let value = execute_job(job).await;
+        if responses.send(value).is_err() {
+            break;
+        }
+    }
+}
+
+fn job_queue(receiver: tokio::sync::mpsc::Receiver<Job>) -> JobQueue {
+    std::sync::Arc::new(tokio::sync::Mutex::new(receiver))
+}
+
+async fn dispatch_action(
+    shares: &ServeShares,
+    mutations: &tokio::sync::mpsc::Sender<Job>,
+    reads: &tokio::sync::mpsc::Sender<Job>,
     id: u64,
     op: &str,
     params: serde_json::Value,
@@ -422,18 +520,29 @@ async fn handle_action(
     if op == "ping" {
         return emit(&response_ok(id, serde_json::json!({ "pong": true })));
     }
-    let response = match find_route(op) {
-        None => response_err(Some(id), not_implemented(op)),
-        Some(route) => match (route.planner)(op, params) {
-            Err(error) => response_err(Some(id), error),
-            Ok(Plan::DryRun(data)) => response_ok(id, data),
-            Ok(Plan::Execute(raw)) => match (route.runner)(guard, raw).await {
-                Ok(data) => response_ok(id, data),
-                Err(error) => response_err(Some(id), error),
-            },
-        },
+    let Some(route) = find_route(op) else {
+        return emit(&response_err(Some(id), not_implemented(op)));
     };
-    emit(&response)
+    match (route.planner)(op, params) {
+        Err(error) => emit(&response_err(Some(id), error)),
+        Ok(Plan::DryRun(data)) => emit(&response_ok(id, data)),
+        Ok(Plan::Execute(raw)) => {
+            let job = Job {
+                id,
+                op: route.op,
+                timeout: route.timeout,
+                future: (route.runner)(shares.clone(), raw),
+            };
+            let queue = match route.lane {
+                Lane::Mutate => mutations,
+                Lane::Read => reads,
+            };
+            if queue.send(job).await.is_err() {
+                output::log_line("warn", "serve: op queue closed before dispatch");
+            }
+            Ok(())
+        }
+    }
 }
 
 fn event_kind_allowed(update: &Update, kinds: &[String]) -> Option<&'static str> {
@@ -489,12 +598,12 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let creds = crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(SERVE_INTAKE_CAPACITY);
     tokio::spawn(async move {
         use tokio::io::AsyncBufReadExt;
         let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if tx.send(line).is_err() {
+            if tx.send(line).await.is_err() {
                 break;
             }
         }
@@ -530,13 +639,13 @@ async fn serve_connection(
     catch_up: bool,
     creds: &crate::config::Credentials,
     config_path: Option<&std::path::Path>,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    rx: &mut tokio::sync::mpsc::Receiver<String>,
     failures: &mut u32,
     greet: bool,
     dedupe: &mut ServeDedupe,
 ) -> TeleResult<bool> {
     let mut guard = loop {
-        match ClientGuard::connect(name, creds.api_id, config_path).await {
+        match crate::client::ClientGuard::connect(name, creds.api_id, config_path).await {
             Ok(guard) => break guard,
             Err(e) => {
                 handle_stream_failure(name, TeleError::from(e), failures, None).await?;
@@ -581,12 +690,31 @@ async fn serve_connection(
     } else {
         emit(&hello_out(name, Some(identity)))?;
     }
+    let shares = guard.shares();
+    let (mutations, mutation_rx) = tokio::sync::mpsc::channel::<Job>(MUTATE_QUEUE_CAPACITY);
+    let (reads, read_rx) = tokio::sync::mpsc::channel::<Job>(READ_QUEUE_CAPACITY);
+    let (response_tx, mut response_rx) =
+        tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let mut workers = Vec::new();
+    workers.push(tokio::spawn(job_worker(
+        job_queue(mutation_rx),
+        response_tx.clone(),
+    )));
+    let shared_reads = job_queue(read_rx);
+    for _ in 0..READ_POOL_SIZE {
+        workers.push(tokio::spawn(job_worker(
+            std::sync::Arc::clone(&shared_reads),
+            response_tx.clone(),
+        )));
+    }
+    drop(response_tx);
     loop {
         enum Tick {
             Line(String),
             Eof,
             Update(Box<Update>),
             StreamError(grammers_client::InvocationError),
+            Response(serde_json::Value),
         }
         let tick = tokio::select! {
             biased;
@@ -602,10 +730,22 @@ async fn serve_connection(
                 Ok(Err(e)) => Tick::StreamError(e),
                 Err(_) => continue,
             },
+            response = response_rx.recv() => match response {
+                Some(value) => Tick::Response(value),
+                None => continue,
+            },
         };
         match tick {
             Tick::Eof => {
                 output::log_line("info", "serve: stdin closed, shutting down");
+                drop(mutations);
+                drop(reads);
+                for worker in workers.drain(..) {
+                    let _ = worker.await;
+                }
+                while let Some(value) = response_rx.recv().await {
+                    emit(&value)?;
+                }
                 guard.close().await;
                 return Ok(true);
             }
@@ -615,9 +755,10 @@ async fn serve_connection(
                     let _ = protocol;
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
-                    handle_action(&guard, id, &op, params).await?
+                    dispatch_action(&shares, &mutations, &reads, id, &op, params).await?
                 }
             },
+            Tick::Response(value) => emit(&value)?,
             Tick::StreamError(e) => {
                 if crate::error::invocation_is_unauthorized(&e) {
                     return Err(crate::error::invocation_error(e));
@@ -1132,5 +1273,147 @@ mod tests {
         }
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn route_for(op: &str) -> &'static OpRoute {
+        find_route(op).unwrap_or_else(|| panic!("route missing for {op}"))
+    }
+
+    #[test]
+    fn lane_and_timeout_table_is_locked() {
+        let expected: &[(&str, Lane, Option<u64>)] = &[
+            ("msg click", Lane::Mutate, Some(30)),
+            ("msg delete", Lane::Mutate, Some(30)),
+            ("msg download", Lane::Read, None),
+            ("msg edit", Lane::Mutate, Some(30)),
+            ("msg forward", Lane::Mutate, Some(30)),
+            ("msg get", Lane::Read, Some(120)),
+            ("msg pin", Lane::Mutate, Some(30)),
+            ("msg read", Lane::Mutate, Some(30)),
+            ("msg react", Lane::Mutate, Some(30)),
+            ("msg search", Lane::Read, Some(120)),
+            ("msg send", Lane::Mutate, Some(30)),
+            ("msg typing", Lane::Mutate, Some(30)),
+            ("msg vote", Lane::Mutate, Some(30)),
+        ];
+        assert_eq!(SERVE_OPS.len(), expected.len());
+        for (op, lane, secs) in expected {
+            let route = route_for(op);
+            assert_eq!(route.lane, *lane, "lane for {op}");
+            assert_eq!(
+                route.timeout,
+                secs.map(Duration::from_secs),
+                "timeout for {op}"
+            );
+        }
+    }
+
+    fn scripted_job(id: u64, delay_ms: u64, timeout: Option<Duration>) -> Job {
+        Job {
+            id,
+            op: "msg send",
+            timeout,
+            future: Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                Ok(serde_json::json!({ "id": id }))
+            }),
+        }
+    }
+
+    async fn next_response(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    ) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("response overdue")
+            .expect("response channel closed")
+    }
+
+    #[tokio::test]
+    async fn mutate_lane_preserves_submission_order_reads_run_concurrently() {
+        let (mutation_tx, mutation_rx) = tokio::sync::mpsc::channel::<Job>(8);
+        let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Job>(8);
+        let (response_tx, mut response_rx) =
+            tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let mut workers = vec![tokio::spawn(job_worker(
+            job_queue(mutation_rx),
+            response_tx.clone(),
+        ))];
+        let shared_reads = job_queue(read_rx);
+        for _ in 0..READ_POOL_SIZE {
+            workers.push(tokio::spawn(job_worker(
+                std::sync::Arc::clone(&shared_reads),
+                response_tx.clone(),
+            )));
+        }
+        drop(response_tx);
+
+        mutation_tx.send(scripted_job(1, 90, None)).await.unwrap();
+        mutation_tx.send(scripted_job(2, 1, None)).await.unwrap();
+        mutation_tx.send(scripted_job(3, 1, None)).await.unwrap();
+        read_tx.send(scripted_job(4, 100, None)).await.unwrap();
+        read_tx.send(scripted_job(5, 100, None)).await.unwrap();
+        drop(mutation_tx);
+        drop(read_tx);
+
+        let started = std::time::Instant::now();
+        let mut arrivals = Vec::new();
+        for _ in 0..5 {
+            let value = next_response(&mut response_rx).await;
+            assert_eq!(value["ok"], true);
+            arrivals.push(value["id"].as_u64().unwrap());
+        }
+        let elapsed = started.elapsed();
+
+        for worker in workers {
+            worker.await.unwrap();
+        }
+        assert!(response_rx.recv().await.is_none());
+
+        let mutate_order: Vec<u64> = arrivals.iter().copied().filter(|id| *id <= 3).collect();
+        assert_eq!(mutate_order, vec![1, 2, 3]);
+        assert_eq!(arrivals.len(), 5);
+        assert!(
+            elapsed < Duration::from_millis(175),
+            "reads did not overlap the mutation lane: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_job_enforces_timeout_with_correlated_envelope() {
+        let slow = scripted_job(42, 60_000, Some(Duration::from_millis(20)));
+        let value = execute_job(slow).await;
+        assert_eq!(value["type"], "response");
+        assert_eq!(value["id"], 42);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["type"], "Timeout");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(message.contains("msg send"), "{message}");
+        assert!(message.contains("20ms"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn execute_job_passes_core_outcomes_through_unbounded_reads() {
+        let ok_job = Job {
+            id: 7,
+            op: "msg download",
+            timeout: None,
+            future: Box::pin(async { Ok(serde_json::json!({ "bytes": 11 })) }),
+        };
+        let value = execute_job(ok_job).await;
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["data"]["bytes"], 11);
+
+        let err_job = Job {
+            id: 8,
+            op: "msg download",
+            timeout: None,
+            future: Box::pin(async { Err(err_json("ServeError", "boom")) }),
+        };
+        let value = execute_job(err_job).await;
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["id"], 8);
+        assert_eq!(value["error"]["type"], "ServeError");
     }
 }
