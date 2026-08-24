@@ -1009,6 +1009,11 @@ mod tests {
     #[test]
     fn routes_table_is_locked_command_path_form() {
         let expected = [
+            "contact add",
+            "contact block",
+            "contact list",
+            "contact remove",
+            "contact unblock",
             "dialog archive",
             "dialog delete",
             "dialog draft",
@@ -1028,6 +1033,12 @@ mod tests {
             "msg send",
             "msg typing",
             "msg vote",
+            "privacy get",
+            "privacy set",
+            "profile emoji-status",
+            "profile get",
+            "profile photo",
+            "profile set",
             "topic close",
             "topic create",
             "topic delete",
@@ -1040,14 +1051,19 @@ mod tests {
         actual.sort_unstable();
         assert_eq!(actual, expected);
         let group_ok = |op: &str| {
-            op.starts_with("msg ") || op.starts_with("dialog ") || op.starts_with("topic ")
+            op.starts_with("msg ")
+                || op.starts_with("dialog ")
+                || op.starts_with("topic ")
+                || op.starts_with("profile ")
+                || op.starts_with("privacy ")
+                || op.starts_with("contact ")
         };
         assert!(serve_op_routes().iter().all(|r| {
             group_ok(r.op)
                 && !r.op.contains('.')
                 && r.op
                     .chars()
-                    .all(|c| c.is_ascii_lowercase() || c == ' ' || c.is_ascii_digit())
+                    .all(|c| c.is_ascii_lowercase() || c == ' ' || c == '-' || c.is_ascii_digit())
         }));
     }
 
@@ -1422,6 +1438,11 @@ mod tests {
     #[test]
     fn lane_and_timeout_table_is_locked() {
         let expected: &[(&str, Lane, Option<u64>)] = &[
+            ("contact add", Lane::Mutate, Some(30)),
+            ("contact block", Lane::Mutate, Some(30)),
+            ("contact list", Lane::Read, Some(120)),
+            ("contact remove", Lane::Mutate, Some(30)),
+            ("contact unblock", Lane::Mutate, Some(30)),
             ("dialog archive", Lane::Mutate, Some(30)),
             ("dialog delete", Lane::Mutate, Some(30)),
             ("dialog draft", Lane::Mutate, Some(30)),
@@ -1441,6 +1462,12 @@ mod tests {
             ("msg send", Lane::Mutate, Some(30)),
             ("msg typing", Lane::Mutate, Some(30)),
             ("msg vote", Lane::Mutate, Some(30)),
+            ("privacy get", Lane::Read, Some(120)),
+            ("privacy set", Lane::Mutate, Some(30)),
+            ("profile emoji-status", Lane::Mutate, Some(30)),
+            ("profile get", Lane::Read, Some(120)),
+            ("profile photo", Lane::Mutate, Some(30)),
+            ("profile set", Lane::Mutate, Some(30)),
             ("topic close", Lane::Mutate, Some(30)),
             ("topic create", Lane::Mutate, Some(30)),
             ("topic delete", Lane::Mutate, Some(30)),

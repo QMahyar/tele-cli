@@ -18,7 +18,7 @@ pub enum ProfileCmd {
     EmojiStatus(EmojiStatusArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct GetArgs {
     #[arg(long, help = "target user: @username, numeric ID, or me (default)")]
     chat: Option<String>,
@@ -26,7 +26,7 @@ pub struct GetArgs {
     show_phone: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct SetArgs {
     #[arg(long, help = "new display name (first and last)")]
     name: Option<String>,
@@ -38,13 +38,13 @@ pub struct SetArgs {
     username: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct PhotoArgs {
     #[arg(long, help = "remove the current profile photo")]
     remove: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct EmojiStatusArgs {
     #[arg(long, help = "custom emoji document ID to set as emoji status")]
     emoji: Option<i64>,
@@ -66,72 +66,17 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
-    let show_phone = args.show_phone;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let target = args.chat.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(get_dry_run_payload(target.as_deref()));
+                return get_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let row = match &target {
-                Some(t) => {
-                    let peer =
-                        entities::resolve_peer(&guard.client, guard.session.as_ref(), t).await?;
-                    match &peer {
-                        grammers_client::peer::Peer::User(user) => {
-                            let input =
-                                entities::input_user(&peer).await.map_err(tele_invocation)?;
-                            let full: tl::enums::users::UserFull = guard
-                                .client
-                                .invoke(&tl::functions::users::GetFullUser { id: input })
-                                .await
-                                .map_err(tele_invocation)?;
-                            let tl::enums::users::UserFull::Full(full) = full;
-                            let tl::enums::UserFull::Full(full_user) = full.full_user;
-                            serde_json::json!({
-                                "id": user.id().bare_id().unwrap_or_default(),
-                                "name": user.full_name(),
-                                "username": user.username().unwrap_or_default(),
-                                "phone": redact_phone(user.phone(), show_phone),
-                                "bio": full_user.about,
-                                "bot": user.is_bot(),
-                            })
-                        }
-                        other => serde_json::json!({
-                            "id": other.id().bare_id().unwrap_or_default(),
-                            "name": crate::serialize::peer_name(other),
-                            "kind": crate::serialize::peer_kind(other),
-                        }),
-                    }
-                }
-                None => {
-                    let me = guard.client.get_me().await.map_err(tele_invocation)?;
-                    let input =
-                        entities::input_user(&grammers_client::peer::Peer::User(me.clone()))
-                            .await
-                            .map_err(tele_invocation)?;
-                    let full: tl::enums::users::UserFull = guard
-                        .client
-                        .invoke(&tl::functions::users::GetFullUser { id: input })
-                        .await
-                        .map_err(tele_invocation)?;
-                    let tl::enums::users::UserFull::Full(full) = full;
-                    let tl::enums::UserFull::Full(full_user) = full.full_user;
-                    serde_json::json!({
-                        "id": me.id().bare_id().unwrap_or_default(),
-                        "name": me.full_name(),
-                        "username": me.username().unwrap_or_default(),
-                        "phone": redact_phone(me.phone(), show_phone),
-                        "bio": full_user.about,
-                        "bot": me.is_bot(),
-                    })
-                }
-            };
+            let row = get_core(&guard.shares(), GetParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
                 for (k, v) in row.as_object().unwrap() {
                     output::print_line(&format!("{k}: {v}"))?;
@@ -315,107 +260,22 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
-        let new_name = args.name.clone();
-        let new_bio = args.bio.clone();
-        let photo = args.photo.clone();
-        let username_raw = args.username.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                let mut fields = Vec::new();
-                if new_name.is_some() {
-                    fields.push("name");
-                }
-                if new_bio.is_some() {
-                    fields.push("bio");
-                }
-                if photo.is_some() {
-                    fields.push("photo");
-                }
-                if username_raw.is_some() {
-                    fields.push("username");
-                }
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "would": format!("set profile {}", fields.join(", "))
-                }));
+                return set_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            if new_name.is_some() || new_bio.is_some() {
-                let (first, last) = match &new_name {
-                    Some(n) => split_full_name(n),
-                    None => (None, None),
-                };
-                let _: tl::enums::User = guard
-                    .client
-                    .invoke(&tl::functions::account::UpdateProfile {
-                        first_name: first,
-                        last_name: last,
-                        about: new_bio.clone(),
-                    })
-                    .await
-                    .map_err(tele_invocation)?;
-            }
-            if new_name.is_some() || new_bio.is_some() || photo.is_some() {
-                guard.rate_limiter.acquire().await;
-            }
-            let mut applied_username: Option<String> = None;
-            if let Some(raw) = &username_raw {
-                applied_username = Some(apply_username(&guard, raw).await?);
-            }
-            if let Some(p) = &photo {
-                let uploaded = guard
-                    .client
-                    .upload_file(p)
-                    .await
-                    .map_err(|e| TeleError::TaskPanic(e.to_string()))?;
-                let uploaded_photo: tl::enums::photos::Photo = guard
-                    .client
-                    .invoke(&tl::functions::photos::UploadProfilePhoto {
-                        fallback: false,
-                        bot: None,
-                        file: Some(uploaded.raw),
-                        video: None,
-                        video_start_ts: None,
-                        video_emoji_markup: None,
-                    })
-                    .await
-                    .map_err(tele_invocation)?;
-                let tl::enums::photos::Photo::Photo(uploaded_photo) = uploaded_photo;
-                let tl::enums::Photo::Photo(photo) = uploaded_photo.photo else {
-                    return Err(TeleError::Other(
-                        "profile photo upload returned an empty photo".to_string(),
-                    ));
-                };
-                let _: tl::enums::photos::Photo = guard
-                    .client
-                    .invoke(&tl::functions::photos::UpdateProfilePhoto {
-                        fallback: false,
-                        bot: None,
-                        id: tl::enums::InputPhoto::Photo(tl::types::InputPhoto {
-                            id: photo.id,
-                            access_hash: photo.access_hash,
-                            file_reference: photo.file_reference,
-                        }),
-                    })
-                    .await
-                    .map_err(tele_invocation)?;
-            }
-            Ok(serde_json::json!({
-                "name": new_name,
-                "bio": new_bio,
-                "photo": photo,
-                "username": applied_username,
-            }))
+            set_core(&guard.shares(), SetParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-async fn apply_username(guard: &ClientGuard, raw: &str) -> TeleResult<String> {
+async fn apply_username(shares: &crate::client::ServeShares, raw: &str) -> TeleResult<String> {
     let trimmed = raw.trim();
     let removing = trimmed.eq_ignore_ascii_case("remove");
     let value = if removing {
@@ -423,8 +283,8 @@ async fn apply_username(guard: &ClientGuard, raw: &str) -> TeleResult<String> {
     } else {
         strip_username_prefixes(trimmed).to_string()
     };
-    guard.rate_limiter.acquire().await;
-    let _: tl::enums::User = guard
+    shares.rate_limiter.acquire().await;
+    let _: tl::enums::User = shares
         .client
         .invoke(&tl::functions::account::UpdateUsername {
             username: value.clone(),
@@ -439,41 +299,34 @@ async fn apply_username(guard: &ClientGuard, raw: &str) -> TeleResult<String> {
 }
 
 async fn photo(args: PhotoArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    if !args.remove {
-        return Err(TeleError::Usage(
-            "profile photo requires --remove (setting a photo is profile set --photo <path>)"
-                .to_string(),
-        ));
-    }
+    validate_photo(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(serde_json::json!({
-                    "dry_run": true,
-                    "would": "remove current profile photo"
-                }));
+                return photo_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            remove_profile_photo(&guard).await?;
-            Ok(serde_json::json!({"removed": true}))
+            photo_core(&guard.shares(), PhotoParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-async fn current_photo_input_photo(guard: &ClientGuard) -> TeleResult<tl::enums::InputPhoto> {
-    let me = guard.client.get_me().await.map_err(tele_invocation)?;
+async fn current_photo_input_photo(
+    shares: &crate::client::ServeShares,
+) -> TeleResult<tl::enums::InputPhoto> {
+    let me = shares.client.get_me().await.map_err(tele_invocation)?;
     let input = entities::input_user(&grammers_client::peer::Peer::User(me.clone()))
         .await
         .map_err(tele_invocation)?;
-    let full: tl::enums::users::UserFull = guard
+    let full: tl::enums::users::UserFull = shares
         .client
         .invoke(&tl::functions::users::GetFullUser { id: input })
         .await
@@ -489,10 +342,10 @@ async fn current_photo_input_photo(guard: &ClientGuard) -> TeleResult<tl::enums:
         .ok_or_else(|| TeleError::Other("profile has no removable photo to remove".to_string()))
 }
 
-async fn remove_profile_photo(guard: &ClientGuard) -> TeleResult<()> {
-    let input = current_photo_input_photo(guard).await?;
-    guard.rate_limiter.acquire().await;
-    let _: Vec<i64> = guard
+async fn remove_profile_photo(shares: &crate::client::ServeShares) -> TeleResult<()> {
+    let input = current_photo_input_photo(shares).await?;
+    shares.rate_limiter.acquire().await;
+    let _: Vec<i64> = shares
         .client
         .invoke(&tl::functions::photos::DeletePhotos { id: vec![input] })
         .await
@@ -521,55 +374,420 @@ fn validate_emoji_status(args: &EmojiStatusArgs) -> TeleResult<Option<i64>> {
 }
 
 async fn emoji_status(args: EmojiStatusArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    let document_id = validate_emoji_status(&args)?;
+    validate_emoji_status(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
+        let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(match document_id {
-                    Some(id) => serde_json::json!({
-                        "dry_run": true,
-                        "would": format!("set emoji status to emoji document {id}")
-                    }),
-                    None => serde_json::json!({
-                        "dry_run": true,
-                        "would": "clear emoji status"
-                    }),
-                });
+                return emoji_status_serve_dry_run(&args);
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let status = match document_id {
-                Some(id) => tl::enums::EmojiStatus::Status(tl::types::EmojiStatus {
-                    document_id: id,
-                    until: None,
-                }),
-                None => tl::enums::EmojiStatus::Empty,
-            };
-            let _: bool = guard
-                .client
-                .invoke(&tl::functions::account::UpdateEmojiStatus {
-                    emoji_status: status,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            Ok(match document_id {
-                Some(id) => serde_json::json!({"emoji_status": id, "removed": false}),
-                None => serde_json::json!({"emoji_status": null, "removed": true}),
-            })
+            emoji_status_core(&guard.shares(), EmojiStatusParams::from(&args)).await
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
 }
 
-pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GetParams {
+    #[serde(default)]
+    pub(crate) chat: Option<String>,
+    #[serde(default)]
+    pub(crate) show_phone: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
 }
+
+impl From<&GetArgs> for GetParams {
+    fn from(a: &GetArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            show_phone: a.show_phone,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&GetParams> for GetArgs {
+    fn from(p: &GetParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            show_phone: p.show_phone,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SetParams {
+    pub(crate) name: Option<String>,
+    pub(crate) bio: Option<String>,
+    pub(crate) photo: Option<String>,
+    pub(crate) username: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&SetArgs> for SetParams {
+    fn from(a: &SetArgs) -> Self {
+        Self {
+            name: a.name.clone(),
+            bio: a.bio.clone(),
+            photo: a.photo.clone(),
+            username: a.username.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&SetParams> for SetArgs {
+    fn from(p: &SetParams) -> Self {
+        Self {
+            name: p.name.clone(),
+            bio: p.bio.clone(),
+            photo: p.photo.clone(),
+            username: p.username.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PhotoParams {
+    #[serde(default)]
+    pub(crate) remove: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&PhotoArgs> for PhotoParams {
+    fn from(a: &PhotoArgs) -> Self {
+        Self {
+            remove: a.remove,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&PhotoParams> for PhotoArgs {
+    fn from(p: &PhotoParams) -> Self {
+        Self { remove: p.remove }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmojiStatusParams {
+    pub(crate) emoji: Option<i64>,
+    #[serde(default)]
+    pub(crate) remove: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&EmojiStatusArgs> for EmojiStatusParams {
+    fn from(a: &EmojiStatusArgs) -> Self {
+        Self {
+            emoji: a.emoji,
+            remove: a.remove,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&EmojiStatusParams> for EmojiStatusArgs {
+    fn from(p: &EmojiStatusParams) -> Self {
+        Self {
+            emoji: p.emoji,
+            remove: p.remove,
+        }
+    }
+}
+
+fn validate_get(_args: &GetArgs) -> TeleResult<()> {
+    Ok(())
+}
+
+fn validate_photo(args: &PhotoArgs) -> TeleResult<()> {
+    if !args.remove {
+        return Err(TeleError::Usage(
+            "profile photo requires --remove (setting a photo is profile set --photo <path>)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value> {
+    Ok(get_dry_run_payload(args.chat.as_deref()))
+}
+
+fn set_serve_dry_run(args: &SetArgs) -> TeleResult<serde_json::Value> {
+    let mut fields = Vec::new();
+    if args.name.is_some() {
+        fields.push("name");
+    }
+    if args.bio.is_some() {
+        fields.push("bio");
+    }
+    if args.photo.is_some() {
+        fields.push("photo");
+    }
+    if args.username.is_some() {
+        fields.push("username");
+    }
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "would": format!("set profile {}", fields.join(", "))
+    }))
+}
+
+fn photo_serve_dry_run(_args: &PhotoArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "would": "remove current profile photo"
+    }))
+}
+
+fn emoji_status_serve_dry_run(args: &EmojiStatusArgs) -> TeleResult<serde_json::Value> {
+    Ok(match validate_emoji_status(args)? {
+        Some(id) => serde_json::json!({
+            "dry_run": true,
+            "would": format!("set emoji status to emoji document {id}")
+        }),
+        None => serde_json::json!({
+            "dry_run": true,
+            "would": "clear emoji status"
+        }),
+    })
+}
+
+pub(crate) async fn get_core(
+    shares: &crate::client::ServeShares,
+    params: GetParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    match &params.chat {
+        Some(t) => {
+            let peer = entities::resolve_peer(&shares.client, shares.session.as_ref(), t).await?;
+            match &peer {
+                grammers_client::peer::Peer::User(user) => {
+                    let input = entities::input_user(&peer).await.map_err(tele_invocation)?;
+                    let full: tl::enums::users::UserFull = shares
+                        .client
+                        .invoke(&tl::functions::users::GetFullUser { id: input })
+                        .await
+                        .map_err(tele_invocation)?;
+                    let tl::enums::users::UserFull::Full(full) = full;
+                    let tl::enums::UserFull::Full(full_user) = full.full_user;
+                    Ok(serde_json::json!({
+                        "id": user.id().bare_id().unwrap_or_default(),
+                        "name": user.full_name(),
+                        "username": user.username().unwrap_or_default(),
+                        "phone": redact_phone(user.phone(), params.show_phone),
+                        "bio": full_user.about,
+                        "bot": user.is_bot(),
+                    }))
+                }
+                other => Ok(serde_json::json!({
+                    "id": other.id().bare_id().unwrap_or_default(),
+                    "name": crate::serialize::peer_name(other),
+                    "kind": crate::serialize::peer_kind(other),
+                })),
+            }
+        }
+        None => {
+            let me = shares.client.get_me().await.map_err(tele_invocation)?;
+            let input = entities::input_user(&grammers_client::peer::Peer::User(me.clone()))
+                .await
+                .map_err(tele_invocation)?;
+            let full: tl::enums::users::UserFull = shares
+                .client
+                .invoke(&tl::functions::users::GetFullUser { id: input })
+                .await
+                .map_err(tele_invocation)?;
+            let tl::enums::users::UserFull::Full(full) = full;
+            let tl::enums::UserFull::Full(full_user) = full.full_user;
+            Ok(serde_json::json!({
+                "id": me.id().bare_id().unwrap_or_default(),
+                "name": me.full_name(),
+                "username": me.username().unwrap_or_default(),
+                "phone": redact_phone(me.phone(), params.show_phone),
+                "bio": full_user.about,
+                "bot": me.is_bot(),
+            }))
+        }
+    }
+}
+
+pub(crate) async fn set_core(
+    shares: &crate::client::ServeShares,
+    params: SetParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let new_name = params.name.clone();
+    let new_bio = params.bio.clone();
+    let photo_path = params.photo.clone();
+    let username_raw = params.username.clone();
+    if new_name.is_some() || new_bio.is_some() {
+        let (first, last) = match &new_name {
+            Some(n) => split_full_name(n),
+            None => (None, None),
+        };
+        let _: tl::enums::User = shares
+            .client
+            .invoke(&tl::functions::account::UpdateProfile {
+                first_name: first,
+                last_name: last,
+                about: new_bio.clone(),
+            })
+            .await
+            .map_err(tele_invocation)?;
+    }
+    if new_name.is_some() || new_bio.is_some() || photo_path.is_some() {
+        shares.rate_limiter.acquire().await;
+    }
+    let mut applied_username: Option<String> = None;
+    if let Some(raw) = &username_raw {
+        applied_username = Some(apply_username(shares, raw).await?);
+    }
+    if let Some(p) = &photo_path {
+        let uploaded = shares
+            .client
+            .upload_file(p)
+            .await
+            .map_err(|e| TeleError::TaskPanic(e.to_string()))?;
+        let uploaded_photo: tl::enums::photos::Photo = shares
+            .client
+            .invoke(&tl::functions::photos::UploadProfilePhoto {
+                fallback: false,
+                bot: None,
+                file: Some(uploaded.raw),
+                video: None,
+                video_start_ts: None,
+                video_emoji_markup: None,
+            })
+            .await
+            .map_err(tele_invocation)?;
+        let tl::enums::photos::Photo::Photo(uploaded_photo) = uploaded_photo;
+        let tl::enums::Photo::Photo(photo) = uploaded_photo.photo else {
+            return Err(TeleError::Other(
+                "profile photo upload returned an empty photo".to_string(),
+            ));
+        };
+        let _: tl::enums::photos::Photo = shares
+            .client
+            .invoke(&tl::functions::photos::UpdateProfilePhoto {
+                fallback: false,
+                bot: None,
+                id: tl::enums::InputPhoto::Photo(tl::types::InputPhoto {
+                    id: photo.id,
+                    access_hash: photo.access_hash,
+                    file_reference: photo.file_reference,
+                }),
+            })
+            .await
+            .map_err(tele_invocation)?;
+    }
+    Ok(serde_json::json!({
+        "name": new_name,
+        "bio": new_bio,
+        "photo": photo_path,
+        "username": applied_username,
+    }))
+}
+
+pub(crate) async fn photo_core(
+    shares: &crate::client::ServeShares,
+    _params: PhotoParams,
+) -> TeleResult<serde_json::Value> {
+    remove_profile_photo(shares).await?;
+    Ok(serde_json::json!({"removed": true}))
+}
+
+pub(crate) async fn emoji_status_core(
+    shares: &crate::client::ServeShares,
+    params: EmojiStatusParams,
+) -> TeleResult<serde_json::Value> {
+    let document_id = validate_emoji_status(&EmojiStatusArgs::from(&params))?;
+    shares.rate_limiter.acquire().await;
+    let status = match document_id {
+        Some(id) => tl::enums::EmojiStatus::Status(tl::types::EmojiStatus {
+            document_id: id,
+            until: None,
+        }),
+        None => tl::enums::EmojiStatus::Empty,
+    };
+    let _: bool = shares
+        .client
+        .invoke(&tl::functions::account::UpdateEmojiStatus {
+            emoji_status: status,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(match document_id {
+        Some(id) => serde_json::json!({"emoji_status": id, "removed": false}),
+        None => serde_json::json!({"emoji_status": null, "removed": true}),
+    })
+}
+
+pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "profile emoji-status",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            EmojiStatusParams,
+            EmojiStatusArgs,
+            validate_emoji_status,
+            emoji_status_serve_dry_run,
+            run_emoji_status
+        ),
+        crate::serve_route!(
+            "profile get",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            GetParams,
+            GetArgs,
+            validate_get,
+            get_serve_dry_run,
+            run_get
+        ),
+        crate::serve_route!(
+            "profile photo",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            PhotoParams,
+            PhotoArgs,
+            validate_photo,
+            photo_serve_dry_run,
+            run_photo
+        ),
+        crate::serve_route!(
+            "profile set",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            SetParams,
+            SetArgs,
+            validate_set,
+            set_serve_dry_run,
+            run_set
+        ),
+    ]
+}
+
+crate::serve_runner!(run_get, get_core, GetParams);
+crate::serve_runner!(run_set, set_core, SetParams);
+crate::serve_runner!(run_photo, photo_core, PhotoParams);
+crate::serve_runner!(run_emoji_status, emoji_status_core, EmojiStatusParams);
 
 #[cfg(test)]
 mod tests {
@@ -924,5 +1142,251 @@ mod tests {
         std::fs::write(&photo, b"x").unwrap();
         assert!(validate_set(&set_args(Some(&photo.to_string_lossy()))).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn plan_for(
+        op: &str,
+        params: serde_json::Value,
+    ) -> Result<crate::commands::serve::Plan, serde_json::Value> {
+        let routes = profile_serve_routes();
+        let route = routes
+            .iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    #[test]
+    fn serve_routes_declare_lanes_and_timeouts() {
+        use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+        let routes = profile_serve_routes();
+        let want: Vec<(&str, Lane, Option<std::time::Duration>)> = vec![
+            (
+                "profile emoji-status",
+                Lane::Mutate,
+                Some(OP_TIMEOUT_SIMPLE),
+            ),
+            ("profile get", Lane::Read, Some(OP_TIMEOUT_PAGINATED)),
+            ("profile photo", Lane::Mutate, Some(OP_TIMEOUT_SIMPLE)),
+            ("profile set", Lane::Mutate, Some(OP_TIMEOUT_SIMPLE)),
+        ];
+        assert_eq!(routes.len(), want.len());
+        for (op, lane, timeout) in want {
+            let route = routes
+                .iter()
+                .find(|r| r.op == op)
+                .unwrap_or_else(|| panic!("{op}"));
+            assert_eq!(route.lane, lane, "{op}");
+            assert_eq!(route.timeout, timeout, "{op}");
+        }
+    }
+
+    #[test]
+    fn serve_wrong_type_param_yields_serve_error() {
+        for (op, params, fragment) in [
+            (
+                "profile get",
+                serde_json::json!({"chat": 5}),
+                "expected a string",
+            ),
+            (
+                "profile set",
+                serde_json::json!({"bio": 7}),
+                "expected a string",
+            ),
+            (
+                "profile photo",
+                serde_json::json!({"remove": "yes"}),
+                "expected a boolean",
+            ),
+            (
+                "profile emoji-status",
+                serde_json::json!({"emoji": "big"}),
+                "i64",
+            ),
+        ] {
+            let err = plan_for(op, params).unwrap_err();
+            assert_eq!(err["type"], "ServeError", "{op}");
+            let msg = err["message"].as_str().unwrap();
+            assert!(msg.contains(op), "{op}: {msg}");
+            assert!(msg.contains(fragment), "{op}: {msg}");
+        }
+    }
+
+    #[test]
+    fn serve_unknown_param_yields_serve_error() {
+        let err = plan_for("profile set", serde_json::json!({"nam": "typo"})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("nam"), "{msg}");
+    }
+
+    #[test]
+    fn serve_validation_usage_errors_stay_pure() {
+        let err = plan_for("profile set", serde_json::json!({})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("--name"));
+
+        let err = plan_for("profile set", serde_json::json!({"username": "1bad!"})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for("profile set", serde_json::json!({"bio": "z".repeat(141)})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for("profile set", serde_json::json!({"name": ""})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for("profile photo", serde_json::json!({})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("--remove"));
+
+        let err = plan_for("profile emoji-status", serde_json::json!({})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for("profile emoji-status", serde_json::json!({"emoji": -1})).unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+
+        let err = plan_for(
+            "profile emoji-status",
+            serde_json::json!({"emoji": 1, "remove": true}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+    }
+
+    #[test]
+    fn serve_rejects_sensitive_photo_paths_through_planner() {
+        for bad in [
+            serde_json::json!({"photo": "C:/secrets/.env"}),
+            serde_json::json!({"photo": "2.session-journal"}),
+        ] {
+            let err = plan_for("profile set", bad).unwrap_err();
+            assert_eq!(err["type"], "UsageError");
+        }
+    }
+
+    #[test]
+    fn serve_dry_run_payloads_match_cli_shapes() {
+        let plan = plan_for(
+            "profile get",
+            serde_json::json!({"chat": "me", "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({"dry_run": true, "chat": "me", "would": "get profile of user me"})
+        );
+
+        let plan = plan_for("profile get", serde_json::json!({"dry_run": true})).unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({"dry_run": true, "would": "get own profile"})
+        );
+
+        let plan = plan_for(
+            "profile set",
+            serde_json::json!({"name": "John Doe", "bio": "hi", "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({"dry_run": true, "would": "set profile name, bio"})
+        );
+
+        let dir =
+            std::env::temp_dir().join(format!("telecli-profile-serve-dry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let photo = dir.join("photo.jpg");
+        std::fs::write(&photo, b"x").unwrap();
+        let plan = plan_for(
+            "profile set",
+            serde_json::json!({
+                "username": "@john_doe",
+                "photo": photo.to_string_lossy(),
+                "dry_run": true
+            }),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({"dry_run": true, "would": "set profile photo, username"})
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let plan = plan_for(
+            "profile photo",
+            serde_json::json!({"remove": true, "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({"dry_run": true, "would": "remove current profile photo"})
+        );
+
+        let plan = plan_for(
+            "profile emoji-status",
+            serde_json::json!({"emoji": 5312345678i64, "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "dry_run": true,
+                "would": "set emoji status to emoji document 5312345678"
+            })
+        );
+
+        let plan = plan_for(
+            "profile emoji-status",
+            serde_json::json!({"remove": true, "dry_run": true}),
+        )
+        .unwrap();
+        let crate::commands::serve::Plan::DryRun(v) = plan else {
+            panic!("expected dry run plan")
+        };
+        assert_eq!(
+            v,
+            serde_json::json!({"dry_run": true, "would": "clear emoji status"})
+        );
+    }
+
+    #[test]
+    fn serve_execute_plan_passes_raw_params_through() {
+        for (op, raw) in [
+            ("profile get", serde_json::json!({"show_phone": true})),
+            ("profile get", serde_json::json!({})),
+            ("profile set", serde_json::json!({"name": "New Name"})),
+            ("profile set", serde_json::json!({"username": "remove"})),
+            ("profile photo", serde_json::json!({"remove": true})),
+            ("profile emoji-status", serde_json::json!({"emoji": 777i64})),
+        ] {
+            let plan = plan_for(op, raw.clone()).unwrap();
+            match plan {
+                crate::commands::serve::Plan::Execute(passed) => {
+                    assert_eq!(passed, raw, "{op}")
+                }
+                other => panic!("expected execute plan for {op}, got {other:?}"),
+            }
+        }
     }
 }
