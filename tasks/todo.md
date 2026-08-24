@@ -270,6 +270,8 @@ Round 3 (2026-08-23, after ACCT-1/ACCT-2):
 
 ACCT-1 + ACCT-2 shipped & pushed. Remaining backlog (user-approved "keep on backlog"): email-verify login purposes, phone verify/confirm, updateStatus, contact-signup notifications — reachable via tele raw.
 
+Round 4 (2026-08-23): password set live ✓ (LiveRound3Pass!, hint live-r3); remove/change hit deterministic NEW_SETTINGS_EMPTY / INPUT_FETCH_ERROR / INPUT_CONSTRUCTOR_INVALID even with WRONG password (server never validates proof → request-bytes parse failure), while auth.CheckPassword with identical SRP struct works (login 2FA) and set with InputCheckPasswordEmpty + populated settings works. Conclusion: grammers-tl-gen serialization defect for UpdatePasswordSettings when password=InputCheckPasswordSrp — upstream issue. CLI now maps those three RPC names to an honest error directing to official-app disable. Account 1 currently has password `LiveRound3Pass!` (hint live-r3) — user must app-disable OR we retry after upstream fix.
+
 ## Delegation waves — implement every remaining want (2026-08-23)
 
 Manager mode: main agent orchestrates only; implementation via sub-agents on per-ticket branches; capabilities.md/todo.md row flips done by manager at merge time (agents must NOT touch docs/tracker to avoid collisions). business.*/stars.* flipped `never` by product decision 2026-08-23. mcp/skill stay gated on explicit user go (Phase 6 boundary) despite want status.
