@@ -333,7 +333,7 @@ Goal: tele serve becomes the full account-control surface for agent apps — obs
   - P2-chat chat group (feat/srv-chat): join/leave(C)/create/settings/edit/link/kick(C)/admin/invite/requests/admin-log/stats/participants
 - [x] **S-acct** MERGED (b20113e) — reads only (status/ttl get+set/sessions list+web); terminate excluded by design; takeout deferred. Was: = account reads guarded: status/ttl get+set/sessions list; takeout start/finish/status only if state files proven safe beside live stream; export stays CLI-only. login/logout/remove/password/delete NEVER over pipe.
 - [x] **S-docs** MERGED (e9dac13) cli-contract.md serve section + matrix + changelog. Was: = cli-contract.md full serve section + capabilities.md annotations ("also exposed as serve op") + matrix row updates.
-- [ ] Live verify whole program (67 ops now): hello -> dialog list -> msg send/edit/get/delete -> chat participants -> privacy get -> raw contacts.Search with cross-account event mid-burst (no starvation); then v0.6.0.
+- [x] Live verify whole program DONE (2026-08-25): python e2e driver vs live serve account1 — 25/25 PASS (hello v2+identity, ops.list 70 entries w/ hints, dialog list, privacy get, msg send/edit/get/delete confirm-dance, raw registry gate, cross-account event mid-stream seq monotonic 1→3, EOF clean exit). Harness at %TEMP%\opencode\serve_e2e.py. MessageEdited needs explicit --events (default NewMessage only) — documented behavior. hello -> dialog list -> msg send/edit/get/delete -> chat participants -> privacy get -> raw contacts.Search with cross-account event mid-burst (no starvation); then v0.6.0.
 
 ### Phase 0 — original checklist (superseded by slice plan above)
 - [x] 0d..0i tracked as slices S-exec/S-meta/S-selfdesc/S-docs above
