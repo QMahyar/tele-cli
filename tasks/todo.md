@@ -331,9 +331,9 @@ Goal: tele serve becomes the full account-control surface for agent apps — obs
   - DONE P1b profile+privacy+contact (feat/srv-profile-contact): get/set/photo/emoji-status/get/set/list/add/remove(C)/block/unblock
   - DONE P1c stickers+stories+raw (feat/srv-stickers-stories-raw): list/search/show/install/remove(C)/send/read/delete(C)/pin/unpin + raw <method> passthrough
   - P2-chat chat group (feat/srv-chat): join/leave(C)/create/settings/edit/link/kick(C)/admin/invite/requests/admin-log/stats/participants
-- [ ] **S-acct** (last, riskiest) = account reads guarded: status/ttl get+set/sessions list; takeout start/finish/status only if state files proven safe beside live stream; export stays CLI-only. login/logout/remove/password/delete NEVER over pipe.
-- [ ] **S-docs** (near end) = cli-contract.md full serve section + capabilities.md annotations ("also exposed as serve op") + matrix row updates.
-- [ ] Live verify whole program: hello -> dialog list -> msg send/edit/get/delete -> chat participants -> privacy get -> raw contacts.Search with cross-account event mid-burst (no starvation); then v0.6.0.
+- [x] **S-acct** MERGED (b20113e) — reads only (status/ttl get+set/sessions list+web); terminate excluded by design; takeout deferred. Was: = account reads guarded: status/ttl get+set/sessions list; takeout start/finish/status only if state files proven safe beside live stream; export stays CLI-only. login/logout/remove/password/delete NEVER over pipe.
+- [x] **S-docs** MERGED (e9dac13) cli-contract.md serve section + matrix + changelog. Was: = cli-contract.md full serve section + capabilities.md annotations ("also exposed as serve op") + matrix row updates.
+- [ ] Live verify whole program (67 ops now): hello -> dialog list -> msg send/edit/get/delete -> chat participants -> privacy get -> raw contacts.Search with cross-account event mid-burst (no starvation); then v0.6.0.
 
 ### Phase 0 — original checklist (superseded by slice plan above)
 - [x] 0d..0i tracked as slices S-exec/S-meta/S-selfdesc/S-docs above
@@ -357,7 +357,7 @@ chat join/leave(confirm)/create/settings/edit/link/kick(confirm)/admin/invite/re
 ### Phase 4 — self-mutation (~12 ops)
 profile set/photo/emoji-status, privacy set, story list/read/delete(confirm)/pin/unpin/send(validate_upload_path in core)
 
-### Phase 5 — guarded account reads (riskiest; scope tight)
+### Phase 5 (superseded by S-acct merge above) — guarded account reads (riskiest; scope tight)
 account status, ttl get/set, sessions list; takeout start/finish/status ONLY if state files proven safe beside live stream; takeout export stays CLI-only (hours-long, starves loop). login/logout/remove/password/delete NEVER over pipe — documented exclusion row.
 
 ### Definition of done (whole program)
