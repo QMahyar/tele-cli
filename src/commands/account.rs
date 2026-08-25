@@ -3605,13 +3605,359 @@ fn should_print_token(show_token: bool, stderr_is_terminal: bool) -> bool {
     show_token || stderr_is_terminal
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AccountStatusParams {
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TtlGetParams {
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TtlSetParams {
+    pub(crate) days: i64,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionsListParams {
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionsWebParams {
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AccountStatusArgs {
+    #[allow(dead_code)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TtlGetArgs {
+    #[allow(dead_code)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TtlSetArgs {
+    days: i64,
+    #[allow(dead_code)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SessionsListArgs {
+    #[allow(dead_code)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SessionsWebArgs {
+    #[allow(dead_code)]
+    dry_run: bool,
+}
+
+impl From<&AccountStatusParams> for AccountStatusArgs {
+    fn from(p: &AccountStatusParams) -> Self {
+        Self { dry_run: p.dry_run }
+    }
+}
+
+impl From<&TtlGetParams> for TtlGetArgs {
+    fn from(p: &TtlGetParams) -> Self {
+        Self { dry_run: p.dry_run }
+    }
+}
+
+impl From<&TtlSetParams> for TtlSetArgs {
+    fn from(p: &TtlSetParams) -> Self {
+        Self {
+            days: p.days,
+            dry_run: p.dry_run,
+        }
+    }
+}
+
+impl From<&SessionsListParams> for SessionsListArgs {
+    fn from(p: &SessionsListParams) -> Self {
+        Self { dry_run: p.dry_run }
+    }
+}
+
+impl From<&SessionsWebParams> for SessionsWebArgs {
+    fn from(p: &SessionsWebParams) -> Self {
+        Self { dry_run: p.dry_run }
+    }
+}
+
+fn validate_serve_status(_args: &AccountStatusArgs) -> TeleResult<()> {
+    Ok(())
+}
+
+fn validate_serve_ttl_get(_args: &TtlGetArgs) -> TeleResult<()> {
+    Ok(())
+}
+
+fn validate_serve_sessions_list(_args: &SessionsListArgs) -> TeleResult<()> {
+    Ok(())
+}
+
+fn validate_serve_sessions_web(_args: &SessionsWebArgs) -> TeleResult<()> {
+    Ok(())
+}
+
+fn validate_serve_ttl_set(args: &TtlSetArgs) -> TeleResult<()> {
+    let parsed = i32::try_from(args.days)
+        .map_err(|_| TeleError::Usage("--days must be between 1 and 365".to_string()))?;
+    if !(1..=365).contains(&parsed) {
+        return Err(TeleError::Usage(format!(
+            "--days must be between 1 and 365, got {parsed}"
+        )));
+    }
+    Ok(())
+}
+
+fn status_serve_dry_run(_args: &AccountStatusArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "would": "probe authorization status",
+    }))
+}
+
+fn ttl_get_serve_dry_run(_args: &TtlGetArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "would": "show the inactive-account TTL",
+    }))
+}
+
+fn ttl_set_serve_dry_run(args: &TtlSetArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "days": args.days,
+        "would": format!("set the inactive-account TTL to {} days", args.days),
+    }))
+}
+
+fn sessions_list_serve_dry_run(_args: &SessionsListArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "would": "list device sessions",
+    }))
+}
+
+fn sessions_web_serve_dry_run(_args: &SessionsWebArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "would": "list web login sessions",
+    }))
+}
+
+pub(crate) async fn account_status_core(
+    shares: &crate::client::ServeShares,
+    _params: AccountStatusParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let mut authorized = shares.client.is_authorized().await.map_err(|e| {
+        if crate::error::invocation_is_unauthorized(&e) {
+            TeleError::Auth("not logged in".to_string())
+        } else {
+            TeleError::Invocation(
+                crate::error::invocation_message(&e),
+                crate::error::invocation_wait_seconds(&e),
+            )
+        }
+    })?;
+    if authorized {
+        shares.rate_limiter.acquire().await;
+        match shares
+            .client
+            .invoke(&grammers_client::tl::functions::account::GetPassword {})
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                if crate::error::invocation_is_unauthorized(&e) {
+                    authorized = false;
+                } else {
+                    return Err(tele_invocation(e));
+                }
+            }
+        }
+    }
+    let device = status_device_data(&config::DeviceIdentity::default());
+    Ok(serde_json::json!({ "authorized": authorized, "device": device }))
+}
+
+pub(crate) async fn account_ttl_get_core(
+    shares: &crate::client::ServeShares,
+    _params: TtlGetParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let response = shares
+        .client
+        .invoke(&grammers_client::tl::functions::account::GetAccountTtl {})
+        .await
+        .map_err(tele_invocation)?;
+    let grammers_client::tl::enums::AccountDaysTtl::Ttl(ttl) = response;
+    Ok(ttl_data(ttl.days))
+}
+
+pub(crate) async fn account_ttl_set_core(
+    shares: &crate::client::ServeShares,
+    params: TtlSetParams,
+) -> TeleResult<serde_json::Value> {
+    let days = i32::try_from(params.days)
+        .map_err(|_| TeleError::Usage("--days must be between 1 and 365".to_string()))?;
+    shares.rate_limiter.acquire().await;
+    let request = grammers_client::tl::functions::account::SetAccountTtl {
+        ttl: grammers_client::tl::enums::AccountDaysTtl::Ttl(
+            grammers_client::tl::types::AccountDaysTtl { days },
+        ),
+    };
+    let result = shares.client.invoke(&request).await;
+    match result {
+        Ok(true) => Ok(ttl_set_data(days)),
+        Ok(false) => Err(TeleError::Other(
+            "server refused to update the account TTL".to_string(),
+        )),
+        Err(e) => Err(tele_invocation(e)),
+    }
+}
+
+pub(crate) async fn account_sessions_list_core(
+    shares: &crate::client::ServeShares,
+    _params: SessionsListParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let authorizations = fetch_authorizations(&shares.client).await?;
+    let rows: Vec<serde_json::Value> = authorizations.iter().map(authorization_row).collect();
+    Ok(serde_json::json!({ "count": rows.len(), "authorizations": rows }))
+}
+
+pub(crate) async fn account_sessions_web_core(
+    shares: &crate::client::ServeShares,
+    _params: SessionsWebParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let webs = fetch_web_authorizations(&shares.client).await?;
+    let rows: Vec<serde_json::Value> = webs.iter().map(web_authorization_row).collect();
+    Ok(serde_json::json!({
+        "count": rows.len(),
+        "web": true,
+        "authorizations": rows
+    }))
+}
+
+crate::serve_runner!(run_account_status, account_status_core, AccountStatusParams);
+crate::serve_runner!(run_ttl_get, account_ttl_get_core, TtlGetParams);
+crate::serve_runner!(run_ttl_set, account_ttl_set_core, TtlSetParams);
+crate::serve_runner!(
+    run_sessions_list,
+    account_sessions_list_core,
+    SessionsListParams
+);
+crate::serve_runner!(
+    run_sessions_web,
+    account_sessions_web_core,
+    SessionsWebParams
+);
+
 pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "account status",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "probe authorization and account-level API health",
+            AccountStatusParams,
+            AccountStatusArgs,
+            validate_serve_status,
+            status_serve_dry_run,
+            run_account_status
+        ),
+        crate::serve_route!(
+            "account sessions list",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list active device sessions",
+            SessionsListParams,
+            SessionsListArgs,
+            validate_serve_sessions_list,
+            sessions_list_serve_dry_run,
+            run_sessions_list
+        ),
+        crate::serve_route!(
+            "account sessions web",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list active web login sessions",
+            SessionsWebParams,
+            SessionsWebArgs,
+            validate_serve_sessions_web,
+            sessions_web_serve_dry_run,
+            run_sessions_web
+        ),
+        crate::serve_route!(
+            "account ttl get",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "show the inactive-account self-destruct TTL",
+            TtlGetParams,
+            TtlGetArgs,
+            validate_serve_ttl_get,
+            ttl_get_serve_dry_run,
+            run_ttl_get
+        ),
+        crate::serve_route!(
+            "account ttl set",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "set the inactive-account self-destruct TTL",
+            TtlSetParams,
+            TtlSetArgs,
+            validate_serve_ttl_set,
+            ttl_set_serve_dry_run,
+            run_ttl_set
+        ),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::serve::{Lane, Plan};
     use grammers_session::storages::SqliteSession;
 
     fn login_args(method: &str, phone: Option<&str>) -> LoginArgs {
@@ -6023,5 +6369,229 @@ mod tests {
             assert!(load_pending_under(&dir, "work").unwrap().is_none());
         })
         .await;
+    }
+
+    fn plan_acct_op(op: &str, params: serde_json::Value) -> Result<Plan, serde_json::Value> {
+        let route = account_serve_routes()
+            .into_iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    fn expect_acct_dry(plan: Plan, expected: serde_json::Value) {
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, expected),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+    }
+
+    type AcctRouteLock = (&'static str, Lane, Option<u64>, bool, bool, bool);
+
+    #[test]
+    fn account_serve_lane_hints_table_is_locked() {
+        let expected: &[AcctRouteLock] = &[
+            (
+                "account sessions list",
+                Lane::Read,
+                Some(120),
+                true,
+                false,
+                true,
+            ),
+            (
+                "account sessions web",
+                Lane::Read,
+                Some(120),
+                true,
+                false,
+                true,
+            ),
+            ("account status", Lane::Read, Some(120), true, false, true),
+            ("account ttl get", Lane::Read, Some(120), true, false, true),
+            (
+                "account ttl set",
+                Lane::Mutate,
+                Some(30),
+                false,
+                false,
+                true,
+            ),
+        ];
+        let routes = account_serve_routes();
+        assert_eq!(routes.len(), expected.len());
+        let mut names: Vec<&str> = routes.iter().map(|r| r.op).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "account sessions list",
+                "account sessions web",
+                "account status",
+                "account ttl get",
+                "account ttl set"
+            ]
+        );
+        for (op, lane, secs, read_only, destructive, retry_safe) in expected {
+            let route = routes.iter().find(|r| r.op == *op).unwrap();
+            assert_eq!(route.lane, *lane, "lane for {op}");
+            assert_eq!(
+                route.timeout,
+                secs.map(std::time::Duration::from_secs),
+                "timeout for {op}"
+            );
+            assert_eq!(route.read_only, *read_only, "read_only for {op}");
+            assert_eq!(route.destructive, *destructive, "destructive for {op}");
+            assert_eq!(route.retry_safe, *retry_safe, "retry_safe for {op}");
+            assert!(!route.summary.is_empty(), "summary for {op}");
+            assert!(
+                route.summary.chars().next().unwrap().is_ascii_lowercase(),
+                "summary case for {op}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_reads_accept_empty_params_and_pass_through() {
+        for op in [
+            "account status",
+            "account ttl get",
+            "account sessions list",
+            "account sessions web",
+        ] {
+            let raw = serde_json::json!({});
+            match plan_acct_op(op, raw.clone()).unwrap() {
+                Plan::Execute(passed) => assert_eq!(passed, raw, "{op}"),
+                other => panic!("{op}: expected execute plan, got {other:?}"),
+            }
+        }
+        let raw = serde_json::json!({"days": 180});
+        match plan_acct_op("account ttl set", raw.clone()).unwrap() {
+            Plan::Execute(passed) => assert_eq!(passed, raw),
+            other => panic!("expected execute plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn account_ops_reject_unknown_fields_with_param_key() {
+        for op in [
+            "account status",
+            "account ttl get",
+            "account sessions list",
+            "account sessions web",
+        ] {
+            let err = plan_acct_op(op, serde_json::json!({"dayz": 1})).unwrap_err();
+            assert_eq!(err["type"], "ServeError", "{op}: {err}");
+            let msg = err["message"].as_str().unwrap();
+            assert!(msg.contains("unknown field"), "{op}: {msg}");
+            assert!(msg.contains("dayz"), "{op}: {msg}");
+            assert_eq!(err["param"], "dayz", "{op}");
+        }
+        let err = plan_acct_op(
+            "account ttl set",
+            serde_json::json!({"days": 30, "dayz": 31}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "ServeError", "{err}");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("unknown field"), "{msg}");
+        assert!(msg.contains("dayz"), "{msg}");
+        assert_eq!(err["param"], "dayz");
+    }
+
+    #[test]
+    fn account_ttl_set_param_errors_name_days_field() {
+        let err = plan_acct_op("account ttl set", serde_json::json!({})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("days"), "{msg}");
+        assert_eq!(err["param"], "days");
+
+        let err = plan_acct_op("account ttl set", serde_json::json!({"days": "soon"})).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("invalid type"), "{msg}");
+        assert!(msg.contains("i64"), "{msg}");
+        assert_eq!(err["param"], "days");
+    }
+
+    #[test]
+    fn account_ttl_set_rejects_out_of_range_days_as_usage() {
+        for bad in [0i64, 366, -5, 4_000_000_000] {
+            let err =
+                plan_acct_op("account ttl set", serde_json::json!({"days": bad})).unwrap_err();
+            assert_eq!(err["type"], "UsageError", "{bad}: {err}");
+            let msg = err["message"].as_str().unwrap();
+            assert!(msg.contains("--days must be between 1 and 365"), "{msg}");
+        }
+        for good in [1i64, 90, 365] {
+            plan_acct_op("account ttl set", serde_json::json!({"days": good})).unwrap();
+        }
+    }
+
+    #[test]
+    fn account_dry_run_payloads_echo_shape_without_network() {
+        let plan = plan_acct_op("account status", serde_json::json!({"dry_run": true})).unwrap();
+        expect_acct_dry(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "would": "probe authorization status"
+            }),
+        );
+
+        let plan = plan_acct_op("account ttl get", serde_json::json!({"dry_run": true})).unwrap();
+        expect_acct_dry(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "would": "show the inactive-account TTL"
+            }),
+        );
+
+        let plan = plan_acct_op(
+            "account ttl set",
+            serde_json::json!({"days": 90, "dry_run": true}),
+        )
+        .unwrap();
+        expect_acct_dry(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "days": 90,
+                "would": "set the inactive-account TTL to 90 days"
+            }),
+        );
+
+        let plan = plan_acct_op(
+            "account sessions list",
+            serde_json::json!({"dry_run": true}),
+        )
+        .unwrap();
+        expect_acct_dry(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "would": "list device sessions"
+            }),
+        );
+
+        let plan =
+            plan_acct_op("account sessions web", serde_json::json!({"dry_run": true})).unwrap();
+        expect_acct_dry(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "would": "list web login sessions"
+            }),
+        );
+    }
+
+    #[test]
+    fn account_ttl_get_rejects_non_object_params_shape() {
+        let err = plan_acct_op("account ttl get", serde_json::json!([1])).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(err.get("param").is_none(), "{}", err);
     }
 }
