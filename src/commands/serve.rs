@@ -1138,6 +1138,24 @@ mod tests {
     #[test]
     fn routes_table_is_locked_command_path_form() {
         let expected = [
+            "account sessions list",
+            "account sessions web",
+            "account status",
+            "account ttl get",
+            "account ttl set",
+            "chat admin",
+            "chat admin-log",
+            "chat create",
+            "chat edit",
+            "chat invite",
+            "chat join",
+            "chat kick",
+            "chat leave",
+            "chat link",
+            "chat participants",
+            "chat requests",
+            "chat settings",
+            "chat stats",
             "contact add",
             "contact block",
             "contact list",
@@ -1200,6 +1218,8 @@ mod tests {
                 || op.starts_with("contact ")
                 || op.starts_with("sticker ")
                 || op.starts_with("story ")
+                || op.starts_with("chat ")
+                || op.starts_with("account ")
                 || op == "raw"
         };
         assert!(serve_op_routes().iter().all(|r| {
@@ -1214,7 +1234,7 @@ mod tests {
     #[test]
     fn unknown_op_maps_to_not_implemented_listing_known_ops() {
         assert!(find_route("msg.send").is_none());
-        assert!(find_route("chat join").is_none());
+        assert!(find_route("chat join").is_some());
         assert!(find_route("ping").is_none());
         assert!(find_route("stream.resync").is_none());
         assert!(find_route("ops.list").is_none());
@@ -1633,6 +1653,24 @@ mod tests {
             ("topic list", Lane::Read, Some(120)),
             ("topic pin", Lane::Mutate, Some(30)),
             ("topic reopen", Lane::Mutate, Some(30)),
+            ("account sessions list", Lane::Read, Some(120)),
+            ("account sessions web", Lane::Read, Some(120)),
+            ("account status", Lane::Read, Some(120)),
+            ("account ttl get", Lane::Read, Some(120)),
+            ("account ttl set", Lane::Mutate, Some(30)),
+            ("chat admin", Lane::Mutate, Some(30)),
+            ("chat admin-log", Lane::Read, Some(120)),
+            ("chat create", Lane::Mutate, Some(30)),
+            ("chat edit", Lane::Mutate, Some(30)),
+            ("chat invite", Lane::Mutate, Some(30)),
+            ("chat join", Lane::Mutate, Some(30)),
+            ("chat kick", Lane::Mutate, Some(30)),
+            ("chat leave", Lane::Mutate, Some(30)),
+            ("chat link", Lane::Mutate, Some(30)),
+            ("chat participants", Lane::Read, Some(120)),
+            ("chat requests", Lane::Mutate, Some(30)),
+            ("chat settings", Lane::Mutate, Some(30)),
+            ("chat stats", Lane::Read, Some(120)),
         ];
         assert_eq!(serve_op_routes().len(), expected.len());
         for (op, lane, secs) in expected {
@@ -1698,6 +1736,24 @@ mod tests {
             ("topic list", true, false, true),
             ("topic pin", false, false, true),
             ("topic reopen", false, false, true),
+            ("account sessions list", true, false, true),
+            ("account sessions web", true, false, true),
+            ("account status", true, false, true),
+            ("account ttl get", true, false, true),
+            ("account ttl set", false, false, true),
+            ("chat admin", false, false, true),
+            ("chat admin-log", true, false, true),
+            ("chat create", false, false, true),
+            ("chat edit", false, false, true),
+            ("chat invite", false, false, true),
+            ("chat join", false, false, true),
+            ("chat kick", false, true, true),
+            ("chat leave", false, true, true),
+            ("chat link", false, false, true),
+            ("chat participants", true, false, true),
+            ("chat requests", false, false, true),
+            ("chat settings", false, false, true),
+            ("chat stats", true, false, true),
         ];
         let mut destructive: Vec<&str> = Vec::new();
         let mut retry_unsafe: Vec<&str> = Vec::new();
@@ -1721,7 +1777,9 @@ mod tests {
                 "msg delete",
                 "sticker remove",
                 "story delete",
-                "topic delete"
+                "topic delete",
+                "chat kick",
+                "chat leave"
             ]
         );
         assert_eq!(

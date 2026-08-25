@@ -676,7 +676,7 @@ immediately; none occupy an op lane. Each `ops.list` entry has the schema
 `{"op","summary","group","read_only","destructive","retry_safe"}` where
 `group` is the leading word of a spaced op (`msg`, `dialog`, `topic`,
 `profile`, `privacy`, `contact`, `sticker`, `story`, `raw`) or `transport`
-for the three inline ops. The list covers all 49 routed ops plus the 3
+for the three inline ops. The list covers all 67 routed ops plus the 3
 inline ops (52 entries).
 
 ### Two-lane execution and timeouts
@@ -730,7 +730,7 @@ Intake is bounded end to end: a 64-line stdin queue and 64-job op queues. A
 slow consumer stalls the pipeline instead of growing memory without bound —
 drivers should read stdout continuously.
 
-### Op table (49 routes)
+### Op table (67 routes)
 
 Lane `mutate` = ordered lane, `read` = concurrent lane. The hints column lists
 only the non-default flags: `read_only` performs no state change,
