@@ -445,7 +445,8 @@ fn merge_privacy_rules(
     merged
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GetParams {
     #[serde(default)]
@@ -469,7 +470,8 @@ impl From<&GetParams> for GetArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SetParams {
     pub(crate) key: String,
@@ -638,7 +640,7 @@ pub(crate) fn privacy_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_get,
             get_serve_dry_run,
             run_get,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<GetParams>
         ),
         crate::serve_route!(
             "privacy set",
@@ -653,7 +655,7 @@ pub(crate) fn privacy_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_set,
             set_serve_dry_run,
             run_set,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SetParams>
         ),
     ]
 }
@@ -1642,6 +1644,28 @@ mod tests {
                 privacy_rule_display(rule),
                 "{rule:?}"
             );
+        }
+    }
+
+    #[test]
+    fn set_params_schema_requires_key_and_is_closed() {
+        let v = crate::commands::serve::params_schema::<SetParams>();
+        assert_eq!(v["type"], "object");
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+        assert_eq!(v["required"], serde_json::json!(["key"]));
+        assert_eq!(v["properties"]["key"]["type"], "string");
+        for field in ["allow", "allow_chat", "deny", "deny_chat", "dry_run"] {
+            assert!(v["properties"][field].is_object(), "{field} missing");
+        }
+    }
+
+    #[test]
+    fn get_params_schema_is_closed_object() {
+        let v = crate::commands::serve::params_schema::<GetParams>();
+        assert_eq!(v["type"], "object");
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+        for field in ["key", "dry_run"] {
+            assert!(v["properties"][field].is_object(), "{field} missing");
         }
     }
 }

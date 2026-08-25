@@ -394,7 +394,8 @@ async fn emoji_status(args: EmojiStatusArgs, flags: &GlobalFlags) -> TeleResult<
     crate::executor::finish(flags, &envelope)
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GetParams {
     #[serde(default)]
@@ -424,7 +425,8 @@ impl From<&GetParams> for GetArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SetParams {
     pub(crate) name: Option<String>,
@@ -458,7 +460,8 @@ impl From<&SetParams> for SetArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PhotoParams {
     #[serde(default)]
@@ -482,7 +485,8 @@ impl From<&PhotoParams> for PhotoArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EmojiStatusParams {
     pub(crate) emoji: Option<i64>,
@@ -754,7 +758,7 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_emoji_status,
             emoji_status_serve_dry_run,
             run_emoji_status,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<EmojiStatusParams>
         ),
         crate::serve_route!(
             "profile get",
@@ -769,7 +773,7 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_get,
             get_serve_dry_run,
             run_get,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<GetParams>
         ),
         crate::serve_route!(
             "profile photo",
@@ -784,7 +788,7 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_photo,
             photo_serve_dry_run,
             run_photo,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<PhotoParams>
         ),
         crate::serve_route!(
             "profile set",
@@ -799,7 +803,7 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_set,
             set_serve_dry_run,
             run_set,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SetParams>
         ),
     ]
 }
@@ -1407,6 +1411,28 @@ mod tests {
                 }
                 other => panic!("expected execute plan for {op}, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn set_params_schema_is_closed_object() {
+        let v = crate::commands::serve::params_schema::<SetParams>();
+        assert_eq!(v["type"], "object");
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+        for field in ["name", "bio", "photo", "username", "dry_run"] {
+            assert!(v["properties"][field].is_object(), "{field} missing");
+        }
+        let required = v["required"].as_array().cloned().unwrap_or_default();
+        assert!(required.is_empty());
+    }
+
+    #[test]
+    fn emoji_status_params_schema_covers_fields() {
+        let v = crate::commands::serve::params_schema::<EmojiStatusParams>();
+        assert_eq!(v["type"], "object");
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+        for field in ["emoji", "remove", "dry_run"] {
+            assert!(v["properties"][field].is_object(), "{field} missing");
         }
     }
 }
