@@ -85,6 +85,13 @@ pub(crate) fn schema_placeholder() -> serde_json::Value {
     serde_json::json!({})
 }
 
+pub(crate) fn params_schema<P: rmcp::schemars::JsonSchema>() -> serde_json::Value {
+    use rmcp::schemars::generate::SchemaSettings;
+    let gen = SchemaSettings::draft2020_12().into_generator();
+    let root = gen.into_root_schema_for::<P>();
+    serde_json::to_value(root).unwrap_or_else(|_| serde_json::json!({}))
+}
+
 #[derive(Debug)]
 pub(crate) enum Plan {
     DryRun(serde_json::Value),
