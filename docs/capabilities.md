@@ -1,14 +1,14 @@
 # Capability matrix
 
-Spine of development. Status: `want` | `later` | `never` | `done`.
+This table tracks every product capability from request to ship. `Status` is one of `want`, `later`, `never`, or `done`.
 
-Sources: [Telegram API](https://core.telegram.org/api), [methods](https://core.telegram.org/methods), [grammers docs](https://docs.rs/grammers-client/latest/grammers_client/), [Full API](https://docs.telegram.org/methods). Layer tracked against grammers 0.10.
+Sources: the [Telegram API overview](https://core.telegram.org/api), the [method reference](https://core.telegram.org/methods), the [grammers docs](https://docs.rs/grammers-client/latest/grammers_client/), and the [full method listing](https://docs.telegram.org/methods). Rows track grammers 0.10.
 
-On grammers bump: diff client methods + TL layer changelog; add rows; do not silently drop.
+When you bump grammers, diff its client methods and TL-layer changelog against this table, then add rows for what changed. Do not delete rows silently.
 
-Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed registry** in `src/commands/raw.rs` (Rust TL types are static; the registry maps each supported method to a handler). Unregistered methods fail with a clear error; adding one is a one-command change + matrix row.
+RPCs without a friendly wrapper stay reachable through `tele raw <registry-name>`. The typed registry in `src/commands/raw.rs` maps each supported method to a handler, because Rust TL types are static. An unregistered method fails with an error that names the registry. Adding one takes one match arm and one row here.
 
-## Auth
+## Auth and account
 
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
@@ -77,9 +77,9 @@ Escape hatch for unwrapped RPCs: `tele raw <registry-name>` — a **typed regist
 | chat.invite-check | Preview invite link without joining (title/members/request flag) | `messages.checkChatInvite` | raw | `tele chat invite --check LINK` (Already/Peek/Invite variants; bare +hash accepted) | done |
 | chat.join-requests | Approve/dismiss join requests, bulk | `messages.{hideChatJoinRequest,hideAllChatJoinRequests}` (+ list via GetChatInviteImporters requested:true — getChatJoinRequests absent at layer 227) | raw | `tele chat requests` list; approve/dismiss via `--approve` / `--dismiss` with `--user USER` or `--all` | done |
 
-Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes); empty, non-emoji, or multi-codepoint values are rejected with a Usage error before connect. The accepted value is sent as the packed codepoint in `icon_emoji_id`, but Telegram expects a custom-emoji document ID (~1e18) there — the server currently rejects/ignores it, so the topic icon is degraded. Full support is deferred until a `messages.searchCustomEmoji` document-ID lookup is implemented (open item M7, tracked in `tasks/todo.md`). Topic lifecycle (`close`, `reopen`, `edit`, `delete`, `pin`) ships via raw TL: `messages.editForumTopic` (closed flag / title), `messages.updatePinnedForumTopic` (pin), and `messages.deleteTopicHistory` (whole-topic history removal; not `messages.deleteHistory`). `topic list` rows carry additive `closed` + `pinned`.
+Note on topic icons: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8 bytes). Empty values, non-emoji values, and multi-codepoint values fail with a Usage error before connect. The command sends the packed codepoint as `icon_emoji_id`, but Telegram expects a custom-emoji document ID (roughly 1e18) in that field, so the server currently rejects or ignores the value and the topic icon degrades. Full support waits on a `messages.searchCustomEmoji` document-ID lookup (open item M7, tracked in `tasks/todo.md`). Topic lifecycle (`close`, `reopen`, `edit`, `delete`, `pin`) ships over raw TL: `messages.editForumTopic` sets the closed flag and the title, `messages.updatePinnedForumTopic` pins, and `messages.deleteTopicHistory` removes whole-topic history (it is not `messages.deleteHistory`). `topic list` rows carry additive `closed` and `pinned`.
 
-## Dialogs & users
+## Dialogs and users
 
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
@@ -93,7 +93,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | takeout | Data export | `/api/takeout` | raw | `tele takeout` (requires explicit `--account`/`--tag`; `all` allowed; stderr progress in human mode; per-dialog checkpoint resume appends instead of truncating; `finish --abandon` = success:false) | done |
 | stories.* | Story send/list/read/delete/pin | `stories.{sendStory,getPeerStories,getStoriesArchive,getPinnedStories,readStories,deleteStories,togglePinned}`, `upload_file` + `inputMediaUploadedPhoto`/`inputMediaUploadedDocument` | raw | `tele story *` (`send --file F [--caption C] [--privacy everyone/contacts/close-friends] [--period s] [--pinned] [--noforwards]`; `list [--archive] [--pinned]`; `read --max-id N` (API is max-id only, no per-id read); `delete --ids`, `pin --ids`, `unpin --ids`; all mutators require explicit `--account` and honor `--dry-run`; send validates sensitive paths like msg uploads; peer must be own account, a user whose privacy permits, or a channel you admin — server-enforced, not pre-checked offline) | done |
 
-## Updates
+## Update streams
 
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
@@ -110,7 +110,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
 
-## Explicitly later / never
+## Other domains
 
 | id | Domain | Status | Why |
 |---|---|---|---|
@@ -126,7 +126,9 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | mcp | MCP stdio server: tele mcp exposes 67 ops as tools via rmcp 3.1 (stdio, legacy handshake, inputSchema via schemars, annotations, confirm gate, read-only/groups filters) | tele mcp --account NAME | done |
 | skill | Agent skill | want | End of development |
 
-## Kernel (not Telegram, but blocking)
+## Kernel
+
+Kernel rows cover the non-Telegram pieces the CLI needs before any RPC runs.
 
 | id | Capability | CLI / module | Status |
 |---|---|---|---|
@@ -137,7 +139,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | kernel.output | Broken stdout pipes exit 0 silently; stderr write failures ignored; tables use dynamic width arrangement | `src/output.rs`, `src/main.rs` | done |
 | kernel.proxy | Global + per-account SOCKS5 (grammers 0.10 proxy feature is socks5-only) | `src/client.rs` | done |
 | kernel.json | Serialize results | `src/serialize.rs` | done |
-| kernel.raw | Build-time TL registry | `tele raw` (`src/commands/raw.rs` + `build.rs` + vendored `tl/api.tl`) — validation, registry, and help generated from TL schema at build time via `grammers-tl-parser`; dispatch arms hand-written for response shaping; human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `account.SetAuthorizationTTL`, `contacts.DeleteByPhones`, `messages.ExportChatInvite`) require an explicit `--account` and honor `--dry-run`; 18 registry names incl. read-only `channels.GetFullChannel`, `users.GetUsers`, `messages.{GetHistory,Search,GetScheduledHistory,GetMessagesViews,ReadReactions,ReadMentions,GetDialogUnreadMarks}`, `account.GetAuthorizations` | done |
+| kernel.raw | Build-time TL registry | `tele raw` (`src/commands/raw.rs` + `build.rs` + vendored `tl/api.tl`) — validation, registry, and help generated from TL schema at build time via `grammers-tl-parser`; dispatch arms hand-written for response shaping; human-readable output in non-machine mode (lines or table); JSON envelope in `--json`/`--jsonl`; mutating methods (`account.UpdateProfile`, `account.SetAuthorizationTTL`, `contacts.DeleteByPhones`, `messages.ExportChatInvite`, `messages.AppendTodoList`, `messages.SendScheduledMessages`, `messages.ToggleTodoCompleted`) require an explicit `--account` and honor `--dry-run`; 25 registry names incl. read-only `channels.GetFullChannel`, `users.GetUsers`, `messages.{GetHistory,Search,GetScheduledHistory,GetMessagesViews,ReadReactions,ReadMentions,GetDialogUnreadMarks}`, `account.GetAuthorizations` | done |
 | kernel.peers | Chat-target resolution: numeric id (cached auth; `chat create` caches the created chat's access_hash into the session so `--chat <id>` works immediately after; `-100…` bot-API dialog ids via `PeerId::from_bot_api_dialog_id`), `@username`, `t.me/` link, `me` (friendly `get_me`; `resolve_peer(InputPeerSelf)` is broken in grammers 0.10 — misleading `Dropped`), `+phone` (raw `contacts.ImportContacts`, no friendly path; the temporary import is deleted immediately after resolution — no contact side effect, and privacy settings may hide the account) | `src/entities.rs` | done |
 | kernel.completions | Shell completions (bash, zsh, fish, powershell), printed to stdout, exit 0 | `tele completions` (`src/commands/completions.rs`) | done |
 | kernel.device-id | Per-account device identity (`device_model`/`system_version`/`app_version`/`lang_code`) fed to the client builder; config `[accounts.<name>]` keys → `ConnectionParams`; all four wired at grammers 0.10, defaults neutral when unset | `src/config.rs`, `src/client.rs` | done |
@@ -145,3 +147,13 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | kernel.login-staged | Non-TTY staged login; pending auth state resumable across invocations (`--stage begin/code/status/cancel`; phone_code_hash persisted under `{app}/pending/`, secrets never stored; 303 DC migration handled); server-side `--stage resend` (auth.resendCode) and `--stage cancel-code` (auth.cancelCode + clears local state); code-staged method only — QR staging excluded | `tele account login --stage …` | done |
 | kernel.link-resolve | Deep link → chat id + message id (`t.me/<chat>/<id>`, `t.me/c/<internal>/<id>`): `msg get --chat LINK` fetches that message (--id conflicts); other commands reject link-carried ids naming accepted consumers; parser exposed as `parse_target() -> ResolvedTarget` | `src/entities.rs`, `src/commands/msg.rs` | done |
 | kernel.serve | Single-owner duplex control plane: `tele serve` child owns exactly one account session (OS-level lock, EOF drains and exits 0) speaking newline-delimited JSONL over stdin/stdout with stderr logs; script is supervisor. Negotiated hello (driver `{"type":"hello","protocol":N}`; server carries `protocol`/`min_protocol`/`max_protocol`, account name, `identity{user_id,username,first_name,phone_masked}`, `last_seq`; `VersionMismatch` outside the inclusive range). Requests correlate by integer `id`; params parse with deny_unknown_fields and failures carry `error.param`. Full error taxonomy incl. FLOOD_WAIT/SLOWMODE_WAIT `seconds`, per-class `Timeout` (30s simple, 120s paginated/raw, 600s story send, unbounded download), `ConfirmRequired{would}` confirm gate on the eight destructive ops (`msg delete`, `dialog delete`, `topic delete`, `story delete`, `contact remove`, `sticker remove`, `chat kick`, `chat leave`) requiring `"confirm":true` (stripped before parsing). Two-lane executor: mutate lane strictly ordered single-worker, read lane dual-worker; bounded intake/queues (64) for backpressure; monotonic event `seq` per process with gap detection via `last_seq` + `stream.resync` catch-up healing and bounded replay dedupe; event rows share the listen serializers (`NewMessage`/`MessageEdited` flattened, `Reconnected`). Self-description via inline `ops.list`: all 67 routed ops across msg/dialog/topic/profile/privacy/contact/sticker/story/raw/chat/account groups plus `ping`/`stream.resync`/`ops.list` (group `transport`), each entry `{op,summary,group,read_only,destructive,retry_safe}` | `tele serve --account NAME` (`src/commands/serve.rs` + shared cores in command modules) | done |
+
+## Counts
+
+The numbers this file claims resolve as follows in the current tree:
+
+- Raw registry names (`kernel.raw` row): 25. Recount in PowerShell:
+  `$s = Get-Content src/commands/raw.rs -Raw; $i = $s.IndexOf('pub const REGISTERED'); $j = $s.IndexOf('];', $i); ([regex]::Matches($s.Substring($i, $j - $i), '"[^"]+"')).Count`
+- Routed serve and MCP ops (`mcp` row): 67. Recount:
+  `(Select-String -Path src\commands\*.rs -Pattern 'serve_route!\(').Count`
+- Every `done` row must expose a real CLI surface. The contract test enforces it: `cargo test --test contract -- done_rows_have_cli_surface`.

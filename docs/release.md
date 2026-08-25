@@ -1,177 +1,66 @@
-# Release and publish
+# Publish a release
 
-Rust/grammers reality. Unpublished until `want` rows in `docs/capabilities.md` are
-`done` — that gate is currently **met** (all rows `done`/`later`/`never`; MCP/skill
-stay `later` until Phase 6), per [ADR-005](decisions/005-unpublished-until-want-done.md).
-This document is the contract so we do not invent a second process later.
+A release is an annotated tag. You bump versions and push the tag. The `release` workflow in `.github/workflows/release.yml` builds the binaries, publishes the GitHub Release, and publishes npm. crates.io waits for an explicit order.
 
-Open release-readiness work:
+## Check the gates
 
-- CI exists (`ci` workflow in `.github/workflows/ci.yml`); plan below is the contract it implements.
-- Trunk is `main` (renamed from `master`); the `ci` workflow triggers on both until stale refs clear.
-- `v0.1.1` tag exists; `CHANGELOG.md` has the dated `[0.1.1] - 2026-08-17` section (and the `[0.1.0] - 2026-08-13` initial section).
+1. Confirm `main` is green. The `ci` workflow (`.github/workflows/ci.yml`) gates on `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, an MSRV check on Rust 1.89, and `cargo audit`.
+2. Confirm that `docs/capabilities.md` has no remaining `want` rows. The publication gate lives in [ADR-005](decisions/005-unpublished-until-want-done.md) and is currently met. Waive nothing silently.
+3. Pick the version number. MAJOR breaks the contract, MINOR adds commands or JSON keys, PATCH fixes. The breaking-change definition sits in `docs/cli-contract.md` under "Stability". For why this stack exists, see [ADR-006](decisions/006-rust-grammers.md).
 
-## Versioning
+## Bump the version
 
-SemVer. Version is derived from git tags; `Cargo.toml` `version` is bumped in the release commit to match the tag (`0.1.2` for `v0.1.2`).
+1. Set `version` in `Cargo.toml` to the tag number without the `v` prefix. Use `0.6.2` for `v0.6.2`. Commit `Cargo.lock` in sync.
+2. Add a `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`. The workflow extracts the section whose heading matches the tag version, so the heading must match exactly. Write entries when you land changes, not at release time.
+3. Commit with a `chore:`, `feat:`, or `fix:` prefix and push to `main`.
 
-- `MAJOR` — exit-code meaning changes, `--json` keys removed/renamed, removed
-  commands
-- `MINOR` — new commands or additive JSON keys
-- `PATCH` — fixes, no contract change
+Never commit `.env`, `*.session`, phones, or api hashes.
 
-`Cargo.toml` `version` must match the tag (`0.1.0` for `v0.1.0`); bump it in the
-release commit. The contract for what counts as breaking lives in
-`docs/cli-contract.md` ("Stability" section).
+## Tag the release
 
-## Git
+```bash
+git tag -a -m "vX.Y.Z" vX.Y.Z
+git push origin vX.Y.Z
+```
 
-- Trunk-based. `main` must always pass the offline gate (see CI below).
-- Branches: `feature/*`, `fix/*`, `chore/*`, `docs/*`. Short-lived, deleted after
-  merge. Never force-push `main`.
-- Commits: `feat|fix|refactor|test|docs|chore:` prefix — one logical change per
-  commit.
-- Never commit `.env`, `*.session`, `*.session-journal`, phones, or api hashes
-  (`.gitignore` covers these; `docs/` must also be scrubbed of real numbers).
-- `Cargo.lock` is committed (it is a binary crate); keep it in sync in the
-  release commit.
+The push triggers the `release` workflow.
 
-## Changelog
+## What the workflow builds
 
-`CHANGELOG.md` is curated (Added / Changed / Fixed / Deprecated / Removed /
-Security). **Write the entry with the change**, not at release archaeology time —
-a change without its entry is unfinished. It is consumer-facing: describe CLI
-behavior, not `git log`.
+**Build job.** A matrix of 4 targets: windows x64, linux x64, macOS arm64, and macOS x64 cross-compiled on the arm64 runner. Each target produces `telecli-<version>-<os>-<arch>[.exe]` and a matching `.sha256` checksum file. Regenerate the count with `rg -c "target: " .github/workflows/release.yml`, which prints `4`.
 
-## CI
+**Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries 8 assets: 4 binaries plus their 4 checksum files.
 
-The `ci` workflow runs on PR and push to `main` (and `master` until stale refs
-clear), on `ubuntu-latest` and `windows-latest`. Jobs:
+**npm job.** Copies the win-x64 binary into `npm/bin/telecli.exe`, bumps `npm/package.json` to the tag version with `npm version <ver> --no-git-tag-version --allow-same-version`, then runs `npm publish --access public` from the `npm/` directory. The tarball bundles the binary directly. Nothing downloads release assets at install time.
 
-- **test** (matrix, both OSes): fmt check, clippy `-D warnings`, `cargo test`.
-- **msrv**: `cargo check --workspace --all-targets` on the pinned MSRV
-  toolchain (`1.89`, mirrored from `rust-version` in `Cargo.toml` — keep both
-  in sync; `File::try_lock` in `session.rs` currently sets the floor).
-- **audit**: `cargo audit` on every run (advisory gate).
+## Verify the release
 
-In a fresh checkout the offline gate is:
+1. Open the GitHub Release page and confirm 8 assets.
+2. Download a binary and smoke-test it. `telecli --help` and `telecli --dry-run` must respond.
+3. Run `npm view @qmahyar/telecli version` and confirm it shows the tag version. Then install and check:
 
-1. `cargo fmt --all -- --check`
-2. `cargo clippy --all-targets -- -D warnings`
-3. `cargo test` (default — **no network**, no Telegram; `tests/contract.rs` reads
-   only local files)
-4. No Telegram secrets in CI: never load `%APPDATA%/telecli/.env`, never create
-   sessions. Live checks stay manual on a developer machine with real sessions.
+```bash
+npm install -g @qmahyar/telecli && telecli --version
+```
 
-## Release workflow (automated)
+## Handle an npm failure
 
-The `release` workflow (`.github/workflows/release.yml`) triggers on `v*` tag
-pushes and automates building, GitHub Release creation, and (optionally) npm
-publish.
+Publishing authenticates through npm trusted publishing (OIDC). The `@qmahyar/telecli` package on npmjs.com must list this repository and the `release` workflow as its trusted publisher. OIDC tokens are short lived, so there is no secret to set or rotate. When publish fails, fix the trusted-publisher configuration on npmjs.com, then rerun the failed job:
 
-### What CI does on tag push
+```bash
+gh run rerun <run-id> --job <npm-job-id>
+```
 
-1. **Build job** — matrix of 4 targets (windows x64, linux x64, macOS arm64,
-   macOS x64 cross-compiled). Produces:
-   - `telecli-<ver>-<os>-<arch>[.exe]` binary per target
-   - Matching `.sha256` checksum file per binary
-2. **Release job** — downloads all build artifacts, extracts the matching section
-   from `CHANGELOG.md` as the release body, and creates/updates the GitHub Release
-   via `softprops/action-gh-release@v2`.
-3. **npm job** (conditional) — guarded by the `NPM_TOKEN` secret. Downloads the
-   win-x64 binary, copies it into `npm/bin/telecli.exe`, bumps `npm/package.json`
-   version to match the tag, and runs `npm publish --access=public` from the `npm/`
-   directory. The npm tarball bundles the binary directly; it does **not** download
-   release assets at install time (the repo is private and release assets 404
-   anonymously).
+The GitHub Release ships even when npm fails. To publish npm by hand instead, use your own npm login with publish rights:
 
-### What stays manual
+```bash
+cd npm && npm version <ver> --no-git-tag-version --allow-same-version && npm publish --access=public
+```
 
-Before pushing the tag, **you** must:
+## Order crates.io separately
 
-1. **Version bump commit** — update `Cargo.toml` `version` to match the intended
-   tag, add the `CHANGELOG.md` entry for the new version, and commit
-   (`chore:` or `feat:`/`fix:` prefix as appropriate).
-2. **Annotated tag push** — `git tag -a -m "vX.Y.Z" vX.Y.Z && git push origin
-   vX.Y.Z`. This triggers the release workflow.
-3. **NPM_TOKEN secret** — must be configured in the repository's Settings → Secrets
-   and variables → Actions (see [NPM_TOKEN secret](#npm_token-secret) below).
-   Without it the npm job is skipped silently; GitHub Releases and binaries are
-   still published.
-4. **Verify** — check the GitHub Release page and (if npm was published) install
-   with `npm install -g @qmahyar/telecli` and run `telecli --version`.
+crates.io publication is not part of this pipeline. It happens only when you explicitly order it, because this is a personal tool. Run `cargo publish` when ordered.
 
-### NPM_TOKEN secret
+## Roll back
 
-The `NPM_TOKEN` action secret is **permanent**: set once, it persists across all
-future releases. GitHub does not consume or clear secrets when a workflow uses
-them; it stays until someone removes it or the underlying npm token expires or
-is revoked.
-
-**Creating the npm token** (one-time):
-
-1. Sign in to [npmjs.com](https://www.npmjs.com/login) with the account that owns
-   the `@qmahyar` scope (verified with `npm view @qmahyar/telecli maintainers`).
-2. **Access tokens** → *Generate New Token*:
-   - Granular token: name it (e.g. `github-actions-telecli`), scope it to
-     **only** `@qmahyar/telecli`, permissions **Read and write**; set an expiry
-     you can live with (a 1-year rotation ceremony is healthy).
-   - Or a classic **Automation** token — never expires, but has the account's
-     full publish rights; use it only if you accept that trade-off.
-3. Copy the token (`npm_...`); it is shown only once.
-
-**Installing it as the secret** — either:
-
-- Web: repo → Settings → Secrets and variables → Actions → *New repository
-  secret* → name `NPM_TOKEN`, paste the token.
-- Or CLI: `echo -n '<token>' | gh secret set NPM_TOKEN --repo QMahyar/tele-cli`
-  (stdin so it does not land in shell history or CI logs).
-
-**Rotation / renewal**: create a new npm token, then *update* the existing
-`NPM_TOKEN` secret with the new value (Settings → update, or the same `gh secret
-set` command). The workflow reads the secret by name, so no workflow or commit
-change is needed.
-
-**Failure mode**: an expired or revoked token silently skips the npm publish step
-(the release itself still ships). Check `npm view @qmahyar/telecli version` after
-a release — if it did not bump, re-set the secret and re-run the npm job:
-`gh run rerun <run-id> --job <npm-job-id>`.
-
-### crates.io — explicit order only
-
-Publishing the crate to crates.io is **not** part of the automated pipeline and
-must only happen on explicit instruction. This is a personal tool; crate
-publication is a separate decision.
-
-## Publish checklist (manual summary)
-
-1. Matrix gate: no remaining `want` rows (currently met) — or you explicitly waive
-   named ids.
-2. `CHANGELOG.md` has a version section for the tag; `Cargo.toml` version matches.
-3. Tag `vX.Y.Z` **annotated** (`git tag -a -m "vX.Y.Z"`) and push tags.
-4. CI builds, creates GitHub Release, and (if NPM_TOKEN is set) publishes npm.
-5. Smoke-test: verify binary `--help` and `--dry-run` from the release assets or
-   from a local build.
-6. **crates.io only on explicit order** (see above).
-7. **npm** — publish is automated by CI when NPM_TOKEN is set. If you need to
-   publish manually: `cd npm && npm version <ver> --no-git-tag-version && npm
-   publish --access=public`.
-
-Rollback: no production servers to revert — point users at the previous tag;
-`git tag` + GitHub Release can be deleted and re-cut if a release is broken.
-SemVer PATCH on top is preferred over tag rewriting once a release is out.
-
-## Dependency updates
-
-- **Dependabot** (or `gitsum`) for Rust deps: weekly, one PR per update.
-- grammers changes need care: after any `grammers-client` / `grammers-session`
-  bump, diff the client methods + TL layer and update `docs/capabilities.md`
-  (add rows; do not silently drop — matrix is the spine).
-- Do not auto-merge grammers majors; treat them as a feature slice (matrix diff +
-  live re-verification).
-
-## Related
-
-- ADR-005: [no release until want-matrix is done](decisions/005-unpublished-until-want-done.md)
-- ADR-006: [Rust/grammers pivot](decisions/006-rust-grammers.md)
-- Contract: `docs/cli-contract.md` (what counts as breaking)
+There are no servers to revert. Point users at the previous tag. While nobody depends on the broken release, delete the tag and the GitHub Release, then cut them again. Once a release is out, prefer a SemVer PATCH on top.
