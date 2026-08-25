@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 - SERVE-PLATFORM phase 0+1: duplex control-plane hardening (two-lane executor, event seq/resync, negotiated handshake v2 + identity, ops.list self-description, confirm gate, deny_unknown_fields, poll event parity) + pipe ops across msg/dialog/topic/profile/privacy/contact/stickers/story/raw groups
+- MCP stdio server (rmcp 3.1): `tele mcp` exposes all 67 serve ops as tools with JSON Schema inputSchemas, annotations, confirm gate, read-only/groups filters, legacy handshake compat, offline tests
 
 ## [0.5.0] - 2026-08-23
 

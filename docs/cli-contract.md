@@ -840,6 +840,308 @@ row fields are additive; existing `op` names, envelope shapes, and error
 `type` strings do not change meaning within a negotiated protocol range.
 Discover ops dynamically via `ops.list` instead of hardcoding the table above.
 
+## `tele mcp`
+
+```
+tele mcp --account NAME [--read-only] [--groups g1,g2]
+```
+
+MCP stdio server for LLM agents: every routed `tele serve` op is exposed as
+an MCP **tool**, so an agent drives one Telegram account through the same
+planner/runner core as the CLI without shelling out or parsing CLI tables.
+Implemented on rmcp 3.1 (official Rust SDK); JSON-RPC 2.0 over stdio per the
+Model Context Protocol. The process is spawned by an MCP client (client
+config snippets below), not run interactively.
+
+Process model:
+
+- Exactly one account: `--account NAME` is fixed for the server's lifetime
+  and every tool runs as that account. The standard OS-level session lock
+  applies — while `tele mcp` holds the session no other tele process can
+  open it, and vice versa ("session <name> is in use by another process").
+- Logs stay on stderr; stdout is transport only. Startup emits
+  `mcp: serving N tools (full|read-only) over stdio for account NAME`.
+- `--read-only` omits every mutating tool from `tools/list` (only the 20
+  read-only tools of the table below are discoverable).
+- `--groups msg,dialog` keeps only tools whose op group matches
+  (comma-delimited, case-insensitive). Combined with `--read-only` the two
+  filters AND together. Both flags are discovery filters: a hidden tool
+  stays invokable by its exact name, so treat them as curation, not as a
+  hard security gate.
+- EOF on stdin shuts down cleanly: the Telegram client disconnects, exit
+  code 0.
+
+### Transport and lifecycle
+
+rmcp stdio transport with the legacy initialize handshake:
+
+- The server declares protocol version `2025-11-25` and negotiates down to
+  `2025-06-18` if the client offers it. (The base spec revision 2026-07-28
+  removed `initialize`, but no shipped client requires it yet — tele pins
+  the legacy handshake for maximum compatibility.)
+- Lifecycle: `initialize` -> `notifications/initialized` -> any number of
+  `tools/list`, `tools/call`, `ping`.
+- Server capabilities advertise **tools only**; no `listChanged` yet.
+- The `initialize` result carries `serverInfo` (`name: "tele"`, crate
+  version) plus an instructions string naming the bound account, the
+  universal `dry_run:true` convention, and the ConfirmRequired /
+  `arguments.confirm=true` flow (plus a note that mutating tools are hidden
+  when started `--read-only`). Surface it to the model.
+
+### Tool naming
+
+Op names map to tool names deterministically: spaces become underscores.
+
+- `msg send` -> `msg_send`, `account sessions list` ->
+  `account_sessions_list`, `chat admin-log` -> `chat_admin-log`.
+- Every name matches `^[A-Za-z0-9_-]{1,128}$`.
+- Names are unique across the table; `tools/list` returns them sorted
+  alphabetically.
+
+### Tool descriptor
+
+Each entry in `tools/list` carries:
+
+| field | value |
+|---|---|
+| `name` | mapped tool name |
+| `description` | op summary; destructive ops append: "Destructive: the first call rejects with ConfirmRequired; resend with arguments.confirm=true to run it." |
+| `inputSchema` | JSON Schema draft 2020-12 object: `type: object`, `additionalProperties: false`, properties derived from each op's Params structs via schemars (doc comments become property descriptions) |
+| `annotations` | `readOnlyHint` = route read_only flag; `destructiveHint` = route destructive flag; `idempotentHint` = true when read-only, else the route retry_safe flag |
+
+No separate `title` is emitted — clients fall back to `name`. Annotations
+are hints for clients, not enforcement; the confirm gate below enforces.
+
+### Safety model
+
+- **dry_run everywhere**: every tool accepts `"dry_run": true` and answers
+  offline with the CLI-shaped would payload (`dry_run:true`, a human
+  readable `would`, the operation's own argument keys). No network call.
+- **Confirm gate**: destructive tools reject the first call with an
+  `isError:true` result whose text contains the `ConfirmRequired` envelope
+  including the computed `would` preview; resend the same arguments plus
+  `"confirm": true` to run (`"confirm": false` does not unlock).
+  Destructive set today (8): `chat_kick`, `chat_leave`, `contact_remove`,
+  `dialog_delete`, `msg_delete`, `sticker_remove`, `story_delete`,
+  `topic_delete` — all badged `destructiveHint: true`.
+- **--read-only**: mutating tools are absent from `tools/list`.
+- **--groups**: least-privilege curation before the first request (e.g.
+  `--groups msg,dialog` exposes only messaging and dialog tools).
+
+### Error taxonomy
+
+Only one failure class is protocol-level; everything else arrives in-band
+so the model can self-correct:
+
+| failure | wire shape |
+|---|---|
+| unknown tool name | JSON-RPC error `-32602` invalid_params: `unknown tool X; use tools/list to see the 67 available tele tools` |
+| everything else | normal response whose text carries a tele envelope; `isError: true` marks failure, `isError` absent/false on success |
+
+Envelope `type` strings inside `isError:true` text reuse the serve taxonomy:
+
+| envelope `type` | when | extra keys |
+|---|---|---|
+| `ConfirmRequired` | destructive tool called without `"confirm":true` | `would` (the dry-run preview payload) |
+| `ServeError` | params failed deserialization/validation (`deny_unknown_fields`: typo'd, missing, wrong-typed keys) | `param` (offending field when identified) |
+| `UsageError` | command-level validation failed (identical rules and wording to the CLI flags) | — |
+| `AuthError` | session invalid or logged out; restart the server after re-login | — |
+| `InvocationError` | Telegram RPC or transport failure | `code`, `name`; `seconds` on RPC 420 waits (`FLOOD_WAIT`, `SLOWMODE_WAIT`, …) |
+| `ConfigError`, `TaskPanicError`, `Error` | rare kinds from the shared error model | — |
+
+Self-correction loop: fix params per `ServeError.param`, add
+`"confirm":true` after `ConfirmRequired`, wait `seconds` out on
+`InvocationError` with `name: FLOOD_WAIT`, or switch to `"dry_run":true`
+to preview anything first. There are no lane timeouts over MCP — requests
+run one at a time in arrival order.
+
+### Not exposed over MCP
+
+`tele serve`'s three inline transport ops are serve-loop concepts, not MCP
+tools: `ping` (MCP has its own protocol-level ping), `ops.list` (replaced
+by `tools/list`), and `stream.resync` (no event streaming over MCP yet).
+They appear in neither the tool table nor `tools/list`.
+
+### Tool table (67)
+
+Same hints notation as the serve table: listed values mark non-defaults;
+an absent hints cell means mutating / non-destructive / retry-safe. All 67
+are discoverable in full mode; the 20 rows carrying `read_only` survive
+`--read-only`.
+
+`account` group (5):
+
+| tool | summary | hints |
+|---|---|---|
+| `account_sessions_list` | list active device sessions | read_only |
+| `account_sessions_web` | list active web login sessions | read_only |
+| `account_status` | probe authorization and account-level API health | read_only |
+| `account_ttl_get` | show the inactive-account self-destruct TTL | read_only |
+| `account_ttl_set` | set the inactive-account self-destruct TTL | |
+
+`chat` group (13):
+
+| tool | summary | hints |
+|---|---|---|
+| `chat_admin` | promote or demote a chat admin | |
+| `chat_admin-log` | list recent chat admin log events | read_only |
+| `chat_create` | create a group, supergroup, or channel | |
+| `chat_edit` | edit chat title, about, or photo | |
+| `chat_invite` | invite users or manage invite links | |
+| `chat_join` | join a chat by target or invite link | |
+| `chat_kick` | kick, ban, or restrict a chat participant | destructive |
+| `chat_leave` | leave a chat or channel | destructive |
+| `chat_link` | show or set the discussion link of a channel | |
+| `chat_participants` | list chat participants | read_only |
+| `chat_requests` | list or act on pending join requests | |
+| `chat_settings` | update or read channel settings | |
+| `chat_stats` | show broadcast or megagroup stats | read_only |
+
+`contact` group (5):
+
+| tool | summary | hints |
+|---|---|---|
+| `contact_add` | add a contact by phone number | |
+| `contact_block` | block a user | |
+| `contact_list` | list contacts | read_only |
+| `contact_remove` | remove a contact | destructive |
+| `contact_unblock` | unblock a user | |
+
+`dialog` group (6):
+
+| tool | summary | hints |
+|---|---|---|
+| `dialog_archive` | archive or unarchive a dialog | |
+| `dialog_delete` | remove a dialog from the chat list | destructive |
+| `dialog_draft` | save or clear a chat draft | |
+| `dialog_drafts` | list chats holding unsent drafts | read_only |
+| `dialog_list` | list recent dialogs | read_only |
+| `dialog_pin` | pin or unpin a dialog in the chat list | |
+
+`msg` group (13):
+
+| tool | summary | hints |
+|---|---|---|
+| `msg_click` | click an inline button on a bot message | retry_unsafe |
+| `msg_delete` | delete a message or all my messages in a chat | destructive |
+| `msg_download` | download message media to disk | read_only retry_unsafe |
+| `msg_edit` | edit the text of an outgoing message | |
+| `msg_forward` | forward messages between chats | retry_unsafe |
+| `msg_get` | fetch messages from a chat by recency or id | read_only |
+| `msg_pin` | pin or unpin a message in a chat | |
+| `msg_react` | add or remove a reaction on a message | |
+| `msg_read` | mark a chat read up to a message | |
+| `msg_search` | search messages in a chat or globally | read_only |
+| `msg_send` | send a text message to a chat | retry_unsafe |
+| `msg_typing` | send a chat action such as typing | |
+| `msg_vote` | vote in a poll attached to a message | retry_unsafe |
+
+`privacy` group (2):
+
+| tool | summary | hints |
+|---|---|---|
+| `privacy_get` | show one privacy setting | read_only |
+| `privacy_set` | set one privacy setting | |
+
+`profile` group (4):
+
+| tool | summary | hints |
+|---|---|---|
+| `profile_emoji-status` | set or clear my emoji status | |
+| `profile_get` | show my profile | read_only |
+| `profile_photo` | set or clear my profile photo | |
+| `profile_set` | update my name or bio | |
+
+`raw` group (1):
+
+| tool | summary | hints |
+|---|---|---|
+| `raw` | invoke one raw TL method by name | retry_unsafe |
+
+`sticker` group (5):
+
+| tool | summary | hints |
+|---|---|---|
+| `sticker_install` | install a sticker set | |
+| `sticker_list` | list installed sticker sets | read_only |
+| `sticker_remove` | uninstall a sticker set | destructive |
+| `sticker_search` | search sticker sets by keyword | read_only |
+| `sticker_show` | list stickers in an installed set | read_only |
+
+`story` group (6):
+
+| tool | summary | hints |
+|---|---|---|
+| `story_delete` | delete one of my stories | destructive |
+| `story_list` | list stories for peers | read_only |
+| `story_pin` | pin one of my stories | |
+| `story_read` | mark a peer's stories as read | |
+| `story_send` | post a new story | |
+| `story_unpin` | unpin one of my stories | |
+
+`topic` group (7):
+
+| tool | summary | hints |
+|---|---|---|
+| `topic_close` | close a forum topic | |
+| `topic_create` | create a forum topic in a channel | |
+| `topic_delete` | delete a forum topic | destructive |
+| `topic_edit` | rename or re-icon a forum topic | |
+| `topic_list` | list forum topics in a channel | read_only |
+| `topic_pin` | pin or unpin a forum topic | |
+| `topic_reopen` | reopen a closed forum topic | |
+
+### Backpressure
+
+Not applicable: rmcp processes requests one at a time on the stdio
+transport, so there are no queue bounds to honor (contrast `tele serve`'s
+bounded intake).
+
+### Client configuration
+
+Claude Desktop — `%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "tele": {
+      "command": "tele",
+      "args": ["mcp", "--account", "work"]
+    }
+  }
+}
+```
+
+Claude Code — project `.mcp.json` (same `mcpServers` shape as above), or:
+
+```
+claude mcp add --transport stdio tele -- tele mcp --account work
+```
+
+Cursor — `.cursor/mcp.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "tele": {
+      "command": "tele",
+      "args": ["mcp", "--account", "work", "--read-only"]
+    }
+  }
+}
+```
+
+Adjust `--account`, `--groups`, and the binary path (absolute paths are
+safer in client configs) per setup.
+
+### MCP stability
+
+Tool names, the descriptor fields above, and the `-32602` unknown-tool
+shape are stable. New tools appear additively in `tools/list`; new
+inputSchema properties are additive; existing property types do not change
+meaning. Discover tools via `tools/list` instead of hardcoding the table
+above.
+
 ## `tele takeout`
 
 ```
