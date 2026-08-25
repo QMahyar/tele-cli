@@ -231,7 +231,8 @@ fn sent_display_name(first: &str, last: &str) -> String {
     format!("{first} {last}").trim().to_string()
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ListParams {
     #[serde(default = "default_contact_limit")]
@@ -259,7 +260,8 @@ impl From<&ListParams> for ListArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AddParams {
     pub(crate) user: String,
@@ -293,7 +295,8 @@ impl From<&AddParams> for AddArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RemoveParams {
     pub(crate) user: String,
@@ -318,7 +321,8 @@ impl From<&RemoveParams> for RemoveArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BlockParams {
     pub(crate) user: String,
@@ -564,7 +568,7 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_add,
             add_serve_dry_run,
             run_add,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<AddParams>
         ),
         crate::serve_route!(
             "contact block",
@@ -579,7 +583,7 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_block,
             block_serve_dry_run,
             run_block,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<BlockParams>
         ),
         crate::serve_route!(
             "contact list",
@@ -594,7 +598,7 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_list,
             list_serve_dry_run,
             run_list,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ListParams>
         ),
         crate::serve_route!(
             "contact remove",
@@ -609,7 +613,7 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_remove,
             remove_serve_dry_run,
             run_remove,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<RemoveParams>
         ),
         crate::serve_route!(
             "contact unblock",
@@ -624,7 +628,7 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_block,
             unblock_serve_dry_run,
             run_unblock,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<BlockParams>
         ),
     ]
 }
@@ -982,5 +986,25 @@ mod tests {
                 other => panic!("expected execute plan for {op}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn add_params_schema_requires_user_and_is_closed() {
+        let v = crate::commands::serve::params_schema::<AddParams>();
+        assert_eq!(v["type"], "object");
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+        assert_eq!(v["required"], serde_json::json!(["user"]));
+        assert_eq!(v["properties"]["user"]["type"], "string");
+        for field in ["first", "last", "phone", "dry_run"] {
+            assert!(v["properties"][field].is_object(), "{field} missing");
+        }
+    }
+
+    #[test]
+    fn block_params_schema_requires_user_only() {
+        let v = crate::commands::serve::params_schema::<BlockParams>();
+        assert_eq!(v["type"], "object");
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+        assert_eq!(v["required"], serde_json::json!(["user"]));
     }
 }
