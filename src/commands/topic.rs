@@ -615,8 +615,9 @@ fn default_topic_limit() -> u32 {
     20
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct CreateParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -647,8 +648,9 @@ impl From<&CreateParams> for CreateArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ListParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -677,8 +679,9 @@ impl From<&ListParams> for ListArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct LifecycleParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -706,8 +709,9 @@ impl From<&LifecycleParams> for LifecycleArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct EditParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -833,7 +837,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_lifecycle,
             close_serve_dry_run,
             run_close,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<LifecycleParams>
         ),
         crate::serve_route!(
             "topic create",
@@ -848,7 +852,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_create,
             create_serve_dry_run,
             run_create,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<CreateParams>
         ),
         crate::serve_route!(
             "topic delete",
@@ -863,7 +867,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_lifecycle,
             delete_serve_dry_run,
             run_delete,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<LifecycleParams>
         ),
         crate::serve_route!(
             "topic edit",
@@ -878,7 +882,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_edit,
             edit_serve_dry_run,
             run_edit,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<EditParams>
         ),
         crate::serve_route!(
             "topic list",
@@ -893,7 +897,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_list,
             list_serve_dry_run,
             run_list,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ListParams>
         ),
         crate::serve_route!(
             "topic pin",
@@ -908,7 +912,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_lifecycle,
             pin_serve_dry_run,
             run_pin,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<LifecycleParams>
         ),
         crate::serve_route!(
             "topic reopen",
@@ -923,7 +927,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_lifecycle,
             reopen_serve_dry_run,
             run_reopen,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<LifecycleParams>
         ),
     ]
 }
@@ -1609,5 +1613,20 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn serve_schemas_are_real_objects() {
+        for schema in [
+            crate::commands::serve::params_schema::<CreateParams>(),
+            crate::commands::serve::params_schema::<LifecycleParams>(),
+            crate::commands::serve::params_schema::<EditParams>(),
+        ] {
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+            assert!(schema["properties"].as_object().is_some());
+        }
+        let lifecycle = crate::commands::serve::params_schema::<LifecycleParams>();
+        assert!(lifecycle["properties"]["topic"].is_object());
     }
 }
