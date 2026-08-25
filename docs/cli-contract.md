@@ -706,7 +706,7 @@ is the dry-run preview computed from the submitted params:
 {"type":"response","id":21,"ok":false,"error":{"type":"ConfirmRequired","message":"op msg delete is destructive and requires confirm:true","would":{"dry_run":true,"ids":[],"self_only":false,"would":"delete all messages in chat @game"}}}
 ```
 
-- The destructive set today: `contact remove`, `dialog delete`,
+- The destructive set today: `chat kick`, `chat leave`, `contact remove`, `dialog delete`,
   `msg delete`, `sticker remove`, `story delete`, `topic delete`.
 - Resubmit the same params plus `"confirm":true` to proceed;
   `"confirm":false` does not unlock the gate.
@@ -831,6 +831,34 @@ retry-safe respectively.
 | `topic list` | list forum topics in a channel | read | 120s | read_only |
 | `topic pin` | pin or unpin a forum topic | mutate | 30s | |
 | `topic reopen` | reopen a closed forum topic | mutate | 30s | |
+
+`account` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `account sessions list` | list active device sessions | read | 120s | read_only |
+| `account sessions web` | list active web login sessions | read | 120s | read_only |
+| `account status` | probe authorization and account-level API health | read | 120s | read_only |
+| `account ttl get` | show the inactive-account self-destruct TTL | read | 120s | read_only |
+| `account ttl set` | set the inactive-account self-destruct TTL | mutate | 30s | |
+
+`chat` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `chat admin` | promote or demote a chat admin | mutate | 30s | |
+| `chat admin-log` | list recent chat admin log events | read | 120s | read_only |
+| `chat create` | create a group, supergroup, or channel | mutate | 30s | |
+| `chat edit` | edit chat title, about, or photo | mutate | 30s | |
+| `chat invite` | invite users or manage invite links | mutate | 30s | |
+| `chat join` | join a chat by target or invite link | mutate | 30s | |
+| `chat kick` | kick, ban, or restrict a chat participant | mutate | 30s | destructive |
+| `chat leave` | leave a chat or channel | mutate | 30s | destructive |
+| `chat link` | show or set the discussion link of a channel | mutate | 30s | |
+| `chat participants` | list chat participants | read | 120s | read_only |
+| `chat requests` | list or act on pending join requests | mutate | 30s | |
+| `chat settings` | update or read channel settings | mutate | 30s | |
+| `chat stats` | show broadcast or megagroup stats | read | 120s | read_only |
 
 ### Serve stability
 
