@@ -520,6 +520,326 @@ Runtime semantics:
   accumulated while offline is replayed before live events. Consumers that
   require live-only behavior must filter by `date`.
 
+## `tele serve`
+
+```
+tele serve --account NAME [--events NewMessage,MessageEdited] [--catch-up]
+```
+
+Duplex control plane for embedding scripts: `tele serve` is spawned as a child
+process that owns **one** account session and speaks newline-delimited JSON
+over stdio. Stdout carries server frames (handshake, responses, events); stdin
+carries driver frames (hello, requests); stderr carries the usual freeform log
+lines. The driving script is the supervisor — it spawns, feeds, parses, and
+terminates the process.
+
+Process model:
+
+- Exactly one account: selection must resolve to a single session, otherwise
+  exit 1 before anything connects.
+- Exclusive ownership: the standard OS-level per-account session lock applies.
+  While `tele serve` holds the session no other tele process can open it, and
+  vice versa ("session <name> is in use by another process").
+- Frames are single-line JSON objects terminated by `\n`; writers must flush
+  per line.
+- EOF on stdin shuts down cleanly: queued jobs drain, pending responses are
+  flushed to stdout, the client disconnects, exit code 0.
+- `--events` allowlist: `NewMessage`, `MessageEdited` (default
+  `NewMessage`). Any other name exits 1 before connect.
+- Default mode is live-only (updates from now on, no replay, no history);
+  `--catch-up` first replays what was missed since the persisted update state.
+- Stream failures reconnect automatically with exponential backoff (1s→30s, up
+  to 5 consecutive attempts); auth failures fail fast (exit 4).
+- `tele serve --dry-run` validates selection offline and prints a `Serve` row
+  following the `would` convention; nothing connects.
+
+### Handshake
+
+Immediately after connecting (before reading any input) the server emits its
+hello:
+
+```json
+{"type":"hello","protocol":1,"min_protocol":1,"max_protocol":1,"account":"work","identity":{"user_id":1234567,"username":"work","first_name":"Work","phone_masked":"+7***456"},"last_seq":null}
+```
+
+The driver answers with its own hello to complete negotiation:
+
+```json
+{"type":"hello","protocol":1}
+```
+
+- The driver's `protocol` must be an integer inside `[min_protocol,
+  max_protocol]` (inclusive). A valid value re-emits the server hello; a
+  missing/non-integer/out-of-range one yields a `VersionMismatch` error
+  envelope (no `id`; the parse never produced a request) and the driver should
+  stop.
+- `identity` describes the logged-in account: bare `user_id`, `username`,
+  `first_name`, and `phone_masked` (masked, or `null` when the account has no
+  phone on file). Secrets never appear in hello or anywhere else on the wire.
+- `last_seq` is the highest event `seq` assigned in this process so far
+  (`null` before the first event).
+- Sending another hello later re-emits the server hello with current
+  identity/`last_seq` values.
+- After an internal stream rebuild the server does not re-handshake; it emits
+  a `Reconnected` event row instead.
+
+### Requests and correlation
+
+```json
+{"id":17,"op":"msg send","params":{"chat":"@team","text":"hi"}}
+```
+
+- `id` is a driver-chosen unsigned integer, echoed on every response for
+  correlation.
+- `op` is either `"<group> <action>"` from the table below or a dotted
+  transport op (`ping`, `ops.list`, `stream.resync`). Names mirror the CLI
+  command they wrap (`"msg send"` ⇔ `tele msg send`) and share the same core
+  implementation, validation rules, and chat-target syntax (`@user`,
+  `t.me/…` links, numeric ids, `me`, `+phone` — phone branch wins over numeric
+  parse).
+- `params` mirrors the command's flags in snake_case without the dashes. It
+  must be a JSON object; omitted means `{}`. Params parse with
+  `deny_unknown_fields`: a typo'd key is a `ServeError` naming the field in
+  `error.param` (missing required fields and wrong-typed values carry
+  `error.param` too when the offender can be identified).
+- An unknown op yields `NotImplemented`; its message lists every supported op
+  — but prefer `ops.list` over parsing that message.
+
+### Responses
+
+```json
+{"type":"response","id":17,"ok":true,"data":{}}
+{"type":"response","id":18,"ok":false,"error":{"type":"InvocationError","message":"rpc error 420: FLOOD_WAIT (value: 17)","code":420,"name":"FLOOD_WAIT","seconds":17}}
+```
+
+`ok:false` envelopes carry the same error objects as one-shot `--json`
+(`type`, `message`, plus the additive `seconds` / `code` / `name` keys
+documented above). `id` is omitted when the failure cannot be attributed to a
+request, such as a malformed input line.
+
+Error taxonomy on the serve wire:
+
+| `error.type` | When | Extra keys |
+|---|---|---|
+| `ParseError` | Input line is not valid JSON / not an object | — |
+| `ServeError` | Framing or params problem: bad `id`/`op`/`params` shape, unknown field, wrong param type, non-empty params where none are allowed | `param` (offending field name, when identified) |
+| `UsageError` | Command-level validation failed (identical rules and wording to the CLI flags) | — |
+| `AuthError` | Session invalid or logged out; fatal to the connection | — |
+| `InvocationError` | Telegram RPC or transport failure | `code`, `name` (RPC-backed); `seconds` (wait value for RPC 420: `FLOOD_WAIT`, `SLOWMODE_WAIT`, …) |
+| `Timeout` | Op exceeded its lane timeout; message names the op and the limit | — |
+| `ConfirmRequired` | Destructive op submitted without `"confirm":true` | `would` (the dry-run preview payload) |
+| `NotImplemented` | Unknown op | message lists all supported ops |
+| `VersionMismatch` | hello protocol outside the negotiated range | — |
+
+Rare kinds from the shared error model may also surface additively:
+`ConfigError`, `TaskPanicError`, `Error`.
+
+### Events
+
+Between requests the server polls the update stream and emits event rows on
+stdout. Rows reuse the `tele listen` serializers (poll/event parity): a
+`NewMessage` / `MessageEdited` row is the flattened message object — the same
+shape as a `msg get` row — with these top-level keys merged in:
+
+```json
+{"event":"NewMessage","account":"work","chat_id":456,"seq":12,"id":789,"date":"2026-08-24T10:00:00+00:00","text":"..."}
+```
+
+- `event` is one of the configured `--events` kinds; updates outside the
+  allowlist are consumed for state tracking but never emitted.
+- `chat_id` appears when the update identifies its chat.
+- `seq` is stamped on every emitted frame and counts monotonically from 1 for
+  the lifetime of the `tele serve` process, continuing uninterrupted across
+  internal reconnects and resyncs (it restarts at 1 only when the process is
+  restarted).
+- Each successful internal stream rebuild emits a `Reconnected` row:
+  `{"event":"Reconnected","account":"work","seq":N}`.
+- Gap detection: track the last seen `seq`; a skipped number means stdout rows
+  were lost (likewise, a hello whose `last_seq` exceeds what you have read).
+  Send `stream.resync` to force a rebuild with catch-up replay. Replays are
+  deduplicated server-side via a bounded (chat, message-id, pts) key
+  (capacity 10,000, oldest evicted first), so replayed updates stay invisible
+  unless they fall outside that window.
+
+### Transport ops
+
+Inline ops handled by the serve loop itself (no route entry):
+
+| op | params | `data` | notes |
+|---|---|---|---|
+| `ping` | ignored | `{"pong":true}` | Liveness probe. |
+| `ops.list` | must be empty | `{"ops":[…]}` | Self-description, sorted by `op`. |
+| `stream.resync` | must be empty | `{"resync":"started"}` | Rebuilds the update stream with catch-up; the response is sent before the rebuild starts. |
+
+`ping` and `stream.resync` respond immediately; `ops.list` responds
+immediately; none occupy an op lane. Each `ops.list` entry has the schema
+`{"op","summary","group","read_only","destructive","retry_safe"}` where
+`group` is the leading word of a spaced op (`msg`, `dialog`, `topic`,
+`profile`, `privacy`, `contact`, `sticker`, `story`, `raw`) or `transport`
+for the three inline ops. The list covers all 49 routed ops plus the 3
+inline ops (52 entries).
+
+### Two-lane execution and timeouts
+
+- **Mutate lane**: one worker; jobs run strictly in submission order (queue
+  depth 64).
+- **Read lane**: two workers; read jobs run concurrently and their responses
+  may interleave with each other and with mutate responses (queue depth 64).
+- Per-op timeouts are enforced per job; expiry yields a `Timeout` error
+  envelope correlated by request `id`:
+
+| Class | Limit | Applies to |
+|---|---|---|
+| simple | 30s | mutating ops and short reads |
+| paginated | 120s | list/search/get-style reads |
+| story send | 600s | `story send` (media upload) |
+| download | none | `msg download` streams until completion |
+| raw | 120s | `raw` |
+
+### Confirm gate
+
+Destructive ops refuse to execute until the driver proves intent. Submitting
+one without `"confirm":true` returns a `ConfirmRequired` error whose `would`
+is the dry-run preview computed from the submitted params:
+
+```json
+{"type":"response","id":21,"ok":false,"error":{"type":"ConfirmRequired","message":"op msg delete is destructive and requires confirm:true","would":{"dry_run":true,"ids":[],"self_only":false,"would":"delete all messages in chat @game"}}}
+```
+
+- The destructive set today: `contact remove`, `dialog delete`,
+  `msg delete`, `sticker remove`, `story delete`, `topic delete`.
+- Resubmit the same params plus `"confirm":true` to proceed;
+  `"confirm":false` does not unlock the gate.
+- The gate applies even to `"dry_run":true` submissions of destructive ops.
+- Once accepted, the `confirm` key is stripped before params parsing (it never
+  trips `deny_unknown_fields`). Non-destructive ops strip a stray `confirm`
+  the same way; sending `confirm` inside `params` without passing the gate is
+  an unknown-field `ServeError`.
+
+### Dry-run
+
+Any routed op accepts `"dry_run":true` in params. The request is validated and
+answered inline (no lane, no timeout) with the same payload shape as the
+CLI's `--dry-run`: `dry_run:true`, a human-readable `would` describing the
+exact intended action, and the operation's own argument keys. No network call
+is made.
+
+### Backpressure
+
+Intake is bounded end to end: a 64-line stdin queue and 64-job op queues. A
+slow consumer stalls the pipeline instead of growing memory without bound —
+drivers should read stdout continuously.
+
+### Op table (49 routes)
+
+Lane `mutate` = ordered lane, `read` = concurrent lane. The hints column lists
+only the non-default flags: `read_only` performs no state change,
+`destructive` sits behind the confirm gate, `retry_unsafe` means a blind
+retry can duplicate an effect. Absent hint ⇒ mutating / non-destructive /
+retry-safe respectively.
+
+`contact` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `contact add` | add a contact by phone number | mutate | 30s | |
+| `contact block` | block a user | mutate | 30s | |
+| `contact list` | list contacts | read | 120s | read_only |
+| `contact remove` | remove a contact | mutate | 30s | destructive |
+| `contact unblock` | unblock a user | mutate | 30s | |
+
+`dialog` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `dialog archive` | archive or unarchive a dialog | mutate | 30s | |
+| `dialog delete` | remove a dialog from the chat list | mutate | 30s | destructive |
+| `dialog draft` | save or clear a chat draft | mutate | 30s | |
+| `dialog drafts` | list chats holding unsent drafts | read | 120s | read_only |
+| `dialog list` | list recent dialogs | read | 120s | read_only |
+| `dialog pin` | pin or unpin a dialog in the chat list | mutate | 30s | |
+
+`msg` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `msg click` | click an inline button on a bot message | mutate | 30s | retry_unsafe |
+| `msg delete` | delete a message or all my messages in a chat | mutate | 30s | destructive |
+| `msg download` | download message media to disk | read | none | read_only retry_unsafe |
+| `msg edit` | edit the text of an outgoing message | mutate | 30s | |
+| `msg forward` | forward messages between chats | mutate | 30s | retry_unsafe |
+| `msg get` | fetch messages from a chat by recency or id | read | 120s | read_only |
+| `msg pin` | pin or unpin a message in a chat | mutate | 30s | |
+| `msg react` | add or remove a reaction on a message | mutate | 30s | |
+| `msg read` | mark a chat read up to a message | mutate | 30s | |
+| `msg search` | search messages in a chat or globally | read | 120s | read_only |
+| `msg send` | send a text message to a chat | mutate | 30s | retry_unsafe |
+| `msg typing` | send a chat action such as typing | mutate | 30s | |
+| `msg vote` | vote in a poll attached to a message | mutate | 30s | retry_unsafe |
+
+`privacy` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `privacy get` | show one privacy setting | read | 120s | read_only |
+| `privacy set` | set one privacy setting | mutate | 30s | |
+
+`profile` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `profile emoji-status` | set or clear my emoji status | mutate | 30s | |
+| `profile get` | show my profile | read | 120s | read_only |
+| `profile photo` | set or clear my profile photo | mutate | 30s | |
+| `profile set` | update my name or bio | mutate | 30s | |
+
+`raw` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `raw` | invoke one raw TL method by name | mutate | 120s | retry_unsafe |
+
+`sticker` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `sticker install` | install a sticker set | mutate | 30s | |
+| `sticker list` | list installed sticker sets | read | 120s | read_only |
+| `sticker remove` | uninstall a sticker set | mutate | 30s | destructive |
+| `sticker search` | search sticker sets by keyword | read | 120s | read_only |
+| `sticker show` | list stickers in an installed set | read | 120s | read_only |
+
+`story` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `story delete` | delete one of my stories | mutate | 30s | destructive |
+| `story list` | list stories for peers | read | 120s | read_only |
+| `story pin` | pin one of my stories | mutate | 30s | |
+| `story read` | mark a peer's stories as read | mutate | 30s | |
+| `story send` | post a new story | mutate | 600s | |
+| `story unpin` | unpin one of my stories | mutate | 30s | |
+
+`topic` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `topic close` | close a forum topic | mutate | 30s | |
+| `topic create` | create a forum topic in a channel | mutate | 30s | |
+| `topic delete` | delete a forum topic | mutate | 30s | destructive |
+| `topic edit` | rename or re-icon a forum topic | mutate | 30s | |
+| `topic list` | list forum topics in a channel | read | 120s | read_only |
+| `topic pin` | pin or unpin a forum topic | mutate | 30s | |
+| `topic reopen` | reopen a closed forum topic | mutate | 30s | |
+
+### Serve stability
+
+Serve frames follow the same rule as everything in this file: additive changes
+only. New ops appear in `ops.list` before scripts rely on them; new hint or
+row fields are additive; existing `op` names, envelope shapes, and error
+`type` strings do not change meaning within a negotiated protocol range.
+Discover ops dynamically via `ops.list` instead of hardcoding the table above.
+
 ## `tele takeout`
 
 ```
