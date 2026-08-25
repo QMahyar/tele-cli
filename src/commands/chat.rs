@@ -3728,8 +3728,9 @@ fn default_create_kind() -> String {
     "group".to_string()
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct JoinParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -3754,8 +3755,9 @@ impl From<&JoinParams> for ChatArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct LeaveParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -3780,8 +3782,9 @@ impl From<&LeaveParams> for ChatArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct CreateServeParams {
     pub(crate) title: String,
     #[serde(default)]
@@ -3817,8 +3820,9 @@ impl From<&CreateServeParams> for CreateArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SettingsServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -3863,8 +3867,9 @@ impl From<&SettingsServeParams> for SettingsArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct EditServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -3901,8 +3906,9 @@ impl From<&EditServeParams> for EditArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct LinkServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -3931,8 +3937,9 @@ impl From<&LinkServeParams> for LinkArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct KickServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -3972,8 +3979,9 @@ impl From<&KickServeParams> for KickArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct AdminServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -4021,8 +4029,9 @@ impl From<&AdminServeParams> for AdminArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct AdminLogServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -4071,8 +4080,9 @@ impl From<&AdminLogServeParams> for AdminLogArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct StatsServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -4101,8 +4111,9 @@ impl From<&StatsServeParams> for StatsArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct InviteServeParams {
     #[serde(default)]
     pub(crate) chat: Option<String>,
@@ -4175,8 +4186,9 @@ impl From<&InviteServeParams> for InviteArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct RequestsServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -4225,8 +4237,9 @@ impl From<&RequestsServeParams> for RequestsArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ParticipantsServeParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -5559,7 +5572,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_join,
             join_serve_dry_run,
             run_join,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<JoinParams>
         ),
         crate::serve_route!(
             "chat leave",
@@ -5574,7 +5587,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_leave,
             leave_serve_dry_run,
             run_leave,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<LeaveParams>
         ),
         crate::serve_route!(
             "chat create",
@@ -5589,7 +5602,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_create,
             create_serve_dry_run,
             run_create,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<CreateServeParams>
         ),
         crate::serve_route!(
             "chat settings",
@@ -5604,7 +5617,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_settings,
             settings_serve_dry_run,
             run_settings,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SettingsServeParams>
         ),
         crate::serve_route!(
             "chat edit",
@@ -5619,7 +5632,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_edit,
             edit_serve_dry_run,
             run_edit,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<EditServeParams>
         ),
         crate::serve_route!(
             "chat link",
@@ -5634,7 +5647,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_link,
             link_serve_dry_run,
             run_link,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<LinkServeParams>
         ),
         crate::serve_route!(
             "chat kick",
@@ -5649,7 +5662,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_kick,
             kick_serve_dry_run,
             run_kick,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<KickServeParams>
         ),
         crate::serve_route!(
             "chat admin",
@@ -5664,7 +5677,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_admin,
             admin_serve_dry_run,
             run_admin,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<AdminServeParams>
         ),
         crate::serve_route!(
             "chat admin-log",
@@ -5679,7 +5692,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_admin_log,
             adminlog_serve_dry_run,
             run_admin_log,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<AdminLogServeParams>
         ),
         crate::serve_route!(
             "chat stats",
@@ -5694,7 +5707,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_stats,
             stats_serve_dry_run,
             run_stats,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<StatsServeParams>
         ),
         crate::serve_route!(
             "chat invite",
@@ -5709,7 +5722,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_invite_serve,
             invite_serve_dry_run,
             run_invite,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<InviteServeParams>
         ),
         crate::serve_route!(
             "chat requests",
@@ -5724,7 +5737,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_requests_serve,
             requests_serve_dry_run,
             run_requests,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<RequestsServeParams>
         ),
         crate::serve_route!(
             "chat participants",
@@ -5739,7 +5752,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_participants,
             participants_serve_dry_run,
             run_participants,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ParticipantsServeParams>
         ),
     ]
 }
@@ -9075,5 +9088,39 @@ mod chat_serve_tests {
             }
         }
         assert_eq!(destructive, vec!["chat kick", "chat leave"]);
+    }
+
+    #[test]
+    fn create_schema_declares_required_title_only() {
+        let s = crate::commands::serve::params_schema::<CreateServeParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        for prop in ["title", "description", "kind", "forum", "dry_run"] {
+            assert!(s["properties"][prop].is_object(), "{prop}");
+        }
+        let required: Vec<&str> = s["required"]
+            .as_array()
+            .expect("required array")
+            .iter()
+            .map(|v| v.as_str().expect("string"))
+            .collect();
+        assert_eq!(required, vec!["title"]);
+    }
+
+    #[test]
+    fn kick_schema_declares_required_user_only() {
+        let s = crate::commands::serve::params_schema::<KickServeParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        for prop in ["chat", "user", "ban", "duration", "rights", "dry_run"] {
+            assert!(s["properties"][prop].is_object(), "{prop}");
+        }
+        let required: Vec<&str> = s["required"]
+            .as_array()
+            .expect("required array")
+            .iter()
+            .map(|v| v.as_str().expect("string"))
+            .collect();
+        assert_eq!(required, vec!["user"]);
     }
 }

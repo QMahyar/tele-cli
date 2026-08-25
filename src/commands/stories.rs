@@ -99,8 +99,9 @@ pub struct PinArgs {
     ids: String,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SendParams {
     #[serde(default)]
     chat: String,
@@ -150,8 +151,9 @@ impl From<&SendParams> for SendArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ListParams {
     #[serde(default)]
     chat: String,
@@ -192,8 +194,9 @@ impl From<&ListParams> for ListArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ReadParams {
     #[serde(default)]
     chat: String,
@@ -221,8 +224,9 @@ impl From<&ReadParams> for ReadArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct DeleteParams {
     #[serde(default)]
     chat: String,
@@ -251,8 +255,9 @@ impl From<&DeleteParams> for DeleteArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct PinParams {
     #[serde(default)]
     chat: String,
@@ -1147,7 +1152,7 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_story_delete,
             delete_serve_dry_run,
             run_delete,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<DeleteParams>
         ),
         crate::serve_route!(
             "story list",
@@ -1162,7 +1167,7 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_story_list,
             list_serve_dry_run,
             run_list,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ListParams>
         ),
         crate::serve_route!(
             "story pin",
@@ -1177,7 +1182,7 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_story_toggle,
             pin_serve_dry_run,
             run_pin,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<PinParams>
         ),
         crate::serve_route!(
             "story read",
@@ -1192,7 +1197,7 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_story_read,
             read_serve_dry_run,
             run_read,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ReadParams>
         ),
         crate::serve_route!(
             "story send",
@@ -1207,7 +1212,7 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_story_send,
             send_serve_dry_run,
             run_send,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SendParams>
         ),
         crate::serve_route!(
             "story unpin",
@@ -1222,7 +1227,7 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_story_toggle,
             unpin_serve_dry_run,
             run_unpin,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<PinParams>
         ),
     ]
 }
@@ -1964,5 +1969,42 @@ mod tests {
         }
         let dir = file.parent().unwrap().to_path_buf();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn send_schema_declares_required_file_only() {
+        let s = crate::commands::serve::params_schema::<SendParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        for prop in [
+            "chat",
+            "file",
+            "caption",
+            "privacy",
+            "pinned",
+            "noforwards",
+            "period",
+            "dry_run",
+        ] {
+            assert!(s["properties"][prop].is_object(), "{prop}");
+        }
+        let required: Vec<&str> = s["required"]
+            .as_array()
+            .expect("required array")
+            .iter()
+            .map(|v| v.as_str().expect("string"))
+            .collect();
+        assert_eq!(required, vec!["file"]);
+    }
+
+    #[test]
+    fn list_schema_has_no_required_fields() {
+        let s = crate::commands::serve::params_schema::<ListParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        assert!(s["properties"]["limit"].is_object());
+        assert!(s
+            .get("required")
+            .is_none_or(|r| r.as_array().unwrap().is_empty()));
     }
 }
