@@ -2485,12 +2485,11 @@ pub(crate) fn chat_photo_input_photo(photo: &tl::enums::Photo) -> Option<tl::enu
 }
 
 async fn fetch_full_chat_info(
-    guard: &ClientGuard,
+    client: &grammers_client::Client,
     chat: &grammers_client::peer::Peer,
 ) -> TeleResult<tl::enums::messages::ChatFull> {
     if matches!(chat, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(chat) {
-        guard
-            .client
+        client
             .invoke(&tl::functions::messages::GetFullChat {
                 chat_id: chat.id().bare_id().unwrap_or_default(),
             })
@@ -2500,8 +2499,7 @@ async fn fetch_full_chat_info(
         let input_channel = entities::input_channel(chat)
             .await
             .map_err(tele_invocation)?;
-        guard
-            .client
+        client
             .invoke(&tl::functions::channels::GetFullChannel {
                 channel: input_channel,
             })
@@ -2595,7 +2593,7 @@ async fn edit_chat(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if let Some(photo) = &photo {
                 applied.push("photo");
                 if photo == "remove" {
-                    let full = fetch_full_chat_info(&guard, &chat).await?;
+                    let full = fetch_full_chat_info(&guard.client, &chat).await?;
                     let tl::enums::messages::ChatFull::Full(full) = full;
                     let current: Option<tl::enums::Photo> = match &full.full_chat {
                         tl::enums::ChatFull::ChannelFull(f) => Some(f.chat_photo.clone()),
@@ -2731,7 +2729,7 @@ async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             ensure_chat_peer(&chat, "link")?;
             let Some(to_target) = to_target else {
-                let full = fetch_full_chat_info(&guard, &chat).await?;
+                let full = fetch_full_chat_info(&guard.client, &chat).await?;
                 let tl::enums::messages::ChatFull::Full(full) = full;
                 let linked = match full.full_chat {
                     tl::enums::ChatFull::ChannelFull(f) => f.linked_chat_id,
@@ -3227,7 +3225,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     let tl::enums::messages::InvitedUsers::Users(r) = r;
                     let chat = created_chat(&r.updates);
                     let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-                    cache_created_chat(&guard, chat).await;
+                    cache_created_chat(guard.session.as_ref(), chat).await;
                     serde_json::json!({"kind": "group", "chat_id": chat_id})
                 }
                 "supergroup" => {
@@ -3248,7 +3246,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .map_err(tele_invocation)?;
                     let chat = created_chat(&r);
                     let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-                    cache_created_chat(&guard, chat).await;
+                    cache_created_chat(guard.session.as_ref(), chat).await;
                     serde_json::json!({"kind": "supergroup", "forum": forum, "chat_id": chat_id})
                 }
                 "channel" => {
@@ -3269,7 +3267,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .map_err(tele_invocation)?;
                     let chat = created_chat(&r);
                     let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-                    cache_created_chat(&guard, chat).await;
+                    cache_created_chat(guard.session.as_ref(), chat).await;
                     serde_json::json!({"kind": "channel", "chat_id": chat_id})
                 }
                 other => {
@@ -3292,9 +3290,12 @@ fn created_chat(r: &tl::enums::Updates) -> Option<&tl::enums::Chat> {
     }
 }
 
-async fn cache_created_chat(guard: &client::ClientGuard, chat: Option<&tl::enums::Chat>) {
+async fn cache_created_chat<S: Session>(session: &S, chat: Option<&tl::enums::Chat>)
+where
+    S::Error: std::fmt::Display,
+{
     if let Some(chat) = chat {
-        if let Err(e) = entities::cache_chat(guard.session.as_ref(), chat).await {
+        if let Err(e) = entities::cache_chat(session, chat).await {
             log::warn!(
                 "failed to cache access_hash for created chat {}: {e}",
                 chat.id()
@@ -3711,8 +3712,2023 @@ fn admin_action_display(action: &serde_json::Value) -> String {
     }
 }
 
+fn default_requests_limit() -> u32 {
+    100
+}
+
+fn default_participants_limit() -> u32 {
+    100
+}
+
+fn default_adminlog_limit() -> u32 {
+    20
+}
+
+fn default_create_kind() -> String {
+    "group".to_string()
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct JoinParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ChatArgs> for JoinParams {
+    fn from(a: &ChatArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&JoinParams> for ChatArgs {
+    fn from(p: &JoinParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LeaveParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ChatArgs> for LeaveParams {
+    fn from(a: &ChatArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&LeaveParams> for ChatArgs {
+    fn from(p: &LeaveParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CreateServeParams {
+    pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) description: Option<String>,
+    #[serde(default = "default_create_kind")]
+    pub(crate) kind: String,
+    #[serde(default)]
+    pub(crate) forum: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&CreateArgs> for CreateServeParams {
+    fn from(a: &CreateArgs) -> Self {
+        Self {
+            title: a.title.clone(),
+            description: a.description.clone(),
+            kind: a.kind.clone(),
+            forum: a.forum,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&CreateServeParams> for CreateArgs {
+    fn from(p: &CreateServeParams) -> Self {
+        Self {
+            title: p.title.clone(),
+            description: p.description.clone(),
+            kind: p.kind.clone(),
+            forum: p.forum,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SettingsServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) slow_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) noforwards: Option<String>,
+    #[serde(default)]
+    pub(crate) signatures: Option<String>,
+    #[serde(default)]
+    pub(crate) pre_history: Option<String>,
+    #[serde(default)]
+    pub(crate) join_request: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&SettingsArgs> for SettingsServeParams {
+    fn from(a: &SettingsArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            slow_mode: a.slow_mode.clone(),
+            noforwards: a.noforwards.clone(),
+            signatures: a.signatures.clone(),
+            pre_history: a.pre_history.clone(),
+            join_request: a.join_request.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&SettingsServeParams> for SettingsArgs {
+    fn from(p: &SettingsServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            slow_mode: p.slow_mode.clone(),
+            noforwards: p.noforwards.clone(),
+            signatures: p.signatures.clone(),
+            pre_history: p.pre_history.clone(),
+            join_request: p.join_request.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EditServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) title: Option<String>,
+    #[serde(default)]
+    pub(crate) about: Option<String>,
+    #[serde(default)]
+    pub(crate) photo: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&EditArgs> for EditServeParams {
+    fn from(a: &EditArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            title: a.title.clone(),
+            about: a.about.clone(),
+            photo: a.photo.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&EditServeParams> for EditArgs {
+    fn from(p: &EditServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            title: p.title.clone(),
+            about: p.about.clone(),
+            photo: p.photo.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinkServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) to: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&LinkArgs> for LinkServeParams {
+    fn from(a: &LinkArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            to: a.to.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&LinkServeParams> for LinkArgs {
+    fn from(p: &LinkServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            to: p.to.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct KickServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) user: String,
+    #[serde(default)]
+    pub(crate) ban: bool,
+    #[serde(default)]
+    pub(crate) duration: Option<String>,
+    #[serde(default)]
+    pub(crate) rights: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&KickArgs> for KickServeParams {
+    fn from(a: &KickArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            user: a.user.clone(),
+            ban: a.ban,
+            duration: a.duration.clone(),
+            rights: a.rights.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&KickServeParams> for KickArgs {
+    fn from(p: &KickServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            user: p.user.clone(),
+            ban: p.ban,
+            duration: p.duration.clone(),
+            rights: p.rights.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AdminServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    pub(crate) user: String,
+    #[serde(default)]
+    pub(crate) promote: bool,
+    #[serde(default)]
+    pub(crate) demote: bool,
+    #[serde(default)]
+    pub(crate) title: Option<String>,
+    #[serde(default)]
+    pub(crate) preset: Option<String>,
+    #[serde(default)]
+    pub(crate) rights: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&AdminArgs> for AdminServeParams {
+    fn from(a: &AdminArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            user: a.user.clone(),
+            promote: a.promote,
+            demote: a.demote,
+            title: a.title.clone(),
+            preset: a.preset.clone(),
+            rights: a.rights.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&AdminServeParams> for AdminArgs {
+    fn from(p: &AdminServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            user: p.user.clone(),
+            promote: p.promote,
+            demote: p.demote,
+            title: p.title.clone(),
+            preset: p.preset.clone(),
+            rights: p.rights.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AdminLogServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default = "default_adminlog_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) admin: Option<String>,
+    #[serde(default)]
+    pub(crate) search: Option<String>,
+    #[serde(default)]
+    pub(crate) since: Option<String>,
+    #[serde(default)]
+    pub(crate) until: Option<String>,
+    #[serde(default)]
+    pub(crate) events: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&AdminLogArgs> for AdminLogServeParams {
+    fn from(a: &AdminLogArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            limit: a.limit,
+            admin: a.admin.clone(),
+            search: a.search.clone(),
+            since: a.since.clone(),
+            until: a.until.clone(),
+            events: a.events.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&AdminLogServeParams> for AdminLogArgs {
+    fn from(p: &AdminLogServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            limit: p.limit,
+            admin: p.admin.clone(),
+            search: p.search.clone(),
+            since: p.since.clone(),
+            until: p.until.clone(),
+            events: p.events.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatsServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) broadcast: bool,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&StatsArgs> for StatsServeParams {
+    fn from(a: &StatsArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            broadcast: a.broadcast,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&StatsServeParams> for StatsArgs {
+    fn from(p: &StatsServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            broadcast: p.broadcast,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InviteServeParams {
+    #[serde(default)]
+    pub(crate) chat: Option<String>,
+    #[serde(default)]
+    pub(crate) user: Option<String>,
+    #[serde(default)]
+    pub(crate) expire: Option<String>,
+    #[serde(default)]
+    pub(crate) title: Option<String>,
+    #[serde(default)]
+    pub(crate) usage_limit: Option<u32>,
+    #[serde(default)]
+    pub(crate) request_approval: Option<String>,
+    #[serde(default)]
+    pub(crate) list: bool,
+    #[serde(default)]
+    pub(crate) revoked: bool,
+    #[serde(default)]
+    pub(crate) importers: Option<String>,
+    #[serde(default)]
+    pub(crate) edit: Option<String>,
+    #[serde(default)]
+    pub(crate) revoke: bool,
+    #[serde(default)]
+    pub(crate) delete_revoked: bool,
+    #[serde(default)]
+    pub(crate) check: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&InviteArgs> for InviteServeParams {
+    fn from(a: &InviteArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            user: a.user.clone(),
+            expire: a.expire.clone(),
+            title: a.title.clone(),
+            usage_limit: a.usage_limit,
+            request_approval: a.request_approval.clone(),
+            list: a.list,
+            revoked: a.revoked,
+            importers: a.importers.clone(),
+            edit: a.edit.clone(),
+            revoke: a.revoke,
+            delete_revoked: a.delete_revoked,
+            check: a.check.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&InviteServeParams> for InviteArgs {
+    fn from(p: &InviteServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            user: p.user.clone(),
+            expire: p.expire.clone(),
+            title: p.title.clone(),
+            usage_limit: p.usage_limit,
+            request_approval: p.request_approval.clone(),
+            list: p.list,
+            revoked: p.revoked,
+            importers: p.importers.clone(),
+            edit: p.edit.clone(),
+            revoke: p.revoke,
+            delete_revoked: p.delete_revoked,
+            check: p.check.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RequestsServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) user: Option<String>,
+    #[serde(default)]
+    pub(crate) all: bool,
+    #[serde(default)]
+    pub(crate) approve: bool,
+    #[serde(default)]
+    pub(crate) dismiss: bool,
+    #[serde(default)]
+    pub(crate) link: Option<String>,
+    #[serde(default = "default_requests_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&RequestsArgs> for RequestsServeParams {
+    fn from(a: &RequestsArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            user: a.user.clone(),
+            all: a.all,
+            approve: a.approve,
+            dismiss: a.dismiss,
+            link: a.link.clone(),
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&RequestsServeParams> for RequestsArgs {
+    fn from(p: &RequestsServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            user: p.user.clone(),
+            all: p.all,
+            approve: p.approve,
+            dismiss: p.dismiss,
+            link: p.link.clone(),
+            limit: p.limit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ParticipantsServeParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) role: Option<String>,
+    #[serde(default)]
+    pub(crate) search: Option<String>,
+    #[serde(default = "default_participants_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ParticipantsArgs> for ParticipantsServeParams {
+    fn from(a: &ParticipantsArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            role: a.role.clone(),
+            search: a.search.clone(),
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ParticipantsServeParams> for ParticipantsArgs {
+    fn from(p: &ParticipantsServeParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            role: p.role.clone(),
+            search: p.search.clone(),
+            limit: p.limit,
+        }
+    }
+}
+
+fn validate_join(args: &ChatArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")
+}
+
+fn validate_leave(args: &ChatArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")
+}
+
+fn validate_stats(args: &StatsArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")
+}
+
+fn validate_participants(args: &ParticipantsArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    parse_participant_role(args.role.as_deref())?;
+    Ok(())
+}
+
+fn validate_admin_log(args: &AdminLogArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    let since = args
+        .since
+        .as_deref()
+        .map(crate::commands::parse_unixtime)
+        .transpose()?;
+    let until = args
+        .until
+        .as_deref()
+        .map(crate::commands::parse_unixtime)
+        .transpose()?;
+    if let (Some(s), Some(u)) = (&since, &until) {
+        if s > u {
+            return Err(TeleError::Usage(
+                "--since must not be after --until".to_string(),
+            ));
+        }
+    }
+    parse_admin_events_filter(args.events.as_deref())?;
+    Ok(())
+}
+
+fn validate_invite_serve(args: &InviteArgs) -> TeleResult<()> {
+    validate_invite(args)?;
+    Ok(())
+}
+
+fn validate_requests_serve(args: &RequestsArgs) -> TeleResult<()> {
+    validate_requests(args)?;
+    Ok(())
+}
+
+fn join_serve_dry_run(args: &ChatArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "would": format!("join chat {}", args.chat)
+    }))
+}
+
+fn leave_serve_dry_run(args: &ChatArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "would": format!("leave chat {}", args.chat)
+    }))
+}
+
+fn create_serve_dry_run(args: &CreateArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "title": args.title,
+        "would": format!("create {} chat \"{}\"", args.kind, args.title)
+    }))
+}
+
+fn settings_serve_dry_run(args: &SettingsArgs) -> TeleResult<serde_json::Value> {
+    let slow_mode = parse_slow_mode(args.slow_mode.as_deref())?;
+    let signatures = parse_on_off(args.signatures.as_deref())?;
+    let pre_history = parse_on_off(args.pre_history.as_deref())?;
+    let join_request = parse_on_off(args.join_request.as_deref())?;
+    let has_toggles = slow_mode.is_some()
+        || signatures.is_some()
+        || pre_history.is_some()
+        || join_request.is_some();
+    let mut data = serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "would": if has_toggles {
+            format!("update settings of chat {}", args.chat)
+        } else {
+            format!("read settings of chat {}", args.chat)
+        },
+    });
+    if let Some(secs) = slow_mode {
+        data["slow_mode"] = serde_json::json!(secs);
+    }
+    if let Some(v) = signatures {
+        data["signatures"] = serde_json::json!(v);
+    }
+    if let Some(v) = pre_history {
+        data["pre_history"] = serde_json::json!(v);
+    }
+    if let Some(v) = join_request {
+        data["join_request"] = serde_json::json!(v);
+    }
+    Ok(data)
+}
+
+fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Value> {
+    let mut data = serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "would": format!("edit metadata of chat {}", args.chat),
+    });
+    if let Some(t) = &args.title {
+        data["title"] = serde_json::json!(t.trim());
+    }
+    if let Some(a) = &args.about {
+        data["about"] = serde_json::json!(a.trim());
+    }
+    if let Some(p) = &args.photo {
+        data["photo"] = serde_json::json!(p);
+    }
+    Ok(data)
+}
+
+fn link_serve_dry_run(args: &LinkArgs) -> TeleResult<serde_json::Value> {
+    let to_target = parse_link_target(args.to.as_deref())?;
+    Ok(match &to_target {
+        None => serde_json::json!({
+            "dry_run": true,
+            "chat": args.chat,
+            "would": format!("read discussion link of chat {}", args.chat),
+        }),
+        Some(to) => serde_json::json!({
+            "dry_run": true,
+            "chat": args.chat,
+            "to": to,
+            "would": format!("link chat {} with discussion group {}", args.chat, to),
+        }),
+    })
+}
+
+fn kick_serve_dry_run(args: &KickArgs) -> TeleResult<serde_json::Value> {
+    let until_secs = parse_ban_duration(args.duration.as_deref())?;
+    let rights_entries = match &args.rights {
+        Some(csv) => parse_banned_rights_csv(csv)?,
+        None => Vec::new(),
+    };
+    let mut data = serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "user": args.user,
+        "ban": args.ban,
+        "would": format!("kick user {} from chat {}", args.user, args.chat)
+    });
+    if let Some(secs) = until_secs {
+        data["duration"] = serde_json::json!(secs);
+    }
+    if !rights_entries.is_empty() {
+        data["rights"] = serde_json::json!(rights_entries);
+    }
+    Ok(data)
+}
+
+fn admin_serve_dry_run(args: &AdminArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "user": args.user,
+        "promote": args.promote,
+        "demote": args.demote,
+        "would": format!("change admin status of user {} in chat {}", args.user, args.chat),
+    }))
+}
+
+fn adminlog_serve_dry_run(args: &AdminLogArgs) -> TeleResult<serde_json::Value> {
+    Ok(admin_log_dry_run_payload(
+        &args.chat,
+        args.search.as_deref().unwrap_or_default(),
+        args.events.is_some(),
+        args.admin.is_some(),
+    ))
+}
+
+fn stats_serve_dry_run(args: &StatsArgs) -> TeleResult<serde_json::Value> {
+    Ok(stats_dry_run_payload(&args.chat, args.broadcast))
+}
+
+fn invite_serve_dry_run(args: &InviteArgs) -> TeleResult<serde_json::Value> {
+    let plan = validate_invite(args)?;
+    Ok(invite_dry_run_payload(
+        args.chat.clone().unwrap_or_default().as_str(),
+        &plan,
+    ))
+}
+
+fn requests_serve_dry_run(args: &RequestsArgs) -> TeleResult<serde_json::Value> {
+    let plan = validate_requests(args)?;
+    Ok(requests_dry_run_payload(&args.chat, &plan))
+}
+
+fn participants_serve_dry_run(args: &ParticipantsArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "would": format!("list participants of chat {}", args.chat)
+    }))
+}
+
+pub(crate) async fn chat_join_core(
+    shares: &crate::client::ServeShares,
+    params: JoinParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let normalized = normalize_invite_link(&params.chat);
+    if validate_invite_link(&normalized).is_ok() {
+        let joined = shares
+            .client
+            .accept_invite_link(&normalized)
+            .await
+            .map_err(tele_invocation)?;
+        if let Some(peer) = joined {
+            cache_joined_chat(shares.session.as_ref(), &peer).await;
+        }
+    } else {
+        let peer =
+            entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+        let chat_ref = entities::peer_ref(&peer).await.map_err(tele_invocation)?;
+        let joined = shares
+            .client
+            .join_chat(chat_ref)
+            .await
+            .map_err(tele_invocation)?;
+        if let Some(peer) = joined {
+            cache_joined_chat(shares.session.as_ref(), &peer).await;
+        }
+    }
+    Ok(serde_json::json!({"chat": params.chat, "joined": true}))
+}
+
+pub(crate) async fn chat_leave_core(
+    shares: &crate::client::ServeShares,
+    params: LeaveParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let peer =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    match &peer {
+        grammers_client::peer::Peer::Channel(_) => {
+            let channel = entities::input_channel(&peer)
+                .await
+                .map_err(tele_invocation)?;
+            shares
+                .client
+                .invoke(&tl::functions::channels::LeaveChannel { channel })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        grammers_client::peer::Peer::Group(_) if entities::is_channel(&peer) => {
+            let channel = entities::input_channel(&peer)
+                .await
+                .map_err(tele_invocation)?;
+            shares
+                .client
+                .invoke(&tl::functions::channels::LeaveChannel { channel })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        grammers_client::peer::Peer::Group(_) => {
+            let user_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
+            shares
+                .client
+                .invoke(&tl::functions::messages::DeleteChatUser {
+                    chat_id: peer.id().bare_id().unwrap_or_default(),
+                    user_id,
+                    revoke_history: false,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        grammers_client::peer::Peer::User(_) => {
+            return Err(TeleError::Usage(
+                "cannot leave a private chat; use tele dialog delete".to_string(),
+            ));
+        }
+    }
+    Ok(serde_json::json!({"chat": params.chat, "left": true}))
+}
+
+pub(crate) async fn chat_create_core(
+    shares: &crate::client::ServeShares,
+    params: CreateServeParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    match params.kind.as_str() {
+        "group" => {
+            let r: tl::enums::messages::InvitedUsers = shares
+                .client
+                .invoke(&tl::functions::messages::CreateChat {
+                    users: Vec::new(),
+                    title: params.title.clone(),
+                    ttl_period: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            let tl::enums::messages::InvitedUsers::Users(r) = r;
+            let chat = created_chat(&r.updates);
+            let chat_id = chat.map(|c| c.id()).unwrap_or(0);
+            cache_created_chat(shares.session.as_ref(), chat).await;
+            Ok(serde_json::json!({"kind": "group", "chat_id": chat_id}))
+        }
+        "supergroup" => {
+            let r: tl::enums::Updates = shares
+                .client
+                .invoke(&tl::functions::channels::CreateChannel {
+                    broadcast: false,
+                    megagroup: true,
+                    for_import: false,
+                    forum: params.forum,
+                    title: params.title.clone(),
+                    about: params.description.clone().unwrap_or_default(),
+                    geo_point: None,
+                    address: None,
+                    ttl_period: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            let chat = created_chat(&r);
+            let chat_id = chat.map(|c| c.id()).unwrap_or(0);
+            cache_created_chat(shares.session.as_ref(), chat).await;
+            Ok(serde_json::json!({"kind": "supergroup", "forum": params.forum, "chat_id": chat_id}))
+        }
+        "channel" => {
+            let r: tl::enums::Updates = shares
+                .client
+                .invoke(&tl::functions::channels::CreateChannel {
+                    broadcast: true,
+                    megagroup: false,
+                    for_import: false,
+                    forum: false,
+                    title: params.title.clone(),
+                    about: params.description.clone().unwrap_or_default(),
+                    geo_point: None,
+                    address: None,
+                    ttl_period: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            let chat = created_chat(&r);
+            let chat_id = chat.map(|c| c.id()).unwrap_or(0);
+            cache_created_chat(shares.session.as_ref(), chat).await;
+            Ok(serde_json::json!({"kind": "channel", "chat_id": chat_id}))
+        }
+        other => Err(TeleError::Usage(format!(
+            "unknown chat kind {other} (use group, supergroup or channel)"
+        ))),
+    }
+}
+
+pub(crate) async fn chat_settings_core(
+    shares: &crate::client::ServeShares,
+    params: SettingsServeParams,
+) -> TeleResult<serde_json::Value> {
+    let slow_mode = parse_slow_mode(params.slow_mode.as_deref())?;
+    let signatures = parse_on_off(params.signatures.as_deref())?;
+    let pre_history = parse_on_off(params.pre_history.as_deref())?;
+    let join_request = parse_on_off(params.join_request.as_deref())?;
+    let has_toggles = slow_mode.is_some()
+        || signatures.is_some()
+        || pre_history.is_some()
+        || join_request.is_some();
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "settings")?;
+    let is_basic_group =
+        matches!(&chat, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(&chat);
+    if is_basic_group {
+        return Err(TeleError::Usage(
+            "chat settings are not supported for basic groups; these toggles apply to channels and supergroups only".to_string(),
+        ));
+    }
+    let input_channel = entities::input_channel(&chat)
+        .await
+        .map_err(tele_invocation)?;
+    if has_toggles {
+        let mut applied = Vec::new();
+        if let Some(secs) = slow_mode {
+            applied.push("slow_mode");
+            shares.rate_limiter.acquire().await;
+            shares
+                .client
+                .invoke(&tl::functions::channels::ToggleSlowMode {
+                    channel: input_channel.clone(),
+                    seconds: secs,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        if let Some(enabled) = signatures {
+            applied.push("signatures");
+            shares.rate_limiter.acquire().await;
+            shares
+                .client
+                .invoke(&tl::functions::channels::ToggleSignatures {
+                    signatures_enabled: enabled,
+                    profiles_enabled: false,
+                    channel: input_channel.clone(),
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        if let Some(enabled) = pre_history {
+            applied.push("pre_history");
+            shares.rate_limiter.acquire().await;
+            shares
+                .client
+                .invoke(&tl::functions::channels::TogglePreHistoryHidden {
+                    channel: input_channel.clone(),
+                    enabled,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        if let Some(enabled) = join_request {
+            applied.push("join_request");
+            shares.rate_limiter.acquire().await;
+            shares
+                .client
+                .invoke(&tl::functions::channels::ToggleJoinRequest {
+                    apply_to_invites: enabled,
+                    channel: input_channel.clone(),
+                    enabled,
+                    guard_bot: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        return Ok(serde_json::json!({
+            "chat": params.chat,
+            "applied": applied,
+        }));
+    }
+    shares.rate_limiter.acquire().await;
+    let full = shares
+        .client
+        .invoke(&tl::functions::channels::GetFullChannel {
+            channel: input_channel,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::messages::ChatFull::Full(full) = full;
+    let full_chat = match full.full_chat {
+        tl::enums::ChatFull::ChannelFull(f) => f,
+        tl::enums::ChatFull::Full(_) => {
+            return Err(TeleError::Other(
+                "settings unavailable: server returned group info for this chat".to_string(),
+            ));
+        }
+    };
+    let channel = channel_from_chats(&full.chats, full_chat.id);
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "slow_mode": full_chat.slowmode_seconds.unwrap_or(0),
+        "noforwards": channel.map(|c| c.noforwards),
+        "signatures": channel.map(|c| c.signatures),
+        "pre_history_hidden": full_chat.hidden_prehistory,
+        "join_request": channel.map(|c| c.join_request),
+        "linked_chat_id": full_chat.linked_chat_id,
+    }))
+}
+
+pub(crate) async fn chat_edit_core(
+    shares: &crate::client::ServeShares,
+    params: EditServeParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "chat edit")?;
+    let is_basic_group =
+        matches!(&chat, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(&chat);
+    let mut applied = Vec::new();
+    if let Some(new_title) = &params.title {
+        applied.push("title");
+        let new_title = new_title.trim().to_string();
+        if is_basic_group {
+            shares.rate_limiter.acquire().await;
+            shares
+                .client
+                .invoke(&tl::functions::messages::EditChatTitle {
+                    chat_id: chat.id().bare_id().unwrap_or_default(),
+                    title: new_title,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        } else {
+            shares.rate_limiter.acquire().await;
+            shares
+                .client
+                .invoke(&tl::functions::channels::EditTitle {
+                    channel: entities::input_channel(&chat)
+                        .await
+                        .map_err(tele_invocation)?,
+                    title: new_title,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+    }
+    if let Some(new_about) = &params.about {
+        applied.push("about");
+        let new_about = new_about.trim().to_string();
+        let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+        shares.rate_limiter.acquire().await;
+        shares
+            .client
+            .invoke(&tl::functions::messages::EditChatAbout {
+                peer,
+                about: new_about,
+            })
+            .await
+            .map_err(tele_invocation)?;
+    }
+    if let Some(photo) = &params.photo {
+        applied.push("photo");
+        if photo == "remove" {
+            let full = fetch_full_chat_info(&shares.client, &chat).await?;
+            let tl::enums::messages::ChatFull::Full(full) = full;
+            let current: Option<tl::enums::Photo> = match &full.full_chat {
+                tl::enums::ChatFull::ChannelFull(f) => Some(f.chat_photo.clone()),
+                tl::enums::ChatFull::Full(f) => f.chat_photo.clone(),
+            };
+            let input_photo = current
+                .as_ref()
+                .and_then(chat_photo_input_photo)
+                .ok_or_else(|| TeleError::Other("chat has no photo to remove".to_string()))?;
+            shares.rate_limiter.acquire().await;
+            let _: Vec<i64> = shares
+                .client
+                .invoke(&tl::functions::photos::DeletePhotos {
+                    id: vec![input_photo],
+                })
+                .await
+                .map_err(tele_invocation)?;
+        } else {
+            let uploaded = shares
+                .client
+                .upload_file(photo)
+                .await
+                .map_err(|e| TeleError::TaskPanic(e.to_string()))?;
+            let chat_photo = tl::enums::InputChatPhoto::InputChatUploadedPhoto(
+                tl::types::InputChatUploadedPhoto {
+                    file: Some(uploaded.raw),
+                    video: None,
+                    video_start_ts: None,
+                    video_emoji_markup: None,
+                },
+            );
+            shares.rate_limiter.acquire().await;
+            if is_basic_group {
+                shares
+                    .client
+                    .invoke(&tl::functions::messages::EditChatPhoto {
+                        chat_id: chat.id().bare_id().unwrap_or_default(),
+                        photo: chat_photo,
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+            } else {
+                shares
+                    .client
+                    .invoke(&tl::functions::channels::EditPhoto {
+                        channel: entities::input_channel(&chat)
+                            .await
+                            .map_err(tele_invocation)?,
+                        photo: chat_photo,
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "applied": applied,
+    }))
+}
+
+pub(crate) async fn chat_link_core(
+    shares: &crate::client::ServeShares,
+    params: LinkServeParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "link")?;
+    let Some(to_target) = params.to.clone() else {
+        let full = fetch_full_chat_info(&shares.client, &chat).await?;
+        let tl::enums::messages::ChatFull::Full(full) = full;
+        let linked = match full.full_chat {
+            tl::enums::ChatFull::ChannelFull(f) => f.linked_chat_id,
+            tl::enums::ChatFull::Full(_) => None,
+        };
+        return Ok(serde_json::json!({
+            "chat": params.chat,
+            "linked_chat_id": linked,
+        }));
+    };
+    let to_peer =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &to_target).await?;
+    ensure_chat_peer(&to_peer, "--to")?;
+    let (broadcast, group) = discussion_pair(chat.clone(), to_peer)?;
+    shares.rate_limiter.acquire().await;
+    shares
+        .client
+        .invoke(&tl::functions::channels::SetDiscussionGroup {
+            broadcast: entities::input_channel(&broadcast)
+                .await
+                .map_err(tele_invocation)?,
+            group: entities::input_channel(&group)
+                .await
+                .map_err(tele_invocation)?,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "to": to_target,
+        "linked": true,
+    }))
+}
+
+pub(crate) async fn chat_kick_core(
+    shares: &crate::client::ServeShares,
+    params: KickServeParams,
+) -> TeleResult<serde_json::Value> {
+    let ban = params.ban;
+    let until_secs = parse_ban_duration(params.duration.as_deref())?;
+    let rights_entries = match &params.rights {
+        Some(csv) => parse_banned_rights_csv(csv)?,
+        None => Vec::new(),
+    };
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "kick")?;
+    let user_peer =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.user).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let user_ref = entities::peer_ref(&user_peer)
+        .await
+        .map_err(tele_invocation)?;
+    if !ban && rights_entries.is_empty() && until_secs.is_none() {
+        shares
+            .client
+            .kick_participant(chat_ref, user_ref)
+            .await
+            .map_err(tele_invocation)?;
+        return Ok(serde_json::json!({"chat": params.chat, "user": params.user, "kicked": true}));
+    }
+    let mut call = shares.client.set_banned_rights(chat_ref, user_ref);
+    for (right, allowed) in &rights_entries {
+        call = match right.as_str() {
+            "view_messages" => call.view_messages(*allowed),
+            "send_messages" => call.send_messages(*allowed),
+            "send_media" => call.send_media(*allowed),
+            "send_stickers" => call.send_stickers(*allowed),
+            "send_gifs" => call.send_gifs(*allowed),
+            "send_games" => call.send_games(*allowed),
+            "send_inline" => call.send_inline(*allowed),
+            "embed_links" => call.embed_link_previews(*allowed),
+            "send_polls" => call.send_polls(*allowed),
+            "change_info" => call.change_info(*allowed),
+            "invite_users" => call.invite_users(*allowed),
+            "pin_messages" => call.pin_messages(*allowed),
+            _ => call,
+        };
+    }
+    if ban {
+        call = call.view_messages(false);
+    }
+    if let Some(secs) = until_secs {
+        call = call.duration(std::time::Duration::from_secs(u64::from(secs)));
+    }
+    call.await.map_err(tele_invocation)?;
+    let mut data = serde_json::json!({
+        "chat": params.chat,
+        "user": params.user,
+        "kicked": true,
+        "banned": ban,
+    });
+    if let Some(secs) = until_secs {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        data["until"] = serde_json::json!(i64::from(secs) + now as i64);
+    }
+    if !rights_entries.is_empty() {
+        let denied: Vec<&str> = rights_entries
+            .iter()
+            .filter(|(_, allowed)| !allowed)
+            .map(|(right, _)| right.as_str())
+            .collect();
+        data["restricted"] = serde_json::json!(denied);
+    }
+    Ok(data)
+}
+
+pub(crate) async fn chat_admin_core(
+    shares: &crate::client::ServeShares,
+    params: AdminServeParams,
+) -> TeleResult<serde_json::Value> {
+    let args = AdminArgs::from(&params);
+    let rights = resolve_admin_rights(&args)?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let user_peer =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.user).await?;
+    if rights.needs_raw_edit_admin() {
+        shares
+            .client
+            .invoke(&tl::functions::channels::EditAdmin {
+                channel: entities::input_channel(&chat)
+                    .await
+                    .map_err(tele_invocation)?,
+                user_id: entities::input_user(&user_peer)
+                    .await
+                    .map_err(tele_invocation)?,
+                admin_rights: rights.to_raw(),
+                rank: params.title.clone(),
+            })
+            .await
+            .map_err(tele_invocation)?;
+        return Ok(serde_json::json!({
+            "chat": params.chat,
+            "user": params.user,
+            "promote": params.promote,
+            "demote": params.demote,
+        }));
+    }
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let user_ref = entities::peer_ref(&user_peer)
+        .await
+        .map_err(tele_invocation)?;
+    let mut builder = shares.client.set_admin_rights(chat_ref, user_ref);
+    builder = builder
+        .change_info(rights.change_info)
+        .post_messages(rights.post_messages)
+        .edit_messages(rights.edit_messages)
+        .delete_messages(rights.delete_messages)
+        .ban_users(rights.ban_users)
+        .invite_users(rights.invite_users)
+        .pin_messages(rights.pin_messages)
+        .add_admins(rights.add_admins)
+        .manage_call(rights.manage_call)
+        .anonymous(rights.anonymous);
+    if let Some(t) = &params.title {
+        builder = builder.rank(t.clone());
+    }
+    builder.await.map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "chat": params.chat,
+        "user": params.user,
+        "promote": params.promote,
+        "demote": params.demote,
+    }))
+}
+
+pub(crate) async fn chat_admin_log_core(
+    shares: &crate::client::ServeShares,
+    params: AdminLogServeParams,
+) -> TeleResult<serde_json::Value> {
+    let since = params
+        .since
+        .as_deref()
+        .map(crate::commands::parse_unixtime)
+        .transpose()?;
+    let until = params
+        .until
+        .as_deref()
+        .map(crate::commands::parse_unixtime)
+        .transpose()?;
+    let events_filter = parse_admin_events_filter(params.events.as_deref())?;
+    let search_q = params.search.clone().unwrap_or_default();
+    shares.rate_limiter.acquire().await;
+    let own_id = shares
+        .client
+        .get_me()
+        .await
+        .map_err(tele_invocation)?
+        .id()
+        .bare_id()
+        .unwrap_or_default();
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let channel = entities::input_channel(&chat)
+        .await
+        .map_err(tele_invocation)?;
+    let admins = match params.admin.as_deref() {
+        None => None,
+        Some("me") => Some(vec![tl::enums::InputUser::from(
+            tl::types::InputUserSelf {},
+        )]),
+        Some(user) => {
+            let peer =
+                entities::resolve_peer(&shares.client, shares.session.as_ref(), user).await?;
+            Some(vec![entities::input_user(&peer)
+                .await
+                .map_err(tele_invocation)?])
+        }
+    };
+    let collected = {
+        let client_ref = &shares.client;
+        let channel_ref = &channel;
+        collect_admin_log(params.limit, move |max_id, page_limit| {
+            let q = search_q.clone();
+            let filter = events_filter.clone();
+            let admins = admins.clone();
+            async move {
+                let raw: tl::enums::channels::AdminLogResults = client_ref
+                    .invoke(&tl::functions::channels::GetAdminLog {
+                        channel: (*channel_ref).clone(),
+                        q,
+                        events_filter: filter,
+                        admins,
+                        max_id,
+                        min_id: 0,
+                        limit: page_limit as i32,
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                let tl::enums::channels::AdminLogResults::Results(results) = raw;
+                let next_max_id = results
+                    .events
+                    .iter()
+                    .last()
+                    .map(|e| match e {
+                        tl::enums::ChannelAdminLogEvent::Event(e) => e.id,
+                    })
+                    .unwrap_or_default();
+                Ok(AdminLogPage {
+                    events: results.events,
+                    users: results.users,
+                    max_id: next_max_id,
+                })
+            }
+        })
+    }
+    .await?;
+    let mut rows = Vec::new();
+    for event in collected.events {
+        let tl::enums::ChannelAdminLogEvent::Event(event) = event;
+        let date = chrono::DateTime::from_timestamp(event.date as i64, 0)
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_default();
+        rows.push(serde_json::json!({
+            "id": event.id,
+            "date": date,
+            "actor": actor_value(&shares.client, &collected.users, event.user_id),
+            "action": admin_action_summary(&event.action, own_id),
+        }));
+    }
+    let rows = filter_events_by_range(rows, since, until);
+    Ok(serde_json::json!({"events": rows}))
+}
+
+pub(crate) async fn chat_stats_core(
+    shares: &crate::client::ServeShares,
+    params: StatsServeParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let channel = entities::input_channel(&chat)
+        .await
+        .map_err(tele_invocation)?;
+    let raw = if params.broadcast {
+        let r: tl::enums::stats::BroadcastStats = shares
+            .client
+            .invoke(&tl::functions::stats::GetBroadcastStats {
+                channel,
+                dark: false,
+            })
+            .await
+            .map_err(tele_invocation)?;
+        let tl::enums::stats::BroadcastStats::Stats(r) = r;
+        serde_json::json!({
+            "period": stats_period(&r.period),
+            "followers": stats_abs(&r.followers),
+            "views_per_post": stats_abs(&r.views_per_post),
+            "shares_per_post": stats_abs(&r.shares_per_post),
+            "reactions_per_post": stats_abs(&r.reactions_per_post),
+            "enabled_notifications": stats_percent(&r.enabled_notifications),
+            "recent_posts_interactions": r.recent_posts_interactions.len(),
+        })
+    } else {
+        let r: tl::enums::stats::MegagroupStats = shares
+            .client
+            .invoke(&tl::functions::stats::GetMegagroupStats {
+                channel,
+                dark: false,
+            })
+            .await
+            .map_err(tele_invocation)?;
+        let tl::enums::stats::MegagroupStats::Stats(r) = r;
+        serde_json::json!({
+            "period": stats_period(&r.period),
+            "members": stats_abs(&r.members),
+            "messages": stats_abs(&r.messages),
+            "viewers": stats_abs(&r.viewers),
+            "posters": stats_abs(&r.posters),
+            "top_posters": r.top_posters.len(),
+            "top_admins": r.top_admins.len(),
+            "top_inviters": r.top_inviters.len(),
+        })
+    };
+    Ok(serde_json::json!({"chat": params.chat, "stats": raw}))
+}
+
+pub(crate) async fn chat_invite_core(
+    shares: &crate::client::ServeShares,
+    params: InviteServeParams,
+) -> TeleResult<serde_json::Value> {
+    let args = InviteArgs::from(&params);
+    let plan = validate_invite(&args)?;
+    let target = params.chat.clone().unwrap_or_default();
+    shares.rate_limiter.acquire().await;
+    match plan.mode {
+        InviteMode::User => {
+            let user = plan.user.clone().unwrap_or_default();
+            let chat =
+                entities::resolve_peer(&shares.client, shares.session.as_ref(), &target).await?;
+            let user_peer =
+                entities::resolve_peer(&shares.client, shares.session.as_ref(), &user).await?;
+            let user_input = entities::input_user(&user_peer)
+                .await
+                .map_err(tele_invocation)?;
+            match &chat {
+                grammers_client::peer::Peer::Channel(_) => {
+                    let channel = entities::input_channel(&chat)
+                        .await
+                        .map_err(tele_invocation)?;
+                    shares
+                        .client
+                        .invoke(&tl::functions::channels::InviteToChannel {
+                            channel,
+                            users: vec![user_input],
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                grammers_client::peer::Peer::Group(_) if entities::is_channel(&chat) => {
+                    let channel = entities::input_channel(&chat)
+                        .await
+                        .map_err(tele_invocation)?;
+                    shares
+                        .client
+                        .invoke(&tl::functions::channels::InviteToChannel {
+                            channel,
+                            users: vec![user_input],
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                grammers_client::peer::Peer::Group(_) => {
+                    shares
+                        .client
+                        .invoke(&tl::functions::messages::AddChatUser {
+                            chat_id: chat.id().bare_id().unwrap_or_default(),
+                            user_id: user_input,
+                            fwd_limit: 0,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                grammers_client::peer::Peer::User(_) => {
+                    return Err(TeleError::Usage(
+                        "cannot invite into a private chat".to_string(),
+                    ));
+                }
+            }
+            Ok(serde_json::json!({"chat": target, "user": user, "invited": true}))
+        }
+        InviteMode::Export | InviteMode::Edit => {
+            let chat =
+                entities::resolve_peer(&shares.client, shares.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "chat invite")?;
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let rows = if plan.mode == InviteMode::Export {
+                let r: tl::enums::ExportedChatInvite = shares
+                    .client
+                    .invoke(&tl::functions::messages::ExportChatInvite {
+                        legacy_revoke_permanent: false,
+                        request_needed: plan.request_needed.unwrap_or(false),
+                        peer,
+                        expire_date: plan.expire_date,
+                        usage_limit: plan.usage_limit,
+                        title: plan.title.clone(),
+                        subscription_pricing: None,
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                vec![exported_invite_row(&r)]
+            } else {
+                let link = plan.link.clone().unwrap_or_default();
+                let r: tl::enums::messages::ExportedChatInvite = shares
+                    .client
+                    .invoke(&tl::functions::messages::EditExportedChatInvite {
+                        revoked: plan.revoked,
+                        peer,
+                        link,
+                        expire_date: plan.expire_date,
+                        usage_limit: plan.usage_limit,
+                        request_needed: plan.request_needed,
+                        title: plan.title.clone(),
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                exported_invite_result_rows(&r)
+            };
+            Ok(serde_json::json!({"links": rows}))
+        }
+        InviteMode::List => {
+            let chat =
+                entities::resolve_peer(&shares.client, shares.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "chat invite")?;
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let admin_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
+            match plan.link.clone() {
+                Some(link) => {
+                    let r: tl::enums::messages::ChatInviteImporters = shares
+                        .client
+                        .invoke(&tl::functions::messages::GetChatInviteImporters {
+                            requested: false,
+                            subscription_expired: false,
+                            peer,
+                            link: Some(link),
+                            q: None,
+                            offset_date: 0,
+                            offset_user: tl::types::InputUserEmpty {}.into(),
+                            limit: INVITE_LIST_LIMIT,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                    let rows = chat_invite_importers_rows(&shares.client, &r);
+                    Ok(serde_json::json!({"importers": rows}))
+                }
+                None => {
+                    let r: tl::enums::messages::ExportedChatInvites = shares
+                        .client
+                        .invoke(&tl::functions::messages::GetExportedChatInvites {
+                            revoked: plan.revoked,
+                            peer,
+                            admin_id,
+                            offset_date: None,
+                            offset_link: None,
+                            limit: INVITE_LIST_LIMIT,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                    let rows = exported_chat_invites_rows(&r);
+                    Ok(serde_json::json!({"links": rows}))
+                }
+            }
+        }
+        InviteMode::Check => {
+            let hash = plan.hash.clone().unwrap_or_default();
+            let r: tl::enums::ChatInvite = shares
+                .client
+                .invoke(&tl::functions::messages::CheckChatInvite { hash })
+                .await
+                .map_err(tele_invocation)?;
+            let row = check_invite_row(&r);
+            Ok(serde_json::json!({"invite": row}))
+        }
+        InviteMode::DeleteRevoked => {
+            let chat =
+                entities::resolve_peer(&shares.client, shares.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "chat invite")?;
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            let admin_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
+            let deleted: bool = shares
+                .client
+                .invoke(&tl::functions::messages::DeleteRevokedExportedChatInvites {
+                    peer,
+                    admin_id,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            Ok(serde_json::json!({"deleted_revoked": deleted}))
+        }
+    }
+}
+
+pub(crate) async fn chat_requests_core(
+    shares: &crate::client::ServeShares,
+    params: RequestsServeParams,
+) -> TeleResult<serde_json::Value> {
+    let args = RequestsArgs::from(&params);
+    let plan = validate_requests(&args)?;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "requests")?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    match plan.action {
+        RequestsAction::List => {
+            let r: tl::enums::messages::ChatInviteImporters = shares
+                .client
+                .invoke(&tl::functions::messages::GetChatInviteImporters {
+                    requested: true,
+                    subscription_expired: false,
+                    peer,
+                    link: plan.link.clone(),
+                    q: None,
+                    offset_date: 0,
+                    offset_user: tl::types::InputUserEmpty {}.into(),
+                    limit: plan.limit as i32,
+                })
+                .await
+                .map_err(tele_invocation)?;
+            let rows = join_request_rows(&shares.client, &r, plan.link.as_deref());
+            Ok(serde_json::json!({"requests": rows}))
+        }
+        RequestsAction::Approve | RequestsAction::Dismiss => {
+            let approved = plan.action == RequestsAction::Approve;
+            match &plan.user {
+                Some(user) => {
+                    let user_peer =
+                        entities::resolve_peer(&shares.client, shares.session.as_ref(), user)
+                            .await?;
+                    let user_input = entities::input_user(&user_peer)
+                        .await
+                        .map_err(tele_invocation)?;
+                    shares.rate_limiter.acquire().await;
+                    shares
+                        .client
+                        .invoke(&tl::functions::messages::HideChatJoinRequest {
+                            approved,
+                            peer,
+                            user_id: user_input,
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                    Ok(serde_json::json!({
+                        "chat": params.chat,
+                        "user": user,
+                        "action": if approved { "approved" } else { "dismissed" },
+                    }))
+                }
+                None => {
+                    shares.rate_limiter.acquire().await;
+                    shares
+                        .client
+                        .invoke(&tl::functions::messages::HideAllChatJoinRequests {
+                            approved,
+                            peer,
+                            link: plan.link.clone(),
+                        })
+                        .await
+                        .map_err(tele_invocation)?;
+                    let mut v = serde_json::json!({
+                        "chat": params.chat,
+                        "all": plan.all,
+                        "action": if approved { "approved" } else { "dismissed" },
+                    });
+                    if let Some(link) = &plan.link {
+                        v["link"] = serde_json::json!(link);
+                    }
+                    Ok(v)
+                }
+            }
+        }
+    }
+}
+
+pub(crate) async fn chat_participants_core(
+    shares: &crate::client::ServeShares,
+    params: ParticipantsServeParams,
+) -> TeleResult<serde_json::Value> {
+    let role = parse_participant_role(params.role.as_deref())?;
+    let search = params
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "participants")?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let mut rows = Vec::new();
+    if matches!(&chat, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(&chat) {
+        if role.is_some() || search.is_some() {
+            return Err(TeleError::Usage(
+                "--role/--search filters require a channel or supergroup; basic groups list all members".to_string(),
+            ));
+        }
+        let full = shares
+            .client
+            .invoke(&tl::functions::messages::GetFullChat {
+                chat_id: chat.id().bare_id().unwrap_or_default(),
+            })
+            .await
+            .map_err(tele_invocation)?;
+        let tl::enums::messages::ChatFull::Full(full) = full;
+        let users: HashMap<i64, tl::enums::User> =
+            full.users.into_iter().map(|u| (u.id(), u)).collect();
+        let participants = match full.full_chat {
+            tl::enums::ChatFull::Full(f) => match f.participants {
+                tl::enums::ChatParticipants::Participants(p) => p.participants,
+                tl::enums::ChatParticipants::Forbidden(_) => {
+                    return Err(TeleError::Other(
+                        "participants unavailable for this chat".to_string(),
+                    ));
+                }
+            },
+            tl::enums::ChatFull::ChannelFull(_) => {
+                return Err(TeleError::Other(
+                    "participants unavailable for this chat".to_string(),
+                ));
+            }
+        };
+        let (mut basic_rows, missing) = participant_rows(&shares.client, &users, &participants);
+        basic_rows.truncate(params.limit as usize);
+        if missing > 0 {
+            output::log_line(
+                "warn",
+                &format!("{missing} participant(s) missing user data were skipped"),
+            );
+        }
+        rows = basic_rows;
+    } else {
+        let mut count = 0u32;
+        let mut iter = shares
+            .client
+            .iter_participants(chat_ref)
+            .filter(participant_filter(role, search.as_deref()));
+        while count < params.limit {
+            match iter.next().await.map_err(tele_invocation)? {
+                Some(p) => {
+                    rows.push(serde_json::json!({
+                        "id": p.user.id().bare_id().unwrap_or_default(),
+                        "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
+                        "role": role_name(&p.role),
+                    }));
+                    count += 1;
+                }
+                None => break,
+            }
+        }
+    }
+    Ok(serde_json::json!({"participants": rows}))
+}
+
+crate::serve_runner!(run_join, chat_join_core, JoinParams);
+crate::serve_runner!(run_leave, chat_leave_core, LeaveParams);
+crate::serve_runner!(run_create, chat_create_core, CreateServeParams);
+crate::serve_runner!(run_settings, chat_settings_core, SettingsServeParams);
+crate::serve_runner!(run_edit, chat_edit_core, EditServeParams);
+crate::serve_runner!(run_link, chat_link_core, LinkServeParams);
+crate::serve_runner!(run_kick, chat_kick_core, KickServeParams);
+crate::serve_runner!(run_admin, chat_admin_core, AdminServeParams);
+crate::serve_runner!(run_admin_log, chat_admin_log_core, AdminLogServeParams);
+crate::serve_runner!(run_stats, chat_stats_core, StatsServeParams);
+crate::serve_runner!(run_invite, chat_invite_core, InviteServeParams);
+crate::serve_runner!(run_requests, chat_requests_core, RequestsServeParams);
+crate::serve_runner!(
+    run_participants,
+    chat_participants_core,
+    ParticipantsServeParams
+);
+
 pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
-    Vec::new()
+    use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
+    vec![
+        crate::serve_route!(
+            "chat join",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "join a chat by target or invite link",
+            JoinParams,
+            ChatArgs,
+            validate_join,
+            join_serve_dry_run,
+            run_join
+        ),
+        crate::serve_route!(
+            "chat leave",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            true,
+            true,
+            "leave a chat or channel",
+            LeaveParams,
+            ChatArgs,
+            validate_leave,
+            leave_serve_dry_run,
+            run_leave
+        ),
+        crate::serve_route!(
+            "chat create",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "create a group, supergroup, or channel",
+            CreateServeParams,
+            CreateArgs,
+            validate_create,
+            create_serve_dry_run,
+            run_create
+        ),
+        crate::serve_route!(
+            "chat settings",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "update or read channel settings",
+            SettingsServeParams,
+            SettingsArgs,
+            validate_settings,
+            settings_serve_dry_run,
+            run_settings
+        ),
+        crate::serve_route!(
+            "chat edit",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "edit chat title, about, or photo",
+            EditServeParams,
+            EditArgs,
+            validate_edit,
+            edit_serve_dry_run,
+            run_edit
+        ),
+        crate::serve_route!(
+            "chat link",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "show or set the discussion link of a channel",
+            LinkServeParams,
+            LinkArgs,
+            validate_link,
+            link_serve_dry_run,
+            run_link
+        ),
+        crate::serve_route!(
+            "chat kick",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            true,
+            true,
+            "kick, ban, or restrict a chat participant",
+            KickServeParams,
+            KickArgs,
+            validate_kick,
+            kick_serve_dry_run,
+            run_kick
+        ),
+        crate::serve_route!(
+            "chat admin",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "promote or demote a chat admin",
+            AdminServeParams,
+            AdminArgs,
+            validate_admin,
+            admin_serve_dry_run,
+            run_admin
+        ),
+        crate::serve_route!(
+            "chat admin-log",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list recent chat admin log events",
+            AdminLogServeParams,
+            AdminLogArgs,
+            validate_admin_log,
+            adminlog_serve_dry_run,
+            run_admin_log
+        ),
+        crate::serve_route!(
+            "chat stats",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "show broadcast or megagroup stats",
+            StatsServeParams,
+            StatsArgs,
+            validate_stats,
+            stats_serve_dry_run,
+            run_stats
+        ),
+        crate::serve_route!(
+            "chat invite",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "invite users or manage invite links",
+            InviteServeParams,
+            InviteArgs,
+            validate_invite_serve,
+            invite_serve_dry_run,
+            run_invite
+        ),
+        crate::serve_route!(
+            "chat requests",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "list or act on pending join requests",
+            RequestsServeParams,
+            RequestsArgs,
+            validate_requests_serve,
+            requests_serve_dry_run,
+            run_requests
+        ),
+        crate::serve_route!(
+            "chat participants",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list chat participants",
+            ParticipantsServeParams,
+            ParticipantsArgs,
+            validate_participants,
+            participants_serve_dry_run,
+            run_participants
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -6298,5 +8314,753 @@ mod tests {
         assert_eq!(rows[1]["link"], "https://t.me/+abc");
 
         print_request_table("acc", false, &rows).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod chat_serve_tests {
+    use super::*;
+    use crate::commands::serve::{Lane, Plan};
+
+    fn plan_chat_op(op: &str, params: serde_json::Value) -> Result<Plan, serde_json::Value> {
+        let route = chat_serve_routes()
+            .into_iter()
+            .find(|r| r.op == op)
+            .unwrap_or_else(|| panic!("route missing for {op}"));
+        (route.planner)(op, params)
+    }
+
+    fn serve_error(err: serde_json::Value) -> String {
+        assert_eq!(err["type"], "ServeError", "{err}");
+        err["message"].as_str().unwrap().to_string()
+    }
+
+    fn usage_error(err: serde_json::Value) -> String {
+        assert_eq!(err["type"], "UsageError", "{err}");
+        err["message"].as_str().unwrap().to_string()
+    }
+
+    fn expect_execute(plan: Plan, raw: &serde_json::Value) {
+        match plan {
+            Plan::Execute(passed) => assert_eq!(&passed, raw),
+            other => panic!("expected execute plan, got {other:?}"),
+        }
+    }
+
+    fn expect_dry_run(plan: Plan, expected: serde_json::Value) {
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, expected),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_chat_route_rejects_unknown_fields() {
+        let cases: &[(&str, serde_json::Value)] = &[
+            ("chat join", serde_json::json!({"chat": "@room"})),
+            ("chat leave", serde_json::json!({"chat": "@room"})),
+            ("chat create", serde_json::json!({"title": "T"})),
+            (
+                "chat settings",
+                serde_json::json!({"chat": "@room", "slow_mode": "30"}),
+            ),
+            (
+                "chat edit",
+                serde_json::json!({"chat": "@room", "title": "n"}),
+            ),
+            ("chat link", serde_json::json!({"chat": "@room"})),
+            (
+                "chat kick",
+                serde_json::json!({"chat": "@room", "user": "@u"}),
+            ),
+            (
+                "chat admin",
+                serde_json::json!({"chat": "@room", "user": "@u", "promote": true}),
+            ),
+            ("chat admin-log", serde_json::json!({"chat": "@room"})),
+            ("chat stats", serde_json::json!({"chat": "@room"})),
+            (
+                "chat invite",
+                serde_json::json!({"chat": "@room", "list": true}),
+            ),
+            ("chat requests", serde_json::json!({"chat": "@room"})),
+            ("chat participants", serde_json::json!({"chat": "@room"})),
+        ];
+        for (op, base) in cases {
+            let mut bad = base.clone();
+            bad["bogus"] = serde_json::json!(1);
+            let msg = serve_error(plan_chat_op(op, bad).unwrap_err());
+            assert!(msg.contains("unknown field"), "{op}: {msg}");
+            assert!(msg.contains("bogus"), "{op}: {msg}");
+        }
+    }
+
+    #[test]
+    fn chat_join_plan_matrix() {
+        let msg = usage_error(plan_chat_op("chat join", serde_json::json!({})).unwrap_err());
+        assert!(msg.contains("--chat must not be empty"), "{msg}");
+
+        let msg =
+            serve_error(plan_chat_op("chat join", serde_json::json!({"chat": 5})).unwrap_err());
+        assert!(msg.contains("string"), "{msg}");
+
+        let msg =
+            usage_error(plan_chat_op("chat join", serde_json::json!({"chat": ""})).unwrap_err());
+        assert!(!msg.is_empty(), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat join",
+            serde_json::json!({"chat": "@room", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "@room",
+                "would": "join chat @room"
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "@room"});
+        let plan = plan_chat_op("chat join", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_leave_plan_matrix() {
+        let msg = usage_error(plan_chat_op("chat leave", serde_json::json!({})).unwrap_err());
+        assert!(msg.contains("--chat must not be empty"), "{msg}");
+
+        let msg =
+            serve_error(plan_chat_op("chat leave", serde_json::json!({"chat": 9})).unwrap_err());
+        assert!(msg.contains("string"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat leave",
+            serde_json::json!({"chat": "@room", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "@room",
+                "would": "leave chat @room"
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "@room"});
+        let plan = plan_chat_op("chat leave", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_create_plan_matrix() {
+        let msg = serve_error(plan_chat_op("chat create", serde_json::json!({})).unwrap_err());
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("title"), "{msg}");
+
+        let msg =
+            serve_error(plan_chat_op("chat create", serde_json::json!({"title": 5})).unwrap_err());
+        assert!(msg.contains("string"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat create",
+                serde_json::json!({"title": "T", "kind": "guild"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("unknown chat kind"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat create",
+            serde_json::json!({"title": "T", "kind": "supergroup", "forum": true, "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "title": "T",
+                "would": "create supergroup chat \"T\""
+            }),
+        );
+
+        let raw = serde_json::json!({"title": "T"});
+        let plan = plan_chat_op("chat create", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_settings_plan_matrix() {
+        let msg = serve_error(
+            plan_chat_op(
+                "chat settings",
+                serde_json::json!({"chat": "work", "slow_mode": 30}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("string"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat settings",
+                serde_json::json!({"chat": "work", "noforwards": "on"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("cannot be applied"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat settings",
+                serde_json::json!({"chat": "work", "slow_mode": "9999"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--slow-mode"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat settings",
+            serde_json::json!({"chat": "work", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "would": "read settings of chat work"
+            }),
+        );
+
+        let plan = plan_chat_op(
+            "chat settings",
+            serde_json::json!({"chat": "work", "slow_mode": "60", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "would": "update settings of chat work",
+                "slow_mode": 60
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "work", "slow_mode": "60"});
+        let plan = plan_chat_op("chat settings", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_edit_plan_matrix() {
+        let msg = usage_error(
+            plan_chat_op("chat edit", serde_json::json!({"chat": "work"})).unwrap_err(),
+        );
+        assert!(msg.contains("at least one of"), "{msg}");
+
+        let msg = serve_error(
+            plan_chat_op("chat edit", serde_json::json!({"chat": "work", "photo": 5})).unwrap_err(),
+        );
+        assert!(msg.contains("string"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat edit",
+            serde_json::json!({"chat": "work", "title": " New ", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "would": "edit metadata of chat work",
+                "title": "New"
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "work", "about": "hello"});
+        let plan = plan_chat_op("chat edit", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_link_plan_matrix() {
+        let msg = usage_error(
+            plan_chat_op(
+                "chat link",
+                serde_json::json!({"chat": "work", "to": "remove"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("no unlink method"), "{msg}");
+
+        let msg = serve_error(
+            plan_chat_op("chat link", serde_json::json!({"chat": "work", "to": 5})).unwrap_err(),
+        );
+        assert!(msg.contains("string"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat link",
+            serde_json::json!({"chat": "work", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "would": "read discussion link of chat work"
+            }),
+        );
+
+        let plan = plan_chat_op(
+            "chat link",
+            serde_json::json!({"chat": "work", "to": "@discuss", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "to": "@discuss",
+                "would": "link chat work with discussion group @discuss"
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "work", "to": "@discuss"});
+        let plan = plan_chat_op("chat link", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_kick_plan_matrix() {
+        let msg = serve_error(
+            plan_chat_op("chat kick", serde_json::json!({"chat": "work"})).unwrap_err(),
+        );
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("user"), "{msg}");
+
+        let msg = serve_error(
+            plan_chat_op(
+                "chat kick",
+                serde_json::json!({"chat": "work", "user": "@u", "ban": "yes"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat kick",
+                serde_json::json!({"chat": "work", "user": "@u", "duration": "abc"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--duration"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat kick",
+                serde_json::json!({"chat": "work", "user": "@u", "rights": "nope:true"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("unknown right"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat kick",
+            serde_json::json!({"chat": "work", "user": "@u", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "user": "@u",
+                "ban": false,
+                "would": "kick user @u from chat work"
+            }),
+        );
+
+        let plan = plan_chat_op(
+            "chat kick",
+            serde_json::json!({
+                "chat": "work",
+                "user": "@u",
+                "ban": true,
+                "duration": "300",
+                "rights": "view_messages:false",
+                "dry_run": true
+            }),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "user": "@u",
+                "ban": true,
+                "would": "kick user @u from chat work",
+                "duration": 300,
+                "rights": [["view_messages", false]]
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "work", "user": "@u", "ban": true});
+        let plan = plan_chat_op("chat kick", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_admin_plan_matrix() {
+        let msg = serve_error(
+            plan_chat_op("chat admin", serde_json::json!({"chat": "work"})).unwrap_err(),
+        );
+        assert!(msg.contains("missing field"), "{msg}");
+        assert!(msg.contains("user"), "{msg}");
+
+        let msg = serve_error(
+            plan_chat_op(
+                "chat admin",
+                serde_json::json!({"chat": "work", "user": "@u", "promote": "yes"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat admin",
+                serde_json::json!({"chat": "work", "user": "@u"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--promote or --demote required"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat admin",
+                serde_json::json!({"chat": "work", "user": "@u", "promote": true, "demote": true}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("mutually exclusive"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat admin",
+                serde_json::json!({"chat": "work", "user": "@u", "demote": true, "preset": "boss"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("unknown preset"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat admin",
+            serde_json::json!({"chat": "work", "user": "@u", "demote": true, "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "user": "@u",
+                "promote": false,
+                "demote": true,
+                "would": "change admin status of user @u in chat work"
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "work", "user": "@u", "promote": true});
+        let plan = plan_chat_op("chat admin", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_adminlog_plan_matrix() {
+        let msg = serve_error(
+            plan_chat_op(
+                "chat admin-log",
+                serde_json::json!({"chat": "work", "limit": "many"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("u32"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat admin-log",
+                serde_json::json!({"chat": "work", "events": "hugs"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("unknown --events flag"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat admin-log",
+                serde_json::json!({"chat": "work", "since": "not-a-date"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(!msg.is_empty(), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat admin-log",
+                serde_json::json!({"chat": "work", "since": "200", "until": "100"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--since must not be after --until"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat admin-log",
+            serde_json::json!({"chat": "work", "search": "rank", "admin": "me", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(plan, admin_log_dry_run_payload("work", "rank", false, true));
+
+        let raw = serde_json::json!({"chat": "work"});
+        let plan = plan_chat_op("chat admin-log", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_stats_plan_matrix() {
+        let msg = serve_error(
+            plan_chat_op(
+                "chat stats",
+                serde_json::json!({"chat": "work", "broadcast": "yes"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("boolean"), "{msg}");
+
+        let msg =
+            usage_error(plan_chat_op("chat stats", serde_json::json!({"chat": ""})).unwrap_err());
+        assert!(!msg.is_empty(), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat stats",
+            serde_json::json!({"chat": "work", "broadcast": true, "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(plan, stats_dry_run_payload("work", true));
+
+        let raw = serde_json::json!({"chat": "work"});
+        let plan = plan_chat_op("chat stats", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_invite_plan_matrix() {
+        let msg = usage_error(
+            plan_chat_op(
+                "chat invite",
+                serde_json::json!({"chat": "work", "user": "@u", "list": true}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("mutually exclusive"), "{msg}");
+
+        let msg = serve_error(
+            plan_chat_op(
+                "chat invite",
+                serde_json::json!({"chat": "work", "usage_limit": "5"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("u32"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op("chat invite", serde_json::json!({"chat": "", "list": true})).unwrap_err(),
+        );
+        assert!(!msg.is_empty(), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat invite",
+            serde_json::json!({"chat": "work", "list": true, "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "mode": "list",
+                "revoked": false,
+                "importers": null,
+                "would": "list active invite links of chat work"
+            }),
+        );
+
+        let plan = plan_chat_op(
+            "chat invite",
+            serde_json::json!({"check": "t.me/+abc123", "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => {
+                assert_eq!(data["mode"], serde_json::json!("check"));
+                assert_eq!(
+                    data["would"],
+                    serde_json::json!("preview invite link https://t.me/+abc123")
+                );
+            }
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"chat": "work", "list": true});
+        let plan = plan_chat_op("chat invite", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_requests_plan_matrix() {
+        let msg = usage_error(
+            plan_chat_op(
+                "chat requests",
+                serde_json::json!({"chat": "work", "approve": true}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("requires --user USER or --all"), "{msg}");
+
+        let msg = serve_error(
+            plan_chat_op(
+                "chat requests",
+                serde_json::json!({"chat": "work", "limit": "many"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("u32"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat requests",
+                serde_json::json!({"chat": "work", "all": true}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--all applies to"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat requests",
+            serde_json::json!({"chat": "work", "approve": true, "user": "@u", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "action": "approve",
+                "user": "@u",
+                "would": "approve join request of @u in chat work"
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "work", "dismiss": true, "all": true});
+        let plan = plan_chat_op("chat requests", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_participants_plan_matrix() {
+        let msg = serve_error(
+            plan_chat_op(
+                "chat participants",
+                serde_json::json!({"chat": "work", "limit": "many"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("u32"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat participants",
+                serde_json::json!({"chat": "work", "role": "boss"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("unknown role"), "{msg}");
+
+        let msg = usage_error(
+            plan_chat_op(
+                "chat participants",
+                serde_json::json!({"chat": "work", "limit": 10_001}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--limit"), "{msg}");
+
+        let plan = plan_chat_op(
+            "chat participants",
+            serde_json::json!({"chat": "work", "role": "admin", "dry_run": true}),
+        )
+        .unwrap();
+        expect_dry_run(
+            plan,
+            serde_json::json!({
+                "dry_run": true,
+                "chat": "work",
+                "would": "list participants of chat work"
+            }),
+        );
+
+        let raw = serde_json::json!({"chat": "work", "role": "admin"});
+        let plan = plan_chat_op("chat participants", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn chat_serve_lane_and_hints_table_is_locked() {
+        let expected: &[(&str, Lane, u64, bool, bool, bool)] = &[
+            ("chat admin", Lane::Mutate, 30, false, false, true),
+            ("chat admin-log", Lane::Read, 120, true, false, true),
+            ("chat create", Lane::Mutate, 30, false, false, true),
+            ("chat edit", Lane::Mutate, 30, false, false, true),
+            ("chat invite", Lane::Mutate, 30, false, false, true),
+            ("chat join", Lane::Mutate, 30, false, false, true),
+            ("chat kick", Lane::Mutate, 30, false, true, true),
+            ("chat leave", Lane::Mutate, 30, false, true, true),
+            ("chat link", Lane::Mutate, 30, false, false, true),
+            ("chat participants", Lane::Read, 120, true, false, true),
+            ("chat requests", Lane::Mutate, 30, false, false, true),
+            ("chat settings", Lane::Mutate, 30, false, false, true),
+            ("chat stats", Lane::Read, 120, true, false, true),
+        ];
+        let routes = chat_serve_routes();
+        assert_eq!(routes.len(), expected.len());
+        let mut destructive: Vec<&str> = Vec::new();
+        for (op, lane, secs, read_only, is_destructive, retry_safe) in expected {
+            let route = routes
+                .iter()
+                .find(|r| r.op == *op)
+                .unwrap_or_else(|| panic!("route missing for {op}"));
+            assert_eq!(route.lane, *lane, "lane for {op}");
+            assert_eq!(
+                route.timeout,
+                Some(std::time::Duration::from_secs(*secs)),
+                "timeout for {op}"
+            );
+            assert_eq!(route.read_only, *read_only, "read_only for {op}");
+            assert_eq!(route.destructive, *is_destructive, "destructive for {op}");
+            assert_eq!(route.retry_safe, *retry_safe, "retry_safe for {op}");
+            if *is_destructive {
+                destructive.push(op);
+            }
+        }
+        assert_eq!(destructive, vec!["chat kick", "chat leave"]);
     }
 }
