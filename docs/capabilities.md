@@ -123,7 +123,7 @@ Note: `tele topic create --emoji` accepts only a single-codepoint emoji (4 UTF-8
 | ads.* | Sponsored messages | never | Official-client burden |
 | collectibles.* | Fragment collectibles | never | Not this product |
 | smsjobs.* | Official-client SMS jobs | never | Official only |
-| mcp | MCP server | want | End of development |
+| mcp | MCP stdio server: tele mcp exposes 67 ops as tools via rmcp 3.1 (stdio, legacy handshake, inputSchema via schemars, annotations, confirm gate, read-only/groups filters) | tele mcp --account NAME | done |
 | skill | Agent skill | want | End of development |
 
 ## Kernel (not Telegram, but blocking)
