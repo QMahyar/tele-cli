@@ -741,6 +741,26 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
 }
 
+const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn drain_and_flush(
+    workers: &mut Vec<tokio::task::JoinHandle<()>>,
+    response_rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+) -> TeleResult<()> {
+    let deadline = tokio::time::sleep(DRAIN_BUDGET);
+    tokio::pin!(deadline);
+    for mut worker in workers.drain(..) {
+        tokio::select! {
+            _ = &mut worker => {}
+            _ = &mut deadline => worker.abort(),
+        }
+    }
+    while let Some(value) = response_rx.recv().await {
+        emit(&value)?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn serve_connection(
     name: &str,
@@ -775,6 +795,7 @@ async fn serve_connection(
         .await
     {
         let err = getstate_probe_error(e);
+        guard.close().await;
         if matches!(err, TeleError::Auth(_)) {
             return Err(err);
         }
@@ -853,12 +874,7 @@ async fn serve_connection(
                 output::log_line("info", "serve: stdin closed, shutting down");
                 drop(mutations);
                 drop(reads);
-                for worker in workers.drain(..) {
-                    let _ = worker.await;
-                }
-                while let Some(value) = response_rx.recv().await {
-                    emit(&value)?;
-                }
+                drain_and_flush(&mut workers, &mut response_rx).await?;
                 guard.close().await;
                 return Ok(ConnExit::Eof);
             }
@@ -880,6 +896,10 @@ async fn serve_connection(
                     )
                     .await?;
                     if resync_requested {
+                        drop(mutations);
+                        drop(reads);
+                        drain_and_flush(&mut workers, &mut response_rx).await?;
+                        guard.close().await;
                         break;
                     }
                 }
@@ -887,10 +907,12 @@ async fn serve_connection(
             Tick::Response(value) => emit(&value)?,
             Tick::StreamError(e) => {
                 if crate::error::invocation_is_unauthorized(&e) {
+                    guard.close().await;
                     return Err(crate::error::invocation_error(e));
                 }
                 handle_stream_failure(name, crate::error::invocation_error(e), failures, None)
                     .await?;
+                guard.close().await;
                 return Ok(ConnExit::StreamDown);
             }
             Tick::Update(update) => {

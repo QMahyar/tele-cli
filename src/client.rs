@@ -87,8 +87,13 @@ impl ClientGuard {
 
     pub async fn close(mut self) {
         self.client.disconnect();
-        if let Some(runner) = self.runner.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(3), runner).await;
+        if let Some(mut runner) = self.runner.take() {
+            tokio::select! {
+                _ = &mut runner => {}
+                _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                    runner.abort();
+                }
+            }
         }
     }
 }

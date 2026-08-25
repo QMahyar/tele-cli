@@ -2118,7 +2118,12 @@ fn resolve_admin_rights(args: &AdminArgs) -> TeleResult<AdminRights> {
         return Ok(match preset.as_str() {
             "moderator" => AdminRights::moderator(),
             "editor" => AdminRights::editor(),
-            _ => AdminRights::all(),
+            "admin" => AdminRights::all(),
+            other => {
+                return Err(TeleError::Usage(format!(
+                    "unknown admin preset '{other}': use moderator, editor, or admin"
+                )))
+            }
         });
     }
     if let Some(rights_str) = &args.rights {
@@ -7395,6 +7400,33 @@ mod tests {
             rights: Some("ban".to_string()),
         };
         assert!(grants_nothing(&resolve_admin_rights(&args).unwrap()));
+    }
+
+    #[test]
+    fn resolve_admin_rights_unknown_preset_is_a_usage_error_not_all() {
+        let mut args = AdminArgs {
+            chat: "c".to_string(),
+            user: "u".to_string(),
+            promote: true,
+            demote: false,
+            title: None,
+            preset: Some("modrator".to_string()),
+            rights: None,
+        };
+        assert!(matches!(
+            resolve_admin_rights(&args),
+            Err(TeleError::Usage(_))
+        ));
+        args.preset = Some("".to_string());
+        assert!(matches!(
+            resolve_admin_rights(&args),
+            Err(TeleError::Usage(_))
+        ));
+        args.preset = Some("Admin".to_string());
+        assert!(matches!(
+            resolve_admin_rights(&args),
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]
