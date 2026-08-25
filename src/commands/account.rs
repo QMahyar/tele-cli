@@ -3605,37 +3605,42 @@ fn should_print_token(show_token: bool, stderr_is_terminal: bool) -> bool {
     show_token || stderr_is_terminal
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct AccountStatusParams {
     #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct TtlGetParams {
     #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct TtlSetParams {
     pub(crate) days: i64,
     #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SessionsListParams {
     #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SessionsWebParams {
     #[serde(default)]
     pub(crate) dry_run: bool,
@@ -3894,7 +3899,7 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_serve_status,
             status_serve_dry_run,
             run_account_status,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<AccountStatusParams>
         ),
         crate::serve_route!(
             "account sessions list",
@@ -3909,7 +3914,7 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_serve_sessions_list,
             sessions_list_serve_dry_run,
             run_sessions_list,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SessionsListParams>
         ),
         crate::serve_route!(
             "account sessions web",
@@ -3924,7 +3929,7 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_serve_sessions_web,
             sessions_web_serve_dry_run,
             run_sessions_web,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SessionsWebParams>
         ),
         crate::serve_route!(
             "account ttl get",
@@ -3939,7 +3944,7 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_serve_ttl_get,
             ttl_get_serve_dry_run,
             run_ttl_get,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<TtlGetParams>
         ),
         crate::serve_route!(
             "account ttl set",
@@ -3954,7 +3959,7 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_serve_ttl_set,
             ttl_set_serve_dry_run,
             run_ttl_set,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<TtlSetParams>
         ),
     ]
 }
@@ -6598,5 +6603,33 @@ mod tests {
         let err = plan_acct_op("account ttl get", serde_json::json!([1])).unwrap_err();
         assert_eq!(err["type"], "ServeError");
         assert!(err.get("param").is_none(), "{}", err);
+    }
+
+    #[test]
+    fn ttl_set_schema_declares_required_days_only() {
+        let s = crate::commands::serve::params_schema::<TtlSetParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        for prop in ["days", "dry_run"] {
+            assert!(s["properties"][prop].is_object(), "{prop}");
+        }
+        let required: Vec<&str> = s["required"]
+            .as_array()
+            .expect("required array")
+            .iter()
+            .map(|v| v.as_str().expect("string"))
+            .collect();
+        assert_eq!(required, vec!["days"]);
+    }
+
+    #[test]
+    fn status_schema_is_empty_object_with_no_required_fields() {
+        let s = crate::commands::serve::params_schema::<AccountStatusParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        assert!(s["properties"]["dry_run"].is_object());
+        assert!(s
+            .get("required")
+            .is_none_or(|r| r.as_array().unwrap().is_empty()));
     }
 }

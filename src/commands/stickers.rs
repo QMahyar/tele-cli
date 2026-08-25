@@ -63,8 +63,9 @@ pub struct RemoveArgs {
     set: String,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ListParams {
     #[serde(default = "default_list_limit")]
     limit: u32,
@@ -91,8 +92,9 @@ impl From<&ListParams> for ListArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SearchParams {
     query: String,
     #[serde(default = "default_search_limit")]
@@ -124,8 +126,9 @@ impl From<&SearchParams> for SearchArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ShowParams {
     set: String,
     #[serde(default)]
@@ -147,8 +150,9 @@ impl From<&ShowParams> for ShowArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct InstallParams {
     set: String,
     #[serde(default)]
@@ -176,8 +180,9 @@ impl From<&InstallParams> for InstallArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct RemoveParams {
     set: String,
     #[serde(default)]
@@ -728,7 +733,7 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_install,
             install_serve_dry_run,
             run_install,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<InstallParams>
         ),
         crate::serve_route!(
             "sticker list",
@@ -743,7 +748,7 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_list,
             list_serve_dry_run,
             run_list,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ListParams>
         ),
         crate::serve_route!(
             "sticker remove",
@@ -758,7 +763,7 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_remove,
             remove_serve_dry_run,
             run_remove,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<RemoveParams>
         ),
         crate::serve_route!(
             "sticker search",
@@ -773,7 +778,7 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_search,
             search_serve_dry_run,
             run_search,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SearchParams>
         ),
         crate::serve_route!(
             "sticker show",
@@ -788,7 +793,7 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_show,
             show_serve_dry_run,
             run_show,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ShowParams>
         ),
     ]
 }
@@ -1288,5 +1293,34 @@ mod tests {
                 other => panic!("{op}: expected execute plan, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn search_schema_declares_required_query_only() {
+        let s = crate::commands::serve::params_schema::<SearchParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        for prop in ["query", "limit", "dry_run"] {
+            assert!(s["properties"][prop].is_object(), "{prop}");
+        }
+        let required = s["required"].as_array().expect("required array");
+        let names: Vec<&str> = required
+            .iter()
+            .map(|v| v.as_str().expect("string"))
+            .collect();
+        assert_eq!(names, vec!["query"]);
+    }
+
+    #[test]
+    fn list_schema_has_no_required_fields() {
+        let s = crate::commands::serve::params_schema::<ListParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        for prop in ["limit", "dry_run"] {
+            assert!(s["properties"][prop].is_object(), "{prop}");
+        }
+        assert!(s
+            .get("required")
+            .is_none_or(|r| r.as_array().unwrap().is_empty()));
     }
 }

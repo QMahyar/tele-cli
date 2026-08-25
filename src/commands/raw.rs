@@ -108,8 +108,9 @@ fn raw_dry_run_payload(name: &str, params: &serde_json::Value) -> serde_json::Va
     })
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct RawParams {
     method: String,
     #[serde(default = "default_raw_args")]
@@ -194,7 +195,7 @@ pub(crate) fn raw_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
         validate_raw,
         raw_serve_dry_run,
         run_invoke,
-        crate::commands::serve::schema_placeholder
+        crate::commands::serve::params_schema::<RawParams>
     )]
 }
 
@@ -2408,5 +2409,30 @@ mod tests {
             panic!("expected dry run");
         };
         assert_eq!(data["args"], with_args);
+    }
+
+    #[test]
+    fn raw_params_schema_declares_required_method_only() {
+        let s = crate::commands::serve::params_schema::<RawParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
+        for prop in ["method", "args", "dry_run"] {
+            assert!(s["properties"][prop].is_object(), "{prop}");
+        }
+        let required: Vec<&str> = s["required"]
+            .as_array()
+            .expect("required array")
+            .iter()
+            .map(|v| v.as_str().expect("string"))
+            .collect();
+        assert_eq!(required, vec!["method"]);
+    }
+
+    #[test]
+    fn raw_params_args_property_accepts_any_json_value() {
+        let s = crate::commands::serve::params_schema::<RawParams>();
+        let args = &s["properties"]["args"];
+        assert!(args.is_object());
+        assert_ne!(args["type"], serde_json::json!("string"));
     }
 }
