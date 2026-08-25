@@ -6,6 +6,7 @@ pub mod credentials;
 pub mod dialog;
 pub mod helpers;
 pub mod listen;
+pub mod mcp;
 pub mod msg;
 pub mod privacy;
 pub mod profile;

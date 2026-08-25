@@ -28,6 +28,7 @@ libsql = { version = "=0.9.30", default-features = false, features = ["core"] }
 log = "0.4"
 num-bigint = "0.4"
 pbkdf2 = { version = "0.13", default-features = false }
+rmcp = { version = "3.1", default-features = false, features = ["server", "transport-io"] }
 qrcode = "0.14"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

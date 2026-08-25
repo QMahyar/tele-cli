@@ -637,7 +637,8 @@ pub(crate) fn privacy_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             GetArgs,
             validate_get,
             get_serve_dry_run,
-            run_get
+            run_get,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "privacy set",
@@ -651,7 +652,8 @@ pub(crate) fn privacy_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SetArgs,
             validate_set,
             set_serve_dry_run,
-            run_set
+            run_set,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

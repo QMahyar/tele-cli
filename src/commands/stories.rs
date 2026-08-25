@@ -1146,7 +1146,8 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             DeleteArgs,
             validate_story_delete,
             delete_serve_dry_run,
-            run_delete
+            run_delete,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "story list",
@@ -1160,7 +1161,8 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ListArgs,
             validate_story_list,
             list_serve_dry_run,
-            run_list
+            run_list,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "story pin",
@@ -1174,7 +1176,8 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             PinArgs,
             validate_story_toggle,
             pin_serve_dry_run,
-            run_pin
+            run_pin,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "story read",
@@ -1188,7 +1191,8 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ReadArgs,
             validate_story_read,
             read_serve_dry_run,
-            run_read
+            run_read,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "story send",
@@ -1202,7 +1206,8 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SendArgs,
             validate_story_send,
             send_serve_dry_run,
-            run_send
+            run_send,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "story unpin",
@@ -1216,7 +1221,8 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             PinArgs,
             validate_story_toggle,
             unpin_serve_dry_run,
-            run_unpin
+            run_unpin,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

@@ -5719,7 +5719,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ClickArgs,
             validate_click,
             click_serve_dry_run,
-            run_click
+            run_click,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg delete",
@@ -5733,7 +5734,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             DeleteArgs,
             validate_delete,
             delete_serve_dry_run,
-            run_delete
+            run_delete,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg download",
@@ -5747,7 +5749,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             DownloadArgs,
             validate_download,
             download_serve_dry_run,
-            run_download
+            run_download,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg edit",
@@ -5761,7 +5764,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             EditArgs,
             validate_edit,
             edit_serve_dry_run,
-            run_edit
+            run_edit,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg forward",
@@ -5775,7 +5779,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ForwardArgs,
             validate_forward,
             forward_serve_dry_run,
-            run_forward
+            run_forward,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg get",
@@ -5789,7 +5794,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             GetArgs,
             validate_get,
             get_serve_dry_run,
-            run_get
+            run_get,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg pin",
@@ -5803,7 +5809,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             PinArgs,
             validate_pin,
             pin_serve_dry_run,
-            run_pin
+            run_pin,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg read",
@@ -5817,7 +5824,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ReadArgs,
             validate_read,
             read_serve_dry_run,
-            run_read
+            run_read,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg react",
@@ -5831,7 +5839,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ReactArgs,
             validate_react,
             react_serve_dry_run,
-            run_react
+            run_react,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg search",
@@ -5845,7 +5854,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SearchArgs,
             validate_search,
             search_serve_dry_run,
-            run_search
+            run_search,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg send",
@@ -5859,7 +5869,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SendArgs,
             validate_send,
             send_serve_dry_run,
-            run_send
+            run_send,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg typing",
@@ -5873,7 +5884,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             TypingArgs,
             validate_typing,
             typing_serve_dry_run,
-            run_typing
+            run_typing,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "msg vote",
@@ -5887,7 +5899,8 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             VoteArgs,
             validate_vote,
             vote_serve_dry_run,
-            run_vote
+            run_vote,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

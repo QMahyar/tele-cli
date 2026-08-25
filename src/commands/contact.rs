@@ -563,7 +563,8 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             AddArgs,
             validate_add,
             add_serve_dry_run,
-            run_add
+            run_add,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "contact block",
@@ -577,7 +578,8 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             BlockArgs,
             validate_block,
             block_serve_dry_run,
-            run_block
+            run_block,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "contact list",
@@ -591,7 +593,8 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ListArgs,
             validate_list,
             list_serve_dry_run,
-            run_list
+            run_list,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "contact remove",
@@ -605,7 +608,8 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             RemoveArgs,
             validate_remove,
             remove_serve_dry_run,
-            run_remove
+            run_remove,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "contact unblock",
@@ -619,7 +623,8 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             BlockArgs,
             validate_block,
             unblock_serve_dry_run,
-            run_unblock
+            run_unblock,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

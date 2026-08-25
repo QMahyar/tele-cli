@@ -3893,7 +3893,8 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             AccountStatusArgs,
             validate_serve_status,
             status_serve_dry_run,
-            run_account_status
+            run_account_status,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "account sessions list",
@@ -3907,7 +3908,8 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SessionsListArgs,
             validate_serve_sessions_list,
             sessions_list_serve_dry_run,
-            run_sessions_list
+            run_sessions_list,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "account sessions web",
@@ -3921,7 +3923,8 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SessionsWebArgs,
             validate_serve_sessions_web,
             sessions_web_serve_dry_run,
-            run_sessions_web
+            run_sessions_web,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "account ttl get",
@@ -3935,7 +3938,8 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             TtlGetArgs,
             validate_serve_ttl_get,
             ttl_get_serve_dry_run,
-            run_ttl_get
+            run_ttl_get,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "account ttl set",
@@ -3949,7 +3953,8 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             TtlSetArgs,
             validate_serve_ttl_set,
             ttl_set_serve_dry_run,
-            run_ttl_set
+            run_ttl_set,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }
