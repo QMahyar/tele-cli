@@ -81,10 +81,6 @@ pub(crate) type Planner = fn(&str, serde_json::Value) -> Result<Plan, serde_json
 
 pub(crate) type SchemaFn = fn() -> serde_json::Value;
 
-pub(crate) fn schema_placeholder() -> serde_json::Value {
-    serde_json::json!({})
-}
-
 pub(crate) fn params_schema<P: rmcp::schemars::JsonSchema>() -> serde_json::Value {
     use rmcp::schemars::generate::SchemaSettings;
     let gen = SchemaSettings::draft2020_12().into_generator();
