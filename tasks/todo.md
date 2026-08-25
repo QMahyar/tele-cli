@@ -363,3 +363,13 @@ account status, ttl get/set, sessions list; takeout start/finish/status ONLY if 
 ### Definition of done (whole program)
 SERVE_OPS covers every non-excluded group; route-lock test pins final table; every mutating op dry-runs without connecting; FLOOD_WAIT seconds everywhere; uploads validate paths in-core; zero prompts reachable from runners (grep gate); cli-contract.md complete; live verify: hello -> dialog list -> msg send/edit/get/delete -> chat participants -> privacy get -> raw contacts.Search with cross-account event arriving mid-burst (no starvation); matrix rows annotated "also exposed as serve op"; v0.6.0 release.
 
+
+## MCP program (2026-08-25) — two-round research complete, implementation starting
+
+Research verdicts: pin legacy-era handshake (declare 2025-11-25; 2026-07-28 rev deletes initialize but no client ships it); rmcp 3.1 official SDK (conformance suite, MSRV 1.88 < local 1.97) with default-features=false + server+transport-io (macros unneeded); schemars via rmcp re-export (deny_unknown_fields->additionalProperties:false auto; doc comments->description auto; draft2020_12 generator); safety = read-only gate + annotations + confirm:true arg pattern (elicitation NOT universal -> skip); errors protocol-vs-isError split; tool names snake_case [A-Za-z0-9_-].
+
+- [ ] MCP-1 (solo): deps + clap `tele mcp --account NAME [--read-only] [--groups g,g]` + src/commands/mcp.rs skeleton (TeleMcp handler: get_info w/ instructions, list_tools from serve_op_routes w/ name mapping + annotations, call_tool -> planner+runner inline) + OpRoute.schema_fn plumbing + offline RED test
+- [ ] MCP-2a/b/c (parallel): JsonSchema derives on all *Params structs + macro schema_fn rows (msg/dialog/topic | profile/privacy/contact | stickers/stories/raw/chat/account)
+- [ ] MCP-3: read-only + groups filters wired, error taxonomy mapping table-locked, offline initialize->tools/list->tools/call round-trip test w/ clean stdout assertion
+- [ ] MCP-4: docs cli-contract tele-mcp section + capabilities mcp row want->done + CHANGELOG + client config snippets (Claude Desktop %APPDATA%\Claude\claude_desktop_config.json / Claude Code .mcp.json + claude mcp add / Cursor .cursor/mcp.json)
+- [ ] Live verify: MCP Inspector (npx @modelcontextprotocol/inspector) tools/list + dry-run call + one real send; claude mcp add smoke
