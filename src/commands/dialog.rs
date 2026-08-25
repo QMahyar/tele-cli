@@ -672,8 +672,9 @@ fn default_dialog_limit() -> u32 {
     20
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ListParams {
     #[serde(default = "default_dialog_limit")]
     pub(crate) limit: u32,
@@ -701,8 +702,9 @@ impl From<&ListParams> for ListArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct DraftsParams {
     #[serde(default = "default_dialog_limit")]
     pub(crate) limit: u32,
@@ -728,8 +730,9 @@ impl From<&DraftsParams> for ListArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct DraftParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -761,8 +764,9 @@ impl From<&DraftParams> for DraftArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ArchiveParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -791,8 +795,9 @@ impl From<&ArchiveParams> for ArchiveArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct PinParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -821,8 +826,9 @@ impl From<&PinParams> for PinArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct DeleteParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -924,7 +930,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_archive,
             archive_serve_dry_run,
             run_archive,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ArchiveParams>
         ),
         crate::serve_route!(
             "dialog delete",
@@ -939,7 +945,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_delete,
             delete_serve_dry_run,
             run_delete,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<DeleteParams>
         ),
         crate::serve_route!(
             "dialog draft",
@@ -954,7 +960,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_draft,
             draft_serve_dry_run,
             run_draft,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<DraftParams>
         ),
         crate::serve_route!(
             "dialog drafts",
@@ -969,7 +975,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_drafts,
             drafts_serve_dry_run,
             run_drafts,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<DraftsParams>
         ),
         crate::serve_route!(
             "dialog list",
@@ -984,7 +990,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_list,
             list_serve_dry_run,
             run_list,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ListParams>
         ),
         crate::serve_route!(
             "dialog pin",
@@ -999,7 +1005,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_pin,
             pin_serve_dry_run,
             run_pin,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<PinParams>
         ),
     ]
 }
@@ -1868,5 +1874,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.toml"), "[accounts.work]\ntags = []\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn serve_schemas_are_real_objects() {
+        for schema in [
+            crate::commands::serve::params_schema::<ListParams>(),
+            crate::commands::serve::params_schema::<DraftsParams>(),
+            crate::commands::serve::params_schema::<DeleteParams>(),
+        ] {
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+            assert!(schema["properties"].as_object().is_some());
+        }
+        let list = crate::commands::serve::params_schema::<ListParams>();
+        assert!(list["properties"]["limit"].is_object());
     }
 }

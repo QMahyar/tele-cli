@@ -343,8 +343,9 @@ pub struct ClickArgs {
     password: bool,
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SendParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -430,8 +431,9 @@ impl From<&SendParams> for SendArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct EditParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -463,8 +465,9 @@ impl From<&EditParams> for EditArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct DeleteParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -501,8 +504,9 @@ impl From<&DeleteParams> for DeleteArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ForwardParams {
     #[serde(default)]
     pub(crate) from: String,
@@ -535,8 +539,9 @@ impl From<&ForwardParams> for ForwardArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct PinParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -580,8 +585,9 @@ impl From<&PinParams> for PinArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct GetParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -621,8 +627,9 @@ impl From<&GetParams> for GetArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ReadParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -655,8 +662,9 @@ impl From<&ReadParams> for ReadArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ReactParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -691,8 +699,9 @@ impl From<&ReactParams> for ReactArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SearchParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -729,8 +738,9 @@ impl From<&SearchParams> for SearchArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct DownloadParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -769,8 +779,9 @@ impl From<&DownloadParams> for DownloadArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct VoteParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -802,8 +813,9 @@ impl From<&VoteParams> for VoteArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct TypingParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -831,8 +843,9 @@ impl From<&TypingParams> for TypingArgs {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ClickParams {
     #[serde(default)]
     pub(crate) chat: String,
@@ -5702,6 +5715,22 @@ mod tests {
         assert_eq!(plain["noforwards"], serde_json::json!(false));
         assert_eq!(plain["background"], serde_json::json!(false));
     }
+
+    #[test]
+    fn serve_schemas_are_real_objects() {
+        for schema in [
+            crate::commands::serve::params_schema::<SendParams>(),
+            crate::commands::serve::params_schema::<GetParams>(),
+            crate::commands::serve::params_schema::<DeleteParams>(),
+        ] {
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+            assert!(schema["properties"].as_object().is_some());
+        }
+        let send = crate::commands::serve::params_schema::<SendParams>();
+        assert!(send["properties"]["chat"].is_object());
+        assert!(send["properties"]["files"]["type"].is_string());
+    }
 }
 
 pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
@@ -5720,7 +5749,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_click,
             click_serve_dry_run,
             run_click,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ClickParams>
         ),
         crate::serve_route!(
             "msg delete",
@@ -5735,7 +5764,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_delete,
             delete_serve_dry_run,
             run_delete,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<DeleteParams>
         ),
         crate::serve_route!(
             "msg download",
@@ -5750,7 +5779,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_download,
             download_serve_dry_run,
             run_download,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<DownloadParams>
         ),
         crate::serve_route!(
             "msg edit",
@@ -5765,7 +5794,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_edit,
             edit_serve_dry_run,
             run_edit,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<EditParams>
         ),
         crate::serve_route!(
             "msg forward",
@@ -5780,7 +5809,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_forward,
             forward_serve_dry_run,
             run_forward,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ForwardParams>
         ),
         crate::serve_route!(
             "msg get",
@@ -5795,7 +5824,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_get,
             get_serve_dry_run,
             run_get,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<GetParams>
         ),
         crate::serve_route!(
             "msg pin",
@@ -5810,7 +5839,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_pin,
             pin_serve_dry_run,
             run_pin,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<PinParams>
         ),
         crate::serve_route!(
             "msg read",
@@ -5825,7 +5854,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_read,
             read_serve_dry_run,
             run_read,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ReadParams>
         ),
         crate::serve_route!(
             "msg react",
@@ -5840,7 +5869,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_react,
             react_serve_dry_run,
             run_react,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<ReactParams>
         ),
         crate::serve_route!(
             "msg search",
@@ -5855,7 +5884,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_search,
             search_serve_dry_run,
             run_search,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SearchParams>
         ),
         crate::serve_route!(
             "msg send",
@@ -5870,7 +5899,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_send,
             send_serve_dry_run,
             run_send,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<SendParams>
         ),
         crate::serve_route!(
             "msg typing",
@@ -5885,7 +5914,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_typing,
             typing_serve_dry_run,
             run_typing,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<TypingParams>
         ),
         crate::serve_route!(
             "msg vote",
@@ -5900,7 +5929,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             validate_vote,
             vote_serve_dry_run,
             run_vote,
-            crate::commands::serve::schema_placeholder
+            crate::commands::serve::params_schema::<VoteParams>
         ),
     ]
 }
