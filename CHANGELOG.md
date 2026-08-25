@@ -4,13 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.6.0] - 2026-08-25
 
 ### Added
 - SERVE-PLATFORM phase 0+1: duplex control-plane hardening (two-lane executor, event seq/resync, negotiated handshake v2 + identity, ops.list self-description, confirm gate, deny_unknown_fields, poll event parity) + pipe ops across msg/dialog/topic/profile/privacy/contact/stickers/story/raw groups
 - MCP stdio server (rmcp 3.1): `tele mcp` exposes all 67 serve ops as tools with JSON Schema inputSchemas, annotations, confirm gate, read-only/groups filters, legacy handshake compat, offline tests
 
-## [0.5.0] - 2026-08-23
+## [0.6.0] - 2026-08-25`n`n### Added — MCP stdio server (rmcp 3.1): tele mcp exposes all 67 serve ops as tools with JSON Schema inputSchemas, annotations, confirm gate, read-only/groups filters, legacy handshake compat, offline tests`n`n## [0.5.0] - 2026-08-23
 
 ### Added
 - 	ele account ttl get|set --days N (inactive-account self-destruct timer) and 	ele account delete --reason R --yes (SRP-protected, explicit --account + --yes required).
