@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.1] - 2026-08-25
+
+### Fixed
+- Enable automatic npm publishes via Trusted Publishers (OIDC) — no more `NPM_TOKEN` or passkey.
+
 ## [0.6.0] - 2026-08-25
 
 ### Added
