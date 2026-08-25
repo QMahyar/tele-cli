@@ -832,7 +832,8 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             LifecycleArgs,
             validate_lifecycle,
             close_serve_dry_run,
-            run_close
+            run_close,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "topic create",
@@ -846,7 +847,8 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             CreateArgs,
             validate_create,
             create_serve_dry_run,
-            run_create
+            run_create,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "topic delete",
@@ -860,7 +862,8 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             LifecycleArgs,
             validate_lifecycle,
             delete_serve_dry_run,
-            run_delete
+            run_delete,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "topic edit",
@@ -874,7 +877,8 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             EditArgs,
             validate_edit,
             edit_serve_dry_run,
-            run_edit
+            run_edit,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "topic list",
@@ -888,7 +892,8 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ListArgs,
             validate_list,
             list_serve_dry_run,
-            run_list
+            run_list,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "topic pin",
@@ -902,7 +907,8 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             LifecycleArgs,
             validate_lifecycle,
             pin_serve_dry_run,
-            run_pin
+            run_pin,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "topic reopen",
@@ -916,7 +922,8 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             LifecycleArgs,
             validate_lifecycle,
             reopen_serve_dry_run,
-            run_reopen
+            run_reopen,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

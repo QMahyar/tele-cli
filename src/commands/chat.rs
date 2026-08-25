@@ -5558,7 +5558,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ChatArgs,
             validate_join,
             join_serve_dry_run,
-            run_join
+            run_join,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat leave",
@@ -5572,7 +5573,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ChatArgs,
             validate_leave,
             leave_serve_dry_run,
-            run_leave
+            run_leave,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat create",
@@ -5586,7 +5588,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             CreateArgs,
             validate_create,
             create_serve_dry_run,
-            run_create
+            run_create,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat settings",
@@ -5600,7 +5603,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SettingsArgs,
             validate_settings,
             settings_serve_dry_run,
-            run_settings
+            run_settings,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat edit",
@@ -5614,7 +5618,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             EditArgs,
             validate_edit,
             edit_serve_dry_run,
-            run_edit
+            run_edit,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat link",
@@ -5628,7 +5633,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             LinkArgs,
             validate_link,
             link_serve_dry_run,
-            run_link
+            run_link,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat kick",
@@ -5642,7 +5648,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             KickArgs,
             validate_kick,
             kick_serve_dry_run,
-            run_kick
+            run_kick,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat admin",
@@ -5656,7 +5663,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             AdminArgs,
             validate_admin,
             admin_serve_dry_run,
-            run_admin
+            run_admin,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat admin-log",
@@ -5670,7 +5678,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             AdminLogArgs,
             validate_admin_log,
             adminlog_serve_dry_run,
-            run_admin_log
+            run_admin_log,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat stats",
@@ -5684,7 +5693,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             StatsArgs,
             validate_stats,
             stats_serve_dry_run,
-            run_stats
+            run_stats,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat invite",
@@ -5698,7 +5708,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             InviteArgs,
             validate_invite_serve,
             invite_serve_dry_run,
-            run_invite
+            run_invite,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat requests",
@@ -5712,7 +5723,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             RequestsArgs,
             validate_requests_serve,
             requests_serve_dry_run,
-            run_requests
+            run_requests,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "chat participants",
@@ -5726,7 +5738,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ParticipantsArgs,
             validate_participants,
             participants_serve_dry_run,
-            run_participants
+            run_participants,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

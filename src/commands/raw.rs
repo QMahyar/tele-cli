@@ -193,7 +193,8 @@ pub(crate) fn raw_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
         RawCall,
         validate_raw,
         raw_serve_dry_run,
-        run_invoke
+        run_invoke,
+        crate::commands::serve::schema_placeholder
     )]
 }
 

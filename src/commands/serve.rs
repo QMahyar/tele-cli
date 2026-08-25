@@ -77,7 +77,13 @@ pub(crate) type ServeFuture =
 
 pub(crate) type ServeRunner = fn(ServeShares, serde_json::Value) -> ServeFuture;
 
-type Planner = fn(&str, serde_json::Value) -> Result<Plan, serde_json::Value>;
+pub(crate) type Planner = fn(&str, serde_json::Value) -> Result<Plan, serde_json::Value>;
+
+pub(crate) type SchemaFn = fn() -> serde_json::Value;
+
+pub(crate) fn schema_placeholder() -> serde_json::Value {
+    serde_json::json!({})
+}
 
 #[derive(Debug)]
 pub(crate) enum Plan {
@@ -108,6 +114,7 @@ pub(crate) struct OpRoute {
     pub(crate) summary: &'static str,
     pub(crate) planner: Planner,
     pub(crate) runner: ServeRunner,
+    pub(crate) schema_fn: SchemaFn,
 }
 
 const INLINE_OPS: &[(&str, &str, bool, bool, bool)] = &[
@@ -365,7 +372,7 @@ macro_rules! serve_runner {
 
 #[macro_export]
 macro_rules! serve_route {
-    ($op:literal, $lane:expr, $timeout:expr, $read_only:expr, $destructive:expr, $retry_safe:expr, $summary:literal, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr) => {
+    ($op:literal, $lane:expr, $timeout:expr, $read_only:expr, $destructive:expr, $retry_safe:expr, $summary:literal, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr, $schema:expr) => {
         $crate::commands::serve::OpRoute {
             op: $op,
             lane: $lane,
@@ -386,6 +393,7 @@ macro_rules! serve_route {
                 Ok($crate::commands::serve::Plan::Execute(raw))
             },
             runner: $runner,
+            schema_fn: $schema,
         }
     };
 }
@@ -557,7 +565,7 @@ fn confirm_required_error(op: &str, would: serde_json::Value) -> serde_json::Val
     })
 }
 
-fn apply_confirm_gate(
+pub(crate) fn apply_confirm_gate(
     op: &str,
     destructive: bool,
     planner: Planner,

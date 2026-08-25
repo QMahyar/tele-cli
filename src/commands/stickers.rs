@@ -727,7 +727,8 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             InstallArgs,
             validate_install,
             install_serve_dry_run,
-            run_install
+            run_install,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "sticker list",
@@ -741,7 +742,8 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ListArgs,
             validate_list,
             list_serve_dry_run,
-            run_list
+            run_list,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "sticker remove",
@@ -755,7 +757,8 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             RemoveArgs,
             validate_remove,
             remove_serve_dry_run,
-            run_remove
+            run_remove,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "sticker search",
@@ -769,7 +772,8 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SearchArgs,
             validate_search,
             search_serve_dry_run,
-            run_search
+            run_search,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "sticker show",
@@ -783,7 +787,8 @@ pub(crate) fn stickers_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ShowArgs,
             validate_show,
             show_serve_dry_run,
-            run_show
+            run_show,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

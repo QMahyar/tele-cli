@@ -753,7 +753,8 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             EmojiStatusArgs,
             validate_emoji_status,
             emoji_status_serve_dry_run,
-            run_emoji_status
+            run_emoji_status,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "profile get",
@@ -767,7 +768,8 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             GetArgs,
             validate_get,
             get_serve_dry_run,
-            run_get
+            run_get,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "profile photo",
@@ -781,7 +783,8 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             PhotoArgs,
             validate_photo,
             photo_serve_dry_run,
-            run_photo
+            run_photo,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "profile set",
@@ -795,7 +798,8 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             SetArgs,
             validate_set,
             set_serve_dry_run,
-            run_set
+            run_set,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

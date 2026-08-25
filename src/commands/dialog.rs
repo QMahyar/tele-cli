@@ -923,7 +923,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ArchiveArgs,
             validate_archive,
             archive_serve_dry_run,
-            run_archive
+            run_archive,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "dialog delete",
@@ -937,7 +938,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             DeleteArgs,
             validate_delete,
             delete_serve_dry_run,
-            run_delete
+            run_delete,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "dialog draft",
@@ -951,7 +953,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             DraftArgs,
             validate_draft,
             draft_serve_dry_run,
-            run_draft
+            run_draft,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "dialog drafts",
@@ -965,7 +968,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ListArgs,
             validate_drafts,
             drafts_serve_dry_run,
-            run_drafts
+            run_drafts,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "dialog list",
@@ -979,7 +983,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ListArgs,
             validate_list,
             list_serve_dry_run,
-            run_list
+            run_list,
+            crate::commands::serve::schema_placeholder
         ),
         crate::serve_route!(
             "dialog pin",
@@ -993,7 +998,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             PinArgs,
             validate_pin,
             pin_serve_dry_run,
-            run_pin
+            run_pin,
+            crate::commands::serve::schema_placeholder
         ),
     ]
 }

@@ -115,6 +115,8 @@ enum Command {
     Listen(listen::ListenArgs),
     /// Duplex JSONL runtime: events out, actions in (owns one session)
     Serve(serve::ServeArgs),
+    /// MCP stdio server: tele ops as tools (owns one session)
+    Mcp(mcp::McpArgs),
     /// Raw TL invocation (typed registry)
     Raw(raw::RawArgs),
     /// Generate shell completions
@@ -286,6 +288,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Takeout(c) => takeout::run(c, flags).await,
         Command::Listen(c) => listen::run(&c, flags).await,
         Command::Serve(c) => serve::run(&c, flags).await,
+        Command::Mcp(c) => mcp::run(&c, flags).await,
         Command::Raw(c) => raw::run(&c, flags).await,
         Command::Completions(s) => completions::run(s, flags).await,
     };
