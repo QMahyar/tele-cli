@@ -1,6 +1,6 @@
 {
   "name": "@qmahyar/telecli",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming, MCP server. No bot tokens.",
   "license": "MIT",
   "keywords": [
@@ -25,14 +25,5 @@
   },
   "files": [
     "bin/"
-  ],
-  "optionalDependencies": {
-    "@qmahyar/telecli-win32-x64": "0.6.3",
-    "@qmahyar/telecli-linux-x64-gnu": "0.6.3",
-    "@qmahyar/telecli-linux-x64-musl": "0.6.3",
-    "@qmahyar/telecli-linux-arm64-gnu": "0.6.3",
-    "@qmahyar/telecli-linux-arm64-musl": "0.6.3",
-    "@qmahyar/telecli-darwin-arm64": "0.6.3",
-    "@qmahyar/telecli-darwin-x64": "0.6.3"
-  }
+  ]
 }

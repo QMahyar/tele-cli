@@ -3,59 +3,60 @@
 
 const { spawn } = require("child_process");
 const path = require("path");
-const { createRequire } = require("module");
+const fs = require("fs");
 
-const PLATFORMS = {
-  "win32-x64": ["@qmahyar/telecli-win32-x64"],
-  "linux-x64": [
-    "@qmahyar/telecli-linux-x64-gnu",
-    "@qmahyar/telecli-linux-x64-musl",
-  ],
-  "linux-arm64": [
-    "@qmahyar/telecli-linux-arm64-gnu",
-    "@qmahyar/telecli-linux-arm64-musl",
-  ],
-  "darwin-arm64": ["@qmahyar/telecli-darwin-arm64"],
-  "darwin-x64": ["@qmahyar/telecli-darwin-x64"],
-};
-
-function binaryPath() {
-  const key = `${process.platform}-${process.arch}`;
-  const candidates = PLATFORMS[key];
-  if (!candidates) {
-    console.error(
-      `[telecli] unsupported platform: ${key}. ` +
-        "Supported: win32-x64, linux-x64, linux-arm64, darwin-arm64, darwin-x64. " +
-        "Static musl builds for every Linux arch are on the GitHub Releases page."
-    );
-    process.exit(1);
-  }
-  const req = createRequire(__filename);
-  for (const pkg of candidates) {
-    try {
-      const dir = path.dirname(req.resolve(`${pkg}/package.json`));
-      return path.join(dir, "bin", `telecli${process.platform === "win32" ? ".exe" : ""}`);
-    } catch {
-      continue;
-    }
-  }
-  console.error(
-    `[telecli] no binary package installed for ${key} ` +
-      `(tried: ${candidates.join(", ")}). ` +
-      "Reinstall with: npm install -g @qmahyar/telecli"
-  );
-  process.exit(1);
-}
-
-const exe = binaryPath();
+const exe = pickExe();
 const child = spawn(exe, process.argv.slice(2), { stdio: "inherit" });
 
 child.on("error", (err) => {
   console.error(`[telecli] failed to start ${exe}: ${err.message}`);
-  console.error("[telecli] reinstall with: npm install -g @qmahyar/telecli");
   process.exit(1);
 });
 
 child.on("exit", (code) => {
   process.exit(code ?? 1);
 });
+
+function pickExe() {
+  const platform = process.platform;
+  const arch = process.arch;
+  const ext = platform === "win32" ? ".exe" : "";
+  // Bundled binaries are named telecli-<target-triple>[.exe]
+  const candidates = [];
+  if (platform === "win32" && arch === "x64") candidates.push("x86_64-pc-windows-msvc");
+  if (platform === "win32" && arch === "arm64") candidates.push("aarch64-pc-windows-msvc");
+  if (platform === "darwin" && arch === "arm64") candidates.push("aarch64-apple-darwin");
+  if (platform === "darwin" && arch === "x64") candidates.push("x86_64-apple-darwin");
+  if (platform === "linux" && arch === "x64") {
+    if (isMusl()) candidates.push("x86_64-unknown-linux-musl");
+    candidates.push("x86_64-unknown-linux-gnu");
+  }
+  if (platform === "linux" && arch === "arm64") {
+    if (isMusl()) candidates.push("aarch64-unknown-linux-musl");
+    candidates.push("aarch64-unknown-linux-gnu");
+  }
+  if (platform === "linux" && arch === "arm") candidates.push("armv7-unknown-linux-gnueabihf");
+  if (platform === "linux" && arch === "ia32") candidates.push("i686-unknown-linux-musl");
+  if (platform === "linux" && arch === "ppc64") candidates.push("powerpc64le-unknown-linux-gnu");
+  if (platform === "linux" && arch === "riscv64") candidates.push("riscv64gc-unknown-linux-gnu");
+
+  for (const triple of candidates) {
+    const p = path.join(__dirname, `telecli-${triple}${ext}`);
+    if (fs.existsSync(p)) return p;
+  }
+  console.error(
+    `[telecli] no binary bundled for ${platform}-${arch}` +
+      (candidates.length ? ` (tried: ${candidates.join(", ")})` : "") +
+      ". Download from https://github.com/QMahyar/tele-cli/releases"
+  );
+  process.exit(1);
+}
+
+function isMusl() {
+  try {
+    const out = require("child_process").execSync("ldd --version 2>&1 || true", { encoding: "utf8" });
+    return out.includes("musl");
+  } catch {
+    return false;
+  }
+}

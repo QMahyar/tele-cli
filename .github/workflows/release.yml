@@ -205,76 +205,35 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Extract binaries from archives
+      - name: Bundle all binaries into main npm package
         shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          mkdir -p bins
+          mkdir -p npm-bin-staging
           for f in artifacts/telecli-${VERSION}-*.tar.gz; do
             [ -e "$f" ] || continue
             base=$(basename "$f" .tar.gz)
+            triple=${base#telecli-${VERSION}-}
             tar -xzf "$f" -C artifacts
-            cp "artifacts/${base}/telecli" "bins/${base}"
+            cp "artifacts/${base}/telecli" "npm-bin-staging/telecli-${triple}"
           done
           for f in artifacts/telecli-${VERSION}-*.zip; do
             [ -e "$f" ] || continue
             base=$(basename "$f" .zip)
-            unzip -o -j "$f" "*/telecli.exe" -d bins >/dev/null
-            mv "bins/telecli.exe" "bins/${base}.exe"
+            triple=${base#telecli-${VERSION}-}
+            unzip -o -j "$f" "*/telecli.exe" -d npm-bin-staging >/dev/null
+            mv "npm-bin-staging/telecli.exe" "npm-bin-staging/telecli-${triple}.exe"
           done
-          ls -la bins
-
-      - name: Stage main package
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          ls -la npm-bin-staging
+          mkdir -p pkg-main
+          rm -rf npm/bin/telecli-* 2>/dev/null || true
+          cp -r npm-bin-staging/* npm/bin/
+          cp npm/bin/telecli.js pkg-main/bin/telecli.js 2>/dev/null || (mkdir -p pkg-main/bin && cp npm/bin/telecli.js pkg-main/bin/telecli.js)
           mkdir -p pkg-main/bin
+          cp npm/bin/telecli-* pkg-main/bin/ 2>/dev/null || true
           cp npm/bin/telecli.js pkg-main/bin/telecli.js
-          jq --arg v "$VERSION" '.version = $v |
-             .optionalDependencies = (.optionalDependencies | with_entries(.value = $v))' \
-             npm/package.json > pkg-main/package.json
+          jq --arg v "$VERSION" '.version = $v' npm/package.json > pkg-main/package.json
 
-      - name: Stage platform packages
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          stage() {
-            local id="$1" os="$2" cpu="$3" triple="$4" exe="$5"
-            local src="bins/telecli-${VERSION}-${triple}${exe}"
-            if [ ! -f "$src" ]; then
-              echo "skip ${id}: no binary at ${src} (build skipped)"
-              return 0
-            fi
-            mkdir -p "pkg-${id}/bin"
-            cp "$src" "pkg-${id}/bin/telecli${exe}"
-            chmod +x "pkg-${id}/bin/telecli${exe}" || true
-            jq -n --arg v "$VERSION" --arg id "$id" --arg os "$os" --arg cpu "$cpu" \
-              '{name: ("@qmahyar/telecli-" + $id),
-                version: $v,
-                description: ("telecli binary for " + $os + "-" + $cpu),
-                license: "MIT",
-                repository: {type: "git", url: "git+https://github.com/QMahyar/tele-cli.git"},
-                os: [$os], cpu: [$cpu],
-                files: ["bin/"]}' \
-              > "pkg-${id}/package.json"
-          }
-          stage win32-x64        win32  x64   x86_64-pc-windows-msvc        ".exe"
-          stage linux-x64-gnu    linux  x64   x86_64-unknown-linux-gnu      ""
-          stage linux-x64-musl   linux  x64   x86_64-unknown-linux-musl     ""
-          stage linux-arm64-gnu  linux  arm64 aarch64-unknown-linux-gnu     ""
-          stage linux-arm64-musl linux  arm64 aarch64-unknown-linux-musl    ""
-
-      - name: Publish platform packages
-        shell: bash
-        run: |
-          set -e
-          shopt -s nullglob
-          for dir in pkg-*/; do
-            case "$dir" in pkg-main/) continue ;; esac
-            echo "publishing ${dir}"
-            (cd "$dir" && npm publish --access public)
-          done
-
-      - name: Publish main package
+      - name: Publish to npm
         working-directory: pkg-main
         run: npm publish --access public
