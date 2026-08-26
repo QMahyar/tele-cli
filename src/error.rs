@@ -111,12 +111,12 @@ pub fn aggregate_exit_code(ok_count: usize, failed: &[i32]) -> i32 {
         EXIT_OK
     } else if ok_count > 0 {
         EXIT_PARTIAL
-    } else if failed.iter().all(|c| *c == EXIT_AUTH) {
+    } else if failed.contains(&EXIT_AUTH) {
         EXIT_AUTH
-    } else if failed.contains(&EXIT_USAGE) {
-        EXIT_USAGE
-    } else {
+    } else if failed.iter().any(|c| *c != EXIT_USAGE) {
         EXIT_ALL_FAILED
+    } else {
+        EXIT_USAGE
     }
 }
 
@@ -146,7 +146,11 @@ pub fn invocation_wait_seconds(e: &grammers_client::InvocationError) -> Option<u
 
 pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
     if invocation_is_unauthorized(&e) {
-        TeleError::Auth("not logged in (session invalid)".to_string())
+        if let grammers_client::InvocationError::Rpc(rpc) = &e {
+            TeleError::Auth(format!("not logged in (session invalid): {}", rpc.name))
+        } else {
+            TeleError::Auth("not logged in (session invalid)".to_string())
+        }
     } else {
         match e {
             grammers_client::InvocationError::Rpc(rpc) => {
@@ -332,7 +336,10 @@ mod tests {
         let err = invocation_error(e);
         assert!(matches!(err, TeleError::Auth(_)));
         assert_eq!(err.exit_code(), EXIT_AUTH);
-        assert_eq!(err.message(), "not logged in (session invalid)");
+        assert_eq!(
+            err.message(),
+            "not logged in (session invalid): AUTH_KEY_UNREGISTERED"
+        );
     }
 
     #[test]

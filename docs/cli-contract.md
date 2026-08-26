@@ -32,7 +32,7 @@ An empty account selection is an error, except for `tele account list` and `tele
 | 4 | Auth required (not logged in, 2FA needed and not supplied) |
 | 130 | Interrupted (SIGINT) |
 
-Telegram errors never produce exit code 1. They produce 3, or 4 when login is required.
+Telegram errors never produce exit code 1. They produce 3, or 4 when login is required. When every selected account fails, precedence is: auth (4) outranks Telegram/IO (3), which outranks usage (1). Exit 1 means all failures were usage failures.
 
 ## `--json` envelope (one-shot)
 

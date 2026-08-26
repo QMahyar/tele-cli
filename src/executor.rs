@@ -521,12 +521,12 @@ mod tests {
     }
 
     #[test]
-    fn all_failed_exits_all_failed_even_with_auth_mix() {
+    fn auth_failure_outranks_telegram_failure_in_all_failed_mix() {
         let env = envelope(vec![
             outcome("a", false, Some(EXIT_AUTH)),
             outcome("b", false, Some(EXIT_ALL_FAILED)),
         ]);
-        assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
+        assert_eq!(envelope_exit_code(&env), EXIT_AUTH);
     }
 
     #[test]
@@ -591,12 +591,12 @@ mod tests {
     }
 
     #[test]
-    fn usage_among_failures_exits_usage() {
+    fn telegram_failure_outranks_usage_among_failures() {
         let env = envelope(vec![
             usage_outcome("a"),
             outcome("b", false, Some(EXIT_ALL_FAILED)),
         ]);
-        assert_eq!(envelope_exit_code(&env), EXIT_USAGE);
+        assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
     }
 
     #[test]
@@ -621,12 +621,12 @@ mod tests {
     }
 
     #[test]
-    fn auth_mixed_with_usage_exits_usage() {
+    fn auth_failure_outranks_usage_among_failures() {
         let env = envelope(vec![
             outcome("a", false, Some(EXIT_AUTH)),
             usage_outcome("b"),
         ]);
-        assert_eq!(envelope_exit_code(&env), EXIT_USAGE);
+        assert_eq!(envelope_exit_code(&env), EXIT_AUTH);
     }
 
     #[test]

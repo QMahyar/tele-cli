@@ -1020,10 +1020,18 @@ pub(crate) async fn handle_stream_failure(
     }
     *failures = on_failure(*failures);
     if give_up(*failures) {
-        return Err(TeleError::Other(format!(
-            "{account}: updates stream failed {failures} consecutive times, giving up: {}",
-            err.message()
-        )));
+        return Err(match err {
+            TeleError::Rpc(msg, code, name, seconds) => TeleError::Rpc(
+                format!("{account}: updates stream failed {failures} consecutive times, giving up: {msg}"),
+                code,
+                name,
+                seconds,
+            ),
+            other => TeleError::Other(format!(
+                "{account}: updates stream failed {failures} consecutive times, giving up: {}",
+                other.message()
+            )),
+        });
     }
     let delay = next_delay(*failures);
     let sleep_for = match deadline {
@@ -1046,7 +1054,16 @@ pub(crate) fn getstate_probe_error(e: grammers_client::InvocationError) -> TeleE
     if crate::error::invocation_is_unauthorized(&e) {
         crate::error::invocation_error(e)
     } else {
-        TeleError::Other(format!("initial GetState failed: {e}"))
+        match &e {
+            grammers_client::InvocationError::Rpc(_) => {
+                let mut err = crate::error::invocation_error(e);
+                if let TeleError::Rpc(msg, _, _, _) = &mut err {
+                    *msg = format!("initial GetState failed: {msg}");
+                }
+                err
+            }
+            other => TeleError::Other(format!("initial GetState failed: {other}")),
+        }
     }
 }
 
@@ -2189,27 +2206,27 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_exit_mixed_usage_dominates_like_fanout() {
+    fn aggregate_exit_mixed_failures_let_telegram_win_over_usage() {
         assert_eq!(
             crate::error::aggregate_exit_code(
                 0,
                 &[crate::error::EXIT_USAGE, crate::error::EXIT_ALL_FAILED]
             ),
-            crate::error::EXIT_USAGE
+            crate::error::EXIT_ALL_FAILED
         );
         assert_eq!(
             crate::error::aggregate_exit_code(
                 0,
                 &[crate::error::EXIT_USAGE, crate::error::EXIT_AUTH]
             ),
-            crate::error::EXIT_USAGE
+            crate::error::EXIT_AUTH
         );
         assert_eq!(
             crate::error::aggregate_exit_code(
                 0,
                 &[crate::error::EXIT_AUTH, crate::error::EXIT_ALL_FAILED]
             ),
-            crate::error::EXIT_ALL_FAILED
+            crate::error::EXIT_AUTH
         );
     }
 

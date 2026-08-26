@@ -1307,7 +1307,7 @@ async fn login_flow(
                 credentials,
                 args.qr_timeout_secs,
                 |uri| {
-                    render_qr(uri, show_token);
+                    render_qr(uri, show_token, flags.quiet);
                 },
             )
             .await?;
@@ -3573,8 +3573,26 @@ fn qr_token_lines(uri: &str, stderr_is_terminal: bool) -> (Option<&'static str>,
     (warning, format!("URI: {uri}"))
 }
 
-fn render_qr(uri: &str, show_token: bool) {
-    eprintln!("Scan this QR code with Telegram (Settings > Devices > Link Desktop Device):");
+fn render_qr(uri: &str, show_token: bool, quiet: bool) {
+    if quiet {
+        if should_print_token(show_token, std::io::stderr().is_terminal()) {
+            let (warning, line) = qr_token_lines(uri, std::io::stderr().is_terminal());
+            if let Some(warning) = warning {
+                output::log_line("warn", warning);
+            }
+            output::log_line("info", &line);
+        } else {
+            output::log_line(
+                "warn",
+                "QR rendering suppressed in quiet mode; re-run with --show-token to log the login URI",
+            );
+        }
+        return;
+    }
+    output::log_line(
+        "info",
+        "Scan this QR code with Telegram (Settings > Devices > Link Desktop Device):",
+    );
     match qrcode::QrCode::new(uri.as_bytes()) {
         Ok(code) => {
             let rendered = code
