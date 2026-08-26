@@ -195,7 +195,10 @@ pub fn parse_incoming(line: &str) -> Result<ServeIn, serde_json::Value> {
             .get("protocol")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| err_json("VersionMismatch", "hello requires an integer protocol"))?;
-        let protocol = protocol as u32;
+        let protocol = match u32::try_from(protocol) {
+            Ok(p) => p,
+            Err(_) => return Err(version_error(u32::MAX)),
+        };
         if !(SERVE_PROTOCOL_MIN..=SERVE_PROTOCOL).contains(&protocol) {
             return Err(version_error(protocol));
         }

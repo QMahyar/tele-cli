@@ -6,6 +6,7 @@ use tokio::sync::Semaphore;
 use crate::error::{TeleError, TeleResult};
 use crate::output::{log_line, AccountOutcome};
 
+#[derive(Clone)]
 pub struct GlobalFlags {
     pub account: Vec<String>,
     pub tag: Vec<String>,

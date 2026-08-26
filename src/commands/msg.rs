@@ -2121,10 +2121,8 @@ fn upload_error(e: std::io::Error) -> TeleError {
         .get_ref()
         .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
     match invocation {
-        Some(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 420 => {
-            TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name.clone(), rpc.value)
-        }
-        _ => TeleError::Other(e.to_string()),
+        Some(inv) => crate::error::invocation_error_ref(inv),
+        None => TeleError::Other(e.to_string()),
     }
 }
 
@@ -3272,9 +3270,28 @@ mod tests {
     }
 
     #[test]
-    fn upload_non_flood_error_maps_to_other() {
+    fn upload_error_keeps_rpc_taxonomy() {
+        let e = std::io::Error::other(grammers_client::InvocationError::Rpc(
+            grammers_client::sender::RpcError {
+                code: 400,
+                name: "CHAT_INVALID".to_string(),
+                value: None,
+                caused_by: None,
+            },
+        ));
+        assert!(matches!(
+            upload_error(e),
+            TeleError::Rpc(_, 400, name, _) if name == "CHAT_INVALID"
+        ));
+    }
+
+    #[test]
+    fn upload_dropped_error_gets_peer_unknown_hint() {
         let e = std::io::Error::other(grammers_client::InvocationError::Dropped);
-        assert!(matches!(upload_error(e), TeleError::Other(_)));
+        assert!(matches!(
+            upload_error(e),
+            TeleError::Invocation(msg, _) if msg.contains("peer unknown")
+        ));
     }
 
     fn send_args(format: &str) -> SendArgs {

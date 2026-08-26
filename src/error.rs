@@ -144,9 +144,9 @@ pub fn invocation_wait_seconds(e: &grammers_client::InvocationError) -> Option<u
     }
 }
 
-pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
-    if invocation_is_unauthorized(&e) {
-        if let grammers_client::InvocationError::Rpc(rpc) = &e {
+pub fn invocation_error_ref(e: &grammers_client::InvocationError) -> TeleError {
+    if invocation_is_unauthorized(e) {
+        if let grammers_client::InvocationError::Rpc(rpc) = e {
             TeleError::Auth(format!("not logged in (session invalid): {}", rpc.name))
         } else {
             TeleError::Auth("not logged in (session invalid)".to_string())
@@ -155,11 +155,15 @@ pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
         match e {
             grammers_client::InvocationError::Rpc(rpc) => {
                 let seconds = if rpc.code == 420 { rpc.value } else { None };
-                TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name, seconds)
+                TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name.clone(), seconds)
             }
-            other => TeleError::Invocation(invocation_message(&other), None),
+            other => TeleError::Invocation(invocation_message(other), None),
         }
     }
+}
+
+pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
+    invocation_error_ref(&e)
 }
 
 pub use invocation_error as tele_invocation;

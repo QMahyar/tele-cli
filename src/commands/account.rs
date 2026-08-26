@@ -658,7 +658,7 @@ fn phone_pending_file(name: &str) -> String {
 fn save_pending_document_under(base: &std::path::Path, file: &str, text: &str) -> TeleResult<()> {
     let dir = pending_dir_under(base);
     crate::fs_util::create_dir_private(&dir)
-        .map_err(|e| TeleError::Other(format!("failed to create {}: {e}", dir.display())))?;
+        .map_err(|e| TeleError::Other(format!("failed to create pending dir {}: {e}", file)))?;
     let path = pending_dir_under(base).join(file);
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp-{}", std::process::id()));
@@ -666,17 +666,11 @@ fn save_pending_document_under(base: &std::path::Path, file: &str, text: &str) -
     let result = std::fs::write(&tmp_path, "")
         .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
         .and_then(|()| std::fs::write(&tmp_path, text))
-        .and_then(|()| {
-            #[cfg(windows)]
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-            }
-            std::fs::rename(&tmp_path, &path)
-        });
+        .and_then(|()| std::fs::rename(&tmp_path, &path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
-    result.map_err(|e| TeleError::Other(format!("failed to write {}: {e}", path.display())))
+    result.map_err(|e| TeleError::Other(format!("failed to write {file}: {e}")))
 }
 
 fn load_pending_document_under(base: &std::path::Path, file: &str) -> TeleResult<Option<String>> {

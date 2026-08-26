@@ -2145,9 +2145,12 @@ mod tests {
     }
 
     #[test]
-    fn getstate_probe_error_is_reconnectable_for_rpc_failure() {
+    fn getstate_probe_error_keeps_rpc_taxonomy() {
         let err = getstate_probe_error(rpc_error(500, "INTERNAL"));
-        assert!(matches!(err, TeleError::Other(_)));
+        assert!(matches!(
+            &err,
+            TeleError::Rpc(_, 500, name, _) if name == "INTERNAL"
+        ));
         assert!(
             err.message().starts_with("initial GetState failed:"),
             "err: {err}"
@@ -2155,6 +2158,13 @@ mod tests {
         assert!(err.message().contains("INTERNAL"), "err: {err}");
         assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
         assert!(!is_auth_error(&err));
+    }
+
+    #[test]
+    fn getstate_probe_error_keeps_other_for_non_rpc() {
+        let err = getstate_probe_error(grammers_client::InvocationError::Dropped);
+        assert!(matches!(err, TeleError::Other(_)));
+        assert!(err.message().starts_with("initial GetState failed:"));
     }
 
     #[test]

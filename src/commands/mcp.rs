@@ -279,6 +279,15 @@ pub async fn run(args: &McpArgs, flags: &crate::executor::GlobalFlags) -> TeleRe
     if name.is_empty() {
         return Err(TeleError::Usage("--account must not be empty".to_string()));
     }
+    let known = crate::executor::select_accounts(&crate::executor::GlobalFlags {
+        account: vec![name.to_string()],
+        ..flags.clone()
+    })?;
+    if known.len() != 1 || known[0] != name {
+        return Err(TeleError::Usage(format!(
+            "unknown account '{name}': not in config.toml or no session file"
+        )));
+    }
     let creds = crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
     let guard = ClientGuard::connect(name, creds.api_id, flags.config_path.as_deref()).await?;
     let outcome = serve_session(&guard, args).await;

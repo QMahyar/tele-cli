@@ -91,7 +91,7 @@ For one-shot commands, `--jsonl` behaves exactly like `--json`: one envelope lin
   "results": [],
   "error": {
     "type": "ConfigError",
-    "message": "failed to parse C:\\path\\config.toml: ..."
+    "message": "failed to parse config.toml: ..."
   }
 }
 ```

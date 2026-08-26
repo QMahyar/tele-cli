@@ -381,7 +381,7 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
         let existing = std::fs::read_to_string(path)?;
         let mut doc: toml_edit::DocumentMut = existing
             .parse()
-            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?;
+            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", config_display_name(path)))?;
         let mut fresh: toml_edit::DocumentMut = toml_edit::ser::to_string_pretty(cfg)?
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;
