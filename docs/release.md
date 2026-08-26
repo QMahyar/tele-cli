@@ -27,11 +27,11 @@ The push triggers the `release` workflow.
 
 ## What the workflow builds
 
-**Build job.** A matrix of 7 targets: windows x64, linux x64 (gnu + musl), linux arm64 (gnu + musl), macOS arm64, and macOS x64 cross-compiled on the arm64 runner. Each target produces `telecli-<version>-<os>-<arch>[.exe]` and a matching `.sha256` checksum file. Regenerate the count with `rg -c "target: " .github/workflows/release.yml`, which prints `7`.
+**Build job.** A matrix of 13 targets named by full Rust target triple, matching the ripgrep convention: windows x64 + arm64 (msvc), macOS arm64 + x64, and linux x64/arm64/armv7/i686/riscv64/powerpc64le across gnu and musl. Every Linux target cross-compiles through `cross` (docker images carry the C toolchain for libsql's SQLite); the arm64-musl build is fully static and runs in Termux/Android. Each target produces `telecli-<version>-<target-triple>.tar.gz` (`.zip` on windows) plus a `.sha256`. Regenerate the count with `rg -c "target: " .github/workflows/release.yml`, which prints `13`.
 
-**Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries 14 assets: 7 binaries plus their 7 checksum files.
+**Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries up to 28 assets: 14 archives plus their checksum files (the windows-arm64 build is best-effort with `continue-on-error`).
 
-**npm job.** Publishes 8 packages through OIDC trusted publishing (no token). Seven platform packages (`@qmahyar/telecli-<os>-<arch>`) each bundle one binary with `os`/`cpu` guards; the main `@qmahyar/telecli` package ships only the JS launcher and pins every platform package under `optionalDependencies`, so `npm install -g @qmahyar/telecli` downloads just the matching binary. The `linux-arm64-musl` binary is static and runs in Termux/Android.
+**npm job.** Publishes 8 packages through OIDC trusted publishing (no token). Seven platform packages (`@qmahyar/telecli-<os>-<arch>`, napi-rs naming) each bundle one binary with `os`/`cpu` guards; the main `@qmahyar/telecli` package ships only the JS launcher and pins every platform package under `optionalDependencies`, so `npm install -g @qmahyar/telecli` downloads just the matching binary. The `linux-arm64-musl` binary is static and runs in Termux/Android.
 
 ## Verify the release
 

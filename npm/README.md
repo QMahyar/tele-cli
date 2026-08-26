@@ -26,9 +26,9 @@ The right native binary for your platform installs automatically via `optionalDe
 Download the static binary from [GitHub Releases](https://github.com/QMahyar/tele-cli/releases):
 
 ```sh
-curl -fLO https://github.com/QMahyar/tele-cli/releases/latest/download/telecli-<version>-linux-arm64-musl
-chmod +x telecli-<version>-linux-arm64-musl
-mv telecli-<version>-linux-arm64-musl $PREFIX/bin/telecli
+curl -fLO "https://github.com/QMahyar/tele-cli/releases/latest/download/telecli-<version>-aarch64-unknown-linux-musl.tar.gz"
+tar -xzf telecli-<version>-aarch64-unknown-linux-musl.tar.gz
+cp telecli-<version>-aarch64-unknown-linux-musl/telecli $PREFIX/bin/telecli
 tele --version
 ```
 

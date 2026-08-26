@@ -18,42 +18,58 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Windows (native MSVC)
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            osname: win
-            arch: x64
-            ext: ".exe"
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            osname: linux
-            arch: x64-gnu
-            ext: ""
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            osname: linux
-            arch: x64-musl
-            ext: ""
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            osname: linux
-            arch: arm64-gnu
-            ext: ""
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            osname: linux
-            arch: arm64-musl
-            ext: ""
+            archive: zip
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            continue-on-error: true
+          # macOS (native, Apple clang builds both archs on the arm64 runner)
           - os: macos-latest
             target: aarch64-apple-darwin
-            osname: mac
-            arch: arm64
-            ext: ""
-          # macOS x64 cross-compiled on arm64 runner (Apple clang supports both archs).
+            archive: tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            osname: mac
-            arch: x64
-            ext: ""
+            archive: tar.gz
+          # Linux — cross-rs docker images carry the C cross-toolchain for libsql's SQLite
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: i686-unknown-linux-musl
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: riscv64gc-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: powerpc64le-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
     steps:
       - uses: actions/checkout@v4
 
@@ -65,27 +81,16 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross toolchain (linux x64 musl)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
 
-      - name: Install cross toolchain (linux arm64 gnu)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
 
-      - name: Install cross toolchain (linux arm64 musl)
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: |
-          sudo apt-get update && sudo apt-get install -y curl
-          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o musl-cross.tgz
-          sudo tar -xzf musl-cross.tgz -C /opt
-          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
-
-      - name: Build
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Set version
@@ -93,38 +98,43 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Name artifacts
-        id: name
-        shell: bash
-        run: |
-          BINARY="telecli-${{ steps.version.outputs.version }}-${{ matrix.osname }}-${{ matrix.arch }}"
-          echo "binary=${BINARY}" >> "$GITHUB_OUTPUT"
-          echo "binary_ext=${BINARY}${{ matrix.ext }}" >> "$GITHUB_OUTPUT"
-
       - name: Package binary
         shell: bash
         run: |
-          cp "target/${{ matrix.target }}/release/telecli${{ matrix.ext }}" \
-             "${{ steps.name.outputs.binary_ext }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          NAME="telecli-${VERSION}-${{ matrix.target }}"
+          BIN="target/${{ matrix.target }}/release/telecli"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            BIN="${BIN}.exe"
+          fi
+          mkdir -p "dist/${NAME}"
+          cp "${BIN}" "dist/${NAME}/"
+          cp README.md "dist/${NAME}/" 2>/dev/null || true
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd dist && 7z a "${NAME}.zip" "${NAME}")
+          else
+            tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
+          fi
+          echo "asset=dist/${NAME}.${{ matrix.archive }}" >> "$GITHUB_OUTPUT"
 
       - name: Checksum
         shell: bash
         run: |
+          ASSET="dist/telecli-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}"
+          cd dist
           if command -v sha256sum &>/dev/null; then
-            sha256sum "${{ steps.name.outputs.binary_ext }}" \
-              > "${{ steps.name.outputs.binary_ext }}.sha256"
+            sha256sum "$(basename "$ASSET")" > "$(basename "$ASSET").sha256"
           else
-            shasum -a 256 "${{ steps.name.outputs.binary_ext }}" \
-              > "${{ steps.name.outputs.binary_ext }}.sha256"
+            shasum -a 256 "$(basename "$ASSET")" > "$(basename "$ASSET").sha256"
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.name.outputs.binary }}
+          name: telecli-${{ steps.version.outputs.version }}-${{ matrix.target }}
           path: |
-            ${{ steps.name.outputs.binary_ext }}
-            ${{ steps.name.outputs.binary_ext }}.sha256
+            dist/telecli-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+            dist/telecli-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}.sha256
           retention-days: 5
 
   release:
@@ -195,6 +205,25 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Extract binaries from archives
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p bins
+          for f in artifacts/telecli-${VERSION}-*.tar.gz; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f" .tar.gz)
+            tar -xzf "$f" -C artifacts
+            cp "artifacts/${base}/telecli" "bins/${base}"
+          done
+          for f in artifacts/telecli-${VERSION}-*.zip; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f" .zip)
+            unzip -o -j "$f" "*/telecli.exe" -d bins >/dev/null
+            mv "bins/telecli.exe" "bins/${base}.exe"
+          done
+          ls -la bins
+
       - name: Stage main package
         shell: bash
         run: |
@@ -210,9 +239,14 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           stage() {
-            local id="$1" os="$2" cpu="$3" binary="$4" exe="$5"
+            local id="$1" os="$2" cpu="$3" triple="$4" exe="$5"
+            local src="bins/telecli-${VERSION}-${triple}${exe}"
+            if [ ! -f "$src" ]; then
+              echo "skip ${id}: no binary at ${src} (build skipped)"
+              return 0
+            fi
             mkdir -p "pkg-${id}/bin"
-            cp "artifacts/${binary}${exe}" "pkg-${id}/bin/telecli${exe}"
+            cp "$src" "pkg-${id}/bin/telecli${exe}"
             chmod +x "pkg-${id}/bin/telecli${exe}" || true
             jq -n --arg v "$VERSION" --arg id "$id" --arg os "$os" --arg cpu "$cpu" \
               '{name: ("@qmahyar/telecli-" + $id),
@@ -224,16 +258,13 @@ jobs:
                 files: ["bin/"]}' \
               > "pkg-${id}/package.json"
           }
-          stage win32-x64       win32  x64   "telecli-${{ steps.version.outputs.version }}-win-x64"        ".exe"
-          stage linux-x64-gnu   linux  x64   "telecli-${{ steps.version.outputs.version }}-linux-x64-gnu"   ""
-          stage linux-x64-musl  linux  x64   "telecli-${{ steps.version.outputs.version }}-linux-x64-musl"  ""
-          stage linux-arm64-gnu linux  arm64 "telecli-${{ steps.version.outputs.version }}-linux-arm64-gnu" ""
-          stage linux-arm64-musl linux arm64 "telecli-${{ steps.version.outputs.version }}-linux-arm64-musl" ""
-          stage darwin-arm64    darwin arm64 "telecli-${{ steps.version.outputs.version }}-mac-arm64"       ""
-          stage darwin-x64      darwin x64   "telecli-${{ steps.version.outputs.version }}-mac-x64"         ""
+          stage win32-x64        win32  x64   x86_64-pc-windows-msvc        ".exe"
+          stage linux-x64-gnu    linux  x64   x86_64-unknown-linux-gnu      ""
+          stage linux-x64-musl   linux  x64   x86_64-unknown-linux-musl     ""
+          stage linux-arm64-gnu  linux  arm64 aarch64-unknown-linux-gnu     ""
+          stage linux-arm64-musl linux  arm64 aarch64-unknown-linux-musl    ""
 
       - name: Publish platform packages
-        working-directory: .
         shell: bash
         run: |
           set -e

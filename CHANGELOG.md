@@ -1,18 +1,18 @@
-## [0.6.3] - 2026-08-25
-
-### Added
-- Multi-platform npm distribution: platform packages (win32-x64, linux-x64/arm64 gnu+musl, darwin-arm64/x64) via optionalDependencies; npm installs only the matching native binary.
-- Static musl binaries for linux-x64 and linux-arm64 — the arm64-musl build runs in Termux/Android.
-- GitHub Release assets for all 7 targets (was 4).
-
-### Fixed
-- All rust-skills review findings: admin-preset security hole, teardown/lock races, exit-code precedence (auth > telegram > usage), error-taxonomy fidelity, session export/import atomicity.
-
 # Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
+
+## [0.6.3] - 2026-08-25
+
+### Added
+- Multi-platform npm distribution: platform packages (win32-x64, linux-x64/arm64 gnu+musl, darwin-arm64/x64) via optionalDependencies; npm installs only the matching native binary.
+- Release binaries for 13 Rust target triples (ripgrep naming convention): windows x64/arm64, macOS arm64/x64, linux x64/arm64/armv7/i686/riscv64/powerpc64le across gnu and musl. Static musl builds run in Termux/Android and Alpine.
+- Release archives are `.tar.gz` (`.zip` on windows) containing the binary plus README.
+
+### Fixed
+- All rust-skills review findings: admin-preset security hole, teardown/lock races, exit-code precedence (auth > telegram > usage), error-taxonomy fidelity, session export/import atomicity.
 
 ## [0.6.1] - 2026-08-25
 
