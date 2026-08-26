@@ -198,7 +198,10 @@ pub struct RemoveArgs {
 pub struct ExportSessionArgs {
     #[arg(long)]
     name: String,
-    #[arg(long, help = "destination path; defaults to ./{name}.session")]
+    #[arg(
+        long,
+        help = "destination path; defaults to <app data>/sessions/<name>.session.export"
+    )]
     out: Option<String>,
 }
 
@@ -1637,7 +1640,11 @@ fn import_data(imported: &session::ImportedSession) -> serde_json::Value {
 async fn export_session(args: &ExportSessionArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     session::validate_name(&args.name).map_err(TeleError::Usage)?;
     if flags.dry_run {
-        let dest = args.out.as_deref().unwrap_or("./<name>.session");
+        let dest = args
+            .out
+            .as_deref()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("<app data>/sessions/{}.session.export", args.name));
         let would = format!("export session {dest} from account {}", args.name);
         return crate::executor::finish(
             flags,
