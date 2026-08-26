@@ -5,3 +5,4 @@ sessions/
 *.session-journal
 .pi/
 dist/
+.opencode/
