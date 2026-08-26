@@ -20,6 +20,11 @@ pub mod topic;
 pub use crate::error::{TeleError, TeleResult};
 
 pub fn validate_limit(value: u32, max: u32, flag: &str) -> Result<u32, TeleError> {
+    if value == 0 {
+        return Err(TeleError::Usage(format!(
+            "--{flag} must be between 1 and {max} (got 0)"
+        )));
+    }
     if value > max {
         Err(TeleError::Usage(format!(
             "--{flag} too large: {value} (max {max})"
