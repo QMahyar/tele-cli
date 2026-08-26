@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use rmcp::model::{
@@ -12,7 +13,7 @@ use rmcp::{ServerHandler, ServiceExt};
 
 use crate::client::{ClientGuard, ServeShares};
 use crate::commands::serve::{
-    apply_confirm_gate, serve_op_routes, OpRoute, Plan, Planner, SchemaFn, ServeRunner,
+    apply_confirm_gate, err_json, serve_op_routes, OpRoute, Plan, Planner, SchemaFn, ServeRunner,
 };
 use crate::error::{TeleError, TeleResult, EXIT_OK};
 
@@ -31,6 +32,7 @@ struct ExecEntry {
     schema_fn: SchemaFn,
     planner: Planner,
     runner: ServeRunner,
+    timeout: Option<Duration>,
 }
 
 pub(crate) struct TeleMcp {
@@ -40,6 +42,7 @@ pub(crate) struct TeleMcp {
     groups: Option<Vec<String>>,
     routes: Vec<McpRouteMeta>,
     execs: HashMap<&'static str, ExecEntry>,
+    visible_names: HashSet<String>,
 }
 
 fn tool_name_for_op(op: &str) -> String {
@@ -73,6 +76,7 @@ fn build_route_tables(ops: &[OpRoute]) -> (Vec<McpRouteMeta>, HashMap<&'static s
                     schema_fn: r.schema_fn,
                     planner: r.planner,
                     runner: r.runner,
+                    timeout: r.timeout,
                 },
             )
         })
@@ -158,6 +162,11 @@ impl TeleMcp {
             }
         }
         let (routes, execs) = build_route_tables(ops);
+        let visible_names = visible_metas(&routes, read_only, groups.as_deref())
+            .into_iter()
+            .filter(|meta| execs.contains_key(meta.op))
+            .map(|meta| meta.tool_name.clone())
+            .collect();
         Self {
             shares,
             account,
@@ -165,6 +174,7 @@ impl TeleMcp {
             groups,
             routes,
             execs,
+            visible_names,
         }
     }
 
@@ -200,15 +210,27 @@ Destructive tools carry annotations.destructiveHint=true: the first call rejects
         tool_name: &str,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult, ErrorData> {
-        let Some(meta) = self.routes.iter().find(|r| r.tool_name == tool_name) else {
+        if !self.visible_names.contains(tool_name) {
+            let visible = self.visible_names.len();
             return Err(ErrorData::invalid_params(
-                format!(
-                    "unknown tool {tool_name}; use tools/list to see the {} available tele tools",
-                    self.routes.len()
-                ),
+                if self.routes.iter().any(|r| r.tool_name == tool_name) {
+                    format!(
+                        "tool {tool_name} is hidden by the --read-only or --groups gate on this server; \
+use tools/list to see the {visible} available tele tools"
+                    )
+                } else {
+                    format!(
+                        "unknown tool {tool_name}; use tools/list to see the {visible} available tele tools"
+                    )
+                },
                 None,
             ));
-        };
+        }
+        let meta = self
+            .routes
+            .iter()
+            .find(|r| r.tool_name == tool_name)
+            .expect("visible tool name must exist in route table");
         let Some(exec) = self.execs.get(meta.op).copied() else {
             return Err(ErrorData::internal_error(
                 format!("tool {tool_name} has no executor"),
@@ -225,10 +247,23 @@ Destructive tools carry annotations.destructiveHint=true: the first call rejects
         match (exec.planner)(meta.op, raw.clone()) {
             Err(env) => Ok(text_result(env, true)),
             Ok(Plan::DryRun(data)) => Ok(text_result(data, false)),
-            Ok(Plan::Execute(raw)) => match (exec.runner)(self.shares.clone(), raw).await {
-                Ok(data) => Ok(text_result(data, false)),
-                Err(env) => Ok(text_result(env, true)),
-            },
+            Ok(Plan::Execute(raw)) => {
+                let future = (exec.runner)(self.shares.clone(), raw);
+                let outcome = match exec.timeout {
+                    Some(limit) => match tokio::time::timeout(limit, future).await {
+                        Ok(outcome) => outcome,
+                        Err(_) => Err(err_json(
+                            "Timeout",
+                            format!("op {} timed out after {limit:?}", meta.op),
+                        )),
+                    },
+                    None => future.await,
+                };
+                match outcome {
+                    Ok(data) => Ok(text_result(data, false)),
+                    Err(env) => Ok(text_result(env, true)),
+                }
+            }
         }
     }
 }
@@ -442,6 +477,129 @@ mod tests {
         let raw_only = visible_metas(&metas, false, Some(&["raw".to_string()]));
         assert_eq!(raw_only.len(), 1);
         assert_eq!(raw_only[0].tool_name, "raw");
+    }
+
+    fn passthrough_planner(_op: &str, raw: serde_json::Value) -> Result<Plan, serde_json::Value> {
+        Ok(Plan::Execute(raw))
+    }
+
+    fn slow_runner(
+        _shares: ServeShares,
+        _raw: serde_json::Value,
+    ) -> crate::commands::serve::ServeFuture {
+        Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            Ok(serde_json::json!({"ok": true}))
+        })
+    }
+
+    fn slow_route(timeout: Option<std::time::Duration>) -> OpRoute {
+        OpRoute {
+            op: "test slow",
+            lane: crate::commands::serve::Lane::Read,
+            timeout,
+            read_only: true,
+            destructive: false,
+            retry_safe: false,
+            summary: "slow op used by timeout tests",
+            planner: passthrough_planner,
+            runner: slow_runner,
+            schema_fn: || serde_json::json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_gate_rejects_hidden_tools_before_execution() {
+        let handler = offline_handler(true, None).await;
+        let args = serde_json::json!({"chat": "@game", "all": true});
+        let call = handler.call_core("msg_delete", Some(args.as_object().unwrap().clone()));
+        let err = tokio::time::timeout(std::time::Duration::from_secs(10), call)
+            .await
+            .expect("gated tool must be rejected without executing")
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("--read-only"), "{}", err.message);
+
+        let kept_args = serde_json::json!({"dry_run": true});
+        let kept = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handler.call_core("dialog_list", Some(kept_args.as_object().unwrap().clone())),
+        )
+        .await
+        .expect("visible tool must pass the gate");
+        assert!(kept.is_ok(), "dialog_list is visible under --read-only");
+    }
+
+    #[tokio::test]
+    async fn groups_gate_rejects_tools_outside_selected_groups() {
+        let handler = offline_handler(false, Some(vec!["dialog".to_string()])).await;
+        let args = serde_json::json!({"chat": "@game", "id": 5, "reaction": "+1", "dry_run": true});
+        let call = handler.call_core("msg_react", Some(args.as_object().unwrap().clone()));
+        let err = tokio::time::timeout(std::time::Duration::from_secs(10), call)
+            .await
+            .expect("gated tool must be rejected without executing")
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("--groups"), "{}", err.message);
+
+        let kept_args = serde_json::json!({"dry_run": true});
+        let kept = handler
+            .call_core("dialog_list", Some(kept_args.as_object().unwrap().clone()))
+            .await;
+        assert!(kept.is_ok(), "dialog_list stays visible for group dialog");
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_error_reports_visible_count_not_total() {
+        let handler = offline_handler(true, None).await;
+        let visible = visible_metas(&handler.routes, true, None).len();
+        let total = handler.routes.len();
+        assert!(visible < total);
+        let err = handler
+            .call_core("definitely_not_a_tool", None)
+            .await
+            .unwrap_err();
+        let want = format!("the {visible} available");
+        let banned = format!("the {total} available");
+        assert!(err.message.contains(want.as_str()), "{}", err.message);
+        assert!(!err.message.contains(banned.as_str()), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn execute_path_enforces_route_timeout_with_error_envelope() {
+        let ops = [slow_route(Some(std::time::Duration::from_millis(50)))];
+        let handler = TeleMcp::from_ops(
+            offline_shares("timeout").await,
+            "test-acct".to_string(),
+            false,
+            None,
+            &ops,
+        );
+        let started = std::time::Instant::now();
+        let result = handler.call_core("test_slow", None).await.unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "runner await must be bounded, elapsed {elapsed:?}"
+        );
+        let text = match &result.content[0] {
+            ContentBlock::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        assert!(text.contains("\"Timeout\""), "{text}");
+        assert!(text.contains("timed out after"), "{text}");
+
+        let untimed = [slow_route(None)];
+        let loose = TeleMcp::from_ops(
+            offline_shares("timeout-none").await,
+            "test-acct".to_string(),
+            false,
+            None,
+            &untimed,
+        );
+        let ok = loose.call_core("test_slow", None).await.unwrap();
+        assert_eq!(ok.is_error, Some(false));
     }
 
     #[tokio::test]
