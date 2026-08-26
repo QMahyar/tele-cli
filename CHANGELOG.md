@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.6.3] - 2026-08-25
+## [0.6.4] - 2026-08-26`n`n### Fixed`n- npm distribution: single package bundles all 13 binaries — every platform installs via the existing trusted publisher, no new package names, no 404.`n`n## [0.6.3] - 2026-08-25
 
 ### Added
 - Multi-platform npm distribution: platform packages (win32-x64, linux-x64/arm64 gnu+musl, darwin-arm64/x64) via optionalDependencies; npm installs only the matching native binary.
