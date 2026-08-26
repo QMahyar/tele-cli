@@ -3,7 +3,7 @@ use std::io::Write;
 
 use crate::client::{self, ClientGuard};
 use crate::error::{TeleError, TeleResult};
-use crate::executor::{effective_parallel, require_explicit_selection, GlobalFlags};
+use crate::executor::{require_explicit_selection, GlobalFlags};
 use crate::output;
 use clap::Args;
 use grammers_client::tl::{self, Serializable};
@@ -73,6 +73,7 @@ const MAX_RECONNECT_BACKOFF: u32 = 30;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const ALBUM_FLUSH_MILLIS: u64 = 500;
 const OBSERVED_PEER_CAP: usize = 10_000;
+const GAP_TRACKER_CAP: usize = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -308,15 +309,22 @@ struct GapSignal {
 #[derive(Default)]
 struct GapTracker {
     last: HashMap<StateBoxKey, (i32, i32)>,
+    order: VecDeque<StateBoxKey>,
 }
 
 impl GapTracker {
     fn observe(&mut self, raw: &tl::enums::Update) -> Option<GapSignal> {
         let point = pts_point(raw)?;
+        if !self.last.contains_key(&point.box_key) && self.last.len() >= GAP_TRACKER_CAP {
+            if let Some(oldest) = self.order.pop_front() {
+                self.last.remove(&oldest);
+            }
+        }
         match self.last.get_mut(&point.box_key) {
             None => {
                 self.last
                     .insert(point.box_key, (point.pts, point.pts_count.max(0)));
+                self.order.push_back(point.box_key);
                 None
             }
             Some(&mut (last_pts, last_count)) => {
@@ -535,10 +543,16 @@ impl ListenDedupe {
     }
 }
 
-fn dedupe_key(chat_id: Option<i64>, msg_id: i32, pts: i32) -> (i64, i32, i32) {
-    (chat_id.unwrap_or(0), msg_id, pts)
+fn dedupe_key(
+    chat_id: Option<i64>,
+    msg_id: i32,
+    raw: &tl::enums::Update,
+) -> Option<(i64, i32, i32)> {
+    let point = pts_point(raw)?;
+    Some((chat_id.unwrap_or(0), msg_id, point.pts))
 }
 
+#[allow(dead_code)]
 fn pts_from_state(state: &State) -> i32 {
     match &state.message_box {
         Some(mb) => match mb {
@@ -594,8 +608,6 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let chat_targets = args.chat.clone();
     let from_targets = args.from.clone();
     validate_listen_inputs(&chat_targets, &from_targets)?;
-    let cfg = crate::config::load_config(flags.config_path.as_deref())?;
-    let _parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
     let mut tasks = tokio::task::JoinSet::new();
     for name in names {
         let config_path = config_path.clone();
@@ -739,7 +751,16 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         let update = match tick {
                             Tick::AlbumDue => {
                                 if let Some(done) = album_flush(&name, &mut album) {
-                                    emit_row(done).await?;
+                                    match emit_row(done).await {
+                                        Ok(()) => {}
+                                        Err(e) if e.is_broken_pipe() => return Ok(()),
+                                        Err(e) => {
+                                            output::log_line(
+                                                "error",
+                                                &format!("{name}: emit failed: {}", e.message()),
+                                            );
+                                        }
+                                    }
                                 }
                                 continue;
                             }
@@ -764,10 +785,24 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             Tick::Update(u) => *u,
                         };
                         failures = on_reconnect_success(failures);
-                        let _ = stream.sync_update_state().await;
+                        if let Err(e) = stream.sync_update_state().await {
+                            output::log_line(
+                                "warn",
+                                &format!("{name}: sync_update_state failed: {e}"),
+                            );
+                        }
                         if gap_on {
                             if let Some(signal) = gaps.observe(update.raw()) {
-                                emit_row(gap_row(&name, &signal, update.state())).await?;
+                                match emit_row(gap_row(&name, &signal, update.state())).await {
+                                    Ok(()) => {}
+                                    Err(e) if e.is_broken_pipe() => return Ok(()),
+                                    Err(e) => {
+                                        output::log_line(
+                                            "error",
+                                            &format!("{name}: gap emit failed: {}", e.message()),
+                                        );
+                                    }
+                                }
                             }
                         }
                         match &update {
@@ -803,24 +838,63 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     }
                                 }
                                 let chat_id = peer.and_then(|p| p.bare_id());
-                                let pts = pts_from_state(update.state());
-                                if dedupe.check(dedupe_key(chat_id, m.id(), pts)) {
-                                    continue;
+                                if let Some(key) = dedupe_key(chat_id, m.id(), update.raw()) {
+                                    if dedupe.check(key) {
+                                        continue;
+                                    }
                                 }
                                 if routes_to_service(service_on, service_flavored) {
                                     if let tl::enums::Message::Service(svc) = &(**m).raw {
-                                        let mut svc_row = streamed_message_row(m)?;
+                                        let mut svc_row = match streamed_message_row(m) {
+                                            Ok(r) => r,
+                                            Err(e) => {
+                                                output::log_line(
+                                                    "error",
+                                                    &format!(
+                                                        "{name}: failed to serialize message {}: {}",
+                                                        m.id(),
+                                                        e.message()
+                                                    ),
+                                                );
+                                                continue;
+                                            }
+                                        };
                                         crate::serialize::ensure_outer_peer_sender(
                                             &mut svc_row,
                                             peer,
                                             None,
                                         );
-                                        emit_row(service_row(&name, chat_id, svc_row, &svc.action))
-                                            .await?;
+                                        match emit_row(service_row(
+                                            &name, chat_id, svc_row, &svc.action,
+                                        ))
+                                        .await
+                                        {
+                                            Ok(()) => {}
+                                            Err(e) if e.is_broken_pipe() => return Ok(()),
+                                            Err(e) => {
+                                                output::log_line(
+                                                    "error",
+                                                    &format!("{name}: emit failed: {}", e.message()),
+                                                );
+                                            }
+                                        }
                                         continue;
                                     }
                                 }
-                                let mut row = streamed_message_row(m)?;
+                                let mut row = match streamed_message_row(m) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        output::log_line(
+                                            "error",
+                                            &format!(
+                                                "{name}: failed to serialize message {}: {}",
+                                                m.id(),
+                                                e.message()
+                                            ),
+                                        );
+                                        continue;
+                                    }
+                                };
                                 crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
                                 let grouped = if album_on { album_member(&row) } else { None };
                                 match (grouped, chat_id) {
@@ -833,7 +907,19 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             gid,
                                             tokio::time::Instant::now(),
                                         ) {
-                                            emit_row(done).await?;
+                                            match emit_row(done).await {
+                                                Ok(()) => {}
+                                                Err(e) if e.is_broken_pipe() => return Ok(()),
+                                                Err(e) => {
+                                                    output::log_line(
+                                                        "error",
+                                                        &format!(
+                                                            "{name}: emit failed: {}",
+                                                            e.message()
+                                                        ),
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                     (None, _) => {
@@ -841,16 +927,38 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             continue;
                                         }
                                         if let Some(done) = album_flush(&name, &mut album) {
-                                            emit_row(done).await?;
+                                            match emit_row(done).await {
+                                                Ok(()) => {}
+                                                Err(e) if e.is_broken_pipe() => return Ok(()),
+                                                Err(e) => {
+                                                    output::log_line(
+                                                        "error",
+                                                        &format!(
+                                                            "{name}: emit failed: {}",
+                                                            e.message()
+                                                        ),
+                                                    );
+                                                }
+                                            }
                                         }
-                                        emit_row(event_row(
+                                        match emit_row(event_row(
                                             "NewMessage",
                                             &name,
                                             chat_id,
                                             None,
                                             Some(row),
                                         ))
-                                        .await?;
+                                        .await
+                                        {
+                                            Ok(()) => {}
+                                            Err(e) if e.is_broken_pipe() => return Ok(()),
+                                            Err(e) => {
+                                                output::log_line(
+                                                    "error",
+                                                    &format!("{name}: emit failed: {}", e.message()),
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -883,33 +991,82 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     }
                                 }
                                 let chat_id = peer.and_then(|p| p.bare_id());
-                                let pts = pts_from_state(update.state());
-                                if dedupe.check(dedupe_key(chat_id, m.id(), pts)) {
-                                    continue;
+                                if let Some(key) = dedupe_key(chat_id, m.id(), update.raw()) {
+                                    if dedupe.check(key) {
+                                        continue;
+                                    }
                                 }
                                 if routes_to_service(service_on, service_flavored) {
                                     if let tl::enums::Message::Service(svc) = &(**m).raw {
-                                        let mut svc_row = streamed_message_row(m)?;
+                                        let mut svc_row = match streamed_message_row(m) {
+                                            Ok(r) => r,
+                                            Err(e) => {
+                                                output::log_line(
+                                                    "error",
+                                                    &format!(
+                                                        "{name}: failed to serialize message {}: {}",
+                                                        m.id(),
+                                                        e.message()
+                                                    ),
+                                                );
+                                                continue;
+                                            }
+                                        };
                                         crate::serialize::ensure_outer_peer_sender(
                                             &mut svc_row,
                                             peer,
                                             None,
                                         );
-                                        emit_row(service_row(&name, chat_id, svc_row, &svc.action))
-                                            .await?;
+                                        match emit_row(service_row(
+                                            &name, chat_id, svc_row, &svc.action,
+                                        ))
+                                        .await
+                                        {
+                                            Ok(()) => {}
+                                            Err(e) if e.is_broken_pipe() => return Ok(()),
+                                            Err(e) => {
+                                                output::log_line(
+                                                    "error",
+                                                    &format!("{name}: emit failed: {}", e.message()),
+                                                );
+                                            }
+                                        }
                                         continue;
                                     }
                                 }
-                                let mut row = streamed_message_row(m)?;
+                                let mut row = match streamed_message_row(m) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        output::log_line(
+                                            "error",
+                                            &format!(
+                                                "{name}: failed to serialize message {}: {}",
+                                                m.id(),
+                                                e.message()
+                                            ),
+                                        );
+                                        continue;
+                                    }
+                                };
                                 crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
-                                emit_row(event_row(
+                                match emit_row(event_row(
                                     "MessageEdited",
                                     &name,
                                     chat_id,
                                     None,
                                     Some(row),
                                 ))
-                                .await?;
+                                .await
+                                {
+                                    Ok(()) => {}
+                                    Err(e) if e.is_broken_pipe() => return Ok(()),
+                                    Err(e) => {
+                                        output::log_line(
+                                            "error",
+                                            &format!("{name}: emit failed: {}", e.message()),
+                                        );
+                                    }
+                                }
                             }
                             Update::MessageDeleted(d) => {
                                 if !events.iter().any(|e| e == "MessageDeleted") {
@@ -930,14 +1087,24 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 let Some(matched) = matched else {
                                     continue;
                                 };
-                                emit_row(event_row(
+                                match emit_row(event_row(
                                     "MessageDeleted",
                                     &name,
                                     sole_chat_label(&filter.chats),
                                     Some(&matched),
                                     None,
                                 ))
-                                .await?;
+                                .await
+                                {
+                                    Ok(()) => {}
+                                    Err(e) if e.is_broken_pipe() => return Ok(()),
+                                    Err(e) => {
+                                        output::log_line(
+                                            "error",
+                                            &format!("{name}: emit failed: {}", e.message()),
+                                        );
+                                    }
+                                }
                             }
                             _ => {
                                 if chat_action_on {
@@ -947,7 +1114,19 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
                                         }
-                                        emit_row(row).await?;
+                                        match emit_row(row).await {
+                                            Ok(()) => {}
+                                            Err(e) if e.is_broken_pipe() => return Ok(()),
+                                            Err(e) => {
+                                                output::log_line(
+                                                    "error",
+                                                    &format!(
+                                                        "{name}: emit failed: {}",
+                                                        e.message()
+                                                    ),
+                                                );
+                                            }
+                                        }
                                         continue;
                                     }
                                 }
@@ -958,7 +1137,19 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
                                         }
-                                        emit_row(row).await?;
+                                        match emit_row(row).await {
+                                            Ok(()) => {}
+                                            Err(e) if e.is_broken_pipe() => return Ok(()),
+                                            Err(e) => {
+                                                output::log_line(
+                                                    "error",
+                                                    &format!(
+                                                        "{name}: emit failed: {}",
+                                                        e.message()
+                                                    ),
+                                                );
+                                            }
+                                        }
                                         continue;
                                     }
                                 }
@@ -968,7 +1159,16 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !filter.raw_allows(update_peer(update.raw())) {
                                     continue;
                                 }
-                                emit_row(raw_row(&name, update.raw(), update.state())).await?;
+                                match emit_row(raw_row(&name, update.raw(), update.state())).await {
+                                    Ok(()) => {}
+                                    Err(e) if e.is_broken_pipe() => return Ok(()),
+                                    Err(e) => {
+                                        output::log_line(
+                                            "error",
+                                            &format!("{name}: emit failed: {}", e.message()),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -1524,6 +1724,7 @@ fn message_action_kind(action: &tl::enums::MessageAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::effective_parallel;
     use grammers_session::Session;
 
     fn base_message_row() -> serde_json::Value {
@@ -2407,6 +2608,27 @@ mod tests {
         assert!(
             t.observe(&channel_pts_update(2000, 4, 1)).is_none(),
             "second channel has its own box"
+        );
+    }
+
+    #[test]
+    fn gap_tracker_caps_and_evicts_oldest_channel_boxes() {
+        let mut t = GapTracker::default();
+        for ch in 0..(GAP_TRACKER_CAP as i64) {
+            assert!(t.observe(&channel_pts_update(ch, 1, 1)).is_none());
+        }
+        assert_eq!(t.last.len(), GAP_TRACKER_CAP);
+        assert!(t
+            .observe(&channel_pts_update(GAP_TRACKER_CAP as i64, 1, 1))
+            .is_none());
+        assert_eq!(
+            t.last.len(),
+            GAP_TRACKER_CAP,
+            "cap must hold after overflow insert"
+        );
+        assert!(
+            t.observe(&channel_pts_update(0, 100, 1)).is_none(),
+            "evicted box re-baselines instead of signaling a stale gap"
         );
     }
 
@@ -3719,9 +3941,11 @@ mod tests {
     #[test]
     fn listen_dedupe_suppresses_duplicate_pts_windows() {
         let mut d = ListenDedupe::new();
-        let k1 = dedupe_key(Some(123), 5, 10);
-        let k2 = dedupe_key(Some(123), 5, 11);
-        let k3 = dedupe_key(Some(456), 5, 10);
+        let raw10 = pts_update(user_tl_peer(), 5, 10, 1, None);
+        let raw11 = pts_update(user_tl_peer(), 5, 11, 1, None);
+        let k1 = dedupe_key(Some(123), 5, &raw10).unwrap();
+        let k2 = dedupe_key(Some(123), 5, &raw11).unwrap();
+        let k3 = dedupe_key(Some(456), 5, &raw10).unwrap();
         assert!(!d.check(k1));
         assert!(d.check(k1));
         assert!(!d.check(k2));
@@ -3734,16 +3958,69 @@ mod tests {
     fn listen_dedupe_evicts_oldest_beyond_cap() {
         let mut d = ListenDedupe::new();
         for i in 0..(LISTEN_DEDUPE_CAP as i32) {
-            assert!(!d.check(dedupe_key(Some(1), i, i)));
+            let raw = pts_update(user_tl_peer(), i, i, 1, None);
+            assert!(!d.check(dedupe_key(Some(1), i, &raw).unwrap()));
         }
         assert_eq!(d.seen.len(), LISTEN_DEDUPE_CAP);
-        let first = dedupe_key(Some(1), 0, 0);
+        let first_raw = pts_update(user_tl_peer(), 0, 0, 1, None);
+        let first = dedupe_key(Some(1), 0, &first_raw).unwrap();
         assert!(d.check(first));
-        assert!(!d.check(dedupe_key(
-            Some(1),
+        let overflow_raw = pts_update(
+            user_tl_peer(),
             LISTEN_DEDUPE_CAP as i32,
-            LISTEN_DEDUPE_CAP as i32
-        )));
+            LISTEN_DEDUPE_CAP as i32,
+            1,
+            None,
+        );
+        assert!(!d.check(dedupe_key(Some(1), LISTEN_DEDUPE_CAP as i32, &overflow_raw).unwrap()));
+    }
+
+    #[test]
+    fn listen_dedupe_key_uses_raw_pts_not_global_state() {
+        let raw_a = pts_update(user_tl_peer(), 42, 10, 1, None);
+        let raw_b = pts_update(user_tl_peer(), 42, 11, 1, None);
+        let key_a = dedupe_key(Some(1), 42, &raw_a).unwrap();
+        let key_b = dedupe_key(Some(1), 42, &raw_b).unwrap();
+        assert_ne!(key_a.2, key_b.2);
+        assert_eq!(key_a.2, 10);
+        assert_eq!(key_b.2, 11);
+        let mut d = ListenDedupe::new();
+        assert!(!d.check(key_a));
+        assert!(d.check(key_a));
+        assert!(!d.check(key_b));
+    }
+
+    #[test]
+    fn listen_dedupe_key_none_for_pts_less_update() {
+        assert!(dedupe_key(Some(1), 1, &tl::enums::Update::PtsChanged).is_none());
+        let empty_channel =
+            tl::enums::Update::NewChannelMessage(tl::types::UpdateNewChannelMessage {
+                message: empty_message(),
+                pts: 1,
+                pts_count: 1,
+            });
+        assert!(dedupe_key(Some(1), 1, &empty_channel).is_none());
+    }
+
+    #[test]
+    fn listen_dedupe_edits_have_distinct_keys_by_pts() {
+        let edit_a = tl::enums::Update::EditMessage(tl::types::UpdateEditMessage {
+            message: tl_message(user_tl_peer()),
+            pts: 20,
+            pts_count: 1,
+        });
+        let edit_b = tl::enums::Update::EditMessage(tl::types::UpdateEditMessage {
+            message: tl_message(user_tl_peer()),
+            pts: 21,
+            pts_count: 1,
+        });
+        let ka = dedupe_key(Some(1), 9, &edit_a).unwrap();
+        let kb = dedupe_key(Some(1), 9, &edit_b).unwrap();
+        assert_ne!(ka, kb);
+        let mut d = ListenDedupe::new();
+        assert!(!d.check(ka));
+        assert!(!d.check(kb));
+        assert!(d.check(ka));
     }
 
     #[test]
@@ -3811,7 +4088,8 @@ mod tests {
             let mbox = grammers_session::updates::MessageBoxes::load(state);
             assert_eq!(mbox.session_state().pts, 88);
             let mut dedupe = ListenDedupe::new();
-            let k = dedupe_key(Some(1), 1, mbox.session_state().pts);
+            let raw = pts_update(user_tl_peer(), 1, mbox.session_state().pts, 1, None);
+            let k = dedupe_key(Some(1), 1, &raw).unwrap();
             assert!(!dedupe.check(k));
             assert!(dedupe.check(k));
         }
@@ -3824,5 +4102,36 @@ mod tests {
         }
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_broken_pipe_classified_as_clean_exit() {
+        let err: TeleError = std::io::Error::from(std::io::ErrorKind::BrokenPipe).into();
+        assert!(err.is_broken_pipe());
+        assert_eq!(err.exit_code(), crate::error::EXIT_OK);
+    }
+
+    #[test]
+    fn emit_other_error_not_broken_pipe() {
+        let err: TeleError =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied").into();
+        assert!(!err.is_broken_pipe());
+        assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
+        let err2 = TeleError::Other("serialization failed".to_string());
+        assert!(!err2.is_broken_pipe());
+    }
+
+    #[test]
+    fn sync_update_state_error_is_non_fatal_and_logged() {
+        let err = TeleError::Other("sync failed".to_string());
+        assert!(!err.is_broken_pipe());
+        assert!(!is_auth_error(&err));
+    }
+
+    #[test]
+    fn per_event_serialization_error_does_not_kill_stream() {
+        let err = TeleError::Other("unserializable".to_string());
+        assert!(!err.is_broken_pipe());
+        assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
     }
 }
