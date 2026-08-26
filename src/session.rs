@@ -63,10 +63,22 @@ fn pre_restrict_sidecars(name: &str) -> anyhow::Result<()> {
     for suffix in SESSION_SIDECAR_SUFFIXES {
         let path = sidecar_path(name, suffix);
         if !path.try_exists()? {
-            std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(&path)?;
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&path)?;
+            }
         }
         crate::fs_util::restrict_file_private(&path)?;
     }
@@ -137,6 +149,7 @@ fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
     }
 }
 
+#[allow(dead_code)]
 pub fn probe_live_lock(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     acquire_lock_file(name).map(|_| ())
@@ -189,7 +202,7 @@ pub fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Exported
             source.display()
         ));
     }
-    probe_live_lock(name)?;
+    let _live_lock = acquire_lock_file(name)?;
     let dest = match out {
         Some(path) => path.to_path_buf(),
         None => std::env::current_dir()?.join(format!("{name}.session")),
@@ -269,19 +282,27 @@ async fn install_session_bytes(name: &str, bytes: &[u8]) -> anyhow::Result<Impor
     crate::fs_util::create_dir_private(&session_dir())?;
     let path = session_path(name);
     pre_restrict_sidecars(name)?;
-    std::fs::write(&path, bytes)?;
-    crate::fs_util::restrict_file_private(&path)?;
+    let tmp_path = {
+        let mut p = path.as_os_str().to_os_string();
+        p.push(format!(".tmp-{}", std::process::id()));
+        std::path::PathBuf::from(p)
+    };
+    let _ = std::fs::remove_file(&tmp_path);
+    crate::fs_util::write_file_private(&tmp_path, bytes)?;
+    crate::fs_util::restrict_file_private(&tmp_path)?;
     let probe_result = async {
-        let probe = SqliteSession::open(&path).await?;
+        let probe = SqliteSession::open(&tmp_path).await?;
         drop(probe);
-        restrict_session_files(name)?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
     if let Err(e) = probe_result {
+        let _ = std::fs::remove_file(&tmp_path);
         cleanup_partial_import(name);
         return Err(e.context("not a valid session file"));
     }
+    std::fs::rename(&tmp_path, &path)?;
+    restrict_session_files(name)?;
     Ok(ImportedSession {
         account: name.to_string(),
         path,
@@ -583,9 +604,15 @@ pub async fn write_native_from_telethon(
     let path = session_path(name);
     let lock = acquire_lock_file(name)?;
     pre_restrict_sidecars(name)?;
-    std::fs::write(&path, [])?;
-    crate::fs_util::restrict_file_private(&path)?;
-    let session = SqliteSession::open(&path).await?;
+    let tmp_path = {
+        let mut p = path.as_os_str().to_os_string();
+        p.push(format!(".tmp-{}", std::process::id()));
+        std::path::PathBuf::from(p)
+    };
+    let _ = std::fs::remove_file(&tmp_path);
+    crate::fs_util::write_file_private(&tmp_path, &[])?;
+    crate::fs_util::restrict_file_private(&tmp_path)?;
+    let session = SqliteSession::open(&tmp_path).await?;
     let write_result = async {
         session.set_home_dc_id(data.dc_id).await?;
         session
@@ -612,12 +639,14 @@ pub async fn write_native_from_telethon(
     drop(session);
     if let Err(e) = write_result {
         drop(lock);
+        let _ = std::fs::remove_file(&tmp_path);
         cleanup_partial_import(name);
         return Err(e.context(format!(
             "failed to author native session from Telethon schema v{}",
             data.schema_version
         )));
     }
+    std::fs::rename(&tmp_path, &path)?;
     restrict_session_files(name)?;
     Ok(path)
 }

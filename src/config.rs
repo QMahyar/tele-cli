@@ -407,13 +407,7 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     let result = std::fs::write(&tmp_path, "")
         .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
         .and_then(|()| std::fs::write(&tmp_path, text))
-        .and_then(|()| {
-            #[cfg(windows)]
-            if path.exists() {
-                std::fs::remove_file(path)?;
-            }
-            std::fs::rename(&tmp_path, path)
-        });
+        .and_then(|()| std::fs::rename(&tmp_path, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }

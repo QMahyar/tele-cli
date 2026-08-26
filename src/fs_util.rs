@@ -10,6 +10,22 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
+pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true).mode(0o600);
+    let mut file = opts.open(path)?;
+    use std::io::Write as _;
+    file.write_all(bytes)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+#[cfg(unix)]
 pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
     restrict(path, 0o600)
 }
