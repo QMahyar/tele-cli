@@ -13,6 +13,7 @@ use crate::commands::listen::{
 use crate::error::{TeleError, TeleResult, EXIT_OK};
 use crate::executor::GlobalFlags;
 use crate::output;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const SERVE_PROTOCOL: u32 = 1;
@@ -100,13 +101,31 @@ pub(crate) enum Lane {
     Read,
 }
 
+pub(crate) struct JobCompletionGuard {
+    pub(crate) id: u64,
+    pub(crate) op: &'static str,
+    pub(crate) responses: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    pub(crate) completed: bool,
+}
+
+impl Drop for JobCompletionGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            let _ = self.responses.send(undelivered_envelope(self.id, self.op));
+        }
+    }
+}
+
 struct Job {
     id: u64,
     op: &'static str,
     timeout: Option<Duration>,
     future: ServeFuture,
+    guard: JobCompletionGuard,
 }
 
+#[allow(unpredictable_function_pointer_comparisons)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OpRoute {
     pub(crate) op: &'static str,
     pub(crate) lane: Lane,
@@ -118,6 +137,49 @@ pub(crate) struct OpRoute {
     pub(crate) planner: Planner,
     pub(crate) runner: ServeRunner,
     pub(crate) schema_fn: SchemaFn,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RouteTable {
+    map: HashMap<&'static str, OpRoute>,
+    names: String,
+}
+
+impl RouteTable {
+    pub(crate) fn names(&self) -> &str {
+        &self.names
+    }
+    pub(crate) fn find(&self, op: &str) -> Option<OpRoute> {
+        self.map.get(op).copied()
+    }
+}
+
+pub(crate) fn build_route_table() -> RouteTable {
+    let routes = serve_op_routes();
+    let mut map = HashMap::with_capacity(routes.len());
+    let mut names: Vec<String> = Vec::with_capacity(routes.len());
+    for r in routes {
+        names.push(r.op.to_string());
+        map.insert(r.op, r);
+    }
+    names.sort_unstable();
+    let names = names.join(", ");
+    RouteTable { map, names }
+}
+
+pub(crate) fn route_table() -> &'static RouteTable {
+    static TABLE: OnceLock<RouteTable> = OnceLock::new();
+    TABLE.get_or_init(build_route_table)
+}
+
+pub(crate) fn undelivered_envelope(id: u64, op: &str) -> serde_json::Value {
+    response_err(
+        Some(id),
+        err_json(
+            "StreamDown",
+            format!("op {op} abandoned: stream down before response"),
+        ),
+    )
 }
 
 const INLINE_OPS: &[(&str, &str, bool, bool, bool)] = &[
@@ -436,10 +498,7 @@ pub(crate) fn prep<P: serde::de::DeserializeOwned>(
 }
 
 fn known_op_names() -> String {
-    let routes = serve_op_routes();
-    let mut names: Vec<String> = routes.iter().map(|r| r.op.to_string()).collect();
-    names.sort_unstable();
-    names.join(", ")
+    route_table().names().to_string()
 }
 
 fn not_implemented(op: &str) -> serde_json::Value {
@@ -451,7 +510,7 @@ fn not_implemented(op: &str) -> serde_json::Value {
 }
 
 fn find_route(op: &str) -> Option<OpRoute> {
-    serve_op_routes().into_iter().find(|r| r.op == op)
+    route_table().find(op)
 }
 
 async fn execute_job(job: Job) -> serde_json::Value {
@@ -460,23 +519,27 @@ async fn execute_job(job: Job) -> serde_json::Value {
         op,
         timeout,
         future,
+        mut guard,
     } = job;
     let outcome = match timeout {
         Some(limit) => match tokio::time::timeout(limit, future).await {
             Ok(outcome) => outcome,
             Err(_) => {
+                guard.completed = true;
                 return response_err(
                     Some(id),
                     err_json("Timeout", format!("op {op} timed out after {limit:?}")),
-                )
+                );
             }
         },
         None => future.await,
     };
-    match outcome {
+    let value = match outcome {
         Ok(data) => response_ok(id, data),
         Err(error) => response_err(Some(id), error),
-    }
+    };
+    guard.completed = true;
+    value
 }
 
 type JobQueue = std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Job>>>;
@@ -593,47 +656,68 @@ pub(crate) fn apply_confirm_gate(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_action(
     shares: &ServeShares,
     mutations: &tokio::sync::mpsc::Sender<Job>,
     reads: &tokio::sync::mpsc::Sender<Job>,
+    responses: &tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     id: u64,
     op: &str,
     params: serde_json::Value,
     resync_requested: &mut bool,
 ) -> TeleResult<()> {
     if op == "ping" {
-        return emit(&response_ok(id, serde_json::json!({ "pong": true })));
+        let _ = responses.send(response_ok(id, serde_json::json!({ "pong": true })));
+        return Ok(());
     }
     if op == "stream.resync" {
         if let Err(error) = validate_no_params(op, &params) {
-            return emit(&response_err(Some(id), error));
+            let _ = responses.send(response_err(Some(id), error));
+            return Ok(());
         }
         *resync_requested = true;
-        return emit(&response_ok(id, serde_json::json!({ "resync": "started" })));
+        let _ = responses.send(response_ok(id, serde_json::json!({ "resync": "started" })));
+        return Ok(());
     }
     if op == "ops.list" {
         if let Err(error) = validate_no_params(op, &params) {
-            return emit(&response_err(Some(id), error));
+            let _ = responses.send(response_err(Some(id), error));
+            return Ok(());
         }
-        return emit(&response_ok(id, ops_list_data()));
+        let _ = responses.send(response_ok(id, ops_list_data()));
+        return Ok(());
     }
     let Some(route) = find_route(op) else {
-        return emit(&response_err(Some(id), not_implemented(op)));
+        let _ = responses.send(response_err(Some(id), not_implemented(op)));
+        return Ok(());
     };
     let mut raw = params;
     if let Err(error) = apply_confirm_gate(op, route.destructive, route.planner, &mut raw) {
-        return emit(&response_err(Some(id), error));
+        let _ = responses.send(response_err(Some(id), error));
+        return Ok(());
     }
     match (route.planner)(op, raw) {
-        Err(error) => emit(&response_err(Some(id), error)),
-        Ok(Plan::DryRun(data)) => emit(&response_ok(id, data)),
+        Err(error) => {
+            let _ = responses.send(response_err(Some(id), error));
+            Ok(())
+        }
+        Ok(Plan::DryRun(data)) => {
+            let _ = responses.send(response_ok(id, data));
+            Ok(())
+        }
         Ok(Plan::Execute(raw)) => {
             let job = Job {
                 id,
                 op: route.op,
                 timeout: route.timeout,
                 future: (route.runner)(shares.clone(), raw),
+                guard: JobCompletionGuard {
+                    id,
+                    op: route.op,
+                    responses: responses.clone(),
+                    completed: false,
+                },
             };
             let queue = match route.lane {
                 Lane::Mutate => mutations,
@@ -843,8 +927,35 @@ async fn serve_connection(
             response_tx.clone(),
         )));
     }
+    let (dispatch_tx, mut dispatch_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(u64, String, serde_json::Value)>();
+    let (resync_tx, mut resync_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let disp_response_tx = response_tx.clone();
+    let disp_shares = shares.clone();
+    let disp_mutations = mutations.clone();
+    let disp_reads = reads.clone();
+    let dispatcher = tokio::spawn(async move {
+        let mut resync_requested = false;
+        while let Some((id, op, params)) = dispatch_rx.recv().await {
+            let _ = dispatch_action(
+                &disp_shares,
+                &disp_mutations,
+                &disp_reads,
+                &disp_response_tx,
+                id,
+                &op,
+                params,
+                &mut resync_requested,
+            )
+            .await;
+            if resync_requested {
+                let _ = resync_tx.send(()).await;
+                break;
+            }
+        }
+    });
+    let main_response_tx = response_tx.clone();
     drop(response_tx);
-    let mut resync_requested = false;
     loop {
         enum Tick {
             Line(String),
@@ -852,9 +963,9 @@ async fn serve_connection(
             Update(Box<Update>),
             StreamError(grammers_client::InvocationError),
             Response(serde_json::Value),
+            Resync,
         }
         let tick = tokio::select! {
-            biased;
             line = rx.recv() => match line {
                 Some(l) => Tick::Line(l),
                 None => Tick::Eof,
@@ -871,48 +982,71 @@ async fn serve_connection(
                 Some(value) => Tick::Response(value),
                 None => continue,
             },
+            _ = resync_rx.recv() => Tick::Resync,
         };
         match tick {
             Tick::Eof => {
                 output::log_line("info", "serve: stdin closed, shutting down");
+                drop(dispatch_tx);
                 drop(mutations);
                 drop(reads);
+                drop(main_response_tx);
+                let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
                 drain_and_flush(&mut workers, &mut response_rx).await?;
                 guard.close().await;
                 return Ok(ConnExit::Eof);
             }
             Tick::Line(line) => match parse_incoming(&line) {
-                Err(error) => emit(&response_err(None, error))?,
+                Err(error) => {
+                    let _ = main_response_tx.send(response_err(None, error));
+                }
                 Ok(ServeIn::Hello { protocol }) => {
                     let _ = protocol;
-                    emit(&hello_out(name, Some(identity.clone()), last_seq_of(seq)))?;
+                    let _ = main_response_tx.send(hello_out(
+                        name,
+                        Some(identity.clone()),
+                        last_seq_of(seq),
+                    ));
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
-                    dispatch_action(
-                        &shares,
-                        &mutations,
-                        &reads,
-                        id,
-                        &op,
-                        params,
-                        &mut resync_requested,
-                    )
-                    .await?;
-                    if resync_requested {
-                        drop(mutations);
-                        drop(reads);
-                        drain_and_flush(&mut workers, &mut response_rx).await?;
-                        guard.close().await;
-                        break;
+                    if dispatch_tx.send((id, op, params)).is_err() {
+                        output::log_line("warn", "serve: dispatch queue closed");
                     }
                 }
             },
             Tick::Response(value) => emit(&value)?,
+            Tick::Resync => {
+                drop(dispatch_tx);
+                drop(mutations);
+                drop(reads);
+                drop(main_response_tx);
+                drain_and_flush(&mut workers, &mut response_rx).await?;
+                guard.close().await;
+                break;
+            }
             Tick::StreamError(e) => {
                 if crate::error::invocation_is_unauthorized(&e) {
+                    drop(dispatch_tx);
+                    dispatcher.abort();
+                    drop(mutations);
+                    drop(reads);
+                    drop(main_response_tx);
+                    for w in &mut workers {
+                        w.abort();
+                    }
+                    drain_and_flush(&mut workers, &mut response_rx).await?;
                     guard.close().await;
                     return Err(crate::error::invocation_error(e));
                 }
+                drop(dispatch_tx);
+                dispatcher.abort();
+                drop(mutations);
+                drop(reads);
+                drop(main_response_tx);
+                for w in &mut workers {
+                    w.abort();
+                }
+                drain_and_flush(&mut workers, &mut response_rx).await?;
                 handle_stream_failure(name, crate::error::invocation_error(e), failures, None)
                     .await?;
                 guard.close().await;
@@ -920,7 +1054,9 @@ async fn serve_connection(
             }
             Tick::Update(update) => {
                 *failures = 0;
-                let _ = stream.sync_update_state().await;
+                if let Err(e) = stream.sync_update_state().await {
+                    output::log_line("warn", &format!("serve: sync_update_state failed: {e}"));
+                }
                 let Some(kind) = event_kind_allowed(&update, events) else {
                     continue;
                 };
@@ -938,12 +1074,26 @@ async fn serve_connection(
                 if dedupe.check(key) {
                     continue;
                 }
-                let mut row = crate::serialize::message_to_json(message)?;
-                crate::serialize::enrich_message_row(&mut row, message);
-                crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
+                let row = match crate::serialize::message_to_json(message) {
+                    Ok(mut r) => {
+                        crate::serialize::enrich_message_row(&mut r, message);
+                        crate::serialize::ensure_outer_peer_sender(&mut r, peer, None);
+                        r
+                    }
+                    Err(e) => {
+                        output::log_line(
+                            "warn",
+                            &format!("serve: message_to_json failed: {}", e.message()),
+                        );
+                        continue;
+                    }
+                };
                 let mut ev = event_row(kind, name, chat_id, None, Some(row));
                 apply_seq(&mut ev, seq);
-                emit(&ev)?;
+                if let Err(e) = emit(&ev) {
+                    output::log_line("warn", &format!("serve: emit failed: {}", e.message()));
+                    continue;
+                }
             }
         }
     }
@@ -1282,6 +1432,125 @@ mod tests {
         assert!(msg.contains("ping"), "{msg}");
         assert!(msg.contains("stream.resync"), "{msg}");
         assert!(msg.contains("ops.list"), "{msg}");
+    }
+
+    #[test]
+    fn route_table_build_is_idempotent_and_lookup_is_stable() {
+        let a = build_route_table();
+        let b = build_route_table();
+        assert_eq!(a, b);
+        let mut expected: Vec<String> =
+            serve_op_routes().iter().map(|r| r.op.to_string()).collect();
+        expected.sort_unstable();
+        let joined = expected.join(", ");
+        assert_eq!(a.names(), joined);
+        assert_eq!(b.names(), joined);
+        for op in &expected {
+            let ra = a.find(op);
+            let rb = b.find(op);
+            assert!(ra.is_some(), "{op} missing from table");
+            assert_eq!(ra, rb, "lookup drift for {op}");
+            let again = a.find(op).unwrap();
+            assert_eq!(ra.unwrap(), again, "repeated lookup drift for {op}");
+        }
+        assert!(std::ptr::eq(route_table(), route_table()));
+    }
+
+    #[test]
+    fn undelivered_envelope_is_id_correlated_stream_down_response() {
+        let env = undelivered_envelope(41, "msg send");
+        assert_eq!(env["type"], "response");
+        assert_eq!(env["id"], 41);
+        assert_eq!(env["ok"], false);
+        assert_eq!(env["error"]["type"], "StreamDown");
+        let message = env["error"]["message"].as_str().unwrap();
+        assert!(message.contains("msg send"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn dropped_queued_job_emits_stream_down_envelope_without_running_future() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let job = Job {
+            id: 12,
+            op: "msg get",
+            timeout: None,
+            future: Box::pin(async {
+                std::future::pending::<Result<serde_json::Value, serde_json::Value>>().await
+            }),
+            guard: JobCompletionGuard {
+                id: 12,
+                op: "msg get",
+                responses: tx.clone(),
+                completed: false,
+            },
+        };
+        drop(tx);
+        drop(job);
+        let value = rx.recv().await.expect("guard must emit on drop");
+        assert_eq!(value["id"], 12);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["type"], "StreamDown");
+        assert!(rx.try_recv().is_err(), "exactly one failure envelope");
+    }
+
+    #[tokio::test]
+    async fn completed_job_disarms_guard_so_no_duplicate_envelope() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let job = Job {
+            id: 15,
+            op: "msg get",
+            timeout: None,
+            future: Box::pin(async { Ok(serde_json::json!({ "done": true })) }),
+            guard: JobCompletionGuard {
+                id: 15,
+                op: "msg get",
+                responses: tx.clone(),
+                completed: false,
+            },
+        };
+        drop(tx);
+        let value = execute_job(job).await;
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["data"]["done"], true);
+        assert!(rx.try_recv().is_err(), "disarmed guard must stay silent");
+    }
+
+    #[tokio::test]
+    async fn aborted_job_worker_emits_single_failure_envelope_for_in_flight_job() {
+        let (mutation_tx, mutation_rx) = tokio::sync::mpsc::channel::<Job>(4);
+        let (response_tx, mut response_rx) =
+            tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let worker_tx = response_tx.clone();
+        let guard_tx = response_tx.clone();
+        drop(response_tx);
+        let worker = tokio::spawn(job_worker(job_queue(mutation_rx), worker_tx));
+        let job = Job {
+            id: 21,
+            op: "story send",
+            timeout: None,
+            future: Box::pin(async {
+                std::future::pending::<Result<serde_json::Value, serde_json::Value>>().await
+            }),
+            guard: JobCompletionGuard {
+                id: 21,
+                op: "story send",
+                responses: guard_tx,
+                completed: false,
+            },
+        };
+        mutation_tx.send(job).await.unwrap();
+        drop(mutation_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        worker.abort();
+        let _ = worker.await;
+        let value = tokio::time::timeout(Duration::from_secs(2), response_rx.recv())
+            .await
+            .expect("aborted job must emit")
+            .expect("envelope present");
+        assert_eq!(value["id"], 21);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["type"], "StreamDown");
+        assert!(response_rx.try_recv().is_err());
     }
 
     #[test]
@@ -2023,6 +2292,7 @@ mod tests {
     }
 
     fn scripted_job(id: u64, delay_ms: u64, timeout: Option<Duration>) -> Job {
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
         Job {
             id,
             op: "msg send",
@@ -2031,6 +2301,12 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 Ok(serde_json::json!({ "id": id }))
             }),
+            guard: JobCompletionGuard {
+                id,
+                op: "msg send",
+                responses: tx,
+                completed: false,
+            },
         }
     }
 
@@ -2108,22 +2384,36 @@ mod tests {
 
     #[tokio::test]
     async fn execute_job_passes_core_outcomes_through_unbounded_reads() {
+        let (tx1, _) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
         let ok_job = Job {
             id: 7,
             op: "msg download",
             timeout: None,
             future: Box::pin(async { Ok(serde_json::json!({ "bytes": 11 })) }),
+            guard: JobCompletionGuard {
+                id: 7,
+                op: "msg download",
+                responses: tx1,
+                completed: false,
+            },
         };
         let value = execute_job(ok_job).await;
         assert_eq!(value["ok"], true);
         assert_eq!(value["id"], 7);
         assert_eq!(value["data"]["bytes"], 11);
 
+        let (tx2, _) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
         let err_job = Job {
             id: 8,
             op: "msg download",
             timeout: None,
             future: Box::pin(async { Err(err_json("ServeError", "boom")) }),
+            guard: JobCompletionGuard {
+                id: 8,
+                op: "msg download",
+                responses: tx2,
+                completed: false,
+            },
         };
         let value = execute_job(err_job).await;
         assert_eq!(value["ok"], false);
