@@ -169,7 +169,7 @@ async fn block(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn unblock(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    validate_block(&args)?;
+    validate_unblock(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -367,6 +367,10 @@ fn validate_block(args: &BlockArgs) -> TeleResult<()> {
     require_contact_user("block", &args.user)
 }
 
+fn validate_unblock(args: &BlockArgs) -> TeleResult<()> {
+    require_contact_user("unblock", &args.user)
+}
+
 fn list_serve_dry_run(_args: &ListArgs) -> TeleResult<serde_json::Value> {
     Ok(dry_run_payload("list contacts", None))
 }
@@ -438,16 +442,11 @@ pub(crate) async fn add_core(
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &user_target).await?;
     let user_input = entities::input_user(&peer).await.map_err(tele_invocation)?;
     let peer_name = crate::serialize::peer_name(&peer);
-    let (f, l) = match (params.first, params.last) {
-        (Some(f), Some(l)) => (f, l),
-        _ => {
-            let mut parts = peer_name.splitn(2, ' ');
-            (
-                parts.next().unwrap_or(&peer_name).to_string(),
-                parts.next().unwrap_or("").to_string(),
-            )
-        }
-    };
+    let mut split = peer_name.splitn(2, ' ');
+    let derived_first = split.next().unwrap_or(&peer_name).to_string();
+    let derived_last = split.next().unwrap_or("").to_string();
+    let f = params.first.unwrap_or(derived_first);
+    let l = params.last.unwrap_or(derived_last);
     let updates: tl::enums::Updates = shares
         .client
         .invoke(&tl::functions::contacts::AddContact {
@@ -625,7 +624,7 @@ pub(crate) fn contact_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "unblock a user",
             BlockParams,
             BlockArgs,
-            validate_block,
+            validate_unblock,
             unblock_serve_dry_run,
             run_unblock,
             crate::commands::serve::params_schema::<BlockParams>
