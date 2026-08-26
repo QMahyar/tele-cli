@@ -85,6 +85,8 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if dry_run {
                 return Ok(start_dry_run_payload(contacts, messages, photos));
             }
+            let dir = export_dir(&name);
+            ensure_no_active_takeout(&dir)?;
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
@@ -103,7 +105,6 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 .await
                 .map_err(tele_invocation)?;
             let tl::enums::account::Takeout::Takeout(info) = info;
-            let dir = export_dir(&name);
             crate::fs_util::create_dir_private(&dir)?;
             write_takeout_state(
                 &dir,
@@ -184,6 +185,15 @@ fn read_takeout_state(dir: &std::path::Path) -> TeleResult<TakeoutStateFile> {
         takeout_id,
         checkpoints,
     })
+}
+
+fn ensure_no_active_takeout(dir: &std::path::Path) -> TeleResult<()> {
+    if read_takeout_state(dir).is_ok() {
+        return Err(TeleError::Other(
+            "active takeout exists; finish it first".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn delete_takeout_state(dir: &std::path::Path) {
@@ -499,6 +509,8 @@ async fn run_export(
                     tl::enums::messages::Messages::NotModified(_) => break,
                 };
                 if msgs.is_empty() {
+                    checkpoints.insert(dialog_key.clone(), CHECKPOINT_DONE);
+                    persist_checkpoints(dir, takeout_id, &checkpoints)?;
                     break;
                 }
                 let m_peers = build_peers(&guard.client, m_users, m_chats);
@@ -538,7 +550,9 @@ async fn run_export(
                     persist_checkpoints(dir, takeout_id, &checkpoints)?;
                     break;
                 }
-                let last = msgs.last().expect("non-empty page");
+                let last = msgs
+                    .last()
+                    .ok_or_else(|| TeleError::Other("expected non-empty page".to_string()))?;
                 msg_offset_id = last.id();
                 msg_offset_date = raw_message_date(last);
             }
@@ -644,7 +658,7 @@ fn raw_message_to_json(
         "date".into(),
         serde_json::json!(
             DateTime::<Utc>::from_timestamp(i64::from(raw_message_date(raw)), 0)
-                .expect("date out of range")
+                .ok_or_else(|| TeleError::Other("message date out of range".to_string()))?
                 .to_rfc3339()
         ),
     );
@@ -1105,5 +1119,43 @@ mod tests {
 
         const { assert!(!(100 < PAGE_LIMIT)) };
         const { assert!(!(150 < PAGE_LIMIT)) };
+    }
+
+    #[test]
+    fn active_takeout_guard_blocks_second_start() {
+        let dir = temp_dir("guard-active");
+        write_takeout_state(
+            &dir,
+            &TakeoutStateFile {
+                takeout_id: 99,
+                checkpoints: HashMap::new(),
+            },
+        )
+        .unwrap();
+        let err = ensure_no_active_takeout(&dir).unwrap_err();
+        assert!(
+            err.message().contains("active takeout exists"),
+            "err: {err}"
+        );
+        assert!(err.message().contains("finish it first"), "err: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn active_takeout_guard_allows_fresh_start() {
+        let dir = temp_dir("guard-fresh");
+        assert!(ensure_no_active_takeout(&dir).is_ok());
+        write_takeout_state(
+            &dir,
+            &TakeoutStateFile {
+                takeout_id: 1,
+                checkpoints: HashMap::new(),
+            },
+        )
+        .unwrap();
+        assert!(ensure_no_active_takeout(&dir).is_err());
+        delete_takeout_state(&dir);
+        assert!(ensure_no_active_takeout(&dir).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
