@@ -13,9 +13,22 @@ pub fn session_dir() -> PathBuf {
     crate::config::app_data_dir().join("sessions")
 }
 
+const WINDOWS_RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "con", "nul", "aux", "prn", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
 pub fn validate_name(name: &str) -> Result<(), String> {
     if matches!(name, "all" | "." | "..") {
         return Err(format!("invalid account name {name:?}: reserved"));
+    }
+    if WINDOWS_RESERVED_DEVICE_NAMES
+        .iter()
+        .any(|device| device.eq_ignore_ascii_case(name))
+    {
+        return Err(format!(
+            "invalid account name {name:?}: reserved Windows device name"
+        ));
     }
     let ok = !name.is_empty()
         && name
@@ -105,6 +118,14 @@ pub fn remove_session(name: &str) -> anyhow::Result<()> {
     let mut targets = vec![session_path(name), lock_path(name)];
     for suffix in SESSION_SIDECAR_SUFFIXES {
         targets.push(sidecar_path(name, suffix));
+    }
+    let tmp_prefix = format!("{name}.session.tmp-");
+    if let Ok(entries) = std::fs::read_dir(session_dir()) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&tmp_prefix) {
+                targets.push(entry.path());
+            }
+        }
     }
     let result = targets
         .iter()
@@ -205,8 +226,20 @@ pub fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Exported
     let _live_lock = acquire_lock_file(name)?;
     let dest = match out {
         Some(path) => path.to_path_buf(),
-        None => std::env::current_dir()?.join(format!("{name}.session")),
+        None => {
+            crate::config::ensure_app_data_dir()?;
+            crate::fs_util::create_dir_private(&session_dir())?;
+            session_dir().join(format!("{name}.session.export"))
+        }
     };
+    if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+        if meta.file_type().is_symlink() {
+            return Err(anyhow::anyhow!(
+                "export destination {} is a symlink; refusing to follow it",
+                dest.display()
+            ));
+        }
+    }
     if fs_same_file(&dest, &source) {
         return Err(anyhow::anyhow!(
             "destination equals the live session file for {name}"
@@ -265,10 +298,22 @@ fn ensure_no_clobber(name: &str, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn tmp_session_path(name: &str) -> PathBuf {
+    let mut p = session_path(name).into_os_string();
+    p.push(format!(".tmp-{}", std::process::id()));
+    PathBuf::from(p)
+}
+
+fn tmp_sidecar_path(name: &str, suffix: &str) -> PathBuf {
+    let mut p = tmp_session_path(name).into_os_string();
+    p.push(suffix);
+    PathBuf::from(p)
+}
+
 fn cleanup_partial_import(name: &str) {
-    let _ = std::fs::remove_file(session_path(name));
+    let _ = std::fs::remove_file(tmp_session_path(name));
     for suffix in SESSION_SIDECAR_SUFFIXES {
-        let _ = std::fs::remove_file(sidecar_path(name, suffix));
+        let _ = std::fs::remove_file(tmp_sidecar_path(name, suffix));
     }
 }
 
@@ -282,11 +327,7 @@ async fn install_session_bytes(name: &str, bytes: &[u8]) -> anyhow::Result<Impor
     crate::fs_util::create_dir_private(&session_dir())?;
     let path = session_path(name);
     pre_restrict_sidecars(name)?;
-    let tmp_path = {
-        let mut p = path.as_os_str().to_os_string();
-        p.push(format!(".tmp-{}", std::process::id()));
-        std::path::PathBuf::from(p)
-    };
+    let tmp_path = tmp_session_path(name);
     let _ = std::fs::remove_file(&tmp_path);
     crate::fs_util::write_file_private(&tmp_path, bytes)?;
     crate::fs_util::restrict_file_private(&tmp_path)?;
@@ -297,7 +338,6 @@ async fn install_session_bytes(name: &str, bytes: &[u8]) -> anyhow::Result<Impor
     }
     .await;
     if let Err(e) = probe_result {
-        let _ = std::fs::remove_file(&tmp_path);
         cleanup_partial_import(name);
         return Err(e.context("not a valid session file"));
     }
@@ -616,11 +656,7 @@ pub async fn write_native_from_telethon(
     let path = session_path(name);
     let lock = acquire_lock_file(name)?;
     pre_restrict_sidecars(name)?;
-    let tmp_path = {
-        let mut p = path.as_os_str().to_os_string();
-        p.push(format!(".tmp-{}", std::process::id()));
-        std::path::PathBuf::from(p)
-    };
+    let tmp_path = tmp_session_path(name);
     let _ = std::fs::remove_file(&tmp_path);
     crate::fs_util::write_file_private(&tmp_path, &[])?;
     crate::fs_util::restrict_file_private(&tmp_path)?;
@@ -651,7 +687,6 @@ pub async fn write_native_from_telethon(
     drop(session);
     if let Err(e) = write_result {
         drop(lock);
-        let _ = std::fs::remove_file(&tmp_path);
         cleanup_partial_import(name);
         return Err(e.context(format!(
             "failed to author native session from Telethon schema v{}",
@@ -1133,6 +1168,210 @@ mod tests {
                 "rejected imports must clean up"
             );
         }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_name_rejects_windows_device_names() {
+        for name in [
+            "con", "CON", "Con", "nul", "NUL", "aux", "AUX", "prn", "PRN", "com1", "COM9", "Com5",
+            "lpt1", "LPT9", "Lpt3",
+        ] {
+            assert!(validate_name(name).is_err(), "{name} must be rejected");
+        }
+        for name in [
+            "console",
+            "nullsafe",
+            "computer",
+            "auxiliary",
+            "com0",
+            "lpt0",
+            "lpt10",
+        ] {
+            assert!(validate_name(name).is_ok(), "{name} must stay valid");
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_partial_import_spares_preexisting_destination() {
+        let _guard = lock_env().await;
+        let dir = test_dir("cleanup-spares-dest");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        seed_test_env(&dir);
+        std::fs::write(session_path("victim"), b"original-good-session").unwrap();
+        std::fs::write(sidecar_path("victim", "-journal"), b"orig-journal").unwrap();
+        let stale_tmp = session_dir().join(format!("victim.session.tmp-{}", std::process::id()));
+        std::fs::write(&stale_tmp, b"tmp-leftover").unwrap();
+
+        cleanup_partial_import("victim");
+
+        assert_eq!(
+            std::fs::read(session_path("victim")).unwrap(),
+            b"original-good-session",
+            "pre-existing destination must survive cleanup"
+        );
+        assert_eq!(
+            std::fs::read(sidecar_path("victim", "-journal")).unwrap(),
+            b"orig-journal",
+            "pre-existing sidecars must survive cleanup"
+        );
+        assert!(!stale_tmp.exists(), "this run's temp file must be swept");
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn corrupt_sqlite_body() -> Vec<u8> {
+        let mut bytes = SQLITE_MAGIC.to_vec();
+        bytes.extend(std::iter::repeat_n(0u8, 496));
+        bytes[16] = 0xFF;
+        bytes[17] = 0xFF;
+        bytes
+    }
+
+    #[tokio::test]
+    async fn failed_force_import_preserves_pre_existing_session() {
+        let _guard = lock_env().await;
+        let dir = test_dir("force-import-preserves");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let original_bytes = std::fs::read(session_path("work")).unwrap();
+        let original_sha = sha256_hex(&original_bytes);
+
+        let bad = inbox.join("bad.session");
+        std::fs::write(&bad, corrupt_sqlite_body()).unwrap();
+        let err = import_session(&bad, Some("work"), true).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .to_lowercase()
+                .contains("not a valid session"),
+            "{err}"
+        );
+
+        assert!(
+            session_path("work").exists(),
+            "failed --force import must not delete the pre-existing session"
+        );
+        let after = std::fs::read(session_path("work")).unwrap();
+        assert_eq!(sha256_hex(&after), original_sha, "bytes must be untouched");
+        {
+            let reopened = open_session("work").await.unwrap();
+            drop(reopened);
+        }
+
+        let fresh_bad = inbox.join("fresh-bad.session");
+        std::fs::write(&fresh_bad, corrupt_sqlite_body()).unwrap();
+        let err = import_session(&fresh_bad, Some("x"), false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .to_lowercase()
+                .contains("not a valid session"),
+            "{err}"
+        );
+        assert!(
+            !session_path("x").exists(),
+            "rejected fresh imports must leave nothing behind"
+        );
+
+        remove_session("work").unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn export_without_out_writes_to_app_sessions_dir() {
+        let _guard = lock_env().await;
+        let dir = test_dir("export-default-dest");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let exported = export_session("work", None).unwrap();
+        assert_eq!(
+            exported.path.parent().map(|p| p.to_path_buf()),
+            Some(session_dir()),
+            "default destination must live in the app sessions dir, not CWD"
+        );
+        assert_eq!(exported.path.file_name().unwrap(), "work.session.export");
+        let source_bytes = std::fs::read(session_path("work")).unwrap();
+        assert_eq!(std::fs::read(&exported.path).unwrap(), source_bytes);
+        assert_eq!(exported.sha256, sha256_hex(&source_bytes));
+        remove_session("work").unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn export_refuses_symlinked_destination() {
+        use std::os::unix::fs::symlink;
+        let _guard = lock_env().await;
+        let dir = test_dir("export-symlink");
+        let out = dir.join("out");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&out).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let decoy = out.join("decoy.txt");
+        std::fs::write(&decoy, b"do-not-touch").unwrap();
+        let link = out.join("link.session");
+        symlink(&decoy, &link).unwrap();
+        let err = export_session("work", Some(&link)).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert_eq!(
+            std::fs::read(&decoy).unwrap(),
+            b"do-not-touch",
+            "symlink target must not be written through"
+        );
+        remove_session("work").unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn remove_session_sweeps_stale_tmp_files() {
+        let _guard = lock_env().await;
+        let dir = test_dir("remove-sweeps-tmp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let stale_a = session_dir().join("work.session.tmp-111111");
+        let stale_b = session_dir().join("work.session.tmp-999999-journal");
+        let foreign_tmp = session_dir().join("ghost.session.tmp-222222");
+        std::fs::write(&stale_a, b"x").unwrap();
+        std::fs::write(&stale_b, b"x").unwrap();
+        std::fs::write(&foreign_tmp, b"x").unwrap();
+
+        remove_session("work").unwrap();
+
+        assert!(!session_path("work").exists());
+        assert!(!lock_path("work").exists());
+        assert!(!stale_a.exists(), "stale tmp must be swept");
+        assert!(!stale_b.exists(), "stale tmp sidecars must be swept");
+        assert!(
+            foreign_tmp.exists(),
+            "tmp files of other accounts must not be touched"
+        );
+        std::fs::remove_file(&foreign_tmp).unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
