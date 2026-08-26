@@ -1,3 +1,13 @@
+## [0.6.3] - 2026-08-25
+
+### Added
+- Multi-platform npm distribution: platform packages (win32-x64, linux-x64/arm64 gnu+musl, darwin-arm64/x64) via optionalDependencies; npm installs only the matching native binary.
+- Static musl binaries for linux-x64 and linux-arm64 — the arm64-musl build runs in Termux/Android.
+- GitHub Release assets for all 7 targets (was 4).
+
+### Fixed
+- All rust-skills review findings: admin-preset security hole, teardown/lock races, exit-code precedence (auth > telegram > usage), error-taxonomy fidelity, session export/import atomicity.
+
 # Changelog
 
 All notable changes to this project will be documented in this file.

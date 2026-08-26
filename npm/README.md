@@ -1,43 +1,43 @@
-# telecli
+# @qmahyar/telecli
 
-Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming. No bot tokens.
+Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming, and an MCP server for LLM agents. No bot tokens.
 
 ## Install
 
 ```sh
 npm install -g @qmahyar/telecli
+telecli --version
 ```
 
-Windows x64 only (the Rust binary is published for win32-x64). The npm package
-bundles the binary; integrity is enforced by npm's tarball checksum.
+The right native binary for your platform installs automatically via `optionalDependencies`:
 
-Other platforms / manual install: `cargo install --locked telecli` (requires Rust stable).
+| Package | Platform |
+|---|---|
+| `@qmahyar/telecli-win32-x64` | Windows, Intel/AMD 64-bit |
+| `@qmahyar/telecli-linux-x64-gnu` | Linux x86_64 (glibc) |
+| `@qmahyar/telecli-linux-x64-musl` | Linux x86_64 (static musl) |
+| `@qmahyar/telecli-linux-arm64-gnu` | Linux ARM64 (glibc) |
+| `@qmahyar/telecli-linux-arm64-musl` | Linux ARM64 (static musl — also runs in **Termux/Android**) |
+| `@qmahyar/telecli-darwin-arm64` | macOS Apple Silicon |
+| `@qmahyar/telecli-darwin-x64` | macOS Intel |
 
-## Setup
+## Termux / Android (no npm needed)
 
-Credentials live outside the repo:
-
-- `%APPDATA%\telecli\.env` with `TELE_API_ID` and `TELE_API_HASH` (from https://my.telegram.org)
-- `tele account login` prompts interactively for the verification code or QR
-
-## Usage
+Download the static binary from [GitHub Releases](https://github.com/QMahyar/tele-cli/releases):
 
 ```sh
-telecli account status
-telecli msg send --chat @username --text "hi"
-telecli msg get --chat @username
-telecli chat participants --chat <id>
-telecli listen --jsonl
-telecli --help
+curl -fLO https://github.com/QMahyar/tele-cli/releases/latest/download/telecli-<version>-linux-arm64-musl
+chmod +x telecli-<version>-linux-arm64-musl
+mv telecli-<version>-linux-arm64-musl $PREFIX/bin/telecli
+tele --version
 ```
 
-`--json` / `--jsonl` is the machine API; human tables otherwise. Exit codes:
-0 ok, 1 usage, 2 partial, 3 all-failed, 4 auth, 130 interrupted.
+## First run
 
-## Documentation
+```sh
+tele account login --name main --phone +15551234567
+tele msg send --chat me --text "hello from telecli"
+tele mcp --account main   # MCP stdio server for Claude/Cursor/agents
+```
 
-- capabilities matrix, CLI contract, and security notes ship with the repository; `telecli --help` lists every command.
-
-## License
-
-MIT
+Docs: [cli-contract](https://github.com/QMahyar/tele-cli/blob/main/docs/cli-contract.md) · [capabilities](https://github.com/QMahyar/tele-cli/blob/main/docs/capabilities.md) · [security](https://github.com/QMahyar/tele-cli/blob/main/docs/security.md)

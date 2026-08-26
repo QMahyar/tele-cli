@@ -26,7 +26,22 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             osname: linux
-            arch: x64
+            arch: x64-gnu
+            ext: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            osname: linux
+            arch: x64-musl
+            ext: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            osname: linux
+            arch: arm64-gnu
+            ext: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            osname: linux
+            arch: arm64-musl
             ext: ""
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -34,7 +49,6 @@ jobs:
             arch: arm64
             ext: ""
           # macOS x64 cross-compiled on arm64 runner (Apple clang supports both archs).
-          # If ring/cc cross-build fails on first real run, remove this entry.
           - os: macos-latest
             target: x86_64-apple-darwin
             osname: mac
@@ -48,6 +62,28 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross toolchain (linux x64 musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross toolchain (linux arm64 gnu)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Install cross toolchain (linux arm64 musl)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update && sudo apt-get install -y curl
+          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz -o musl-cross.tgz
+          sudo tar -xzf musl-cross.tgz -C /opt
+          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -153,23 +189,61 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Download win-x64 binary
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: telecli-${{ steps.version.outputs.version }}-win-x64
-          path: _dl
+          path: artifacts
+          merge-multiple: true
 
-      - name: Install binary into npm package
+      - name: Stage main package
         shell: bash
         run: |
-          cp "_dl/telecli-${{ steps.version.outputs.version }}-win-x64.exe" \
-             npm/bin/telecli.exe
-          rm -rf _dl
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p pkg-main/bin
+          cp npm/bin/telecli.js pkg-main/bin/telecli.js
+          jq --arg v "$VERSION" '.version = $v |
+             .optionalDependencies = (.optionalDependencies | with_entries(.value = $v))' \
+             npm/package.json > pkg-main/package.json
 
-      - name: Bump package version
-        working-directory: npm
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+      - name: Stage platform packages
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          stage() {
+            local id="$1" os="$2" cpu="$3" binary="$4" exe="$5"
+            mkdir -p "pkg-${id}/bin"
+            cp "artifacts/${binary}${exe}" "pkg-${id}/bin/telecli${exe}"
+            chmod +x "pkg-${id}/bin/telecli${exe}" || true
+            jq -n --arg v "$VERSION" --arg id "$id" --arg os "$os" --arg cpu "$cpu" \
+              '{name: ("@qmahyar/telecli-" + $id),
+                version: $v,
+                description: ("telecli binary for " + $os + "-" + $cpu),
+                license: "MIT",
+                repository: {type: "git", url: "git+https://github.com/QMahyar/tele-cli.git"},
+                os: [$os], cpu: [$cpu],
+                files: ["bin/"]}' \
+              > "pkg-${id}/package.json"
+          }
+          stage win32-x64       win32  x64   "telecli-${{ steps.version.outputs.version }}-win-x64"        ".exe"
+          stage linux-x64-gnu   linux  x64   "telecli-${{ steps.version.outputs.version }}-linux-x64-gnu"   ""
+          stage linux-x64-musl  linux  x64   "telecli-${{ steps.version.outputs.version }}-linux-x64-musl"  ""
+          stage linux-arm64-gnu linux  arm64 "telecli-${{ steps.version.outputs.version }}-linux-arm64-gnu" ""
+          stage linux-arm64-musl linux arm64 "telecli-${{ steps.version.outputs.version }}-linux-arm64-musl" ""
+          stage darwin-arm64    darwin arm64 "telecli-${{ steps.version.outputs.version }}-mac-arm64"       ""
+          stage darwin-x64      darwin x64   "telecli-${{ steps.version.outputs.version }}-mac-x64"         ""
 
-      - name: Publish to npm
-        working-directory: npm
+      - name: Publish platform packages
+        working-directory: .
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          for dir in pkg-*/; do
+            case "$dir" in pkg-main/) continue ;; esac
+            echo "publishing ${dir}"
+            (cd "$dir" && npm publish --access public)
+          done
+
+      - name: Publish main package
+        working-directory: pkg-main
         run: npm publish --access public

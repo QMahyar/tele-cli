@@ -27,15 +27,15 @@ The push triggers the `release` workflow.
 
 ## What the workflow builds
 
-**Build job.** A matrix of 4 targets: windows x64, linux x64, macOS arm64, and macOS x64 cross-compiled on the arm64 runner. Each target produces `telecli-<version>-<os>-<arch>[.exe]` and a matching `.sha256` checksum file. Regenerate the count with `rg -c "target: " .github/workflows/release.yml`, which prints `4`.
+**Build job.** A matrix of 7 targets: windows x64, linux x64 (gnu + musl), linux arm64 (gnu + musl), macOS arm64, and macOS x64 cross-compiled on the arm64 runner. Each target produces `telecli-<version>-<os>-<arch>[.exe]` and a matching `.sha256` checksum file. Regenerate the count with `rg -c "target: " .github/workflows/release.yml`, which prints `7`.
 
-**Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries 8 assets: 4 binaries plus their 4 checksum files.
+**Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries 14 assets: 7 binaries plus their 7 checksum files.
 
-**npm job.** Copies the win-x64 binary into `npm/bin/telecli.exe`, bumps `npm/package.json` to the tag version with `npm version <ver> --no-git-tag-version --allow-same-version`, then runs `npm publish --access public` from the `npm/` directory. The tarball bundles the binary directly. Nothing downloads release assets at install time.
+**npm job.** Publishes 8 packages through OIDC trusted publishing (no token). Seven platform packages (`@qmahyar/telecli-<os>-<arch>`) each bundle one binary with `os`/`cpu` guards; the main `@qmahyar/telecli` package ships only the JS launcher and pins every platform package under `optionalDependencies`, so `npm install -g @qmahyar/telecli` downloads just the matching binary. The `linux-arm64-musl` binary is static and runs in Termux/Android.
 
 ## Verify the release
 
-1. Open the GitHub Release page and confirm 8 assets.
+1. Open the GitHub Release page and confirm 14 assets.
 2. Download a binary and smoke-test it. `telecli --help` and `telecli --dry-run` must respond.
 3. Run `npm view @qmahyar/telecli version` and confirm it shows the tag version. Then install and check:
 

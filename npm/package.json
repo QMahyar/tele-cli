@@ -1,7 +1,7 @@
 {
   "name": "@qmahyar/telecli",
-  "version": "0.6.0",
-  "description": "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming. No bot tokens.",
+  "version": "0.6.3",
+  "description": "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming, MCP server. No bot tokens.",
   "license": "MIT",
   "keywords": [
     "telegram",
@@ -10,26 +10,29 @@
     "messaging",
     "chat",
     "automation",
-    "rust"
+    "rust",
+    "mcp"
   ],
-  "os": [
-    "win32"
-  ],
-  "cpu": [
-    "x64"
-  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/QMahyar/tele-cli.git"
+  },
   "engines": {
     "node": ">=18"
   },
   "bin": {
     "telecli": "bin/telecli.js"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/QMahyar/tele-cli.git"
-  },
   "files": [
-    "bin/",
-    "README.md"
-  ]
+    "bin/"
+  ],
+  "optionalDependencies": {
+    "@qmahyar/telecli-win32-x64": "0.6.3",
+    "@qmahyar/telecli-linux-x64-gnu": "0.6.3",
+    "@qmahyar/telecli-linux-x64-musl": "0.6.3",
+    "@qmahyar/telecli-linux-arm64-gnu": "0.6.3",
+    "@qmahyar/telecli-linux-arm64-musl": "0.6.3",
+    "@qmahyar/telecli-darwin-arm64": "0.6.3",
+    "@qmahyar/telecli-darwin-x64": "0.6.3"
+  }
 }
