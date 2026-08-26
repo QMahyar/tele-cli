@@ -12,13 +12,22 @@
 - **User accounts, not bots.** Full MTProto client surface — scheduled messages, forum topics, admin log, takeout export, raw TL calls. Anything your Telegram account can do, `tele` can do.
 - **Multi-account.** Name them, tag them, fan out a command across all of them. Sequential by default, `--parallel 1–32` when you need speed.
 - **Human + machine.** Comfy tables on your terminal; a single JSON envelope (or JSONL from `listen`) on stdout for scripts and AI agents. Logs on stderr only.
-- **Pure Rust.** Built on [grammers](https://docs.rs/grammers-client) 0.10 (MTProto). Zero C/C++ dependencies. `cargo build` and done.
+- **Pure Rust client.** Built on [grammers](https://docs.rs/grammers-client) 0.10 (MTProto). The only C is the SQLite engine bundled for Telethon session import.
+- **MCP server built in.** `tele mcp` exposes the whole CLI as tools for Claude, Cursor, or any MCP client.
 
 ---
 
 ## Install
 
-Install: `cargo build --release` (binary `target/release/telecli.exe`); an npm wrapper `@qmahyar/telecli` (win32-x64) is published per `docs/release.md` when you say so. Release gate (ADR-005) is met.
+npm (Windows, Linux x64/arm64, macOS — the matching native binary installs automatically):
+
+```bash
+npm install -g @qmahyar/telecli
+tele --version
+```
+
+Or grab a binary from [Releases](https://github.com/QMahyar/tele-cli/releases) — 7 targets, including a **static linux-arm64-musl build that runs in Termux/Android** and a static linux-x64-musl for any distro.
+
 Build from source (requires [Rust stable](https://www.rust-lang.org/)):
 
 ```bash

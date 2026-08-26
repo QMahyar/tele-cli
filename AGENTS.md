@@ -79,8 +79,7 @@ src/
 ├── session.rs           FileSession (SQLite) per named account
 ├── logging.rs           stderr-only structured logging
 ├── fs_util.rs           Permission helpers (create_dir_private, restrict_file_private); sensitive-file detection lives in msg.rs validate_upload_path()
-└── commands/
-    ├── mod.rs           Subcommand enum dispatch
+└── commands/    ├── mod.rs           Subcommand enum dispatch
     ├── account.rs       add, login (code/QR), logout, remove, status, list
     ├── msg.rs           send, get, edit, delete, forward, search, react, download, read, pin
     ├── chat.rs          join, create, leave, participants, kick, admin, admin-log, stats, invite
@@ -250,7 +249,8 @@ Anti-patterns that hurt this repo:
 - CLI contract: `docs/cli-contract.md`
 - Security: `docs/security.md`
 - Observability: `docs/observability.md`
-- Release: `docs/release.md`
+- Release: `docs/release.md` (7 build targets; npm publishes 8 packages via OIDC trusted publishing)
+- npm packaging: `npm/` — main package + JS launcher (`bin/telecli.js` resolves `@qmahyar/telecli-<os>-<arch>` platform packages); platform packages are generated in the release workflow, never committed
 - ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights; 005 = release gate)
 - Tasks: `tasks/todo.md` (live tracker)
 
