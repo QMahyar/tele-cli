@@ -78,8 +78,10 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             client::authorize(&guard.client).await?;
             let row = get_core(&guard.shares(), GetParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
-                for (k, v) in row.as_object().unwrap() {
-                    output::print_line(&format!("{k}: {v}"))?;
+                if let Some(fields) = row.as_object() {
+                    for (k, v) in fields {
+                        output::print_line(&format!("{k}: {v}"))?;
+                    }
                 }
             }
             Ok(row)

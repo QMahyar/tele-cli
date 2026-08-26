@@ -1535,7 +1535,7 @@ fn print_check_table(account: &str, multi: bool, row: &serde_json::Value) -> Tel
 }
 
 fn rfc3339_or_empty(ts: Option<i32>) -> String {
-    ts.and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
+    ts.and_then(|t| chrono::DateTime::from_timestamp(i64::from(t), 0))
         .map(|d| d.to_rfc3339())
         .unwrap_or_default()
 }
@@ -2889,7 +2889,7 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let mut rows = Vec::new();
             for event in collected.events {
                 let tl::enums::ChannelAdminLogEvent::Event(event) = event;
-                let date = chrono::DateTime::from_timestamp(event.date as i64, 0)
+                let date = chrono::DateTime::from_timestamp(i64::from(event.date), 0)
                     .map(|d| d.to_rfc3339())
                     .unwrap_or_default();
                 rows.push(serde_json::json!({
@@ -5139,7 +5139,7 @@ pub(crate) async fn chat_admin_log_core(
     let mut rows = Vec::new();
     for event in collected.events {
         let tl::enums::ChannelAdminLogEvent::Event(event) = event;
-        let date = chrono::DateTime::from_timestamp(event.date as i64, 0)
+        let date = chrono::DateTime::from_timestamp(i64::from(event.date), 0)
             .map(|d| d.to_rfc3339())
             .unwrap_or_default();
         rows.push(serde_json::json!({

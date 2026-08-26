@@ -2620,7 +2620,7 @@ fn strip_line_ending(line: &str) -> &str {
 
 fn authorization_row(auth: &grammers_client::tl::types::Authorization) -> serde_json::Value {
     let date = |ts: i32| {
-        chrono::DateTime::from_timestamp(ts as i64, 0)
+        chrono::DateTime::from_timestamp(i64::from(ts), 0)
             .map(|d| d.to_rfc3339())
             .unwrap_or_default()
     };
@@ -2813,7 +2813,7 @@ fn validate_sessions_modes(args: &SessionsArgs) -> TeleResult<SessionsMode> {
 
 fn web_authorization_row(web: &grammers_client::tl::types::WebAuthorization) -> serde_json::Value {
     let date = |ts: i32| {
-        chrono::DateTime::from_timestamp(ts as i64, 0)
+        chrono::DateTime::from_timestamp(i64::from(ts), 0)
             .map(|d| d.to_rfc3339())
             .unwrap_or_default()
     };
@@ -2974,7 +2974,8 @@ fn ph1(password: &[u8], salt1: &[u8], salt2: &[u8]) -> [u8; 32] {
 fn ph2(password: &[u8], salt1: &[u8], salt2: &[u8]) -> [u8; 32] {
     let hash1 = ph1(password, salt1, salt2);
     let mut dk = [0u8; 64];
-    pbkdf2::pbkdf2::<Hmac<Sha512>>(&hash1, salt1, 100000, &mut dk).unwrap();
+    pbkdf2::pbkdf2::<Hmac<Sha512>>(&hash1, salt1, 100000, &mut dk)
+        .expect("pbkdf2 cannot fail for a 64-byte output");
     sh(&dk, salt2)
 }
 
@@ -3006,18 +3007,22 @@ fn extend_salt1(base_salt1: &[u8], extra: &[u8; 32]) -> Vec<u8> {
     out
 }
 
-fn generate_secure_32() -> [u8; 32] {
+fn generate_secure_32() -> TeleResult<[u8; 32]> {
     let mut buf = [0u8; 32];
-    getrandom::getrandom(&mut buf).expect("secure random failed");
-    buf
+    getrandom::getrandom(&mut buf)
+        .map_err(|e| TeleError::Other(format!("system entropy unavailable: {e}")))?;
+    Ok(buf)
 }
 
 fn new_password_algo_and_hash(
     password: &str,
     base: &grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow,
     extra: Option<[u8; 32]>,
-) -> (grammers_client::tl::enums::PasswordKdfAlgo, Vec<u8>) {
-    let extra = extra.unwrap_or_else(generate_secure_32);
+) -> TeleResult<(grammers_client::tl::enums::PasswordKdfAlgo, Vec<u8>)> {
+    let extra = match extra {
+        Some(e) => e,
+        None => generate_secure_32()?,
+    };
     let new_salt1 = extend_salt1(&base.salt1, &extra);
     let hash = compute_new_password_hash(password, &new_salt1, &base.salt2, base.g, &base.p);
     let algo = grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow {
@@ -3027,7 +3032,7 @@ fn new_password_algo_and_hash(
         p: base.p.clone(),
     };
     let algo_enum = grammers_client::tl::enums::PasswordKdfAlgo::Sha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow(algo);
-    (algo_enum, hash)
+    Ok((algo_enum, hash))
 }
 
 fn extract_new_algo(
@@ -3096,7 +3101,7 @@ async fn set_cloud_password(
     plan_password_step(PasswordMode::Set, pw.has_password)?;
     let base = extract_new_algo(&pw.new_algo)?;
     let new_password = prompt_new_password_pair()?;
-    let (algo, hash) = new_password_algo_and_hash(&new_password, &base, None);
+    let (algo, hash) = new_password_algo_and_hash(&new_password, &base, None)?;
     let new_settings = grammers_client::tl::enums::account::PasswordInputSettings::Settings(
         grammers_client::tl::types::account::PasswordInputSettings {
             new_algo: Some(algo),
@@ -3225,7 +3230,7 @@ async fn password_status(guard: &ClientGuard) -> TeleResult<serde_json::Value> {
         "hint": pw.hint,
         "email_unconfirmed_pattern": pw.email_unconfirmed_pattern,
         "pending_reset_date": pw.pending_reset_date.map(|d| {
-            chrono::DateTime::from_timestamp(d as i64, 0)
+            chrono::DateTime::from_timestamp(i64::from(d), 0)
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_default()
         }),
@@ -3246,7 +3251,7 @@ async fn start_password_reset(guard: &ClientGuard) -> TeleResult<serde_json::Val
         grammers_client::tl::enums::account::ResetPasswordResult::ResetPasswordRequestedWait(w) => {
             serde_json::json!({
                 "result": "wait",
-                "until_date": chrono::DateTime::from_timestamp(w.until_date as i64, 0)
+                "until_date": chrono::DateTime::from_timestamp(i64::from(w.until_date), 0)
                     .map(|dt| dt.to_rfc3339())
                     .unwrap_or_default(),
             })
@@ -3254,7 +3259,7 @@ async fn start_password_reset(guard: &ClientGuard) -> TeleResult<serde_json::Val
         grammers_client::tl::enums::account::ResetPasswordResult::ResetPasswordFailedWait(w) => {
             serde_json::json!({
                 "result": "failed_wait",
-                "retry_date": chrono::DateTime::from_timestamp(w.retry_date as i64, 0)
+                "retry_date": chrono::DateTime::from_timestamp(i64::from(w.retry_date), 0)
                     .map(|dt| dt.to_rfc3339())
                     .unwrap_or_default(),
             })
@@ -3308,7 +3313,7 @@ async fn change_cloud_password(
     }
     let new_password = prompt_new_password_pair()?;
     let proof = input_check_password_srp(&params, srp_id, &srp_b, &random_a, &current)?;
-    let (algo, hash) = new_password_algo_and_hash(&new_password, &base, None);
+    let (algo, hash) = new_password_algo_and_hash(&new_password, &base, None)?;
     let new_settings = grammers_client::tl::enums::account::PasswordInputSettings::Settings(
         grammers_client::tl::types::account::PasswordInputSettings {
             new_algo: Some(algo),
@@ -5586,7 +5591,7 @@ mod tests {
             p: decode_b64(REF_P_B64),
         };
         let extra = [0x11u8; 32];
-        let (algo, hash) = new_password_algo_and_hash("pwd", &base, Some(extra));
+        let (algo, hash) = new_password_algo_and_hash("pwd", &base, Some(extra)).unwrap();
         match algo {
             grammers_client::tl::enums::PasswordKdfAlgo::Sha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow(inner) => {
                 assert_eq!(inner.salt1.len(), base.salt1.len() + 32);

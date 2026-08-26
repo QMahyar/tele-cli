@@ -340,6 +340,8 @@ pub struct TelethonSessionData {
     pub user_id: Option<i64>,
 }
 
+const MAX_TELETHON_SCHEMA_VERSION: i64 = 7;
+
 impl std::fmt::Debug for TelethonSessionData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TelethonSessionData")
@@ -379,10 +381,14 @@ async fn libsql_table_columns(
     conn: &libsql::Connection,
     table: &str,
 ) -> anyhow::Result<Vec<String>> {
+    if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(anyhow::anyhow!(
+            "unsupported table name for PRAGMA: {table}"
+        ));
+    }
     let mut columns = Vec::new();
-    let quoted = format!("'{table}'");
     let mut rows = conn
-        .query(&format!("PRAGMA table_info({quoted})"), ())
+        .query(&format!("PRAGMA table_info('{table}')"), ())
         .await?;
     while let Some(row) = rows.next().await? {
         if let Some(name) = libsql_value_string(&row.get::<libsql::Value>(1)?) {
@@ -514,6 +520,12 @@ pub async fn parse_telethon_session(source: &Path) -> anyhow::Result<TelethonSes
             }
         }
     };
+    if schema_version > MAX_TELETHON_SCHEMA_VERSION {
+        anyhow::bail!(
+            "Telethon session schema v{schema_version} is newer than the highest tested version \
+             (v{MAX_TELETHON_SCHEMA_VERSION}); conversion is refused because column layouts may differ"
+        );
+    }
     let has_user_id = columns.iter().any(|found| found == "user_id");
     let select_sql = if has_user_id {
         "SELECT dc_id, server_address, port, auth_key, user_id FROM sessions ORDER BY dc_id"

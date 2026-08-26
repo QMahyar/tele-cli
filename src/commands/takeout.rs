@@ -526,7 +526,7 @@ async fn run_export(
                     .map_err(|e| TeleError::Other(e.to_string()))??;
                     let oldest_written =
                         msgs.iter().take(written).map(|m| m.id()).min().unwrap_or(0);
-                    checkpoints.insert(dialog_key.clone(), oldest_written as i64);
+                    checkpoints.insert(dialog_key.clone(), i64::from(oldest_written));
                     persist_checkpoints(dir, takeout_id, &checkpoints)?;
                 }
                 report_progress(
@@ -643,7 +643,7 @@ fn raw_message_to_json(
     out.insert(
         "date".into(),
         serde_json::json!(
-            DateTime::<Utc>::from_timestamp(raw_message_date(raw) as i64, 0)
+            DateTime::<Utc>::from_timestamp(i64::from(raw_message_date(raw)), 0)
                 .expect("date out of range")
                 .to_rfc3339()
         ),

@@ -1258,7 +1258,7 @@ fn raw_input_reply_to(reply_to_msg_id: i32) -> grammers_client::tl::enums::Input
 }
 
 fn rfc3339_ts(ts: i32) -> String {
-    chrono::DateTime::from_timestamp(ts as i64, 0)
+    chrono::DateTime::from_timestamp(i64::from(ts), 0)
         .map(|d| d.to_rfc3339())
         .unwrap_or_default()
 }
@@ -3152,7 +3152,13 @@ pub(crate) async fn download_core(
         let _ = std::fs::remove_file(&temp);
         return Err(TeleError::Usage("message has no media".to_string()));
     }
-    commit_download(&temp, &path)?;
+    tokio::task::spawn_blocking({
+        let temp = temp.clone();
+        let path = path.clone();
+        move || commit_download(&temp, &path)
+    })
+    .await
+    .map_err(|e| TeleError::Other(format!("download commit task failed: {e}")))??;
     let bytes = tokio::task::spawn_blocking({
         let path = path.clone();
         move || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)

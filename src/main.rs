@@ -60,7 +60,12 @@ struct Cli {
     jsonl: bool,
     #[arg(long, global = true, help = "validate without touching Telegram")]
     dry_run: bool,
-    #[arg(long, short = 'q', global = true, help = "suppress stderr logs")]
+    #[arg(
+        long,
+        short = 'q',
+        global = true,
+        help = "quiet: only [error] lines on stderr"
+    )]
     quiet: bool,
     #[arg(
         long,
