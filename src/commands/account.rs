@@ -12,6 +12,17 @@ use sha2::{Digest, Sha256, Sha512};
 use std::io::{IsTerminal, Write};
 use std::sync::Arc;
 
+fn refuse_interactive_with_multiple_accounts(command: &str, flags: &GlobalFlags) -> TeleResult<()> {
+    let count = flags.account.len().max(flags.tag.len());
+    if count > 1 {
+        return Err(TeleError::Usage(format!(
+            "{command} with interactive prompts requires a single --account; \
+             use --account <name> to select exactly one account"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn redact_phone(phone: &str) -> String {
     let phone = phone.trim();
     if phone.len() <= 6 {
@@ -180,6 +191,10 @@ impl PasswordAction {
             PasswordAction::ResetStart => "start 7-day password reset countdown".to_string(),
             PasswordAction::DeclineReset => "cancel pending password reset".to_string(),
         }
+    }
+
+    fn needs_prompt(&self) -> bool {
+        matches!(self, PasswordAction::Mode(_))
     }
 }
 
@@ -524,7 +539,8 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .unwrap_or(false);
+        .map(|exists| !exists)
+        .unwrap_or(true);
     let mut guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
             .await
@@ -544,6 +560,7 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         .map_err(tele_invocation)?;
     if was_authorized {
         log_line("info", "account already authorized");
+        purge_pending(&args.name);
         let data = serde_json::json!({
             "authorized": true,
             "method": args.method.clone(),
@@ -741,6 +758,11 @@ fn remove_pending_under(base: &std::path::Path, name: &str) -> TeleResult<bool> 
     remove_pending_document_under(base, &login_pending_file(name))
 }
 
+fn purge_pending(name: &str) {
+    let _ = remove_pending(name);
+    let _ = remove_pending_phone(name);
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PendingPhone {
     version: u32,
@@ -901,7 +923,8 @@ async fn staged_begin(
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .unwrap_or(false);
+        .map(|exists| !exists)
+        .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
             .await
@@ -1005,7 +1028,14 @@ async fn send_login_code(
         Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 303 => {
             let dc_id = rpc
                 .value
-                .map(|v| i32::try_from(v).unwrap_or_default())
+                .map(|v| {
+                    i32::try_from(v).map_err(|_| {
+                        TeleError::Other(format!(
+                            "DC migration target value {v} does not fit in i32"
+                        ))
+                    })
+                })
+                .transpose()?
                 .ok_or_else(|| {
                     TeleError::Other("DC migration hint arrived without a target DC".to_string())
                 })?;
@@ -1030,7 +1060,8 @@ async fn staged_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .unwrap_or(false);
+        .map(|exists| !exists)
+        .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
             .await
@@ -1043,9 +1074,10 @@ async fn staged_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 return Err(e.into());
             }
         };
-    let result = staged_code_flow(&guard, &pending, flags).await;
+    let mut signed_in = false;
+    let result = staged_code_flow(&guard, &pending, flags, &mut signed_in).await;
     drop(guard);
-    if result.is_err() && !session_existed_before {
+    if result.is_err() && !session_existed_before && !signed_in {
         cleanup_partial_session(&args.name);
     }
     result
@@ -1055,6 +1087,7 @@ async fn staged_code_flow(
     guard: &ClientGuard,
     pending: &PendingLogin,
     flags: &GlobalFlags,
+    signed_in: &mut bool,
 ) -> TeleResult<i32> {
     guard.rate_limiter.acquire().await;
     let already = guard
@@ -1079,6 +1112,7 @@ async fn staged_code_flow(
         let code = code_line.trim().to_string();
         match raw_sign_in(&guard.client, pending, &code).await {
             StagedSignIn::SignedIn(auth) => {
+                *signed_in = true;
                 complete_staged_login(guard, *auth).await?;
                 let _ = remove_pending(&pending.account);
                 log_line(
@@ -1158,7 +1192,8 @@ async fn staged_resend(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32>
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .unwrap_or(false);
+        .map(|exists| !exists)
+        .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
             .await
@@ -1213,6 +1248,7 @@ async fn staged_resend_flow(
         }
         Ok(grammers_client::tl::enums::auth::SentCode::Success(_)) => {
             let _ = remove_pending(&pending.account);
+            let _ = bootstrap_peer_cache(guard).await;
             log_line("info", "server reports the account is already signed in");
             let data = serde_json::json!({"stage": "resend", "authorized": true});
             crate::executor::finish(
@@ -1236,7 +1272,8 @@ async fn staged_cancel_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .unwrap_or(false);
+        .map(|exists| !exists)
+        .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
             .await
@@ -1308,6 +1345,7 @@ async fn login_flow(
                 },
             )
             .await?;
+            let _ = bootstrap_peer_cache(guard).await;
         }
         "code" => {
             let phone = phone
@@ -1388,7 +1426,7 @@ async fn sign_in_with_retries(
                 log_line("warn", "invalid code; try again");
             }
             Err(grammers_client::SignInError::InvalidPassword(_)) => {
-                return Err(TeleError::Usage("invalid code".to_string()));
+                return Err(TeleError::Auth("invalid 2FA password".to_string()));
             }
             Err(grammers_client::SignInError::SignUpRequired) => {
                 return Err(TeleError::Usage(
@@ -1552,6 +1590,54 @@ async fn complete_staged_login(
     }
     Ok(())
 }
+
+async fn bootstrap_peer_cache(guard: &ClientGuard) -> TeleResult<()> {
+    use grammers_client::{
+        session::{
+            types::{PeerAuth, PeerInfo, UpdateState, UpdatesState},
+            Session as _,
+        },
+        tl,
+    };
+    let me = guard.client.get_me().await.map_err(tele_invocation)?;
+    let me = match me.raw {
+        tl::enums::User::User(u) => u,
+        tl::enums::User::Empty(_) => {
+            return Err(TeleError::Other(
+                "get_me returned an empty user after sign in".to_string(),
+            ));
+        }
+    };
+    guard
+        .session
+        .cache_peer(&PeerInfo::User {
+            id: me.id,
+            auth: me.access_hash.filter(|_| !me.min).map(PeerAuth::from_hash),
+            bot: Some(me.bot),
+            is_self: Some(true),
+        })
+        .await
+        .map_err(|e| TeleError::Other(format!("failed to cache signed-in user: {e}")))?;
+    if let Ok(tl::enums::updates::State::State(state)) = guard
+        .client
+        .invoke(&tl::functions::updates::GetState {})
+        .await
+    {
+        guard
+            .session
+            .set_update_state(UpdateState::All(UpdatesState {
+                pts: state.pts,
+                qts: state.qts,
+                date: state.date,
+                seq: state.seq,
+                channels: Vec::new(),
+            }))
+            .await
+            .map_err(|e| TeleError::Other(format!("failed to store update state: {e}")))?;
+    }
+    Ok(())
+}
+
 async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     if flags.dry_run {
         log_line("info", "[dry-run] would log out account");
@@ -1571,9 +1657,11 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             return Err(tele_invocation(e));
         }
     }
-    guard.close().await;
-    remove_session_file_retry(&session::session_path(&args.name)).await?;
-    remove_session_file_retry(&session::lock_path(&args.name)).await?;
+    purge_pending(&args.name);
+    drop(guard);
+    if let Err(e) = session::remove_session(&args.name) {
+        log_line("warn", &format!("could not remove session files: {e:#}"));
+    }
     log_line("info", &format!("account {} logged out", args.name));
     let data = serde_json::json!({"signed_out": true});
     crate::executor::finish(
@@ -1591,6 +1679,7 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             &dry_run_envelope(&args.name, &would, &flags.command),
         );
     }
+    purge_pending(&args.name);
     session::remove_session(&args.name)?;
     let mut cfg = config::load_config(flags.config_path.as_deref())?;
     cfg.accounts.remove(&args.name);
@@ -1900,6 +1989,7 @@ async fn delete_proof(
 async fn delete(args: &DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let reason = validate_delete_reason(&args.reason)?;
     require_explicit_selection("account delete", flags)?;
+    refuse_interactive_with_multiple_accounts("account delete", flags)?;
     if !args.yes {
         let targets = crate::executor::select_accounts(flags)?;
         let list = targets.join(", ");
@@ -2175,9 +2265,6 @@ async fn phone(args: &PhoneArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-const SESSION_REMOVE_RETRIES: usize = 20;
-const SESSION_REMOVE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
-
 async fn fetch_authorizations(
     client: &grammers_client::Client,
 ) -> TeleResult<Vec<grammers_client::tl::types::Authorization>> {
@@ -2428,6 +2515,9 @@ async fn password(args: &PasswordArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         args.recovery_email.as_deref(),
     )?;
     require_explicit_selection("account password", flags)?;
+    if action.needs_prompt() {
+        refuse_interactive_with_multiple_accounts("account password", flags)?;
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let hint_present = args.hint.is_some();
@@ -2506,27 +2596,6 @@ async fn fetch_has_password(client: &grammers_client::Client) -> TeleResult<bool
     Ok(password.has_password)
 }
 
-async fn remove_session_file_retry(path: &std::path::Path) -> TeleResult<()> {
-    let mut last_error: Option<std::io::Error> = None;
-    for _ in 0..SESSION_REMOVE_RETRIES {
-        match std::fs::remove_file(path) {
-            Ok(()) => return Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => {
-                last_error = Some(e);
-                tokio::time::sleep(SESSION_REMOVE_RETRY_DELAY).await;
-            }
-        }
-    }
-    Err(TeleError::Other(format!(
-        "could not remove session file {}: {}",
-        path.display(),
-        last_error
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "unknown error".to_string())
-    )))
-}
-
 fn single_outcome(account: &str, data: serde_json::Value) -> AccountOutcome {
     AccountOutcome {
         account: account.to_string(),
@@ -2596,7 +2665,9 @@ fn status_table_rows(envelope: &Envelope) -> Vec<Vec<String>> {
 
 fn code_prompt(phone: Option<&str>, stderr_is_terminal: bool) -> String {
     match phone {
-        Some(phone) if stderr_is_terminal => format!("Enter the code sent to {phone}: "),
+        Some(phone) if stderr_is_terminal => {
+            format!("Enter the code sent to {}: ", redact_phone(phone))
+        }
         _ => "Enter the code: ".to_string(),
     }
 }
@@ -2992,7 +3063,18 @@ fn compute_new_password_hash(
     salt2: &[u8],
     g: i32,
     p: &[u8],
-) -> Vec<u8> {
+) -> TeleResult<Vec<u8>> {
+    use grammers_crypto::two_factor_auth::check_p_and_g;
+    if !(2..=7).contains(&g) {
+        return Err(TeleError::Other(format!(
+            "unsupported SRP generator g={g}; cannot compute password hash"
+        )));
+    }
+    if !check_p_and_g(p, &g) {
+        return Err(TeleError::Other(
+            "invalid SRP prime parameters; cannot compute password hash".to_string(),
+        ));
+    }
     let x = ph2(password.as_bytes(), salt1, salt2);
     let big_x = BigUint::from_bytes_be(&x);
     let big_p = BigUint::from_bytes_be(p);
@@ -3004,7 +3086,7 @@ fn compute_new_password_hash(
     }
     let mut out = vec![0u8; 256 - v.len()];
     out.extend_from_slice(&v);
-    out
+    Ok(out)
 }
 
 fn extend_salt1(base_salt1: &[u8], extra: &[u8; 32]) -> Vec<u8> {
@@ -3031,7 +3113,7 @@ fn new_password_algo_and_hash(
         None => generate_secure_32()?,
     };
     let new_salt1 = extend_salt1(&base.salt1, &extra);
-    let hash = compute_new_password_hash(password, &new_salt1, &base.salt2, base.g, &base.p);
+    let hash = compute_new_password_hash(password, &new_salt1, &base.salt2, base.g, &base.p)?;
     let algo = grammers_client::tl::types::PasswordKdfAlgoSha256Sha256Pbkdf2Hmacsha512iter100000Sha256ModPow {
         salt1: new_salt1,
         salt2: base.salt2.clone(),
@@ -3538,11 +3620,44 @@ fn restore_stdin_echo(disabled: bool) {
 
 #[cfg(not(windows))]
 fn disable_stdin_echo() -> bool {
-    false
+    use std::os::unix::io::AsRawFd;
+    let fd = std::io::stdin().lock().as_raw_fd();
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut termios) != 0 {
+            return false;
+        }
+        let orig = termios;
+        termios.c_lflag &= !libc::ECHO;
+        if libc::tcsetattr(fd, libc::TCSANOW, &termios) != 0 {
+            return false;
+        }
+        ECHO_RESTORE.store(true, std::sync::atomic::Ordering::Relaxed);
+        ORIG_TERMIOS.lock().unwrap().replace(orig);
+        true
+    }
 }
 
 #[cfg(not(windows))]
-fn restore_stdin_echo(_disabled: bool) {}
+fn restore_stdin_echo(disabled: bool) {
+    if !disabled {
+        return;
+    }
+    use std::os::unix::io::AsRawFd;
+    let fd = std::io::stdin().lock().as_raw_fd();
+    unsafe {
+        if let Some(orig) = ORIG_TERMIOS.lock().unwrap().take() {
+            let _ = libc::tcsetattr(fd, libc::TCSANOW, &orig);
+        }
+    }
+    ECHO_RESTORE.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(windows))]
+static ECHO_RESTORE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(windows))]
+static ORIG_TERMIOS: std::sync::Mutex<Option<libc::termios>> = std::sync::Mutex::new(None);
 
 fn ensure_account_config_entry(
     name: &str,
@@ -4133,7 +4248,7 @@ mod tests {
     fn code_prompt_includes_phone_only_on_terminal_stderr() {
         assert_eq!(
             code_prompt(Some("+15551234567"), true),
-            "Enter the code sent to +15551234567: "
+            "Enter the code sent to +1***567: "
         );
         assert_eq!(code_prompt(Some("+15551234567"), false), "Enter the code: ");
         assert_eq!(code_prompt(None, true), "Enter the code: ");
@@ -4532,35 +4647,6 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn remove_session_file_retry_tolerates_missing_file() {
-        let dir =
-            std::env::temp_dir().join(format!("telecli-logout-missing-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        remove_session_file_retry(&dir.join("ghost.session"))
-            .await
-            .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn remove_session_file_retry_waits_for_handle_release() {
-        let dir = std::env::temp_dir().join(format!("telecli-logout-lock-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("locked.session");
-        let file = std::fs::File::create(&path).unwrap();
-        let holder = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            drop(file);
-        });
-        remove_session_file_retry(&path).await.unwrap();
-        assert!(!path.exists());
-        holder.await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5279,7 +5365,7 @@ mod tests {
             !rendered.contains("p6enp6en"),
             "base64 key material leaked into machine payload: {rendered}"
         );
-        remove_session_file_retry(&dest).await.unwrap();
+        let _ = std::fs::remove_file(&dest);
         session::remove_session("keyed").unwrap();
         std::env::remove_var("TELE_APP_DIR");
         drop(_guard);
@@ -5580,12 +5666,14 @@ mod tests {
         let extended = extend_salt1(&salt1, &extra);
         let salt2 = b"fixed_salt2_16_!!".to_vec();
         let p = decode_b64(REF_P_B64);
-        let h1 = compute_new_password_hash("hello-ph2-deterministic", &extended, &salt2, 3, &p);
-        let h2 = compute_new_password_hash("hello-ph2-deterministic", &extended, &salt2, 3, &p);
+        let h1 =
+            compute_new_password_hash("hello-ph2-deterministic", &extended, &salt2, 3, &p).unwrap();
+        let h2 =
+            compute_new_password_hash("hello-ph2-deterministic", &extended, &salt2, 3, &p).unwrap();
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 256);
         assert!(h1.iter().any(|&b| b != 0));
-        let h3 = compute_new_password_hash("different", &extended, &salt2, 3, &p);
+        let h3 = compute_new_password_hash("different", &extended, &salt2, 3, &p).unwrap();
         assert_ne!(h1, h3);
     }
 
