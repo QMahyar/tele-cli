@@ -240,7 +240,7 @@ Anti-patterns that hurt this repo:
 
 ## Slice Workflow
 
-1. Pick one `tasks/todo.md` item and matching capability ids.
+1. Pick one `docs/capabilities.md` `want` row and matching capability ids.
 2. RED: failing test in `tests/` (offline). Live behavior verified manually.
 3. GREEN: minimal kernel + command.
 4. Mark matrix rows `done` if shipped.
@@ -256,7 +256,6 @@ Anti-patterns that hurt this repo:
 - Release: `docs/release.md` (7 build targets; npm publishes 8 packages via OIDC trusted publishing)
 - npm packaging: `npm/` — main package + JS launcher (`bin/telecli.js` resolves `@qmahyar/telecli-<os>-<arch>` platform packages); platform packages are generated in the release workflow, never committed
 - ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights; 005 = release gate)
-- Tasks: `tasks/todo.md` (live tracker)
 
 ## Verification
 

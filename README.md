@@ -1,17 +1,17 @@
 # tele
 
-> A Rust CLI for driving real Telegram user accounts — messages, chats, groups, contacts, privacy, live streaming, and more. No bot tokens.
+A Rust CLI for driving real Telegram user accounts. Messages, chats, groups, contacts, privacy, live streaming, and more. No bot tokens.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 
 ---
 
-## Why?
+## What it does
 
-- **User accounts, not bots.** Full MTProto client surface — scheduled messages, forum topics, admin log, takeout export, raw TL calls. Anything your Telegram account can do, `tele` can do.
-- **Multi-account.** Name them, tag them, fan out a command across all of them. Sequential by default, `--parallel 1–32` when you need speed.
-- **Human + machine.** Comfy tables on your terminal; a single JSON envelope (or JSONL from `listen`) on stdout for scripts and AI agents. Logs on stderr only.
+- **User accounts, not bots.** The full MTProto client surface: scheduled messages, forum topics, admin log, takeout export, raw TL calls. Anything your Telegram account can do, `tele` can do.
+- **Multi-account.** Name accounts, tag them, fan out a command across all of them. Sequential by default, `--parallel 1–32` when you need speed.
+- **Human and machine.** Tables on your terminal for people. One JSON envelope (or JSONL from `listen`) on stdout for scripts and AI agents. Logs go to stderr only.
 - **Pure Rust client.** Built on [grammers](https://docs.rs/grammers-client) 0.10 (MTProto). The only C is the SQLite engine bundled for Telethon session import.
 - **MCP server built in.** `tele mcp` exposes the whole CLI as tools for Claude, Cursor, or any MCP client.
 
@@ -19,14 +19,14 @@
 
 ## Install
 
-npm (Windows, Linux x64/arm64, macOS — the matching native binary installs automatically):
+npm (Windows, Linux x64/arm64, macOS). The matching native binary installs automatically:
 
 ```bash
 npm install -g @qmahyar/telecli
 tele --version
 ```
 
-Or grab a binary from [Releases](https://github.com/QMahyar/tele-cli/releases) — 7 targets, including a **static linux-arm64-musl build that runs in Termux/Android** and a static linux-x64-musl for any distro.
+Or grab a binary from [Releases](https://github.com/QMahyar/tele-cli/releases). Builds cover 7 targets, including a **static linux-arm64-musl build that runs in Termux/Android** and a static linux-x64-musl for any distro.
 
 Build from source (requires [Rust stable](https://www.rust-lang.org/)):
 
@@ -65,7 +65,7 @@ tele msg send --chat me --text "hello from tele"
 tele listen --events NewMessage --chat me --timeout-secs 30
 ```
 
-That's it. Every command supports `--dry-run`, `--json`, and `--account` / `--tag` for account selection.
+Every command supports `--dry-run`, `--json`, and `--account` / `--tag` for account selection.
 
 ---
 
@@ -188,7 +188,7 @@ See [docs/cli-contract.md](docs/cli-contract.md) for the full machine API refere
 
 - Secrets (API keys, sessions, phone numbers) live **outside the repo** under the app data dir and are never logged.
 - One session file per account. Never share a session across processes.
-- `--dry-run` is honored everywhere — no network calls, no file writes.
+- `--dry-run` is honored everywhere. No network calls, no file writes.
 - `tele raw` is full account power. Treat it with the same care as your Telegram client.
 
 See [docs/security.md](docs/security.md) for the full threat model.

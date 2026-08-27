@@ -102,7 +102,7 @@ TELE_LIVE=1 cargo test -- --ignored   # full live suite
 
 CI runs plain `cargo test` and never sets `TELE_LIVE`. There is no live-test workflow.
 
-Record each completed run and its results in `tasks/todo.md`.
+Record each completed run and its results in the commit that ships the fix.
 
 ## References
 
