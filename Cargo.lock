@@ -2368,6 +2368,7 @@ dependencies = [
  "grammers-session",
  "grammers-tl-parser",
  "hmac",
+ "libc",
  "libsql",
  "log",
  "num-bigint",
