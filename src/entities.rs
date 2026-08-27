@@ -34,6 +34,7 @@ pub async fn resolve_peer(
                 "warn",
                 "looking up phone number; privacy settings may hide the account",
             );
+            let digits_for_cleanup = digits.clone();
             let res = client
                 .invoke(&tl::functions::contacts::ImportContacts {
                     contacts: vec![tl::enums::InputContact::InputPhoneContact(
@@ -52,11 +53,22 @@ pub async fn resolve_peer(
                 tl::enums::contacts::ImportedContacts::Contacts(res) => res.users,
             };
             if let Some(user) = users.first() {
-                let _ = client
+                if let Err(e) = client
                     .invoke(&tl::functions::contacts::DeleteContacts {
                         id: vec![imported_user_to_input_user(user)],
                     })
-                    .await;
+                    .await
+                {
+                    crate::output::log_line(
+                        "warn",
+                        &format!("failed to clean up temporary import: {e}"),
+                    );
+                }
+            } else if let Err(e) = cleanup_temp_contact(client, &digits_for_cleanup).await {
+                crate::output::log_line(
+                    "warn",
+                    &format!("failed to clean up temporary import: {e}"),
+                );
             }
             match users.into_iter().next() {
                 Some(user) => Ok(grammers_client::peer::Peer::User(
@@ -80,6 +92,7 @@ pub async fn resolve_peer(
                     Ok(peer) => return Ok(peer),
                     Err(e) if is_stale_cache_error(&e) => {
                         log_stale_cache_retry(id, &e);
+                        evict_stale_peers(session, id).await;
                     }
                     Err(e) => return Err(crate::error::invocation_error(e)),
                 }
@@ -90,6 +103,7 @@ pub async fn resolve_peer(
                     Ok(peer) => return Ok(peer),
                     Err(e) if is_stale_cache_error(&e) => {
                         log_stale_cache_retry(id, &e);
+                        evict_stale_peers(session, id).await;
                     }
                     Err(e) => return Err(crate::error::invocation_error(e)),
                 }
@@ -99,6 +113,12 @@ pub async fn resolve_peer(
                     return match client.resolve_peer(pref).await {
                         Ok(peer) => Ok(peer),
                         Err(grammers_client::InvocationError::Dropped) => {
+                            let chat_pref = tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
+                                chat_id: raw,
+                            });
+                            client.resolve_peer(chat_pref).await
+                        }
+                        Err(e) if e.is("PEER_ID_INVALID") => {
                             let chat_pref = tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
                                 chat_id: raw,
                             });
@@ -322,7 +342,7 @@ fn classify_target(raw: &str) -> Target {
             return if rt.peer_ref == "me" {
                 Target::Me
             } else if rt.peer_ref.is_empty() {
-                Target::Link(String::new())
+                Target::Invalid
             } else {
                 match rt.peer_ref.parse::<i64>() {
                     Ok(id) => Target::Numeric(id),
@@ -463,7 +483,7 @@ fn rpc_error(code: i32, name: &str) -> InvocationError {
 }
 
 fn is_stale_cache_error(e: &InvocationError) -> bool {
-    e.is("PEER_ID_INVALID") || e.is("CHANNEL_INVALID")
+    e.is("PEER_ID_INVALID") || e.is("CHANNEL_INVALID") || e.is("CHAT_ID_INVALID")
 }
 
 fn log_stale_cache_retry(id: i64, e: &InvocationError) {
@@ -471,6 +491,53 @@ fn log_stale_cache_retry(id: i64, e: &InvocationError) {
         "cached peer data for {id} rejected by server ({}); retrying uncached resolution",
         crate::error::invocation_message(e)
     );
+}
+
+async fn evict_stale_peers(session: &SqliteSession, id: i64) {
+    let mut pids = Vec::new();
+    if let Some(pid) = PeerId::from_bot_api_dialog_id(id) {
+        pids.push(pid);
+    }
+    let raw = if id < 0 { negative_id_raw(id) } else { id };
+    for pid in [PeerId::user(raw), PeerId::chat(raw), PeerId::channel(raw)]
+        .into_iter()
+        .flatten()
+    {
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    for pid in pids {
+        purge_peer(session, pid).await;
+    }
+}
+
+async fn purge_peer(session: &SqliteSession, peer_id: PeerId) {
+    use std::collections::HashMap;
+    #[allow(dead_code)]
+    struct FakeDatabase(libsql::Connection);
+    #[allow(dead_code)]
+    struct FakeCache {
+        home_dc: i32,
+        dc_options: HashMap<i32, grammers_session::types::DcOption>,
+    }
+    #[allow(dead_code)]
+    struct FakeSqliteSession {
+        database: tokio::sync::Mutex<FakeDatabase>,
+        cache: std::sync::Mutex<FakeCache>,
+    }
+    let fake = unsafe { &*(session as *const SqliteSession as *const FakeSqliteSession) };
+    let Some(bot_id) = peer_id.bot_api_dialog_id() else {
+        return;
+    };
+    let guard = fake.database.lock().await;
+    let _ = guard
+        .0
+        .execute(
+            "DELETE FROM peer_info WHERE peer_id = :peer_id",
+            libsql::named_params! {":peer_id": bot_id},
+        )
+        .await;
 }
 
 fn stale_or_invalid_peer_error() -> crate::error::TeleError {
@@ -495,6 +562,32 @@ fn imported_user_to_input_user(user: &tl::enums::User) -> tl::enums::InputUser {
             access_hash: u.access_hash.unwrap_or(0),
         }),
     }
+}
+
+async fn cleanup_temp_contact(client: &Client, digits: &str) -> Result<(), InvocationError> {
+    let raw: tl::enums::contacts::Contacts = client
+        .invoke(&tl::functions::contacts::GetContacts { hash: 0 })
+        .await?;
+    let users = match raw {
+        tl::enums::contacts::Contacts::NotModified => Vec::new(),
+        tl::enums::contacts::Contacts::Contacts(c) => c.users,
+    };
+    let target_digits: String = digits.chars().filter(|c| c.is_ascii_digit()).collect();
+    for user in &users {
+        let phone = match user {
+            tl::enums::User::User(u) => u.phone.as_deref().unwrap_or_default(),
+            tl::enums::User::Empty(_) => continue,
+        };
+        let phone_digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        if phone_digits == target_digits {
+            let input = imported_user_to_input_user(user);
+            client
+                .invoke(&tl::functions::contacts::DeleteContacts { id: vec![input] })
+                .await?;
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 pub fn is_channel(peer: &grammers_client::peer::Peer) -> bool {

@@ -92,6 +92,11 @@ pub struct DeleteArgs {
         help = "private chats only: also delete the history for both sides (channels/groups are left regardless; their history is untouched)"
     )]
     revoke: bool,
+    #[arg(
+        long,
+        help = "allow deleting Saved Messages (chat me); without it, --chat me is refused"
+    )]
+    include_self: bool,
 }
 
 pub async fn run(cmd: DialogCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -162,7 +167,10 @@ pub(crate) async fn dialog_list_core(
     params: ListParams,
 ) -> TeleResult<serde_json::Value> {
     shares.rate_limiter.acquire().await;
-    let folder = params.folder.unwrap_or(0);
+    if let Some(folder) = params.folder {
+        return dialog_list_folder_core(shares, params.limit, folder).await;
+    }
+    let folder = 0;
     let mut iter = shares.client.iter_dialogs();
     let mut rows = Vec::new();
     let mut count = 0u32;
@@ -202,6 +210,209 @@ pub(crate) async fn dialog_list_core(
                 count += 1;
             }
             None => break,
+        }
+    }
+    Ok(serde_json::json!({"dialogs": rows}))
+}
+
+async fn dialog_list_folder_core(
+    shares: &crate::client::ServeShares,
+    limit: u32,
+    folder: i32,
+) -> TeleResult<serde_json::Value> {
+    use grammers_client::peer::{Peer, User};
+    use grammers_session::types::PeerId;
+    let mut rows = Vec::new();
+    let mut offset_date = 0;
+    let mut offset_id = 0;
+    let mut offset_peer = tl::enums::InputPeer::Empty;
+    let mut exclude_pinned = false;
+    loop {
+        let remaining = limit.saturating_sub(rows.len() as u32) as i32;
+        if remaining <= 0 {
+            break;
+        }
+        let fetch = std::cmp::min(100, remaining);
+        shares.rate_limiter.acquire().await;
+        let raw: tl::enums::messages::Dialogs = shares
+            .client
+            .invoke(&tl::functions::messages::GetDialogs {
+                exclude_pinned,
+                folder_id: Some(folder),
+                offset_date,
+                offset_id,
+                offset_peer: offset_peer.clone(),
+                limit: fetch,
+                hash: 0,
+            })
+            .await
+            .map_err(tele_invocation)?;
+        let (dialogs, mut messages, users, chats, is_last) = match raw {
+            tl::enums::messages::Dialogs::Dialogs(d) => {
+                (d.dialogs, d.messages, d.users, d.chats, true)
+            }
+            tl::enums::messages::Dialogs::Slice(d) => {
+                let last = (d.dialogs.len() as i32) < fetch;
+                (d.dialogs, d.messages, d.users, d.chats, last)
+            }
+            tl::enums::messages::Dialogs::NotModified(_) => {
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), true)
+            }
+        };
+        if dialogs.is_empty() {
+            break;
+        }
+        let mut peers_map = std::collections::HashMap::new();
+        for u in users {
+            let p = Peer::User(User::from_raw(&shares.client, u));
+            peers_map.insert(p.id(), p);
+        }
+        for c in chats {
+            let p = Peer::from_raw(&shares.client, c);
+            peers_map.insert(p.id(), p);
+        }
+        let mut last_peer_id: Option<PeerId> = None;
+        let mut last_msg_date: Option<i32> = None;
+        let mut last_msg_id: Option<i32> = None;
+        for dlg in &dialogs {
+            if !is_dialog_row(dlg) {
+                continue;
+            }
+            let d = match dlg {
+                tl::enums::Dialog::Dialog(d) => d,
+                tl::enums::Dialog::Folder(_) => continue,
+            };
+            let peer_id: PeerId = match &d.peer {
+                tl::enums::Peer::User(u) => PeerId::user_unchecked(u.user_id),
+                tl::enums::Peer::Chat(c) => PeerId::chat_unchecked(c.chat_id),
+                tl::enums::Peer::Channel(c) => PeerId::channel_unchecked(c.channel_id),
+            };
+            let Some(peer) = peers_map.get(&peer_id) else {
+                continue;
+            };
+            last_peer_id = Some(peer_id);
+            let draft = match &d.draft {
+                Some(tl::enums::DraftMessage::Message(dm)) => dm.message.clone(),
+                _ => String::new(),
+            };
+            let mut found_idx: Option<usize> = None;
+            for (idx, msg) in messages.iter().enumerate() {
+                let pid = match msg {
+                    tl::enums::Message::Empty(e) => e.peer_id.clone(),
+                    tl::enums::Message::Message(m) => Some(m.peer_id.clone()),
+                    tl::enums::Message::Service(m) => Some(m.peer_id.clone()),
+                };
+                if let Some(pid) = pid {
+                    if PeerId::from(&pid) == peer_id {
+                        found_idx = Some(idx);
+                        break;
+                    }
+                }
+            }
+            let (last_text, last_date) = if let Some(idx) = found_idx {
+                let raw_msg = messages.swap_remove(idx);
+                let (txt, date) = match &raw_msg {
+                    tl::enums::Message::Empty(_) => (String::new(), None),
+                    tl::enums::Message::Message(m) => {
+                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
+                            .map(|d| d.to_rfc3339());
+                        if idx == 0 {
+                            last_msg_date = Some(m.date);
+                            last_msg_id = Some(m.id);
+                        }
+                        (m.message.clone(), dt)
+                    }
+                    tl::enums::Message::Service(m) => {
+                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
+                            .map(|d| d.to_rfc3339());
+                        if idx == 0 {
+                            last_msg_date = Some(m.date);
+                            last_msg_id = Some(m.id);
+                        }
+                        (String::new(), dt)
+                    }
+                };
+                // ensure last msg tracking uses actual last processed dialog's msg if not set yet
+                if last_msg_date.is_none() {
+                    match &raw_msg {
+                        tl::enums::Message::Message(m) => {
+                            last_msg_date = Some(m.date);
+                            last_msg_id = Some(m.id);
+                        }
+                        tl::enums::Message::Service(m) => {
+                            last_msg_date = Some(m.date);
+                            last_msg_id = Some(m.id);
+                        }
+                        _ => {}
+                    }
+                }
+                (txt, date)
+            } else {
+                (String::new(), None)
+            };
+            // fallback last tracking if no msg found, use dialog's last values for pagination
+            if last_msg_date.is_none() {
+                // keep previous offsets
+            }
+            rows.push(dialog_row(
+                d,
+                crate::serialize::peer_key(peer),
+                draft,
+                last_text,
+                last_date,
+            ));
+            if rows.len() as u32 >= limit {
+                break;
+            }
+        }
+        if rows.len() as u32 >= limit || is_last {
+            break;
+        }
+        exclude_pinned = true;
+        if let (Some(pid), Some(date), Some(id)) = (last_peer_id, last_msg_date, last_msg_id) {
+            offset_date = date;
+            offset_id = id;
+            offset_peer = match pid.kind() {
+                grammers_session::types::PeerKind::User => {
+                    tl::enums::InputPeer::User(tl::types::InputPeerUser {
+                        user_id: pid.bare_id_unchecked(),
+                        access_hash: 0,
+                    })
+                }
+                grammers_session::types::PeerKind::Chat => {
+                    tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
+                        chat_id: pid.bare_id_unchecked(),
+                    })
+                }
+                grammers_session::types::PeerKind::Channel => {
+                    tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+                        channel_id: pid.bare_id_unchecked(),
+                        access_hash: 0,
+                    })
+                }
+            };
+        } else if let Some(pid) = last_peer_id {
+            offset_peer = match pid.kind() {
+                grammers_session::types::PeerKind::User => {
+                    tl::enums::InputPeer::User(tl::types::InputPeerUser {
+                        user_id: pid.bare_id_unchecked(),
+                        access_hash: 0,
+                    })
+                }
+                grammers_session::types::PeerKind::Chat => {
+                    tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
+                        chat_id: pid.bare_id_unchecked(),
+                    })
+                }
+                grammers_session::types::PeerKind::Channel => {
+                    tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
+                        channel_id: pid.bare_id_unchecked(),
+                        access_hash: 0,
+                    })
+                }
+            };
+        } else {
+            break;
         }
     }
     Ok(serde_json::json!({"dialogs": rows}))
@@ -271,13 +482,16 @@ pub(crate) async fn dialog_drafts_core(
     for update in collect_updates(&updates) {
         if let tl::enums::Update::DraftMessage(u) = update {
             if let tl::enums::DraftMessage::Message(d) = &u.draft {
-                let id = match &u.peer {
-                    tl::enums::Peer::User(p) => p.user_id,
-                    tl::enums::Peer::Chat(p) => -p.chat_id,
-                    tl::enums::Peer::Channel(p) => -p.channel_id,
+                let (id, kind) = match &u.peer {
+                    tl::enums::Peer::User(p) => (p.user_id, "user"),
+                    tl::enums::Peer::Chat(p) => (-p.chat_id, "group"),
+                    tl::enums::Peer::Channel(p) => {
+                        (-(1_000_000_000_000i64 + p.channel_id), "channel")
+                    }
                 };
                 rows.push(serde_json::json!({
                     "id": id,
+                    "kind": kind,
                     "draft": d.message.clone(),
                 }));
                 if rows.len() >= params.limit as usize {
@@ -640,6 +854,12 @@ pub(crate) async fn dialog_delete_core(
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    if matches!(peer, tl::enums::InputPeer::PeerSelf) && !params.include_self {
+        return Err(TeleError::Usage(
+            "refusing to delete Saved Messages (chat me); pass --include-self to confirm"
+                .to_string(),
+        ));
+    }
     match delete_route(&peer) {
         DeleteRoute::HistoryClear => {
             let _: tl::enums::messages::AffectedHistory = shares
@@ -835,6 +1055,8 @@ pub(crate) struct DeleteParams {
     #[serde(default)]
     pub(crate) revoke: bool,
     #[serde(default)]
+    pub(crate) include_self: bool,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -843,6 +1065,7 @@ impl From<&DeleteArgs> for DeleteParams {
         Self {
             chat: a.chat.clone(),
             revoke: a.revoke,
+            include_self: a.include_self,
             dry_run: false,
         }
     }
@@ -853,6 +1076,7 @@ impl From<&DeleteParams> for DeleteArgs {
         Self {
             chat: p.chat.clone(),
             revoke: p.revoke,
+            include_self: p.include_self,
         }
     }
 }
@@ -1845,6 +2069,7 @@ mod tests {
             DeleteArgs {
                 chat: "@someone".to_string(),
                 revoke: true,
+                include_self: false,
             },
             &flags,
         )
