@@ -2,12 +2,14 @@
 
 A Rust CLI for driving real Telegram user accounts. Messages, chats, groups, contacts, privacy, live streaming, and more. No bot tokens.
 
+Built by [QMahyar](https://github.com/QMahyar).
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 
 ---
 
-## What it does
+## Why use this
 
 - **User accounts, not bots.** The full MTProto client surface: scheduled messages, forum topics, admin log, takeout export, raw TL calls. Anything your Telegram account can do, `tele` can do.
 - **Multi-account.** Name accounts, tag them, fan out a command across all of them. Sequential by default, `--parallel 1–32` when you need speed.
@@ -19,28 +21,33 @@ A Rust CLI for driving real Telegram user accounts. Messages, chats, groups, con
 
 ## Install
 
-npm (Windows, Linux x64/arm64, macOS). The matching native binary installs automatically:
+**npm (Windows, Linux x64/arm64, macOS)**
 
 ```bash
 npm install -g @qmahyar/telecli
 tele --version
 ```
 
-Or grab a binary from [Releases](https://github.com/QMahyar/tele-cli/releases). Builds cover 7 targets, including a **static linux-arm64-musl build that runs in Termux/Android** and a static linux-x64-musl for any distro.
+The matching native binary installs automatically per platform.
 
-Build from source (requires [Rust stable](https://www.rust-lang.org/)):
+**Binary downloads**
+
+Grab a binary from [Releases](https://github.com/QMahyar/tele-cli/releases). Builds cover 7 targets, including a static linux-arm64-musl build that runs in Termux/Android.
+
+**Build from source**
+
+Requires [Rust stable](https://www.rust-lang.org/).
 
 ```bash
 git clone https://github.com/QMahyar/tele-cli.git
 cd tele-cli
 cargo build --release
-cargo run -- --help          # smoke-test
+target/release/tele --help
 ```
 
-The binary is `target/release/tele` (`.exe` on Windows). For development builds use
-`cargo build` and `cargo run -- ...` instead.
+On Windows, the binary is `target/release/tele.exe`.
 
-**Shell completions** (after install):
+**Shell completions**
 
 ```bash
 tele completions bash >> ~/.bashrc
@@ -57,7 +64,7 @@ tele completions fish > ~/.config/fish/completions/tele.fish
 tele account add --name work
 tele account login --name work --method code --phone +1XXXXXXXXXX
 
-# 2. Send a message (dry-run first — touches nothing)
+# 2. Send a message (dry-run first, touches nothing)
 tele msg send --chat me --text "hello from tele" --dry-run
 tele msg send --chat me --text "hello from tele"
 
@@ -82,12 +89,12 @@ Every command supports `--dry-run`, `--json`, and `--account` / `--tag` for acco
 | **Profile** | `profile get`, `profile set` (name/bio/username), `profile photo --remove`, `profile emoji-status` |
 | **Privacy** | `privacy get` (14 keys), `privacy set` (incl. chat-participant rules) |
 | **Takeout** | `takeout start`, `takeout export` (progress + resume), `takeout finish --abandon` |
-| **Listen** | `listen` - stream JSONL updates (`NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw`, `Album`, `Gap`, `Service`, `ChatAction`, `UserUpdate`) |
-| **Raw** | `raw` - typed registry for 25 supported TL methods |
+| **Listen** | `listen` streams JSONL updates: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw`, `Album`, `Gap`, `Service`, `ChatAction`, `UserUpdate` |
+| **Raw** | `raw` typed registry for 25 supported TL methods |
 | **Stickers** | `stickers list`, `stickers sets`, `stickers add`, `stickers delete` |
 | **Stories** | `stories list`, `stories send`, `stories view`, `stories delete`, `stories archive` |
-| **Serve** | `serve` — JSONL server over stdin/stdout |
-| **MCP** | `mcp` — MCP stdio server |
+| **Serve** | `serve` duplex JSONL server over stdin/stdout |
+| **MCP** | `mcp` MCP stdio server |
 | **Completions** | `completions bash`, `completions zsh`, `completions fish`, `completions powershell` |
 
 Run `tele --help` for the full reference, or `tele <command> --help` for a specific command.
@@ -102,11 +109,11 @@ Run `tele --help` for the full reference, or `tele <command> --help` for a speci
 | `--tag <tag>` | Target accounts with this tag |
 | `--json` | Machine-readable JSON output |
 | `--jsonl` | JSON Lines output (one object per line) |
-| `--dry-run` | Validate and print what would happen — no network calls |
+| `--dry-run` | Validate and print what would happen, no network calls |
 | `--parallel <1-32>` | Fan out across accounts in parallel |
 | `--config <path>` | Override config file location |
 | `-v` / `-vv` | Verbose logging (info / debug) on stderr |
-| `-q` | Quiet — errors only |
+| `-q` | Quiet, errors only |
 | `--verbose` | Shorthand for `-v` |
 
 ---
@@ -115,14 +122,14 @@ Run `tele --help` for the full reference, or `tele <command> --help` for a speci
 
 Config lives at `%APPDATA%\telecli` (Windows) or `~/.config/telecli` (macOS/Linux). Override with `--config` or `TELE_APP_DIR`.
 
-**`.env`** — API credentials (from [my.telegram.org](https://my.telegram.org)):
+**`.env`** holds API credentials from [my.telegram.org](https://my.telegram.org):
 
 ```
 TELE_API_ID=1234567
 TELE_API_HASH=0123456789abcdef0123456789abcdef
 ```
 
-**`config.toml`** — accounts, proxy, tuning:
+**`config.toml`** holds accounts, proxy, and tuning:
 
 ```toml
 flood_sleep_threshold = 60
@@ -178,7 +185,7 @@ Every one-shot command prints a single JSON object on stdout with `--json`:
 
 `listen` streams one JSONL object per update on stdout. Events: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw` (selected via the `--events` allowlist; `Raw` rows carry a base64 `raw` payload plus a `state` object).
 
-**Exit codes:** `0` all succeeded · `1` usage error · `2` partial failure · `3` all failed · `4` auth required · `130` interrupted (SIGINT).
+**Exit codes:** `0` all succeeded, `1` usage error, `2` partial failure, `3` all failed, `4` auth required, `130` interrupted (SIGINT).
 
 See [docs/cli-contract.md](docs/cli-contract.md) for the full machine API reference.
 
@@ -186,7 +193,7 @@ See [docs/cli-contract.md](docs/cli-contract.md) for the full machine API refere
 
 ## Security
 
-- Secrets (API keys, sessions, phone numbers) live **outside the repo** under the app data dir and are never logged.
+- Secrets (API keys, sessions, phone numbers) live outside the repo under the app data dir and are never logged.
 - One session file per account. Never share a session across processes.
 - `--dry-run` is honored everywhere. No network calls, no file writes.
 - `tele raw` is full account power. Treat it with the same care as your Telegram client.
@@ -206,17 +213,9 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-Hundreds of tests across unit, contract, and selection suites. All run offline by default.
+1387 tests across unit, contract, and selection suites. All run offline by default.
 
----
-
-## Contributing
-
-Contributions welcome. Open an issue first for anything non-trivial. Run the full test suite before submitting:
-
-```bash
-cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --all -- --check
-```
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full developer guide, architecture overview, and how to add a new command.
 
 ---
 

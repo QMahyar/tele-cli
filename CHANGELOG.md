@@ -4,7 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.6.4] - 2026-08-26`n`n### Fixed`n- npm distribution: single package bundles all 13 binaries — every platform installs via the existing trusted publisher, no new package names, no 404.`n`n## [0.6.3] - 2026-08-25
+## [0.6.5] - 2026-08-27
+
+### Added
+- `docs/CONTRIBUTING.md`: developer guide with architecture overview, step-by-step instructions for adding new commands, testing strategy, and AI agent guidelines.
+
+### Changed
+- README rewritten: user-first framing, author attribution, cleaner prose, link to new contributing guide.
+
+### Removed
+- 65 consumed planning files: `tasks/todo.md`, `.scratch/`, `.wayfinder/`, `docs/superpowers/plans/`, `proptest-regressions/`. All work from these artifacts shipped and the tracker is no longer referenced.
+
+## [0.6.4] - 2026-08-26
+
+### Fixed
+- npm distribution: single package bundles all 13 binaries. Every platform installs via the existing trusted publisher, no new package names, no 404.
+
+## [0.6.3] - 2026-08-25
 
 ### Added
 - Multi-platform npm distribution: platform packages (win32-x64, linux-x64/arm64 gnu+musl, darwin-arm64/x64) via optionalDependencies; npm installs only the matching native binary.
@@ -25,16 +41,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - SERVE-PLATFORM phase 0+1: duplex control-plane hardening (two-lane executor, event seq/resync, negotiated handshake v2 + identity, ops.list self-description, confirm gate, deny_unknown_fields, poll event parity) + pipe ops across msg/dialog/topic/profile/privacy/contact/stickers/story/raw groups
 - MCP stdio server (rmcp 3.1): `tele mcp` exposes all 67 serve ops as tools with JSON Schema inputSchemas, annotations, confirm gate, read-only/groups filters, legacy handshake compat, offline tests
 
-## [0.6.0] - 2026-08-25`n`n### Added — MCP stdio server (rmcp 3.1): tele mcp exposes all 67 serve ops as tools with JSON Schema inputSchemas, annotations, confirm gate, read-only/groups filters, legacy handshake compat, offline tests`n`n## [0.5.0] - 2026-08-23
+## [0.5.0] - 2026-08-23
 
 ### Added
-- 	ele account ttl get|set --days N (inactive-account self-destruct timer) and 	ele account delete --reason R --yes (SRP-protected, explicit --account + --yes required).
+- `tele account ttl get|set --days N` (inactive-account self-destruct timer) and `tele account delete --reason R --yes` (SRP-protected, explicit --account + --yes required).
 - Web-session management: sessions --web, --terminate-web HASH, --terminate-all-web, --change-flags HASH --disable-encrypted/--disable-call-requests.
-- 	ele account phone --change-phone +XXX / phone --confirm-code NNN --phone-hash H (staged phone change).
+- `tele account phone --change-phone +XXX` / `phone --confirm-code NNN --phone-hash H` (staged phone change).
 - Staged login --stage resend (auth.resendCode) and --stage cancel-code (auth.cancelCode + local state clear).
-
-- Recovery-email lifecycle for cloud password: `--confirm-email CODE`, `--resend-email`, `--cancel-email`; set/change auto-prompt for the emailed code on `EMAIL_UNCONFIRMED` (max 3 attempts) after showing the masked inbox pattern. Plus `--status` (has_password / has_recovery / hint / pending_reset_date), `--reset-start` and `--decline-reset.
-- 	ele account password --set and --change via local PH2 (pbkdf2-hmac-sha512 ×100000, salt1 extended with 32-byte secure_random, `PasswordKdfAlgo` + `new_password_hash = pow(g, PH2) mod p` replicated from `grammers-crypto 0.10` `src/two_factor_auth.rs:134-154`; `hint`/`recovery_email` ride same `account.UpdatePasswordSettings` call, no extra RPC; `--remove` remains via SRP proof). Dry-run returns honest `would` + `hint`/`recovery_email` booleans and never prompts.
+- Recovery-email lifecycle for cloud password: `--confirm-email CODE`, `--resend-email`, `--cancel-email`; set/change auto-prompt for the emailed code on `EMAIL_UNCONFIRMED` (max 3 attempts) after showing the masked inbox pattern. Plus `--status` (has_password / has_recovery / hint / pending_reset_date), `--reset-start` and `--decline-reset`.
+- `tele account password --set` and `--change` via local PH2 (pbkdf2-hmac-sha512 x100000, salt1 extended with 32-byte secure_random, `PasswordKdfAlgo` + `new_password_hash = pow(g, PH2) mod p` replicated from `grammers-crypto 0.10` `src/two_factor_auth.rs:134-154`; `hint`/`recovery_email` ride same `account.UpdatePasswordSettings` call, no extra RPC; `--remove` remains via SRP proof). Dry-run returns honest `would` + `hint`/`recovery_email` booleans and never prompts.
 
 ## [0.4.0] - 2026-08-22
 
