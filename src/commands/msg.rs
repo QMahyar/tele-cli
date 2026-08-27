@@ -1000,6 +1000,16 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "--background is not supported with albums".to_string(),
         ));
     }
+    if args.silent && args.files.len() > 1 {
+        return Err(TeleError::Usage(
+            "--silent is not supported with albums".to_string(),
+        ));
+    }
+    if args.media_ttl.is_some() && args.files.len() > 1 {
+        return Err(TeleError::Usage(
+            "--media-ttl is not supported with albums".to_string(),
+        ));
+    }
     if !args.files.is_empty() {
         if !effective_preview(args) {
             return Err(TeleError::Usage(
@@ -1021,6 +1031,23 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
     if args.schedule.as_deref() == Some("online") && !args.files.is_empty() {
         return Err(TeleError::Usage(
             "--schedule online is not supported with albums".to_string(),
+        ));
+    }
+    if args.schedule.as_deref() == Some("online")
+        && (args.url.is_some() || args.copy_from.is_some())
+    {
+        return Err(TeleError::Usage(
+            "--schedule is not supported with --url or --copy-from".to_string(),
+        ));
+    }
+    if args
+        .schedule
+        .as_deref()
+        .is_some_and(|s| !s.eq_ignore_ascii_case("online"))
+        && (args.files.len() > 1 || args.url.is_some() || args.copy_from.is_some())
+    {
+        return Err(TeleError::Usage(
+            "--schedule is not supported with --url, --copy-from, or albums (2+ files)".to_string(),
         ));
     }
     if args.format == "markdown" {
@@ -1495,8 +1522,10 @@ pub(crate) async fn send_core(
         let base = match format.as_str() {
             "markdown" => InputMessage::new()
                 .copy_media(&media)
-                .markdown(caption.unwrap_or_default()),
-            _ => InputMessage::new().copy_media(&media),
+                .markdown(caption.clone().unwrap_or_default()),
+            _ => InputMessage::new()
+                .copy_media(&media)
+                .text(caption.clone().unwrap_or_default()),
         };
         let base = base.link_preview(preview);
         let sent = shares
@@ -1529,7 +1558,7 @@ pub(crate) async fn send_core(
     }
     if files.len() > 1 {
         let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
-        for path in &files {
+        for (idx, path) in files.iter().enumerate() {
             let uploaded = shares
                 .client
                 .upload_file(path)
@@ -1539,9 +1568,14 @@ pub(crate) async fn send_core(
                 true => grammers_client::media::InputMedia::new().photo(uploaded),
                 false => grammers_client::media::InputMedia::new().document(uploaded),
             };
+            let cap = if idx == 0 {
+                caption.clone().unwrap_or_default()
+            } else {
+                String::new()
+            };
             media = match format.as_str() {
-                "markdown" => media.markdown(caption.clone().unwrap_or_default()),
-                _ => media.caption(caption.clone().unwrap_or_default()),
+                "markdown" => media.markdown(cap),
+                _ => media.caption(cap),
             };
             media = media.reply_to(reply);
             medias.push(media);
@@ -1787,7 +1821,8 @@ pub(crate) async fn delete_core(
                 .map_err(tele_invocation)?;
             count += batch.len();
         }
-        let (report, partial) = delete_report(requested, count);
+        let (mut report, partial) = delete_report(requested, count);
+        report["unconfirmed"] = serde_json::json!(true);
         if partial {
             crate::output::log_line(
                 "warn",
@@ -2615,6 +2650,11 @@ pub(crate) fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
+    if args.global && !args.chat.trim().is_empty() {
+        return Err(TeleError::Usage(
+            "--global and --chat are mutually exclusive".to_string(),
+        ));
+    }
     if !args.global {
         require_chat_target(&args.chat, "chat")?;
     }
@@ -3091,17 +3131,23 @@ pub(crate) async fn download_core(
         .next()
         .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
     let name = download_name(&msg);
+    validate_download_dir(&out_dir)?;
     tokio::task::spawn_blocking({
         let out_dir = out_dir.clone();
         move || std::fs::create_dir_all(&out_dir)
     })
     .await
     .map_err(|e| TeleError::Other(e.to_string()))??;
-    validate_download_dir(&out_dir)?;
     let path = std::path::Path::new(&out_dir).join(name);
     if !params.force {
         refuse_existing_download_target(&path)?;
     }
+    tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || sweep_stale_download_temps(&path)
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))?;
     let temp = download_temp_path(&path);
     tokio::task::spawn_blocking({
         let temp = temp.clone();
@@ -3209,11 +3255,50 @@ fn sanitize_download_name(name: &str) -> String {
 }
 
 fn download_temp_path(final_path: &std::path::Path) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CTR: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let ctr = CTR.fetch_add(1, Ordering::SeqCst);
     let name = final_path.file_name().unwrap_or_default().to_string_lossy();
     final_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
-        .join(format!(".{name}.part-{}", std::process::id()))
+        .join(format!(".{name}.part-{}-{nanos}-{ctr}", std::process::id()))
+}
+
+fn sweep_stale_download_temps(final_path: &std::path::Path) {
+    let Some(parent) = final_path.parent() else {
+        return;
+    };
+    let Some(fname) = final_path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let prefix = format!(".{fname}.part-");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(mtime) else {
+            continue;
+        };
+        if age.as_secs() > 3600 {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn refuse_existing_download_target(path: &std::path::Path) -> TeleResult<()> {
@@ -4634,11 +4719,48 @@ mod tests {
         assert_eq!(temp.parent().unwrap(), dir);
         let fname = temp.file_name().unwrap().to_string_lossy().to_string();
         assert!(fname.starts_with(".report.pdf.part-"), "{fname}");
-        assert!(fname
-            .strip_prefix(".report.pdf.part-")
-            .unwrap()
-            .parse::<u32>()
-            .is_ok());
+        let suffix = fname.strip_prefix(".report.pdf.part-").unwrap();
+        let parts: Vec<&str> = suffix.split('-').collect();
+        assert!(parts.len() >= 3, "{fname}");
+        assert!(parts[0].parse::<u32>().is_ok(), "{fname}");
+        assert!(parts[1].parse::<u128>().is_ok(), "{fname}");
+        assert!(parts[2].parse::<u64>().is_ok(), "{fname}");
+    }
+
+    #[test]
+    fn download_temp_path_uniqueness_across_calls() {
+        let dir = std::env::temp_dir().join(format!("telecli-dl-uniq-{}", std::process::id()));
+        let final_path = dir.join("a.bin");
+        let a = download_temp_path(&final_path);
+        let b = download_temp_path(&final_path);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn sweep_stale_download_temps_removes_old_siblings() {
+        let base = std::env::temp_dir().join(format!("telecli-dl-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let final_path = base.join("video.mp4");
+        std::fs::write(&final_path, b"x").unwrap();
+        let stale = base.join(".video.mp4.part-123-1-0");
+        std::fs::write(&stale, b"stale").unwrap();
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        filetime_set_mtime(&stale, old_time);
+        sweep_stale_download_temps(&final_path);
+        assert!(!stale.exists(), "stale sibling should be swept");
+        let fresh = base.join(".video.mp4.part-123-999-1");
+        std::fs::write(&fresh, b"fresh").unwrap();
+        sweep_stale_download_temps(&final_path);
+        assert!(fresh.exists(), "fresh sibling must remain");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn filetime_set_mtime(path: &std::path::Path, t: std::time::SystemTime) {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(t));
     }
 
     #[test]
@@ -5006,7 +5128,7 @@ mod tests {
         assert_eq!(value["dry_run"], serde_json::json!(true));
         assert_eq!(value["chat"], serde_json::json!("@x"));
         assert_eq!(value["text"], serde_json::json!("hi"));
-        assert_eq!(value["file"], serde_json::Value::Null);
+        assert_eq!(value["files"], serde_json::json!([]));
         assert_eq!(value["caption"], serde_json::Value::Null);
         assert_eq!(value["format"], serde_json::json!("plain"));
         assert_eq!(value["schedule"], serde_json::Value::Null);
@@ -5737,6 +5859,171 @@ mod tests {
         let plain = send_dry_run_payload(&send_args("plain"), None);
         assert_eq!(plain["noforwards"], serde_json::json!(false));
         assert_eq!(plain["background"], serde_json::json!(false));
+    }
+
+    fn album_captions_for_test(caption: Option<&str>, n: usize) -> Vec<String> {
+        (0..n)
+            .map(|idx| {
+                if idx == 0 {
+                    caption.unwrap_or_default().to_string()
+                } else {
+                    String::new()
+                }
+            })
+            .collect()
+    }
+
+    fn copy_caption_for_test(caption: Option<&str>) -> String {
+        caption.unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn album_caption_applies_only_to_first_media() {
+        let caps = album_captions_for_test(Some("x"), 3);
+        assert_eq!(caps.len(), 3);
+        assert_eq!(caps[0], "x");
+        assert_eq!(caps[1], "");
+        assert_eq!(caps[2], "");
+        assert_eq!(caps.iter().filter(|c| !c.is_empty()).count(), 1);
+        let empty = album_captions_for_test(None, 3);
+        assert!(empty.iter().all(|c| c.is_empty()));
+    }
+
+    #[test]
+    fn copy_from_caption_carried_for_both_formats() {
+        for fmt in ["plain", "markdown"] {
+            let cap = copy_caption_for_test(Some("hello"));
+            assert_eq!(cap, "hello", "{fmt}");
+            let cap_empty = copy_caption_for_test(None);
+            assert_eq!(cap_empty, "");
+        }
+    }
+
+    #[test]
+    fn validate_send_rejects_schedule_with_url_album_copy() {
+        let future_ts = (chrono::Utc::now().timestamp() + 3600).to_string();
+        let mut args = send_args("plain");
+        args.text = None;
+        args.url = Some("https://example.com/x.jpg".to_string());
+        args.kind = Some("photo".to_string());
+        args.schedule = Some(future_ts.clone());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+
+        let dir = upload_fixture("sched-album", &["a.jpg", "b.jpg", "c.jpg"]);
+        let mut album = send_args("plain");
+        album.text = None;
+        album.files = ["a.jpg", "b.jpg", "c.jpg"]
+            .iter()
+            .map(|n| dir.join(n).to_string_lossy().into_owned())
+            .collect();
+        album.schedule = Some(future_ts.clone());
+        assert!(matches!(validate_send(&album), Err(TeleError::Usage(_))));
+        album.schedule = Some("online".to_string());
+        assert!(matches!(validate_send(&album), Err(TeleError::Usage(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut with_copy = send_args("plain");
+        with_copy.text = None;
+        with_copy.copy_from = Some("@src".to_string());
+        with_copy.copy_id = Some(1);
+        with_copy.schedule = Some(future_ts);
+        assert!(matches!(
+            validate_send(&with_copy),
+            Err(TeleError::Usage(_))
+        ));
+
+        let mut ok = send_args("plain");
+        ok.schedule = Some((chrono::Utc::now().timestamp() + 3600).to_string());
+        assert!(validate_send(&ok).is_ok());
+    }
+
+    #[test]
+    fn validate_send_rejects_silent_and_media_ttl_with_albums() {
+        let dir = upload_fixture("album-flags", &["a.jpg", "b.jpg"]);
+        let mut silent = send_args("plain");
+        silent.text = None;
+        silent.files = ["a.jpg", "b.jpg"]
+            .iter()
+            .map(|n| dir.join(n).to_string_lossy().into_owned())
+            .collect();
+        silent.silent = true;
+        assert!(
+            matches!(validate_send(&silent), Err(TeleError::Usage(msg)) if msg.contains("silent"))
+        );
+        silent.silent = false;
+        silent.media_ttl = Some(60);
+        assert!(
+            matches!(validate_send(&silent), Err(TeleError::Usage(msg)) if msg.contains("media-ttl"))
+        );
+        silent.media_ttl = None;
+        assert!(validate_send(&silent).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_search_rejects_global_with_chat() {
+        let bad = SearchArgs {
+            chat: "@durov".to_string(),
+            query: "q".to_string(),
+            limit: 10,
+            global: true,
+        };
+        assert!(
+            matches!(validate_search(&bad), Err(TeleError::Usage(msg)) if msg.contains("global"))
+        );
+        let ok = SearchArgs {
+            chat: String::new(),
+            query: "q".to_string(),
+            limit: 10,
+            global: true,
+        };
+        assert!(validate_search(&ok).is_ok());
+    }
+
+    #[test]
+    fn delete_all_report_is_unconfirmed() {
+        let (mut report, _) = delete_report(5, 5);
+        assert!(report.get("unconfirmed").is_none());
+        report["unconfirmed"] = serde_json::json!(true);
+        assert_eq!(report["unconfirmed"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn validate_limit_rejects_zero() {
+        assert!(matches!(
+            crate::commands::validate_limit(0, 10_000, "limit"),
+            Err(TeleError::Usage(msg)) if msg.contains("between 1")
+        ));
+        assert!(crate::commands::validate_limit(1, 10_000, "limit").is_ok());
+        assert!(crate::commands::validate_limit(10_000, 10_000, "limit").is_ok());
+    }
+
+    #[test]
+    fn validate_search_rejects_zero_limit() {
+        let args = SearchArgs {
+            chat: "me".to_string(),
+            query: "q".to_string(),
+            limit: 0,
+            global: false,
+        };
+        assert!(matches!(validate_search(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn download_guard_refuses_before_creating_dir() {
+        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let base =
+            std::env::temp_dir().join(format!("telecli-dl-guard-nocreate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sessions")).unwrap();
+        std::env::set_var("TELE_APP_DIR", &base);
+        let inside = base.join("should-not-exist").join("nested");
+        assert!(inside.to_string_lossy().contains("should-not-exist"));
+        let err = validate_download_dir(inside.to_string_lossy().as_ref()).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(!inside.exists(), "guard must refuse before creating dir");
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
