@@ -48,6 +48,8 @@ pub struct LifecycleArgs {
     chat: String,
     #[arg(long, help = "topic id (root message id; see tele topic list)")]
     topic: String,
+    #[arg(long, help = "pin: unpin instead of pin")]
+    unpin: bool,
 }
 
 #[derive(Args, Clone)]
@@ -246,7 +248,7 @@ async fn topic_action_core(
                 .invoke(&tl::functions::messages::UpdatePinnedForumTopic {
                     peer,
                     topic_id,
-                    pinned: true,
+                    pinned: !params.unpin,
                 })
                 .await
                 .map_err(tele_invocation)?;
@@ -687,6 +689,8 @@ pub(crate) struct LifecycleParams {
     pub(crate) chat: String,
     pub(crate) topic: String,
     #[serde(default)]
+    pub(crate) unpin: bool,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -695,6 +699,7 @@ impl From<&LifecycleArgs> for LifecycleParams {
         Self {
             chat: a.chat.clone(),
             topic: a.topic.clone(),
+            unpin: a.unpin,
             dry_run: false,
         }
     }
@@ -705,6 +710,7 @@ impl From<&LifecycleParams> for LifecycleArgs {
         Self {
             chat: p.chat.clone(),
             topic: p.topic.clone(),
+            unpin: p.unpin,
         }
     }
 }
