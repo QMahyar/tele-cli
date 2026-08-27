@@ -51,7 +51,14 @@ pub fn log_line(level: &str, message: &str) {
         "error" => 3,
         "warn" => 2,
         "info" => 1,
-        _ => 0,
+        "debug" => 0,
+        other => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "[error] log_line: unknown level \"{other}\""
+            );
+            3
+        }
     };
     if lv < min {
         return;
@@ -283,6 +290,12 @@ mod tests {
         log_line("error", "test error");
         log_line("warn", "test warn");
         log_line("debug", "test debug");
+    }
+
+    #[test]
+    fn log_line_unknown_level_does_not_panic() {
+        log_line("verbose", "test verbose");
+        log_line("", "test empty");
     }
 
     #[test]

@@ -1,12 +1,41 @@
 use std::path::Path;
 
 pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(path)?;
+    if path.exists() {
+        #[cfg(unix)]
+        restrict(path, 0o700)?;
+        #[cfg(windows)]
+        set_user_only_dacl(path, true)?;
+        return Ok(());
+    }
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let stem = path.file_name().ok_or_else(|| {
+        std::io::Error::other(format!(
+            "cannot create private dir: no file name in {}",
+            path.display()
+        ))
+    })?;
+    let tmp = parent.join(format!(".{}_tmp", stem.to_string_lossy()));
+    std::fs::create_dir_all(&tmp)?;
     #[cfg(unix)]
-    restrict(path, 0o700)?;
+    restrict(&tmp, 0o700)?;
     #[cfg(windows)]
-    set_user_only_dacl(path, true)?;
-    Ok(())
+    set_user_only_dacl(&tmp, true)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                #[cfg(unix)]
+                restrict(path, 0o700)?;
+                #[cfg(windows)]
+                set_user_only_dacl(path, true)?;
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -72,7 +101,7 @@ fn set_user_only_dacl(path: &Path, inheritable: bool) -> std::io::Result<()> {
             return Err(std::io::Error::other(e.to_string()));
         }
 
-        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let token_user = std::ptr::read_unaligned(buffer.as_ptr() as *const TOKEN_USER);
         let user_sid = PSID(token_user.User.Sid.0);
 
         let trustee = TRUSTEE_W {
@@ -192,9 +221,16 @@ pub fn resolve_for_guard(path: &Path) -> std::path::PathBuf {
 
 #[cfg(windows)]
 fn strip_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
-    match path.to_string_lossy().strip_prefix(r"\\?\") {
-        Some(rest) => std::path::PathBuf::from(rest),
-        None => path,
+    let os = path.into_os_string();
+    let bytes = os.as_encoded_bytes();
+    let prefix = br"\\?\";
+    if bytes.starts_with(prefix) {
+        let stripped = &bytes[prefix.len()..];
+        std::path::PathBuf::from(unsafe {
+            std::ffi::OsString::from_encoded_bytes_unchecked(stripped.to_vec())
+        })
+    } else {
+        std::path::PathBuf::from(os)
     }
 }
 

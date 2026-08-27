@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use log::{LevelFilter, Metadata, Record};
 
 const LEVEL_INFO: u8 = 1;
+#[cfg(test)]
 const LEVEL_ERROR: u8 = 3;
 
 static MIN_LINE: AtomicU8 = AtomicU8::new(LEVEL_INFO);
@@ -45,9 +46,13 @@ pub fn set_flags(verbose: u8, quiet: bool) {
         return;
     };
     log::set_max_level(level);
-    if quiet {
-        MIN_LINE.store(LEVEL_ERROR, Ordering::Relaxed);
-    }
+    let line_level = match level {
+        LevelFilter::Debug | LevelFilter::Trace => 0,
+        LevelFilter::Info => 1,
+        LevelFilter::Warn => 2,
+        LevelFilter::Error | LevelFilter::Off => 3,
+    };
+    MIN_LINE.store(line_level, Ordering::Relaxed);
 }
 
 fn resolve_log_level(verbose: u8, quiet: bool, env: Option<&str>) -> Option<LevelFilter> {
