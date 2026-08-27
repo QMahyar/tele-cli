@@ -107,13 +107,14 @@ impl From<serde_json::Error> for TeleError {
 pub type TeleResult<T> = Result<T, TeleError>;
 
 pub fn aggregate_exit_code(ok_count: usize, failed: &[i32]) -> i32 {
-    if failed.is_empty() {
+    let filtered: Vec<i32> = failed.iter().copied().filter(|c| *c != EXIT_OK).collect();
+    if filtered.is_empty() {
         EXIT_OK
     } else if ok_count > 0 {
         EXIT_PARTIAL
-    } else if failed.contains(&EXIT_AUTH) {
+    } else if filtered.contains(&EXIT_AUTH) {
         EXIT_AUTH
-    } else if failed.iter().any(|c| *c != EXIT_USAGE) {
+    } else if filtered.iter().any(|c| *c != EXIT_USAGE) {
         EXIT_ALL_FAILED
     } else {
         EXIT_USAGE
@@ -409,5 +410,22 @@ mod tests {
     #[test]
     fn broken_pipe_is_not_confused_with_other_errors() {
         assert!(!TeleError::Other("pipe?".to_string()).is_broken_pipe());
+    }
+
+    #[test]
+    fn aggregate_exit_code_filters_broken_pipe_ok() {
+        let failed = vec![EXIT_OK, EXIT_ALL_FAILED];
+        assert_eq!(aggregate_exit_code(0, &failed), EXIT_ALL_FAILED);
+    }
+
+    #[test]
+    fn aggregate_exit_code_only_broken_pipe_ok_is_ok() {
+        let failed = vec![EXIT_OK];
+        assert_eq!(aggregate_exit_code(0, &failed), EXIT_OK);
+    }
+
+    #[test]
+    fn aggregate_exit_code_empty_failed_is_ok() {
+        assert_eq!(aggregate_exit_code(0, &[]), EXIT_OK);
     }
 }

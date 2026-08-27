@@ -15,6 +15,7 @@ pub struct RateLimiter {
     capacity: u64,
     refill_rate: f64,
     last_refill: Mutex<Instant>,
+    fractional: Mutex<f64>,
     needs_wait: AtomicBool,
     notify: Notify,
 }
@@ -31,6 +32,7 @@ impl RateLimiter {
             capacity,
             refill_rate: budget / 60.0,
             last_refill: Mutex::new(Instant::now()),
+            fractional: Mutex::new(0.0),
             needs_wait: AtomicBool::new(false),
             notify: Notify::new(),
         })
@@ -51,6 +53,7 @@ impl RateLimiter {
                     .compare_exchange(tokens, tokens - 1, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
+                    self.needs_wait.store(false, Ordering::Release);
                     return;
                 }
                 continue;
@@ -58,8 +61,42 @@ impl RateLimiter {
             self.needs_wait.store(true, Ordering::Release);
             let mut notified = Box::pin(self.notify.notified());
             notified.as_mut().enable();
-            let _ = tokio::time::timeout(Duration::from_millis(100), notified).await;
+            self.maybe_refill();
+            let tokens = self.tokens.load(Ordering::Acquire);
+            if tokens > 0 {
+                if self
+                    .tokens
+                    .compare_exchange(tokens, tokens - 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    self.needs_wait.store(false, Ordering::Release);
+                    return;
+                }
+                continue;
+            }
+            let deadline = self.token_deadline();
+            let wait = deadline.saturating_duration_since(Instant::now());
+            let capped = wait.min(Duration::from_millis(500));
+            let _ = tokio::time::timeout(capped.max(Duration::from_millis(1)), notified).await;
         }
+    }
+
+    fn token_deadline(&self) -> Instant {
+        if self.refill_rate <= 0.0 || self.capacity == 0 {
+            return Instant::now() + Duration::from_secs(3600);
+        }
+        let tokens = self.tokens.load(Ordering::Acquire);
+        let deficit = self.capacity.saturating_sub(tokens);
+        if deficit == 0 {
+            return Instant::now();
+        }
+        let frac = *self.fractional.lock().unwrap_or_else(|e| e.into_inner());
+        let needed = deficit as f64 - frac;
+        if needed <= 0.0 {
+            return Instant::now();
+        }
+        let secs = needed / self.refill_rate;
+        Instant::now() + Duration::from_secs_f64(secs)
     }
 
     pub async fn acquire_for_items(&self, served: usize) {
@@ -81,15 +118,21 @@ impl RateLimiter {
         if elapsed < 0.01 {
             return;
         }
-        let refill_tokens = (elapsed * self.refill_rate) as u64;
-        if refill_tokens > 0 {
-            let new_tokens = tokens.saturating_add(refill_tokens).min(self.capacity);
+        let mut frac = self.fractional.lock().unwrap_or_else(|e| e.into_inner());
+        *frac += elapsed * self.refill_rate;
+        let whole = *frac as u64;
+        if whole > 0 {
+            *frac -= whole as f64;
+            let new_tokens = tokens.saturating_add(whole).min(self.capacity);
+            let credited = new_tokens - tokens;
+            *last += Duration::from_secs_f64(credited as f64 / self.refill_rate);
+            drop(last);
             if self
                 .tokens
                 .compare_exchange(tokens, new_tokens, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                *last = Instant::now();
+                self.needs_wait.store(false, Ordering::Release);
                 self.notify.notify_waiters();
             }
         }
@@ -272,5 +315,44 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(3200)).await;
         assert!(rl.available_tokens() >= 1);
         rl.acquire().await;
+    }
+
+    #[tokio::test]
+    async fn needs_wait_clears_on_refill() {
+        let rl = RateLimiter::new(Some(600.0));
+        for _ in 0..600 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        rl.needs_wait.store(true, Ordering::Release);
+        assert!(rl.is_limited());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        rl.maybe_refill();
+        assert!(!rl.is_limited());
+        assert!(rl.available_tokens() >= 1);
+    }
+
+    #[tokio::test]
+    async fn needs_wait_clears_on_acquire() {
+        let rl = RateLimiter::new(Some(120.0));
+        rl.needs_wait.store(true, Ordering::Release);
+        assert!(rl.is_limited());
+        rl.acquire().await;
+        assert!(!rl.is_limited());
+    }
+
+    #[tokio::test]
+    async fn fractional_remainder_accumulates_across_refills() {
+        let rl = RateLimiter::new(Some(10.0));
+        for _ in 0..10 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        *rl.fractional.lock().unwrap() = 0.0;
+        *rl.last_refill.lock().unwrap() = Instant::now() - Duration::from_millis(150);
+        rl.maybe_refill();
+        assert_eq!(rl.available_tokens(), 0);
+        let frac = *rl.fractional.lock().unwrap();
+        assert!(frac > 0.0, "remainder should accumulate, got {frac}");
     }
 }

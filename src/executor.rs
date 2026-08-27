@@ -109,10 +109,10 @@ async fn run_one(
 async fn collect_outcomes(
     handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
 ) -> Vec<AccountOutcome> {
-    let mut outcomes: Vec<(usize, AccountOutcome)> = Vec::new();
+    let mut outcomes: Vec<AccountOutcome> = Vec::new();
     {
         let _abort_guard = AbortOnDrop(handles);
-        for (index, (name, handle)) in _abort_guard.0.iter_mut().enumerate() {
+        for (name, handle) in _abort_guard.0.iter_mut() {
             let outcome = match handle.await {
                 Ok(Ok(outcome)) => outcome,
                 Ok(Err(e)) => failed_outcome(name.clone(), e),
@@ -121,12 +121,11 @@ async fn collect_outcomes(
                     TeleError::TaskPanic("account task panicked".to_string()),
                 ),
             };
-            outcomes.push((index, outcome));
+            outcomes.push(outcome);
         }
     }
-    let mut ordered: Vec<AccountOutcome> = outcomes.into_iter().map(|(_, o)| o).collect();
-    ordered.sort_by(|a, b| a.account.cmp(&b.account));
-    ordered
+    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
+    outcomes
 }
 
 pub fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
@@ -233,7 +232,7 @@ pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
         .accounts
         .iter()
         .filter(|a| !a.ok)
-        .filter_map(|a| a.exit_code)
+        .map(|a| a.exit_code.unwrap_or(EXIT_ALL_FAILED))
         .collect();
     aggregate_exit_code(ok_count, &failed)
 }
@@ -652,6 +651,27 @@ mod tests {
     fn empty_envelope_is_vacuous_ok() {
         let env = envelope(vec![]);
         assert_eq!(envelope_exit_code(&env), EXIT_OK);
+    }
+
+    #[test]
+    fn failed_outcome_missing_exit_code_defaults_to_all_failed() {
+        let env = envelope(vec![AccountOutcome {
+            account: "a".to_string(),
+            ok: false,
+            error: Some(serde_json::json!({"type": "Error"})),
+            data: None,
+            exit_code: None,
+        }]);
+        assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
+    }
+
+    #[test]
+    fn broken_pipe_exit_ok_filtered_from_failures() {
+        let env = envelope(vec![
+            outcome("a", false, Some(EXIT_OK)),
+            outcome("b", false, Some(EXIT_ALL_FAILED)),
+        ]);
+        assert_eq!(envelope_exit_code(&env), EXIT_ALL_FAILED);
     }
 
     #[test]
