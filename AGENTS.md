@@ -57,7 +57,7 @@ Wasteful: pasting all of `docs/capabilities.md` when you touch one `privacy.*` r
 ```bash
 cargo build                              # debug build
 cargo build --release                    # optimized build
-cargo test                               # 837+ tests, no network
+cargo test                               # 1387 tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
@@ -72,7 +72,7 @@ src/
 ├── client.rs            grammers ClientGuard, SenderPool, connect()
 ├── config.rs            App data dir, config.toml, .env, proxy
 ├── entities.rs          Peer cache, access_hash, chat/user/channel refs
-├── error.rs             TeleError enum, exit codes (1-4)
+├── error.rs             TeleError enum, exit codes (0,1-4,130)
 ├── executor.rs          run_fanout(), select_accounts(), parallel semaphore
 ├── output.rs            Envelope, machine_mode(), log_line()
 ├── serialize.rs         message_to_json(), peer_key(), media_name()
@@ -80,18 +80,22 @@ src/
 ├── logging.rs           stderr-only structured logging
 ├── fs_util.rs           Permission helpers (create_dir_private, restrict_file_private); sensitive-file detection lives in msg.rs validate_upload_path()
 └── commands/    ├── mod.rs           Subcommand enum dispatch
-    ├── account.rs       add, login (code/QR), logout, remove, status, list
-    ├── msg.rs           send, get, edit, delete, forward, search, react, download, read, pin
-    ├── chat.rs          join, create, leave, participants, kick, admin, admin-log, stats, invite
-    ├── dialog.rs        list, drafts, archive/unarchive, delete
-    ├── topic.rs         list, create
+    ├── account.rs       add, login (code/QR), logout, remove, status, list, sessions, password, export-session, import-session, ttl, delete, phone
+    ├── msg.rs           send, get, edit, delete, forward, search, react, download, read, pin, vote, typing, click
+    ├── chat.rs          join, create, leave, participants, kick, admin, admin-log, stats, invite, requests, settings, edit, link
+    ├── dialog.rs        list, drafts, archive/unarchive, delete, pin, draft
+    ├── topic.rs         list, create, close, reopen, edit, delete, pin
     ├── contact.rs       list, add, block/unblock
-    ├── profile.rs       get, set (name, bio, photo)
-    ├── privacy.rs       get, set (9 keys)
+    ├── profile.rs       get, set (name, bio, photo, username, emoji-status)
+    ├── privacy.rs       get, set (14 keys)
     ├── takeout.rs       start, export, finish
-    ├── listen.rs        JSONL streaming (NewMessage, MessageEdited, MessageDeleted, Raw)
-    ├── raw.rs           Typed TL registry
+    ├── listen.rs        JSONL streaming (NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap, Service, ChatAction, UserUpdate)
+    ├── raw.rs           Typed TL registry (25 methods)
     ├── completions.rs   bash, zsh, fish, powershell
+    ├── stickers.rs      list, sets, add, delete
+    ├── stories.rs       list, send, view, delete, archive
+    ├── serve.rs         JSONL server over stdin/stdout (long-running)
+    ├── mcp.rs           MCP stdio server (tools/call)
     ├── credentials.rs   creds(), creds_api_id() shared across commands
     └── helpers.rs       peer_id(), stats_*() shared utilities
 ```
@@ -106,20 +110,20 @@ Login, 2FA, QR, sessions. Pattern: ClientGuard::connect() owns grammers; command
 Key files: account.rs, client.rs, session.rs, config.rs
 
 ## Messaging (src/commands/msg.rs, src/serialize.rs)
-Send/edit/delete/forward/search/react/download/read/pin + media handling.
+Send/edit/delete/forward/search/react/download/read/pin/vote/typing/click + media handling.
 Pattern: SendParams + deny_unknown_fields + would payload (msg.rs:348)
 
 ## Chats & Forums (src/commands/chat.rs, src/commands/topic.rs, src/entities.rs)
-Join/create/leave/participants/kick/admin/settings/link + forum topics. Pattern: peer resolution before numeric parse.
+Join/create/leave/participants/kick/admin/admin-log/stats/invite/requests/settings/edit/link + forum topics. Pattern: peer resolution before numeric parse.
 
 ## Dialogs & Contacts (src/commands/dialog.rs, src/commands/contact.rs)
-Dialog list/drafts/archive/pin/delete + contacts. Pattern: row builders in dialog.rs.
+Dialog list/drafts/archive/unarchive/pin/delete/draft + contacts. Pattern: row builders in dialog.rs.
 
 ## Profiles & Privacy (src/commands/profile.rs, src/commands/privacy.rs)
-Get/set (9 keys) + photo/username/emoji-status. Pattern: raw TL via tele raw when no friendly path exists.
+Get/set (14 keys) + photo/username/emoji-status. Pattern: raw TL via tele raw when no friendly path exists.
 
 ## Updates (src/commands/listen.rs, src/commands/serve.rs + src/client.rs stream)
-Streaming NewMessage/MessageEdited/MessageDeleted/Raw/Album/Gap. Pattern: catch_up + dedupe ServeDedupe.
+Streaming NewMessage/MessageEdited/MessageDeleted/Raw/Album/Gap/Service/ChatAction/UserUpdate. Pattern: catch_up + dedupe ServeDedupe.
 
 ## Shared (src/error.rs, src/output.rs, src/executor.rs, src/fs_util.rs)
 Errors, envelopes, fan-out, permissions. Pattern: TeleError enum, Envelope, run_fanout().

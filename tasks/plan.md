@@ -1,82 +1,102 @@
-# Implementation Plan: Hardening + Capabilities (2026-08)
+# Implementation Plan: Review Remediation Sweep (2026-08-26)
 
 ## Overview
+Fix every finding from the 10-reviewer audit of 2026-08-26: 3 critical, 10 major,
+6 security, 5 correctness, 4 optimization, plus documentation drift. Work is
+partitioned by FILE OWNERSHIP so waves of parallel sub-agents cannot conflict.
+TDD everywhere an offline test can exist (RED first). Full `cargo fmt && cargo
+clippy -D warnings && cargo test` gates between waves.
 
-Two workstreams from the 10-agent deep-dive (2026-08-21), executed systematically via wayfinder tickets, then tested and shipped:
+## Waves (file-partitioned, parallel inside each wave)
 
-1. **Phase 1 — Bug fixes** (7 execution tickets, all file-disjoint → fully parallel).
-2. **Phase 2 — Capabilities**: unused grammers 0.10 friendly surface MERGED with feature gaps (same implementation work; e.g. `send_album` = album send). 16 tickets organized by domain.
-3. **Phase 3 — Integration test pass** + live verification checklist.
-4. **Phase 4 — Ship**: docs sync, CHANGELOG, matrix updates, merge to `main`, push/tag on explicit user confirm.
+### Wave 1 — Critical
+- [ ] W1a mcp.rs: `--read-only`/`--groups` enforced in call_core; visible-count
+      in unknown-tool error; op timeouts enforced on tool calls
+- [ ] W1b listen.rs: per-event error containment (no `?` past reconnect loop);
+      EPIPE = clean exit; dedupe keyed on update pts not state pts;
+      GapTracker cap; log swallowed sync_update_state errors; drop dead
+      `_parallel` binding
+- [ ] W1c session.rs: failed import must never delete pre-existing session;
+      export defaults out of CWD; sweep stale `.tmp-{pid}`; reject Windows
+      reserved device names; guard symlinked export destination
+- [ ] W1d serve.rs: fail undelivered jobs with id-correlated envelopes on
+      StreamDown/resync; move dispatch off biased select loop; cache route
+      table once; log sync_update_state failures
 
-Tracker: wayfinder local markdown (`.wayfinder/tickets/`). Map: `.wayfinder/map.md`.
+### Checkpoint 1
+- [ ] fmt + clippy -D warnings + full test suite green
 
-## Architecture Decisions
+### Wave 2 — Major (messaging/chats/entities)
+- [ ] W2a msg.rs + commands/mod.rs: album caption on first item only; reject or
+      honor --schedule/--silent/--media-ttl/--background on url/album/copy
+      paths; copy-from plain keeps caption; download dir guard before mkdir;
+      unique .part temp names; delete --all reports unconfirmed; reject
+      --global with --chat; fix vacuous files-key test; validate_limit rejects 0
+- [ ] W2b entities.rs + dialog.rs + contact.rs: draft ids use bot-API channel
+      form; purge temp contact when phone resolution finds no user; contact add
+      honors one-sided name flags; unblock usage text says unblock; evict stale
+      peer-cache entries + CHAT_ID_INVALID matcher; classify empty t.me/ as
+      Usage; guard dialog delete against Saved Messages; server-side folder
+      filter for dialog list
+- [ ] W2c chat.rs + topic.rs: join rewrites bare invite hash to t.me link;
+      paginate links/importers/requests past 100; usage-limit i32 range check;
+      admin-log fetches until --since; stats/admin run ensure_chat_peer; reject
+      --forum without supergroup; chat_id 0 becomes error; topic pin/unpin both
+      paths; topic emoji rejected honestly instead of fake ok
+- [ ] W2d takeout.rs + completions.rs: start refuses active takeout session;
+      CHECKPOINT_DONE also on empty-page break; completions derive real bin
+      name (telecli); EPIPE-safe stdout
 
-- **Merge grammers-unused + feature gaps** into one capability phase (user-approved direction; distinction dissolves at implementation level).
-- **Branch-per-ticket off integration branch, single checkout** (user decision: no worktrees — disk + cold-build cost). Agents run sequentially; each cuts its ticket branch from the integration head, gates (clippy/fmt/test), merges back `--no-ff`. Integration branches: `fix/hardening` (Phase 1), `feat/capabilities` (Phase 2).
-- JSON/CLI contract changes are **additive only** (`docs/cli-contract.md`). Matrix rows updated in the same change that ships a capability.
-- Polls/effects/checklists/translate/transcribe/stories/business/stars/MCP stay `later` per matrix — NOT in scope.
-- RED-first where practical: failing offline test before fix.
+### Checkpoint 2
+- [ ] fmt + clippy -D warnings + full test suite green
 
-## Task List (index — detail lives in tickets)
+### Wave 3 — Security + Correctness
+- [ ] W3a account.rs: non-Windows echo-off via termios (or loud per-attempt
+      warning); redact phone in prompts; purge pending/{name}.*.json on
+      logout/remove/success; logout holds lock while deleting; try_exists Err
+      treated as unknown (no cleanup); SignedIn never deletes session; DC id
+      out-of-range errors; InvalidPassword distinct error; SRP p/g checks on new
+      password path; complete login bootstrap on ResendCode/QR success; raise
+      post-signout deletion retry budget; refuse interactive ops under --parallel>1
+- [ ] W3b rate_limiter.rs + error.rs + executor.rs + output.rs + logging.rs +
+      fs_util.rs: Notified registered before token load; fractional refill kept;
+      needs_wait cleared; BrokenPipe exit consistent; missing outcome exit_code
+      defaults to EXIT_ALL_FAILED; Level enum for log_line; unified casing +
+      debug tier reachable; UNC prefix rewrite; aligned TOKEN_USER read
+- [ ] W3c privacy.rs + profile.rs: --allow/-deny union semantics (or documented
+      replace + diff warning) — decision: UNION, matching incremental UX;
+      namespace-tagged overlap keys; base-rule users resolved with real access
+      hashes; username sentinel escape (--clear-username equivalent); bio limit
+      70 + ABOUT_TOO_LONG mapped; UTF-16 length checks; photo mime/size
+      validation; upload_file errors no longer TaskPanic; single limiter acquire
 
-### Phase 1: Bug fixes (parallel agents)
-- [ ] BUG-1 rate-limiter zero-budget hang — `rate_limiter.rs`
-- [ ] BUG-2 per-RPC tokens for paginated iteration — `dialog.rs`, `privacy.rs`, `msg.rs`
-- [ ] BUG-3 contact add parses RPC result — `contact.rs`
-- [ ] BUG-4 login UX cluster (TELE_PHONE, retries, phantom session, QR deadline, tags wipe) — `account.rs`, `client.rs`, `session.rs`
-- [ ] BUG-5 config tolerance (unknown account keys, empty proxy table) — `config.rs`
-- [ ] BUG-6 stale-cache evict/retry/hint — `entities.rs`
-- [ ] BUG-7 upload FLOOD_WAIT keys + name-split — `msg.rs`, `profile.rs`
+### Checkpoint 3
+- [ ] fmt + clippy -D warnings + full test suite green
 
-### Checkpoint: Phase 1
-- [ ] All 7 branches merged into `fix/hardening`; clippy+fmt+full tests green
-- [ ] No contract regressions (47 contract tests)
+### Wave 4 — Optimizations + Cargo
+- [ ] Cargo.toml: release strip + codegen-units=1; drop unused rand; drop dup
+      dev serde_json; comment libsql pin rationale in docs/release.md note
+- [ ] (serve route table, dialog folder filter, MCP timeouts already in W1/W2)
 
-### Phase 2: Capabilities (see CAP tickets for acceptance criteria)
-- [ ] CAP-1 serialize enrichment (message + dialog JSON, additive)
-- [ ] CAP-2 msg --topic scoping (send/get/search)
-- [ ] CAP-3 album send + InputMessage builders (copy/ttl/online/thumbnail/url/stream)
-- [ ] CAP-4 download streaming + pin/read extras (iter_download, get_pinned, unpin_all, --notify, clear_mentions, mark-unread)
-- [ ] CAP-5 global search (search_all_messages)
-- [ ] CAP-6 topic lifecycle (close/edit/delete/pin)
-- [ ] CAP-7 moderation depth (participant filters, admin rights completion, ban duration/rights)
-- [ ] CAP-8 chat settings toggles (slow-mode, noforwards, signatures, pre-history)
-- [ ] CAP-9 chat metadata edit (title/about/photo, linked channel)
-- [ ] CAP-10 invite-link suite (export options/list/revoke/edit)
-- [ ] CAP-11 admin-log depth (actor, old/new values, filters)
-- [ ] CAP-12 dialog extras (draft set/clear, dialog pin/unpin, delete semantics + --revoke)
-- [ ] CAP-13 contacts/profile/privacy completion (contact remove+username, profile username/photo-delete/emoji-status, privacy 5 keys + chat-participant rules)
-- [ ] CAP-14 listen upgrades (Gap event, album grouping, DM-deletion matching)
-- [ ] CAP-15 takeout upgrades (progress lines, cursor resume, abandon)
-- [ ] CAP-16 raw registry growth (~15 read-only methods)
-
-### Checkpoint: Phase 2
-- [ ] Full suite green; new contract tests for every new flag/JSON field
-- [ ] docs/capabilities.md rows flipped to done only where shipped
-
-### Phase 3: Final verification
-- [ ] cargo test + clippy -D warnings + fmt check clean at merge head
-- [ ] Manual live checklist re-run (real sessions; user-assisted) for network-touching features
-
-### Phase 4: Ship
-- [ ] CHANGELOG + docs synced (capabilities.md, cli-contract.md, security.md if touched)
-- [ ] Merge `fix/hardening` → `main` (fast-forward or merge commit per repo history)
-- [ ] Push + tag ONLY on user confirm (AGENTS.md boundary)
+### Wave 5 — Documentation
+- [ ] AGENTS.md: project map adds stickers/stories/mcp/serve; privacy 14 keys;
+      account/chat/msg/topic/dialog/listen rows updated; test count refreshed;
+      exit codes include 0/130
+- [ ] README.md: raw registry count 25; command table gains sticker/story/
+      serve/mcp
+- [ ] docs/cli-contract.md: listen event kinds list completed; any behavior-
+      changing fixes noted (privacy union semantics, bio 70, completions bin)
+- [ ] tasks/todo.md: stale shipped checkboxes closed
 
 ## Risks and Mitigations
-
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Parallel agents conflict on msg.rs (BUG-2 vs BUG-7) | Merge friction | Different regions (~908 vs ~483); trivial resolution expected |
-| grammers friendly gaps discovered mid-ticket | Rework | Scout report verified method existence against 0.10.0 sources; raw fallback documented per item |
-| Contract drift from many additive fields | Machine-API breakage | Every ticket adds contract tests; envelope shape locked by existing tests |
-| Live-only behavior untestable offline | False confidence | Unit tests gate logic; live checklist covers RPC paths before ship |
-| Worktree cold builds slow | Time | Shared CARGO_TARGET_DIR under %TEMP%\opencode |
+| Parallel agents collide | build breakage | strict file ownership per wave |
+| Behavior change breaks contract tests | CI red | agents run targeted tests; I gate between waves |
+| Network-path fixes unverifiable offline | silent regressions | unit-test pure logic; live behavior flagged for manual verify |
 
-## Open Questions
-
-1. Push/tag at ship time — needs explicit user go (Phase 4).
-2. macOS CI job (map "Not yet specified" carry-over) — runner/budget decision, not in this effort.
-3. `toml 0.8→1.x` bump — defer to separate effort (breaking, touches write_config paths just hardened).
+## Verification (final)
+- [ ] cargo fmt --all -- --check
+- [ ] cargo clippy --all-targets -- -D warnings
+- [ ] cargo test (all green, count reported)
+- [ ] docs consistent with shipped behavior

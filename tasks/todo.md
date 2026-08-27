@@ -57,14 +57,14 @@
 - [x] profile: get/set (name, bio, photo)
 - [x] privacy: get/set rules
 - [x] takeout: start/export/finish
-- [ ] msg.poll — deferred to `later`: grammers 0.10 has no friendly poll (InputMessage has no `poll`); raw arm deferred
+- [x] msg.poll — shipped as `tele msg vote` (matrix done, VoteArgs in msg.rs:287)
 - [x] kernel.proxy — wired: `config::proxy_url_for` (per-account overrides global, socks5-only) → `SenderPool::with_configuration` with `ConnectionParams { proxy_url }` in `ClientGuard::connect` (41 call sites: hoisted `config_path` + inner closure clone); 5 unit tests
   - Note: proxy connection itself needs live verification through an actual socks5 proxy (tor 9050) — see checklist below
 
 ## Phase 6 — Last (do not start, ask first)
 
-- [ ] MCP `tele mcp serve`
-- [ ] Agent skill
+- [x] MCP `tele mcp serve` — shipped as `tele mcp` (src/commands/mcp.rs, matrix mcp=done)
+- [ ] Agent skill — gated on explicit user go
 
 ## Manual live verification checklist (real sessions in %APPDATA%\telecli)
 
@@ -189,21 +189,21 @@ Out of scope: raw.rs registry dev-facing error text (contract-mandated), macOS C
 
 ## Gap triage (2026-08-22, external review) — new `want` rows in capabilities.md
 
-- [ ] msg.buttons — serialize reply markup / inline buttons additively as `reply_markup` in every message JSON row (get/listen/takeout share `message_to_json`)
-- [ ] msg.click — inline button press (`messages.getBotCallbackAnswer`) + reply-keyboard fallback (send its text)
-- [ ] msg.album-send — send media groups together (`messages.sendMultiMedia`)
-- [ ] msg.typing — chat action indicator (`messages.setTyping`)
-- [ ] msg.send-mods — `--noforwards`/`--background` on send (raw flags; silent already shipped)
-- [ ] listen.filters — `--from`, `--in/--out`, `--pattern` regex, repeatable `--chat`
-- [ ] listen.service — parsed joins/leaves from service messages
-- [ ] chat.invite-check — preview invite before joining (`messages.checkChatInvite`)
-- [ ] chat.join-requests — approve/dismiss/bulk (`messages.hideChatJoinRequest(s)` family)
-- [ ] auth.password-manage — cloud password set/change/remove + recovery email (`account.UpdatePasswordSettings`)
-- [ ] auth.sessions-manage — list + terminate remote sessions (`account.ResetAuthorization`; GetAuthorizations already raw-registry)
-- [ ] kernel.device-id — per-account device_model/system_version/app_version/lang_code → client builder
-- [ ] kernel.session-port — session export/import + Telethon `.session` converter
-- [ ] kernel.login-staged — non-TTY staged login, pending auth resumable across invocations
-- [ ] kernel.link-resolve — `t.me/<chat>/<id>` → chat id + message id
+- [x] msg.buttons — serialize reply markup / inline buttons additively as `reply_markup` in every message JSON row (get/listen/takeout share `message_to_json`)
+- [x] msg.click — inline button press (`messages.getBotCallbackAnswer`) + reply-keyboard fallback (send its text)
+- [x] msg.album-send — send media groups together (`messages.sendMultiMedia`)
+- [x] msg.typing — chat action indicator (`messages.setTyping`)
+- [x] msg.send-mods — `--noforwards`/`--background` on send (raw flags; silent already shipped)
+- [x] listen.filters — `--from`, `--in/--out`, `--pattern` regex, repeatable `--chat`
+- [x] listen.service — parsed joins/leaves from service messages
+- [x] chat.invite-check — preview invite before joining (`messages.checkChatInvite`)
+- [x] chat.join-requests — approve/dismiss/bulk (`messages.hideChatJoinRequest(s)` family)
+- [x] auth.password-manage — cloud password set/change/remove + recovery email (`account.UpdatePasswordSettings`)
+- [x] auth.sessions-manage — list + terminate remote sessions (`account.ResetAuthorization`; GetAuthorizations already raw-registry)
+- [x] kernel.device-id — per-account device_model/system_version/app_version/lang_code → client builder
+- [x] kernel.session-port — session export/import + Telethon `.session` converter
+- [x] kernel.login-staged — non-TTY staged login, pending auth resumable across invocations
+- [x] kernel.link-resolve — `t.me/<chat>/<id>` → chat id + message id
 
 Partial notes from triage: FLOOD_WAIT seconds already in envelope (`error.rs`, `wait_seconds`) — SLOWMODE_WAIT not special-cased yet, fold into next error.rs touch. Scheduled send done; list/cancel stay on the raw registry. Album receive-side done (`grouped_id` + `--events Album`). Silent send done.
 
@@ -373,3 +373,13 @@ Research verdicts: pin legacy-era handshake (declare 2025-11-25; 2026-07-28 rev 
 - [x] MCP-3 MERGED (absorbed into skeleton 9de698a + offline suite in src/commands/mcp.rs): read-only + groups filters wired, error taxonomy mapping table-locked (unknown tool -32602 vs isError envelopes), offline round-trip tests (unknown tool / confirm gate / dry_run / planner error / list_tools annotations)
 - [x] MCP-4 MERGED (this commit): docs cli-contract tele-mcp section + capabilities mcp row want->done + CHANGELOG + client config snippets (Claude Desktop %APPDATA%\Claude\claude_desktop_config.json / Claude Code .mcp.json + claude mcp add / Cursor .cursor/mcp.json)
 - [x] Live verify: MCP Inspector 17/17 PASS (initialize/tools-list/tools-call dry-run/confirm-gate/unknown-tool) via %TEMP%\opencode\mcp_e2e.py 2026-08-25 (npx @modelcontextprotocol/inspector) tools/list + dry-run call + one real send; claude mcp add smoke — NEXT UP: live Inspector verification is the only remaining MCP item
+
+## Docs drift fixup (2026-08-27) — audit stale checkboxes closed
+
+Stale `[ ]` rows that were already shipped in code but left unchecked in the tracker:
+
+- W1–W4 delegation waves (todo.md:310) — marked COMPLETE in Implement-every-want program (2026-08-23), 13 waves merged
+- S-selfdesc (todo.md:328) — shipped as ops.list with hints (cli-contract self-description)
+- P2-chat (todo.md:333) — all 13 chat ops in serve/MCP tables, 67 routes verified
+- QA-1 / QA-2 (todo.md:240) — QA-1 fixed (required_ints pre-connect check), QA-2 aligned (--pattern repeatable)
+- Phase 0 checklist 0d–0j (todo.md:340-346) — superseded by S-exec/S-meta slices, marked done in that section

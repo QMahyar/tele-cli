@@ -82,8 +82,12 @@ That's it. Every command supports `--dry-run`, `--json`, and `--account` / `--ta
 | **Profile** | `profile get`, `profile set` (name/bio/username), `profile photo --remove`, `profile emoji-status` |
 | **Privacy** | `privacy get` (14 keys), `privacy set` (incl. chat-participant rules) |
 | **Takeout** | `takeout start`, `takeout export` (progress + resume), `takeout finish --abandon` |
-| **Listen** | `listen` - stream JSONL updates (`NewMessage`, `MessageEdited`, `MessageDeleted`, `Album`, `Gap`, `Raw`) |
-| **Raw** | `raw` - typed registry for 18 supported TL methods |
+| **Listen** | `listen` - stream JSONL updates (`NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw`, `Album`, `Gap`, `Service`, `ChatAction`, `UserUpdate`) |
+| **Raw** | `raw` - typed registry for 25 supported TL methods |
+| **Stickers** | `stickers list`, `stickers sets`, `stickers add`, `stickers delete` |
+| **Stories** | `stories list`, `stories send`, `stories view`, `stories delete`, `stories archive` |
+| **Serve** | `serve` — JSONL server over stdin/stdout |
+| **MCP** | `mcp` — MCP stdio server |
 | **Completions** | `completions bash`, `completions zsh`, `completions fish`, `completions powershell` |
 
 Run `tele --help` for the full reference, or `tele <command> --help` for a specific command.
@@ -174,7 +178,7 @@ Every one-shot command prints a single JSON object on stdout with `--json`:
 
 `listen` streams one JSONL object per update on stdout. Events: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw` (selected via the `--events` allowlist; `Raw` rows carry a base64 `raw` payload plus a `state` object).
 
-**Exit codes:** `0` all succeeded · `1` usage error · `2` partial failure · `3` all failed · `4` auth required.
+**Exit codes:** `0` all succeeded · `1` usage error · `2` partial failure · `3` all failed · `4` auth required · `130` interrupted (SIGINT).
 
 See [docs/cli-contract.md](docs/cli-contract.md) for the full machine API reference.
 

@@ -248,7 +248,7 @@ This command removes the current profile photo. It reads the photo id from `user
 The default event type is `NewMessage` only. `--events` is an allowlist that gates all rows, including `Raw`. An unknown event name exits 1 before connect.
 
 Valid names: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw`, `Album`,
-`Gap`.
+`Gap`, `Service`, `ChatAction`, `UserUpdate`.
 
 ### `Album` rows
 
