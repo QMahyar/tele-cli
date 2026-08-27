@@ -34,8 +34,10 @@ pub struct SetArgs {
     bio: Option<String>,
     #[arg(long, help = "path to new profile photo")]
     photo: Option<String>,
-    #[arg(long, help = "new username (5-32 chars) or 'remove' to clear it")]
+    #[arg(long, help = "new username (5-32 chars)")]
     username: Option<String>,
+    #[arg(long, help = "clear the current username")]
+    clear_username: bool,
 }
 
 #[derive(Args, Clone)]
@@ -92,10 +94,19 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn validate_set(args: &SetArgs) -> TeleResult<()> {
-    if args.name.is_none() && args.bio.is_none() && args.photo.is_none() && args.username.is_none()
+    if args.name.is_none()
+        && args.bio.is_none()
+        && args.photo.is_none()
+        && args.username.is_none()
+        && !args.clear_username
     {
         return Err(TeleError::Usage(
-            "at least one of --name, --bio, --photo, --username required".to_string(),
+            "at least one of --name, --bio, --photo, --username, --clear-username".to_string(),
+        ));
+    }
+    if args.clear_username && args.username.is_some() {
+        return Err(TeleError::Usage(
+            "--clear-username and --username are mutually exclusive".to_string(),
         ));
     }
     if let Some(name) = &args.name {
@@ -104,14 +115,14 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
         }
         let (first, last) = split_full_name(name);
         if let Some(first) = &first {
-            if first.chars().count() > MAX_NAME_CHARS {
+            if first.encode_utf16().count() > MAX_NAME_CHARS {
                 return Err(TeleError::Usage(
                     "first name exceeds 64 characters".to_string(),
                 ));
             }
         }
         if let Some(last) = &last {
-            if last.chars().count() > MAX_NAME_CHARS {
+            if last.encode_utf16().count() > MAX_NAME_CHARS {
                 return Err(TeleError::Usage(
                     "last name exceeds 64 characters".to_string(),
                 ));
@@ -120,13 +131,31 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
     }
     if let Some(bio) = &args.bio {
         if bio.trim().chars().count() > MAX_BIO_CHARS {
-            return Err(TeleError::Usage("bio exceeds 140 characters".to_string()));
+            return Err(TeleError::Usage("bio exceeds 70 characters".to_string()));
         }
     }
     if let Some(path) = &args.photo {
-        validate_upload_path(path)?;
+        validate_profile_photo(path)?;
     }
     validate_username_arg(args.username.as_deref())?;
+    Ok(())
+}
+
+fn validate_profile_photo(path: &str) -> TeleResult<()> {
+    validate_upload_path(path)?;
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+        return Err(TeleError::Usage(format!(
+            "profile photo must be jpg, png, or webp (got .{ext})"
+        )));
+    }
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > MAX_PROFILE_PHOTO_BYTES {
+        return Err(TeleError::Usage(format!(
+            "profile photo must be under 10 MiB (got {} bytes)",
+            meta.len()
+        )));
+    }
     Ok(())
 }
 
@@ -134,9 +163,6 @@ fn validate_username_arg(raw: Option<&str>) -> TeleResult<()> {
     let Some(raw) = raw else {
         return Ok(());
     };
-    if raw.trim().eq_ignore_ascii_case("remove") {
-        return Ok(());
-    }
     validate_username(strip_username_prefixes(raw.trim()))
 }
 
@@ -186,9 +212,10 @@ fn validate_username(username: &str) -> TeleResult<()> {
 }
 
 const MAX_NAME_CHARS: usize = 64;
-const MAX_BIO_CHARS: usize = 140;
+const MAX_BIO_CHARS: usize = 70;
 const MIN_USERNAME_CHARS: usize = 5;
 const MAX_USERNAME_CHARS: usize = 32;
+const MAX_PROFILE_PHOTO_BYTES: u64 = 10 * 1024 * 1024;
 
 fn split_full_name(raw: &str) -> (Option<String>, Option<String>) {
     let trimmed = raw.trim();
@@ -277,13 +304,15 @@ async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-async fn apply_username(shares: &crate::client::ServeShares, raw: &str) -> TeleResult<String> {
-    let trimmed = raw.trim();
-    let removing = trimmed.eq_ignore_ascii_case("remove");
-    let value = if removing {
+async fn apply_username(
+    shares: &crate::client::ServeShares,
+    raw: &str,
+    clear: bool,
+) -> TeleResult<String> {
+    let value = if clear {
         String::new()
     } else {
-        strip_username_prefixes(trimmed).to_string()
+        strip_username_prefixes(raw.trim()).to_string()
     };
     shares.rate_limiter.acquire().await;
     let _: tl::enums::User = shares
@@ -293,7 +322,7 @@ async fn apply_username(shares: &crate::client::ServeShares, raw: &str) -> TeleR
         })
         .await
         .map_err(username_rpc_error)?;
-    if removing {
+    if clear {
         Ok("removed".to_string())
     } else {
         Ok(value)
@@ -436,6 +465,8 @@ pub(crate) struct SetParams {
     pub(crate) photo: Option<String>,
     pub(crate) username: Option<String>,
     #[serde(default)]
+    pub(crate) clear_username: bool,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -446,6 +477,7 @@ impl From<&SetArgs> for SetParams {
             bio: a.bio.clone(),
             photo: a.photo.clone(),
             username: a.username.clone(),
+            clear_username: a.clear_username,
             dry_run: false,
         }
     }
@@ -458,6 +490,7 @@ impl From<&SetParams> for SetArgs {
             bio: p.bio.clone(),
             photo: p.photo.clone(),
             username: p.username.clone(),
+            clear_username: p.clear_username,
         }
     }
 }
@@ -546,7 +579,7 @@ fn set_serve_dry_run(args: &SetArgs) -> TeleResult<serde_json::Value> {
     if args.photo.is_some() {
         fields.push("photo");
     }
-    if args.username.is_some() {
+    if args.username.is_some() || args.clear_username {
         fields.push("username");
     }
     Ok(serde_json::json!({
@@ -657,19 +690,22 @@ pub(crate) async fn set_core(
             .await
             .map_err(tele_invocation)?;
     }
-    if new_name.is_some() || new_bio.is_some() || photo_path.is_some() {
-        shares.rate_limiter.acquire().await;
-    }
+    let clear_username = params.clear_username;
     let mut applied_username: Option<String> = None;
     if let Some(raw) = &username_raw {
-        applied_username = Some(apply_username(shares, raw).await?);
+        applied_username = Some(apply_username(shares, raw, false).await?);
+    } else if clear_username {
+        applied_username = Some(apply_username(shares, "", true).await?);
+    }
+    if photo_path.is_some() || new_name.is_some() || new_bio.is_some() {
+        shares.rate_limiter.acquire().await;
     }
     if let Some(p) = &photo_path {
         let uploaded = shares
             .client
             .upload_file(p)
             .await
-            .map_err(|e| TeleError::TaskPanic(e.to_string()))?;
+            .map_err(|e| TeleError::Other(e.to_string()))?;
         let uploaded_photo: tl::enums::photos::Photo = shares
             .client
             .invoke(&tl::functions::photos::UploadProfilePhoto {
@@ -707,6 +743,7 @@ pub(crate) async fn set_core(
         "bio": new_bio,
         "photo": photo_path,
         "username": applied_username,
+        "cleared_username": clear_username,
     }))
 }
 
@@ -827,6 +864,7 @@ mod tests {
             bio: None,
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(matches!(validate_set(&none), Err(TeleError::Usage(_))));
         let with_bio = SetArgs {
@@ -834,6 +872,7 @@ mod tests {
             bio: Some("b".to_string()),
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(validate_set(&with_bio).is_ok());
         let with_name = SetArgs {
@@ -841,8 +880,17 @@ mod tests {
             bio: None,
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(validate_set(&with_name).is_ok());
+        let with_clear = SetArgs {
+            name: None,
+            bio: None,
+            photo: None,
+            username: None,
+            clear_username: true,
+        };
+        assert!(validate_set(&with_clear).is_ok());
     }
 
     #[test]
@@ -870,6 +918,7 @@ mod tests {
             bio: None,
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(matches!(
             validate_set(&long_first),
@@ -880,20 +929,23 @@ mod tests {
             bio: None,
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(matches!(validate_set(&long_last), Err(TeleError::Usage(_))));
         let long_bio = SetArgs {
             name: None,
-            bio: Some("z".repeat(141)),
+            bio: Some("z".repeat(71)),
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(matches!(validate_set(&long_bio), Err(TeleError::Usage(_))));
         let at_cap = SetArgs {
             name: Some(format!("{} Wat", "a".repeat(60))),
-            bio: Some("b".repeat(140)),
+            bio: Some("b".repeat(70)),
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(validate_set(&at_cap).is_ok());
     }
@@ -905,6 +957,7 @@ mod tests {
             bio: None,
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(matches!(validate_set(&empty), Err(TeleError::Usage(_))));
     }
@@ -916,6 +969,7 @@ mod tests {
             bio: None,
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(matches!(validate_set(&blank), Err(TeleError::Usage(_))));
     }
@@ -927,6 +981,7 @@ mod tests {
             bio: None,
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(validate_set(&valid).is_ok());
     }
@@ -938,6 +993,7 @@ mod tests {
             bio: Some(String::new()),
             photo: None,
             username: None,
+            clear_username: false,
         };
         assert!(validate_set(&clear_bio).is_ok());
     }
@@ -983,8 +1039,6 @@ mod tests {
         for raw in ["@john_doe", "t.me/john_doe", "https://t.me/john_doe"] {
             assert!(validate_username_arg(Some(raw)).is_ok(), "{raw}");
         }
-        assert!(validate_username_arg(Some("REMOVE")).is_ok());
-        assert!(validate_username_arg(Some("remove")).is_ok());
         assert!(validate_username_arg(None).is_ok());
     }
 
@@ -995,6 +1049,7 @@ mod tests {
             bio: None,
             photo: None,
             username: Some("@john_doe".to_string()),
+            clear_username: false,
         };
         assert!(validate_set(&only_username).is_ok());
         let bad_username = SetArgs {
@@ -1002,11 +1057,24 @@ mod tests {
             bio: None,
             photo: None,
             username: Some("1bad!".to_string()),
+            clear_username: false,
         };
         assert!(matches!(
             validate_set(&bad_username),
             Err(TeleError::Usage(_))
         ));
+    }
+
+    #[test]
+    fn set_rejects_clear_and_username_together() {
+        let both = SetArgs {
+            name: None,
+            bio: None,
+            photo: None,
+            username: Some("john_doe".to_string()),
+            clear_username: true,
+        };
+        assert!(matches!(validate_set(&both), Err(TeleError::Usage(_))));
     }
 
     #[test]
@@ -1125,6 +1193,7 @@ mod tests {
             bio: None,
             photo: photo.map(str::to_string),
             username: None,
+            clear_username: false,
         }
     }
 
@@ -1167,6 +1236,32 @@ mod tests {
         let photo = dir.join("photo.jpg");
         std::fs::write(&photo, b"x").unwrap();
         assert!(validate_set(&set_args(Some(&photo.to_string_lossy()))).is_ok());
+        let png = dir.join("photo.png");
+        std::fs::write(&png, b"x").unwrap();
+        assert!(validate_set(&set_args(Some(&png.to_string_lossy()))).is_ok());
+        let webp = dir.join("photo.webp");
+        std::fs::write(&webp, b"x").unwrap();
+        assert!(validate_set(&set_args(Some(&webp.to_string_lossy()))).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_rejects_non_image_photo_extensions() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-profile-photo-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for ext in ["txt", "exe", "pdf", "gif", "bmp", "heic"] {
+            let file = dir.join(format!("photo.{ext}"));
+            std::fs::write(&file, b"x").unwrap();
+            assert!(
+                matches!(
+                    validate_set(&set_args(Some(&file.to_string_lossy()))),
+                    Err(TeleError::Usage(_))
+                ),
+                "{ext}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1257,7 +1352,7 @@ mod tests {
         let err = plan_for("profile set", serde_json::json!({"username": "1bad!"})).unwrap_err();
         assert_eq!(err["type"], "UsageError");
 
-        let err = plan_for("profile set", serde_json::json!({"bio": "z".repeat(141)})).unwrap_err();
+        let err = plan_for("profile set", serde_json::json!({"bio": "z".repeat(71)})).unwrap_err();
         assert_eq!(err["type"], "UsageError");
 
         let err = plan_for("profile set", serde_json::json!({"name": ""})).unwrap_err();
@@ -1402,7 +1497,7 @@ mod tests {
             ("profile get", serde_json::json!({"show_phone": true})),
             ("profile get", serde_json::json!({})),
             ("profile set", serde_json::json!({"name": "New Name"})),
-            ("profile set", serde_json::json!({"username": "remove"})),
+            ("profile set", serde_json::json!({"clear_username": true})),
             ("profile photo", serde_json::json!({"remove": true})),
             ("profile emoji-status", serde_json::json!({"emoji": 777i64})),
         ] {
@@ -1421,7 +1516,14 @@ mod tests {
         let v = crate::commands::serve::params_schema::<SetParams>();
         assert_eq!(v["type"], "object");
         assert_eq!(v["additionalProperties"], serde_json::json!(false));
-        for field in ["name", "bio", "photo", "username", "dry_run"] {
+        for field in [
+            "name",
+            "bio",
+            "photo",
+            "username",
+            "clear_username",
+            "dry_run",
+        ] {
             assert!(v["properties"][field].is_object(), "{field} missing");
         }
         let required = v["required"].as_array().cloned().unwrap_or_default();
