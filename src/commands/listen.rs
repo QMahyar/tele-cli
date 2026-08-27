@@ -2280,24 +2280,36 @@ mod tests {
 
     #[test]
     fn effective_parallel_flag_overrides_config() {
-        assert_eq!(effective_parallel(Some(1), 3), 1);
-        assert_eq!(effective_parallel(Some(2), 1), 2);
-        assert_eq!(effective_parallel(Some(32), 1), 32);
+        assert_eq!(effective_parallel(Some(1), 3).unwrap(), 1);
+        assert_eq!(effective_parallel(Some(2), 1).unwrap(), 2);
+        assert_eq!(effective_parallel(Some(32), 1).unwrap(), 32);
     }
 
     #[test]
     fn effective_parallel_config_is_fallback_default() {
-        assert_eq!(effective_parallel(None, 1), 1);
-        assert_eq!(effective_parallel(None, 2), 2);
-        assert_eq!(effective_parallel(None, 32), 32);
+        assert_eq!(effective_parallel(None, 1).unwrap(), 1);
+        assert_eq!(effective_parallel(None, 2).unwrap(), 2);
+        assert_eq!(effective_parallel(None, 32).unwrap(), 32);
     }
 
     #[test]
-    fn effective_parallel_clamped_one_to_thirty_two() {
-        assert_eq!(effective_parallel(Some(0), 3), 1);
-        assert_eq!(effective_parallel(Some(99), 1), 32);
-        assert_eq!(effective_parallel(None, 0), 1);
-        assert_eq!(effective_parallel(None, 999), 32);
+    fn effective_parallel_out_of_range_errors() {
+        assert!(matches!(
+            effective_parallel(Some(0), 3),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            effective_parallel(Some(99), 1),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            effective_parallel(None, 0),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            effective_parallel(None, 999),
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]

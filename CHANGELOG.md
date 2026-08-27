@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.6] - 2026-08-27
+
+### Fixed
+- `--parallel` out of range (0 or >32) now exits with error instead of silently clamping.
+- `--config /nonexistent` now exits with error instead of being silently ignored.
+- `--dry-run` on `msg send` now prints a human-readable "would" line in table mode.
+- `--file` in `msg send --dry-run` no longer requires the file to exist on disk.
+
+### Changed
+- `AGENTS.md` project map updated to match actual subcommands (sticker, story, contact).
+- `docs/cli-contract.md` updated: `msg delete --ids`, `msg forward --from/--ids`, `msg react --reaction`, `msg download --dir`.
+
 ## [0.6.5] - 2026-08-27
 
 ### Added

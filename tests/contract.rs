@@ -270,7 +270,7 @@ fn clap_usage_errors_exit_1() {
 }
 
 #[test]
-fn parallel_out_of_range_is_clamped_not_usage_error() {
+fn parallel_out_of_range_is_usage_error() {
     let dir = isolated_appdir("parclamp");
     write_session(&dir, "work");
     for n in ["0", "99"] {
@@ -291,17 +291,17 @@ fn parallel_out_of_range_is_clamped_not_usage_error() {
             ],
         );
         assert_eq!(
-            code, 0,
-            "--parallel {n} must clamp to 1-32, not a usage error: stderr: {err}"
+            code, 1,
+            "--parallel {n} must error, not clamp: stderr: {err}"
         );
     }
 }
 
 #[test]
-fn parallel_out_of_range_warns_on_stderr() {
+fn parallel_out_of_range_exits_with_error() {
     let (code, _out, err) = run_isolated("parwarn", &["--parallel", "99", "account", "list"]);
-    assert_eq!(code, 0, "stderr: {err}");
-    assert!(err.contains("clamped"), "stderr: {err}");
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("between 1 and 32"), "stderr: {err}");
 }
 
 #[test]

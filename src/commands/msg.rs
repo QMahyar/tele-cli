@@ -1010,18 +1010,13 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "--media-ttl is not supported with albums".to_string(),
         ));
     }
-    if !args.files.is_empty() {
-        if !effective_preview(args) {
-            return Err(TeleError::Usage(
-                "--no-preview is not supported with --file".to_string(),
-            ));
-        }
-        for path in &args.files {
-            validate_upload_path(path)?;
-        }
+    if !args.files.is_empty() && !effective_preview(args) {
+        return Err(TeleError::Usage(
+            "--no-preview is not supported with --file".to_string(),
+        ));
     }
     if let Some(thumb) = &args.thumbnail {
-        validate_upload_path(thumb)?;
+        validate_filename(thumb.rsplit(['/', '\\']).next().unwrap_or(thumb))?;
         if args.files.len() > 1 {
             return Err(TeleError::Usage(
                 "--thumbnail applies to a single document upload".to_string(),
@@ -1159,6 +1154,10 @@ fn check_upload_size(bytes: u64) -> TeleResult<()> {
 }
 
 pub fn validate_upload_path(path: &str) -> TeleResult<()> {
+    validate_upload_path_inner(path, false)
+}
+
+fn validate_upload_path_inner(path: &str, dry_run: bool) -> TeleResult<()> {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     validate_filename(base)?;
     let app_dir = canonical_guard_path(&crate::config::app_data_dir().to_string_lossy());
@@ -1174,11 +1173,14 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
             "refusing to upload sensitive file {base}"
         )));
     }
-    let path = std::path::Path::new(path);
-    if !path.is_file() {
-        return Err(TeleError::Usage(format!("upload file not found: {path:?}")));
+    if !dry_run {
+        let path = std::path::Path::new(path);
+        if !path.is_file() {
+            return Err(TeleError::Usage(format!("upload file not found: {path:?}")));
+        }
+        check_upload_size(std::fs::metadata(path)?.len())?;
     }
-    check_upload_size(std::fs::metadata(path)?.len())
+    Ok(())
 }
 
 pub fn is_sensitive_basename(lower: &str) -> bool {
@@ -1443,8 +1445,18 @@ pub(crate) fn send_serve_dry_run(args: &SendArgs) -> TeleResult<serde_json::Valu
 
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_send(&args)?;
+    if !flags.dry_run {
+        for path in &args.files {
+            validate_upload_path(path)?;
+        }
+        if let Some(thumb) = &args.thumbnail {
+            validate_upload_path(thumb)?;
+        }
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
     let schedule = parse_schedule(args.schedule.as_deref())?.map(|s| s as u64);
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
@@ -1460,6 +1472,15 @@ async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         })
     })
     .await?;
+    if dry_run && !output::machine_mode(json, jsonl) {
+        if let Some(first) = envelope.accounts.first() {
+            if let Some(data) = &first.data {
+                if let Some(would) = data.get("would").and_then(|w| w.as_str()) {
+                    output::print_line(would)?;
+                }
+            }
+        }
+    }
     crate::executor::finish(flags, &envelope)
 }
 

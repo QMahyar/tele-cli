@@ -35,7 +35,7 @@ pub async fn run_fanout(
             "no accounts selected: use --account <name> or --tag <tag>".to_string(),
         ));
     }
-    let parallel = effective_parallel(flags.parallel, cfg.parallel_max) as usize;
+    let parallel = effective_parallel(flags.parallel, cfg.parallel_max)? as usize;
     let semaphore = Arc::new(Semaphore::new(parallel));
     let mut handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)> =
         Vec::new();
@@ -128,8 +128,14 @@ async fn collect_outcomes(
     outcomes
 }
 
-pub fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> u32 {
-    flag.unwrap_or(cfg_max).clamp(1, 32)
+pub fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> TeleResult<u32> {
+    let p = flag.unwrap_or(cfg_max);
+    if !(1..=32).contains(&p) {
+        return Err(TeleError::Usage(format!(
+            "--parallel {p} must be between 1 and 32"
+        )));
+    }
+    Ok(p)
 }
 
 pub fn select_accounts(flags: &GlobalFlags) -> TeleResult<Vec<String>> {
@@ -485,30 +491,48 @@ mod tests {
 
     #[test]
     fn flag_overrides_config() {
-        assert_eq!(effective_parallel(Some(1), 3), 1);
-        assert_eq!(effective_parallel(Some(2), 1), 2);
-        assert_eq!(effective_parallel(Some(32), 1), 32);
+        assert_eq!(effective_parallel(Some(1), 3).unwrap(), 1);
+        assert_eq!(effective_parallel(Some(2), 1).unwrap(), 2);
+        assert_eq!(effective_parallel(Some(32), 1).unwrap(), 32);
     }
 
     #[test]
     fn config_is_fallback_default() {
-        assert_eq!(effective_parallel(None, 1), 1);
-        assert_eq!(effective_parallel(None, 2), 2);
-        assert_eq!(effective_parallel(None, 32), 32);
+        assert_eq!(effective_parallel(None, 1).unwrap(), 1);
+        assert_eq!(effective_parallel(None, 2).unwrap(), 2);
+        assert_eq!(effective_parallel(None, 32).unwrap(), 32);
     }
 
     #[test]
-    fn both_sides_clamped_to_one_to_thirty_two() {
-        assert_eq!(effective_parallel(Some(0), 3), 1);
-        assert_eq!(effective_parallel(Some(99), 1), 32);
-        assert_eq!(effective_parallel(None, 0), 1);
-        assert_eq!(effective_parallel(None, 999), 32);
+    fn parallel_flag_below_one_errors() {
+        assert!(matches!(
+            effective_parallel(Some(0), 3),
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]
-    fn flag_above_thirty_two_clamps_to_thirty_two() {
-        assert_eq!(effective_parallel(Some(33), 1), 32);
-        assert_eq!(effective_parallel(Some(99), 3), 32);
+    fn parallel_flag_above_thirty_two_errors() {
+        assert!(matches!(
+            effective_parallel(Some(33), 1),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            effective_parallel(Some(99), 3),
+            Err(TeleError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn parallel_config_out_of_range_errors() {
+        assert!(matches!(
+            effective_parallel(None, 0),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(matches!(
+            effective_parallel(None, 999),
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]
@@ -851,7 +875,7 @@ mod tests {
             parallel_max: 1,
             ..Default::default()
         };
-        let parallel = effective_parallel(None, cfg.parallel_max) as usize;
+        let parallel = effective_parallel(None, cfg.parallel_max).unwrap() as usize;
         assert_eq!(parallel, 1);
         let semaphore = Arc::new(Semaphore::new(parallel));
         let mut handles = Vec::new();

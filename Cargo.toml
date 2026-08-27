@@ -1,6 +1,6 @@
 [package]
 name = "telecli"
-version = "0.6.5"
+version = "0.6.6"
 edition = "2021"
 rust-version = "1.89"
 description = "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming. No bot tokens."

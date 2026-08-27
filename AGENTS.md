@@ -85,15 +85,15 @@ src/
     ├── chat.rs          join, create, leave, participants, kick, admin, admin-log, stats, invite, requests, settings, edit, link
     ├── dialog.rs        list, drafts, archive/unarchive, delete, pin, draft
     ├── topic.rs         list, create, close, reopen, edit, delete, pin
-    ├── contact.rs       list, add, block/unblock
+    ├── contact.rs       list, add, remove, block, unblock
     ├── profile.rs       get, set (name, bio, photo, username, emoji-status)
     ├── privacy.rs       get, set (14 keys)
     ├── takeout.rs       start, export, finish
     ├── listen.rs        JSONL streaming (NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap, Service, ChatAction, UserUpdate)
     ├── raw.rs           Typed TL registry (25 methods)
     ├── completions.rs   bash, zsh, fish, powershell
-    ├── stickers.rs      list, sets, add, delete
-    ├── stories.rs       list, send, view, delete, archive
+    ├── stickers.rs      list, search, show, install, remove
+    ├── stories.rs       send, list, read, delete, pin, unpin
     ├── serve.rs         JSONL server over stdin/stdout (long-running)
     ├── mcp.rs           MCP stdio server (tools/call)
     ├── credentials.rs   creds(), creds_api_id() shared across commands

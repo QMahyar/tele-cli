@@ -184,7 +184,33 @@ fn main() -> std::process::ExitCode {
     logging::set_flags(cli.verbose, flags.quiet);
     if let Some(p) = flags.parallel {
         if !(1..=32).contains(&p) {
-            output::log_line("warn", &format!("--parallel {p} is outside 1-32; clamped"));
+            let message = format!("--parallel {p} must be between 1 and 32");
+            output::log_line("error", &message);
+            if output::machine_mode(flags.json, flags.jsonl) {
+                let error_json = serde_json::json!({"type": "UsageError", "message": message});
+                let envelope = output::Envelope::failed(flags.dry_run, &flags.command, error_json);
+                if let Ok(v) = serde_json::to_value(&envelope) {
+                    let _ = output::print_json(&v);
+                }
+            }
+            std::process::exit(error::EXIT_USAGE);
+        }
+    }
+    if let Some(ref cfg_path) = flags.config_path {
+        if !cfg_path.exists() {
+            let message = format!(
+                "config file not found: {}",
+                config::config_display_name(cfg_path)
+            );
+            output::log_line("error", &message);
+            if output::machine_mode(flags.json, flags.jsonl) {
+                let error_json = serde_json::json!({"type": "UsageError", "message": message});
+                let envelope = output::Envelope::failed(flags.dry_run, &flags.command, error_json);
+                if let Ok(v) = serde_json::to_value(&envelope) {
+                    let _ = output::print_json(&v);
+                }
+            }
+            std::process::exit(error::EXIT_USAGE);
         }
     }
     if flags.json && flags.jsonl {

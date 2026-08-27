@@ -77,7 +77,7 @@ pub struct AccountConfig {
     pub lang_code: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_flood")]
     pub flood_sleep_threshold: u64,
@@ -87,6 +87,17 @@ pub struct AppConfig {
     pub accounts: std::collections::BTreeMap<String, AccountConfig>,
     #[serde(default)]
     pub proxy: Option<ProxyConfig>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            flood_sleep_threshold: default_flood(),
+            parallel_max: default_parallel_max(),
+            accounts: std::collections::BTreeMap::new(),
+            proxy: None,
+        }
+    }
 }
 
 fn default_flood() -> u64 {
@@ -275,7 +286,7 @@ pub fn load_config(path: Option<&std::path::Path>) -> TeleResult<AppConfig> {
     Ok(cfg)
 }
 
-fn config_display_name(cfg_path: &std::path::Path) -> String {
+pub fn config_display_name(cfg_path: &std::path::Path) -> String {
     cfg_path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())

@@ -10,7 +10,7 @@ tele [GLOBAL] GROUP COMMAND [ARGS]
 Globals (root callback, inherited):
   --account NAME     repeatable; NAME or all
   --tag TAG          repeatable; union with --account
-  --parallel N       default 1; max 32 (values outside 1..=32 are clamped with a warning)
+  --parallel N       default 1; max 32 (values outside 1..=32 exit with usage error)
   --json             machine output on stdout
   --jsonl            machine output: JSON lines (one-shot commands emit a single envelope line; only `tele listen` emits one record per event)
   --quiet / -q
