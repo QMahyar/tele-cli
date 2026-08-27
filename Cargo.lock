@@ -2375,7 +2375,6 @@ dependencies = [
  "pbkdf2",
  "proptest",
  "qrcode",
- "rand 0.10.2",
  "regex",
  "rmcp",
  "serde",

@@ -23,7 +23,7 @@ grammers-crypto = "0.10"
 grammers-session = { version = "0.10", features = ["sqlite-storage"] }
 getrandom = { version = "0.2" }
 hmac = { version = "0.13", default-features = false }
-rand = "0.10"
+# libsql pinned to =0.9.30 — required by grammers-session 0.10 sqlite-storage; do not bump without testing session compat
 libsql = { version = "=0.9.30", default-features = false, features = ["core"] }
 log = "0.4"
 num-bigint = "0.4"
@@ -50,8 +50,9 @@ grammers-tl-parser = "1.2"
 
 [dev-dependencies]
 proptest = "1"
-serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util", "time"] }
 
 [profile.release]
 lto = true
+strip = true
+codegen-units = 1
