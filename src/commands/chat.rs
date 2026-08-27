@@ -427,10 +427,18 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             client::authorize(&guard.client).await?;
             guard.rate_limiter.acquire().await;
             let normalized = normalize_invite_link(&target);
-            if validate_invite_link(&normalized).is_ok() {
+            let accept_url = if grammers_client::Client::parse_invite_link(&normalized).is_some() {
+                normalized.clone()
+            } else if is_bare_invite_hash(&normalized) {
+                let hash = normalized.strip_prefix('+').unwrap_or(&normalized);
+                format!("https://t.me/+{hash}")
+            } else {
+                normalized.clone()
+            };
+            if grammers_client::Client::parse_invite_link(&accept_url).is_some() {
                 let joined = guard
                     .client
-                    .accept_invite_link(&normalized)
+                    .accept_invite_link(&accept_url)
                     .await
                     .map_err(tele_invocation)?;
                 if let Some(peer) = joined {
@@ -724,40 +732,91 @@ async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     let admin_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
                     match plan.link.clone() {
                         Some(link) => {
-                            let r: tl::enums::messages::ChatInviteImporters = guard
-                                .client
-                                .invoke(&tl::functions::messages::GetChatInviteImporters {
-                                    requested: false,
-                                    subscription_expired: false,
-                                    peer,
-                                    link: Some(link),
-                                    q: None,
-                                    offset_date: 0,
-                                    offset_user: tl::types::InputUserEmpty {}.into(),
-                                    limit: INVITE_LIST_LIMIT,
-                                })
-                                .await
-                                .map_err(tele_invocation)?;
-                            let rows = chat_invite_importers_rows(&guard.client, &r);
+                            let mut rows = Vec::new();
+                            let mut offset_date = 0i32;
+                            let mut offset_user: tl::enums::InputUser =
+                                tl::types::InputUserEmpty {}.into();
+                            loop {
+                                let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
+                                if remaining <= 0 {
+                                    break;
+                                }
+                                let r: tl::enums::messages::ChatInviteImporters = guard
+                                    .client
+                                    .invoke(&tl::functions::messages::GetChatInviteImporters {
+                                        requested: false,
+                                        subscription_expired: false,
+                                        peer: peer.clone(),
+                                        link: Some(link.clone()),
+                                        q: None,
+                                        offset_date,
+                                        offset_user: offset_user.clone(),
+                                        limit: remaining.min(INVITE_LIST_LIMIT),
+                                    })
+                                    .await
+                                    .map_err(tele_invocation)?;
+                                let tl::enums::messages::ChatInviteImporters::Importers(ref list) =
+                                    r;
+                                let page_len = list.importers.len();
+                                if page_len > 0 {
+                                    if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
+                                        list.importers.last()
+                                    {
+                                        offset_date = imp.date;
+                                        offset_user = tl::types::InputUser {
+                                            user_id: imp.user_id,
+                                            access_hash: 0,
+                                        }
+                                        .into();
+                                    }
+                                }
+                                rows.extend(chat_invite_importers_rows(&guard.client, &r));
+                                if page_len == 0 {
+                                    break;
+                                }
+                            }
                             if !output::machine_mode(json, jsonl) {
                                 print_importer_table(&name, multi, &rows)?;
                             }
                             Ok(serde_json::json!({"importers": rows}))
                         }
                         None => {
-                            let r: tl::enums::messages::ExportedChatInvites = guard
-                                .client
-                                .invoke(&tl::functions::messages::GetExportedChatInvites {
-                                    revoked: plan.revoked,
-                                    peer,
-                                    admin_id,
-                                    offset_date: None,
-                                    offset_link: None,
-                                    limit: INVITE_LIST_LIMIT,
-                                })
-                                .await
-                                .map_err(tele_invocation)?;
-                            let rows = exported_chat_invites_rows(&r);
+                            let mut rows = Vec::new();
+                            let mut offset_date: Option<i32> = None;
+                            let mut offset_link: Option<String> = None;
+                            loop {
+                                let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
+                                if remaining <= 0 {
+                                    break;
+                                }
+                                let r: tl::enums::messages::ExportedChatInvites = guard
+                                    .client
+                                    .invoke(&tl::functions::messages::GetExportedChatInvites {
+                                        revoked: plan.revoked,
+                                        peer: peer.clone(),
+                                        admin_id: admin_id.clone(),
+                                        offset_date,
+                                        offset_link: offset_link.clone(),
+                                        limit: remaining.min(INVITE_LIST_LIMIT),
+                                    })
+                                    .await
+                                    .map_err(tele_invocation)?;
+                                let tl::enums::messages::ExportedChatInvites::Invites(ref list) = r;
+                                let page_len = list.invites.len();
+                                if page_len > 0 {
+                                    if let Some(
+                                        tl::enums::ExportedChatInvite::ChatInviteExported(inv),
+                                    ) = list.invites.last()
+                                    {
+                                        offset_date = Some(inv.date);
+                                        offset_link = Some(inv.link.clone());
+                                    }
+                                }
+                                rows.extend(exported_chat_invites_rows(&r));
+                                if page_len == 0 {
+                                    break;
+                                }
+                            }
                             if !output::machine_mode(json, jsonl) {
                                 print_invite_link_table(&name, multi, &rows)?;
                             }
@@ -902,21 +961,48 @@ async fn requests(args: RequestsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
             match plan.action {
                 RequestsAction::List => {
-                    let r: tl::enums::messages::ChatInviteImporters = guard
-                        .client
-                        .invoke(&tl::functions::messages::GetChatInviteImporters {
-                            requested: true,
-                            subscription_expired: false,
-                            peer,
-                            link: plan.link.clone(),
-                            q: None,
-                            offset_date: 0,
-                            offset_user: tl::types::InputUserEmpty {}.into(),
-                            limit: plan.limit as i32,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                    let rows = join_request_rows(&guard.client, &r, plan.link.as_deref());
+                    let mut rows = Vec::new();
+                    let mut offset_date = 0i32;
+                    let mut offset_user: tl::enums::InputUser = tl::types::InputUserEmpty {}.into();
+                    let limit = plan.limit as i32;
+                    loop {
+                        let remaining = limit - rows.len() as i32;
+                        if remaining <= 0 {
+                            break;
+                        }
+                        let r: tl::enums::messages::ChatInviteImporters = guard
+                            .client
+                            .invoke(&tl::functions::messages::GetChatInviteImporters {
+                                requested: true,
+                                subscription_expired: false,
+                                peer: peer.clone(),
+                                link: plan.link.clone(),
+                                q: None,
+                                offset_date,
+                                offset_user: offset_user.clone(),
+                                limit: remaining.min(INVITE_LIST_LIMIT),
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                        let tl::enums::messages::ChatInviteImporters::Importers(ref list) = r;
+                        let page_len = list.importers.len();
+                        if page_len > 0 {
+                            if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
+                                list.importers.last()
+                            {
+                                offset_date = imp.date;
+                                offset_user = tl::types::InputUser {
+                                    user_id: imp.user_id,
+                                    access_hash: 0,
+                                }
+                                .into();
+                            }
+                        }
+                        rows.extend(join_request_rows(&guard.client, &r, plan.link.as_deref()));
+                        if page_len == 0 {
+                            break;
+                        }
+                    }
                     if !output::machine_mode(json, jsonl) {
                         print_request_table(&name, multi, &rows)?;
                     }
@@ -1276,7 +1362,10 @@ fn validate_invite(args: &InviteArgs) -> TeleResult<ValidatedInvite> {
                 "--usage-limit must be greater than zero".to_string(),
             ));
         }
-        plan.usage_limit = Some(limit as i32);
+        let limit_i32 = i32::try_from(limit).map_err(|_| {
+            TeleError::Usage("--usage-limit exceeds the maximum value of 2147483647".to_string())
+        })?;
+        plan.usage_limit = Some(limit_i32);
     }
     if let Some(flag) = &args.request_approval {
         plan.request_needed = Some(parse_invite_bool(flag)?);
@@ -2161,6 +2250,7 @@ async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "chat")?;
             let user_peer =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &user).await?;
             if rights.needs_raw_edit_admin() {
@@ -2847,10 +2937,11 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .map_err(tele_invocation)?])
                 }
             };
+            let until_ts = until.map(|u| u.timestamp() as i32);
             let collected = {
                 let guard_ref = &guard;
                 let channel_ref = &channel;
-                collect_admin_log(limit, move |max_id, page_limit| {
+                collect_admin_log(limit, until_ts, move |max_id, page_limit| {
                     let q = search_q.clone();
                     let filter = events_filter.clone();
                     let admins = admins.clone();
@@ -2968,7 +3059,7 @@ fn filter_events_by_range(
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|d| d.with_timezone(&chrono::Utc))
                 .map(|d| since.is_none_or(|s| d >= s) && until.is_none_or(|u| d <= u))
-                .unwrap_or(true)
+                .unwrap_or(false)
         })
         .collect()
 }
@@ -3079,7 +3170,11 @@ struct CollectedAdminLog {
     users: HashMap<i64, tl::enums::User>,
 }
 
-async fn collect_admin_log<F, Fut>(limit: u32, mut fetch: F) -> TeleResult<CollectedAdminLog>
+async fn collect_admin_log<F, Fut>(
+    limit: u32,
+    until: Option<i32>,
+    mut fetch: F,
+) -> TeleResult<CollectedAdminLog>
 where
     F: FnMut(i64, u32) -> Fut,
     Fut: std::future::Future<Output = TeleResult<AdminLogPage>>,
@@ -3103,6 +3198,15 @@ where
         events.extend(page.events);
         if page_len == 0 {
             break;
+        }
+        if let Some(until_ts) = until {
+            let stopped = events.iter().any(|e| {
+                let tl::enums::ChannelAdminLogEvent::Event(ev) = e;
+                ev.date <= until_ts
+            });
+            if stopped {
+                break;
+            }
         }
     }
     Ok(CollectedAdminLog { events, users })
@@ -3135,6 +3239,7 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             guard.rate_limiter.acquire().await;
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
+            ensure_chat_peer(&chat, "chat")?;
             let channel = entities::input_channel(&chat)
                 .await
                 .map_err(tele_invocation)?;
@@ -3196,6 +3301,11 @@ fn validate_create(args: &CreateArgs) -> TeleResult<()> {
 
 async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_create(&args)?;
+    if args.forum && args.kind != "supergroup" {
+        return Err(TeleError::Usage(
+            "--forum is only supported with --kind supergroup".to_string(),
+        ));
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let forum = args.forum;
@@ -3228,9 +3338,10 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         .await
                         .map_err(tele_invocation)?;
                     let tl::enums::messages::InvitedUsers::Users(r) = r;
-                    let chat = created_chat(&r.updates);
-                    let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-                    cache_created_chat(guard.session.as_ref(), chat).await;
+                    let chat = created_chat(&r.updates)
+                        .ok_or_else(|| TeleError::Other("unexpected response shape".to_string()))?;
+                    let chat_id = chat.id();
+                    cache_created_chat(guard.session.as_ref(), Some(chat)).await;
                     serde_json::json!({"kind": "group", "chat_id": chat_id})
                 }
                 "supergroup" => {
@@ -3249,9 +3360,10 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    let chat = created_chat(&r);
-                    let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-                    cache_created_chat(guard.session.as_ref(), chat).await;
+                    let chat = created_chat(&r)
+                        .ok_or_else(|| TeleError::Other("unexpected response shape".to_string()))?;
+                    let chat_id = chat.id();
+                    cache_created_chat(guard.session.as_ref(), Some(chat)).await;
                     serde_json::json!({"kind": "supergroup", "forum": forum, "chat_id": chat_id})
                 }
                 "channel" => {
@@ -3270,9 +3382,10 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         })
                         .await
                         .map_err(tele_invocation)?;
-                    let chat = created_chat(&r);
-                    let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-                    cache_created_chat(guard.session.as_ref(), chat).await;
+                    let chat = created_chat(&r)
+                        .ok_or_else(|| TeleError::Other("unexpected response shape".to_string()))?;
+                    let chat_id = chat.id();
+                    cache_created_chat(guard.session.as_ref(), Some(chat)).await;
                     serde_json::json!({"kind": "channel", "chat_id": chat_id})
                 }
                 other => {
@@ -4499,10 +4612,18 @@ pub(crate) async fn chat_join_core(
 ) -> TeleResult<serde_json::Value> {
     shares.rate_limiter.acquire().await;
     let normalized = normalize_invite_link(&params.chat);
-    if validate_invite_link(&normalized).is_ok() {
+    let accept_url = if grammers_client::Client::parse_invite_link(&normalized).is_some() {
+        normalized.clone()
+    } else if is_bare_invite_hash(&normalized) {
+        let hash = normalized.strip_prefix('+').unwrap_or(&normalized);
+        format!("https://t.me/+{hash}")
+    } else {
+        normalized.clone()
+    };
+    if grammers_client::Client::parse_invite_link(&accept_url).is_some() {
         let joined = shares
             .client
-            .accept_invite_link(&normalized)
+            .accept_invite_link(&accept_url)
             .await
             .map_err(tele_invocation)?;
         if let Some(peer) = joined {
@@ -4577,6 +4698,11 @@ pub(crate) async fn chat_create_core(
     shares: &crate::client::ServeShares,
     params: CreateServeParams,
 ) -> TeleResult<serde_json::Value> {
+    if params.forum && params.kind != "supergroup" {
+        return Err(TeleError::Usage(
+            "--forum is only supported with --kind supergroup".to_string(),
+        ));
+    }
     shares.rate_limiter.acquire().await;
     match params.kind.as_str() {
         "group" => {
@@ -4590,9 +4716,10 @@ pub(crate) async fn chat_create_core(
                 .await
                 .map_err(tele_invocation)?;
             let tl::enums::messages::InvitedUsers::Users(r) = r;
-            let chat = created_chat(&r.updates);
-            let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-            cache_created_chat(shares.session.as_ref(), chat).await;
+            let chat = created_chat(&r.updates)
+                .ok_or_else(|| TeleError::Other("unexpected response shape".to_string()))?;
+            let chat_id = chat.id();
+            cache_created_chat(shares.session.as_ref(), Some(chat)).await;
             Ok(serde_json::json!({"kind": "group", "chat_id": chat_id}))
         }
         "supergroup" => {
@@ -4611,9 +4738,10 @@ pub(crate) async fn chat_create_core(
                 })
                 .await
                 .map_err(tele_invocation)?;
-            let chat = created_chat(&r);
-            let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-            cache_created_chat(shares.session.as_ref(), chat).await;
+            let chat = created_chat(&r)
+                .ok_or_else(|| TeleError::Other("unexpected response shape".to_string()))?;
+            let chat_id = chat.id();
+            cache_created_chat(shares.session.as_ref(), Some(chat)).await;
             Ok(serde_json::json!({"kind": "supergroup", "forum": params.forum, "chat_id": chat_id}))
         }
         "channel" => {
@@ -4632,9 +4760,10 @@ pub(crate) async fn chat_create_core(
                 })
                 .await
                 .map_err(tele_invocation)?;
-            let chat = created_chat(&r);
-            let chat_id = chat.map(|c| c.id()).unwrap_or(0);
-            cache_created_chat(shares.session.as_ref(), chat).await;
+            let chat = created_chat(&r)
+                .ok_or_else(|| TeleError::Other("unexpected response shape".to_string()))?;
+            let chat_id = chat.id();
+            cache_created_chat(shares.session.as_ref(), Some(chat)).await;
             Ok(serde_json::json!({"kind": "channel", "chat_id": chat_id}))
         }
         other => Err(TeleError::Usage(format!(
@@ -5101,7 +5230,7 @@ pub(crate) async fn chat_admin_log_core(
     let collected = {
         let client_ref = &shares.client;
         let channel_ref = &channel;
-        collect_admin_log(params.limit, move |max_id, page_limit| {
+        collect_admin_log(params.limit, None, move |max_id, page_limit| {
             let q = search_q.clone();
             let filter = events_filter.clone();
             let admins = admins.clone();
@@ -5317,37 +5446,85 @@ pub(crate) async fn chat_invite_core(
             let admin_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
             match plan.link.clone() {
                 Some(link) => {
-                    let r: tl::enums::messages::ChatInviteImporters = shares
-                        .client
-                        .invoke(&tl::functions::messages::GetChatInviteImporters {
-                            requested: false,
-                            subscription_expired: false,
-                            peer,
-                            link: Some(link),
-                            q: None,
-                            offset_date: 0,
-                            offset_user: tl::types::InputUserEmpty {}.into(),
-                            limit: INVITE_LIST_LIMIT,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                    let rows = chat_invite_importers_rows(&shares.client, &r);
+                    let mut rows = Vec::new();
+                    let mut offset_date = 0i32;
+                    let mut offset_user: tl::enums::InputUser = tl::types::InputUserEmpty {}.into();
+                    loop {
+                        let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
+                        if remaining <= 0 {
+                            break;
+                        }
+                        let r: tl::enums::messages::ChatInviteImporters = shares
+                            .client
+                            .invoke(&tl::functions::messages::GetChatInviteImporters {
+                                requested: false,
+                                subscription_expired: false,
+                                peer: peer.clone(),
+                                link: Some(link.clone()),
+                                q: None,
+                                offset_date,
+                                offset_user: offset_user.clone(),
+                                limit: remaining.min(INVITE_LIST_LIMIT),
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                        let tl::enums::messages::ChatInviteImporters::Importers(ref list) = r;
+                        let page_len = list.importers.len();
+                        if page_len > 0 {
+                            if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
+                                list.importers.last()
+                            {
+                                offset_date = imp.date;
+                                offset_user = tl::types::InputUser {
+                                    user_id: imp.user_id,
+                                    access_hash: 0,
+                                }
+                                .into();
+                            }
+                        }
+                        rows.extend(chat_invite_importers_rows(&shares.client, &r));
+                        if page_len == 0 {
+                            break;
+                        }
+                    }
                     Ok(serde_json::json!({"importers": rows}))
                 }
                 None => {
-                    let r: tl::enums::messages::ExportedChatInvites = shares
-                        .client
-                        .invoke(&tl::functions::messages::GetExportedChatInvites {
-                            revoked: plan.revoked,
-                            peer,
-                            admin_id,
-                            offset_date: None,
-                            offset_link: None,
-                            limit: INVITE_LIST_LIMIT,
-                        })
-                        .await
-                        .map_err(tele_invocation)?;
-                    let rows = exported_chat_invites_rows(&r);
+                    let mut rows = Vec::new();
+                    let mut offset_date: Option<i32> = None;
+                    let mut offset_link: Option<String> = None;
+                    loop {
+                        let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
+                        if remaining <= 0 {
+                            break;
+                        }
+                        let r: tl::enums::messages::ExportedChatInvites = shares
+                            .client
+                            .invoke(&tl::functions::messages::GetExportedChatInvites {
+                                revoked: plan.revoked,
+                                peer: peer.clone(),
+                                admin_id: admin_id.clone(),
+                                offset_date,
+                                offset_link: offset_link.clone(),
+                                limit: remaining.min(INVITE_LIST_LIMIT),
+                            })
+                            .await
+                            .map_err(tele_invocation)?;
+                        let tl::enums::messages::ExportedChatInvites::Invites(ref list) = r;
+                        let page_len = list.invites.len();
+                        if page_len > 0 {
+                            if let Some(tl::enums::ExportedChatInvite::ChatInviteExported(inv)) =
+                                list.invites.last()
+                            {
+                                offset_date = Some(inv.date);
+                                offset_link = Some(inv.link.clone());
+                            }
+                        }
+                        rows.extend(exported_chat_invites_rows(&r));
+                        if page_len == 0 {
+                            break;
+                        }
+                    }
                     Ok(serde_json::json!({"links": rows}))
                 }
             }
@@ -5394,21 +5571,48 @@ pub(crate) async fn chat_requests_core(
     let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
     match plan.action {
         RequestsAction::List => {
-            let r: tl::enums::messages::ChatInviteImporters = shares
-                .client
-                .invoke(&tl::functions::messages::GetChatInviteImporters {
-                    requested: true,
-                    subscription_expired: false,
-                    peer,
-                    link: plan.link.clone(),
-                    q: None,
-                    offset_date: 0,
-                    offset_user: tl::types::InputUserEmpty {}.into(),
-                    limit: plan.limit as i32,
-                })
-                .await
-                .map_err(tele_invocation)?;
-            let rows = join_request_rows(&shares.client, &r, plan.link.as_deref());
+            let mut rows = Vec::new();
+            let mut offset_date = 0i32;
+            let mut offset_user: tl::enums::InputUser = tl::types::InputUserEmpty {}.into();
+            let limit = plan.limit as i32;
+            loop {
+                let remaining = limit - rows.len() as i32;
+                if remaining <= 0 {
+                    break;
+                }
+                let r: tl::enums::messages::ChatInviteImporters = shares
+                    .client
+                    .invoke(&tl::functions::messages::GetChatInviteImporters {
+                        requested: true,
+                        subscription_expired: false,
+                        peer: peer.clone(),
+                        link: plan.link.clone(),
+                        q: None,
+                        offset_date,
+                        offset_user: offset_user.clone(),
+                        limit: remaining.min(INVITE_LIST_LIMIT),
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                let tl::enums::messages::ChatInviteImporters::Importers(ref list) = r;
+                let page_len = list.importers.len();
+                if page_len > 0 {
+                    if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
+                        list.importers.last()
+                    {
+                        offset_date = imp.date;
+                        offset_user = tl::types::InputUser {
+                            user_id: imp.user_id,
+                            access_hash: 0,
+                        }
+                        .into();
+                    }
+                }
+                rows.extend(join_request_rows(&shares.client, &r, plan.link.as_deref()));
+                if page_len == 0 {
+                    break;
+                }
+            }
             Ok(serde_json::json!({"requests": rows}))
         }
         RequestsAction::Approve | RequestsAction::Dismiss => {
@@ -5937,7 +6141,7 @@ mod tests {
         let pages: [(i64, u32, Vec<i64>, Vec<i64>); 2] =
             [(0, 2, vec![9], vec![11]), (9, 1, vec![8], Vec::new())];
         let mut next = 0usize;
-        let collected = collect_admin_log(2, |_max_id, _limit| {
+        let collected = collect_admin_log(2, None, |_max_id, _limit| {
             let (_want_max, _want_limit, ids, user_ids) = pages[next].clone();
             next += 1;
             let new_max = *ids.last().unwrap_or(&0);
@@ -6059,7 +6263,7 @@ mod tests {
         assert!(filter_events_by_range(rows, strict_since, None).is_empty());
 
         let rows = vec![row_at("bogus")];
-        assert_eq!(filter_events_by_range(rows, strict_since, None).len(), 1);
+        assert_eq!(filter_events_by_range(rows, strict_since, None).len(), 0);
     }
 
     #[test]
@@ -6287,7 +6491,7 @@ mod tests {
     #[tokio::test]
     async fn collect_admin_log_stops_on_empty_page() {
         let mut calls = Vec::new();
-        let collected = collect_admin_log(10, |max_id, page_limit| {
+        let collected = collect_admin_log(10, None, |max_id, page_limit| {
             calls.push((max_id, page_limit));
             async move {
                 Ok(AdminLogPage {
@@ -6308,7 +6512,7 @@ mod tests {
         let pages: [(i64, u32, Vec<i64>, i64); 2] = [(0, 5, vec![10, 9], 9), (9, 3, Vec::new(), 0)];
         let mut next = 0usize;
         let mut calls = Vec::new();
-        let collected = collect_admin_log(5, |max_id, page_limit| {
+        let collected = collect_admin_log(5, None, |max_id, page_limit| {
             let (want_max, want_limit, ids, new_max) = pages[next].clone();
             next += 1;
             calls.push((max_id, page_limit));
@@ -6334,7 +6538,7 @@ mod tests {
             [(0, 5, vec![10, 9, 8], 8), (8, 2, vec![7, 6], 6)];
         let mut next = 0usize;
         let mut calls = Vec::new();
-        let collected = collect_admin_log(5, |max_id, page_limit| {
+        let collected = collect_admin_log(5, None, |max_id, page_limit| {
             let (want_max, want_limit, ids, new_max) = pages[next].clone();
             next += 1;
             calls.push((max_id, page_limit));
@@ -6357,7 +6561,7 @@ mod tests {
     #[tokio::test]
     async fn collect_admin_log_stops_when_limit_reached_exactly() {
         let mut calls = Vec::new();
-        let collected = collect_admin_log(3, |max_id, page_limit| {
+        let collected = collect_admin_log(3, None, |max_id, page_limit| {
             calls.push((max_id, page_limit));
             async move {
                 Ok(AdminLogPage {
@@ -6377,7 +6581,7 @@ mod tests {
     async fn collect_admin_log_page_size_capped_at_100() {
         let mut next = 0usize;
         let mut calls = Vec::new();
-        let collected = collect_admin_log(250, |max_id, page_limit| {
+        let collected = collect_admin_log(250, None, |max_id, page_limit| {
             let ids: Vec<i64> = (0..page_limit)
                 .map(|i| 1000 - next as i64 * 100 - i as i64)
                 .collect();
