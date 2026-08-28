@@ -4104,6 +4104,7 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::commands::serve::{Lane, Plan};
@@ -4155,7 +4156,9 @@ mod tests {
         let dir = staged_temp_dir();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var("TELE_APP_DIR", &dir);
         std::env::remove_var(TELE_PHONE_ENV);
         let result = f(dir.clone()).await;
@@ -4217,7 +4220,9 @@ mod tests {
 
     #[test]
     fn resolve_phone_prefers_explicit_arg_over_env() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(TELE_PHONE_ENV, "+15550001111");
         let resolved = resolve_phone(Some("+15557772222"));
         std::env::remove_var(TELE_PHONE_ENV);
@@ -4226,7 +4231,9 @@ mod tests {
 
     #[test]
     fn resolve_phone_falls_back_to_nonempty_env() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var(TELE_PHONE_ENV, " +15550001111 ");
         let resolved = resolve_phone(None);
         std::env::remove_var(TELE_PHONE_ENV);
@@ -4235,7 +4242,9 @@ mod tests {
 
     #[test]
     fn resolve_phone_ignores_empty_env_and_empty_arg() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::remove_var(TELE_PHONE_ENV);
         assert!(resolve_phone(None).is_none());
         std::env::set_var(TELE_PHONE_ENV, "+15550001111");
@@ -4585,7 +4594,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_readd_without_tags_preserves_existing_tags() {
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = std::env::temp_dir().join(format!("telecli-add-tags-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -5119,7 +5130,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("telecli-exp-dry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("out")).unwrap();
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seed_test_env(&dir);
         let flags = test_flags(
             "account export-session",
@@ -5189,7 +5202,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("src.session"), b"SQLite format 3\x00pad").unwrap();
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seed_test_env(&dir);
         let flags = test_flags(
             "account import-session",
@@ -5246,7 +5261,9 @@ mod tests {
             .await
             .unwrap();
         }
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seed_test_env(&dir);
         let flags = test_flags(
             "account import-session",
@@ -5300,7 +5317,9 @@ mod tests {
             .await
             .unwrap();
         drop(scaffold);
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seed_test_env(&dir);
         let flags = test_flags(
             "account import-session",
@@ -5336,7 +5355,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("telecli-exp-secret-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seed_test_env(&dir);
         {
             let locked = session::open_session("keyed").await.unwrap();
@@ -5378,7 +5399,9 @@ mod tests {
             std::env::temp_dir().join(format!("telecli-cmd-roundtrip-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         seed_test_env(&dir);
         {
             let locked = session::open_session("origin").await.unwrap();

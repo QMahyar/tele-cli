@@ -5971,6 +5971,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use grammers_client::{Client, SenderPool};
@@ -6205,7 +6206,9 @@ mod tests {
 
     #[tokio::test]
     async fn admin_log_validates_since_until_and_flags_offline() {
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut a = admin_log_args("@c");
         a.since = Some("not-a-date".to_string());
         assert!(matches!(

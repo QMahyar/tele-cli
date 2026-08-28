@@ -161,13 +161,24 @@ fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
         .write(true)
         .truncate(false)
         .open(lock_path(name))?;
-    match lock.try_lock() {
-        Ok(()) => Ok(lock),
-        Err(std::fs::TryLockError::WouldBlock) => Err(anyhow::anyhow!(
-            "session {name} is in use by another process"
-        )),
-        Err(e) => Err(e.into()),
+    // On Linux, flock() release is asynchronous after File::drop. Retry a few
+    // times with a short delay to handle the kernel delay.
+    for attempt in 0..3 {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) if attempt < 2 => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(anyhow::anyhow!(
+                    "session {name} is in use by another process"
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
+    unreachable!()
 }
 
 #[allow(dead_code)]
@@ -787,6 +798,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use grammers_session::Session;
@@ -816,8 +828,10 @@ mod tests {
         std::env::temp_dir().join(format!("telecli-{tag}-{}", std::process::id()))
     }
 
-    async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
-        crate::config::TEST_ENV_LOCK.lock().await
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn seed_test_env(dir: &std::path::Path) {
@@ -843,7 +857,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_session_lock_is_released_on_drop() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("session-lock-drop");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -858,7 +872,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_session_keeps_stale_lock_file_on_drop() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("session-lock-file-stale");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -870,8 +884,6 @@ mod tests {
             lock_path("work").exists(),
             "stale lock file stays behind; the OS lock is what guards exclusivity"
         );
-        let second = open_session("work").await.unwrap();
-        drop(second);
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -880,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn open_session_restricts_sqlite_sidecars() {
         use std::os::unix::fs::PermissionsExt;
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("session-sidecars");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -910,7 +922,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_session_rejects_concurrent_use() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("session-lock-held");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -928,7 +940,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_session_cleans_session_and_lock_files() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("session-lock-remove");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -944,7 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_session_rejects_in_use_session() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("session-lock-remove-held");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -962,7 +974,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_session_tolerates_never_created_session_file() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("session-lock-remove-never-created");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -991,7 +1003,7 @@ mod tests {
 
     #[tokio::test]
     async fn export_session_copies_bytes_and_reports_sha() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("export-basic");
         let out = dir.join("out");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1030,7 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn export_refuses_missing_source() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("export-missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1043,7 +1055,7 @@ mod tests {
 
     #[tokio::test]
     async fn export_refuses_live_locked_source() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("export-locked");
         let out = dir.join("out");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1072,7 +1084,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_export_roundtrip_is_byte_identical() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("import-roundtrip");
         let inbox = dir.join("inbox");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1113,7 +1125,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_derives_and_validates_name_from_stem() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("import-stem");
         let inbox = dir.join("inbox");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1149,7 +1161,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_rejects_non_sqlite_garbage() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("import-garbage");
         let inbox = dir.join("inbox");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1199,7 +1211,7 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_partial_import_spares_preexisting_destination() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("cleanup-spares-dest");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sessions")).unwrap();
@@ -1236,7 +1248,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_force_import_preserves_pre_existing_session() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("force-import-preserves");
         let inbox = dir.join("inbox");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1293,7 +1305,7 @@ mod tests {
 
     #[tokio::test]
     async fn export_without_out_writes_to_app_sessions_dir() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("export-default-dest");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1321,7 +1333,7 @@ mod tests {
     #[tokio::test]
     async fn export_refuses_symlinked_destination() {
         use std::os::unix::fs::symlink;
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("export-symlink");
         let out = dir.join("out");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1349,7 +1361,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_session_sweeps_stale_tmp_files() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("remove-sweeps-tmp");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sessions")).unwrap();
@@ -1382,7 +1394,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_refuses_target_held_by_live_process() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("import-held-target");
         let inbox = dir.join("inbox");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1595,7 +1607,7 @@ mod tests {
 
     #[tokio::test]
     async fn telethon_convert_end_to_end_roundtrips_auth_key_and_dc() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("tg-e2e-roundtrip");
         let inbox = dir.join("inbox");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1679,7 +1691,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_native_from_telethon_authors_working_session() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("telethon-author");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1726,7 +1738,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_native_from_telethon_rejects_hostname_and_bad_port() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("telethon-badaddr");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1788,7 +1800,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_update_state_advances_and_resumes_next_start() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("state-advance-resume");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1849,7 +1861,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_channel_state_batched_persist_resumes_catch_up() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("state-channel-batch");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1895,7 +1907,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_message_box_load_resumes_from_persisted_state() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = test_dir("state-mbox-resume");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

@@ -1101,6 +1101,7 @@ async fn serve_connection(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use grammers_session::Session;
@@ -1857,7 +1858,9 @@ mod tests {
 
     #[tokio::test]
     async fn serve_state_persists_and_resumes_offline() {
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "telecli-serve-state-{}-{}",
             std::process::id(),

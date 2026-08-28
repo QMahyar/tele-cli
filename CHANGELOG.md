@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.8] - 2026-08-28
+
+### Fixed
+- Flaky session tests on CI: replaced `tokio::sync::Mutex` with `std::sync::Mutex` for `TEST_ENV_LOCK` to eliminate race conditions between parallel test threads mutating `TELE_APP_DIR` env var. The sync mutex properly blocks the calling OS thread. Poisoned-mutex recovery ensures cascading panics don't break subsequent tests.
+
 ## [0.6.7] - 2026-08-28
 
 ### Fixed

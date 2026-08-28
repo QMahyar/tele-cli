@@ -794,7 +794,9 @@ mod tests {
 
     #[test]
     fn export_dir_lives_under_app_data_export() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base = temp_dir("dir");
         std::env::set_var("TELE_APP_DIR", &base);
         assert_eq!(export_dir("work"), base.join("export").join("work"));

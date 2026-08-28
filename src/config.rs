@@ -13,7 +13,7 @@ pub fn ensure_app_data_dir() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn env_nonempty(
     get: &mut impl FnMut(&str) -> Result<String, std::env::VarError>,
@@ -660,7 +660,9 @@ mod tests {
 
     #[test]
     fn read_config_rejects_directory_with_clear_message() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir =
             std::env::temp_dir().join(format!("telecli-config-rd-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -674,7 +676,9 @@ mod tests {
 
     #[test]
     fn read_config_missing_path_is_defaults() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir =
             std::env::temp_dir().join(format!("telecli-config-rd-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -685,7 +689,9 @@ mod tests {
 
     #[test]
     fn read_config_malformed_toml_is_parse_error() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir =
             std::env::temp_dir().join(format!("telecli-config-rd-bad-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -903,7 +909,9 @@ mod tests {
 
     #[test]
     fn env_nonempty_falls_through_for_empty_and_whitespace() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var("TELE_TEST_ENV_NONEMPTY", "");
         let mut get = |k: &str| std::env::var(k);
         assert!(env_nonempty(&mut get, "TELE_TEST_ENV_NONEMPTY").is_none());
@@ -1070,7 +1078,9 @@ mod tests {
 
     #[test]
     fn credentials_same_path_is_read_once() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = creds_env_dir("creds-once");
         std::fs::write(dir.join(".env"), "TELE_API_ID=111\nTELE_API_HASH=dddd\n").unwrap();
         let before = ENV_READS.load(std::sync::atomic::Ordering::SeqCst);
@@ -1086,7 +1096,9 @@ mod tests {
 
     #[test]
     fn credentials_refresh_when_env_file_changes() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = creds_env_dir("creds-refresh");
         std::fs::write(
             dir.join(".env"),
@@ -1104,7 +1116,9 @@ mod tests {
     #[test]
     fn credentials_tighten_exposed_env_file() {
         use std::os::unix::fs::PermissionsExt;
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = creds_env_dir("creds-tighten");
         let path = dir.join(".env");
         std::fs::write(&path, "TELE_API_ID=5\nTELE_API_HASH=cccc\n").unwrap();
@@ -1118,7 +1132,9 @@ mod tests {
 
     #[test]
     fn credentials_rejects_empty_api_hash() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = creds_env_dir("creds-empty-hash");
         std::fs::write(dir.join(".env"), "TELE_API_ID=1234567\nTELE_API_HASH=\n").unwrap();
         let err = credentials()
@@ -1132,7 +1148,9 @@ mod tests {
 
     #[test]
     fn credentials_rejects_whitespace_only_api_hash() {
-        let _guard = TEST_ENV_LOCK.blocking_lock();
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = creds_env_dir("creds-ws-hash");
         std::fs::write(dir.join(".env"), "TELE_API_ID=1234567\nTELE_API_HASH=   \n").unwrap();
         let err = credentials()

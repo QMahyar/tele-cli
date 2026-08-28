@@ -1722,6 +1722,7 @@ fn message_action_kind(action: &tl::enums::MessageAction) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::executor::effective_parallel;
@@ -4069,7 +4070,9 @@ mod tests {
 
     #[tokio::test]
     async fn listen_state_persists_and_resumes_offline() {
-        let _guard = crate::config::TEST_ENV_LOCK.lock().await;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "telecli-listen-state-{}-{}",
             std::process::id(),

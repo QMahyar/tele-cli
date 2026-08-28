@@ -3363,6 +3363,7 @@ fn looks_like_image(path: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use grammers_session::types::PeerKind;
@@ -4845,7 +4846,9 @@ mod tests {
 
     #[test]
     fn download_dir_rejects_app_data_and_sessions() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base =
             std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -4872,7 +4875,9 @@ mod tests {
 
     #[test]
     fn download_dir_allows_dirs_outside_app_data() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base =
             std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -4892,7 +4897,9 @@ mod tests {
 
     #[test]
     fn download_dir_resolves_nonexisting_tail_outside_app_data() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base =
             std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -4922,7 +4929,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn download_dir_rejects_case_variant_of_app_data() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base =
             std::env::temp_dir().join(format!("telecli-msg-dl-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -4944,7 +4953,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn upload_rejects_case_variant_app_data_path() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base =
             std::env::temp_dir().join(format!("telecli-msg-upload-guard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -4974,8 +4985,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
-        crate::config::TEST_ENV_LOCK.lock().await
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn dryrun_flags(command: &str, dry_run: bool) -> GlobalFlags {
@@ -5002,7 +5015,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_dry_run_short_circuits_before_connect() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = get(
@@ -5024,7 +5037,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_without_dry_run_requires_a_real_session() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = get(
@@ -5046,7 +5059,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_dry_run_short_circuits_before_connect() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = search(
@@ -5067,7 +5080,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_global_dry_run_skips_chat_requirement() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = search(
@@ -5088,7 +5101,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_without_dry_run_requires_a_real_session() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = search(
@@ -5109,7 +5122,7 @@ mod tests {
 
     #[tokio::test]
     async fn download_dry_run_short_circuits_before_connect() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let out =
@@ -5401,7 +5414,7 @@ mod tests {
 
     #[tokio::test]
     async fn vote_dry_run_short_circuits_before_connect() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = vote(vote_args("1,3"), &dryrun_flags("msg vote", true))
@@ -5453,7 +5466,7 @@ mod tests {
 
     #[tokio::test]
     async fn typing_dry_run_short_circuits_before_connect() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = typing(
@@ -5701,7 +5714,7 @@ mod tests {
 
     #[tokio::test]
     async fn click_dry_run_short_circuits_before_connect() {
-        let _guard = lock_env().await;
+        let _guard = lock_env();
         let dir = fake_app_dir();
         std::env::set_var("TELE_APP_DIR", &dir);
         let code = click(
@@ -6032,7 +6045,9 @@ mod tests {
 
     #[test]
     fn download_guard_refuses_before_creating_dir() {
-        let _guard = crate::config::TEST_ENV_LOCK.blocking_lock();
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base =
             std::env::temp_dir().join(format!("telecli-dl-guard-nocreate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
