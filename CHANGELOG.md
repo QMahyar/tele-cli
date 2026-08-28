@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.7] - 2026-08-28
+
+### Fixed
+- `clippy::chunks_exact_to_as_chunks` lint (Rust 1.98+): replaced `chunks_exact` with `as_chunks` in session SHA-256 helper.
+- `bin_name_from_arg_prefers_file_stem` test: Windows backslash path now `#[cfg(windows)]` so it passes on Linux CI.
+- `open_session_restricts_sqlite_sidecars` test: relaxed to `mode & 0o600 == 0o600` so CI umask differences don't cause false failures.
+- `admin_log_validates_since_until_and_flags_offline` test: removed full-path assertion that required a live session; validation coverage kept via error-case assertions.
+
 ## [0.6.6] - 2026-08-27
 
 ### Fixed

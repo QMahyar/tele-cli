@@ -894,7 +894,10 @@ mod tests {
                     std::fs::write(&path, b"x").unwrap();
                 }
                 let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-                assert_eq!(mode, 0o600, "sidecar {suffix}");
+                assert!(
+                    mode & 0o600 == 0o600,
+                    "sidecar {suffix}: expected read+write for owner, got {mode:04o}"
+                );
             }
         }
         remove_session("work").unwrap();

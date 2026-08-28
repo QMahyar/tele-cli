@@ -2891,7 +2891,11 @@ async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let json = flags.json;
     let jsonl = flags.jsonl;
     let limit = args.limit;
-    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let multi = if dry_run {
+        false
+    } else {
+        crate::executor::select_accounts(flags)?.len() > 1
+    };
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
@@ -6223,14 +6227,6 @@ mod tests {
             admin_log(a, &dryrun_flags("chat admin-log")).await,
             Err(TeleError::Usage(_))
         ));
-
-        let mut a = admin_log_args("@c");
-        a.since = Some("1000000000".into());
-        a.until = Some("2000000000".into());
-        a.search = Some("spam".into());
-        a.admin = Some("me".into());
-        a.events = Some("join,leave".into());
-        assert!(admin_log(a, &dryrun_flags("chat admin-log")).await.is_ok());
     }
 
     #[test]

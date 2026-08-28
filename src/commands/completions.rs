@@ -90,6 +90,11 @@ mod tests {
     fn bin_name_from_arg_prefers_file_stem() {
         assert_eq!(bin_name_from_arg(Some("telecli")), "telecli");
         assert_eq!(bin_name_from_arg(Some("/usr/local/bin/telecli")), "telecli");
+        assert_eq!(
+            bin_name_from_arg(Some("/usr/local/bin/telecli.exe")),
+            "telecli"
+        );
+        #[cfg(windows)]
         assert_eq!(bin_name_from_arg(Some("C:\\tools\\telecli.exe")), "telecli");
     }
 
