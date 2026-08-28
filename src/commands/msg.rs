@@ -3,6 +3,7 @@ use grammers_client::message::InputMessage;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::helpers::looks_like_image;
 use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
@@ -3352,14 +3353,6 @@ fn commit_download(temp: &std::path::Path, final_path: &std::path::Path) -> Tele
             )))
         }
     }
-}
-
-fn looks_like_image(path: &str) -> bool {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    matches!(
-        ext.as_str(),
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic"
-    )
 }
 
 #[cfg(test)]
