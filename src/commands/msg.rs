@@ -6063,6 +6063,156 @@ mod tests {
     }
 
     #[test]
+    fn is_sensitive_basename_blocks_each_documented_type() {
+        for name in [
+            ".env",
+            ".env.local",
+            ".env.production",
+            "backup.session",
+            "data.session",
+            ".session",
+            "cert.pem",
+            "server.pem",
+            "private.key",
+            "key.key",
+            "store.p12",
+            "cert.pfx",
+            "vault.kdbx",
+            "config.toml",
+            "config.toml.bak",
+            "id_rsa",
+            "id_rsa.pub",
+            "id_ed25519",
+            "id_ed25519.pub",
+            ".netrc",
+            ".git-credentials",
+            "credentials",
+        ] {
+            assert!(
+                is_sensitive_basename(&name.to_lowercase()),
+                "{name} must be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn is_sensitive_basename_allows_safe_extensions() {
+        for name in [
+            "notes.txt",
+            "document.txt",
+            "photo.jpg",
+            "image.JPG",
+            "report.pdf",
+            "manual.pdf",
+            "main.rs",
+            "lib.rs",
+            "archive.tar.gz",
+            "readme.md",
+            "data.json",
+            "video.mp4",
+        ] {
+            assert!(
+                !is_sensitive_basename(&name.to_lowercase()),
+                "{name} must be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn is_sensitive_basename_edge_cases_empty_and_case_sensitivity() {
+        assert!(
+            !is_sensitive_basename(""),
+            "empty string must be allowed"
+        );
+        assert!(
+            !is_sensitive_basename(".ENV"),
+            ".ENV without lowercasing must not be blocked (function is case-sensitive)"
+        );
+        assert!(
+            !is_sensitive_basename(".Session"),
+            ".Session without lowercasing must not be blocked"
+        );
+        assert!(
+            !is_sensitive_basename(".PEM"),
+            ".PEM without lowercasing must not be blocked"
+        );
+        assert!(
+            !is_sensitive_basename("ID_RSA"),
+            "ID_RSA without lowercasing must not be blocked"
+        );
+        assert!(
+            !is_sensitive_basename("CONFIG.TOML"),
+            "CONFIG.TOML without lowercasing must not be blocked"
+        );
+        assert!(
+            !is_sensitive_basename(".GIT-CREDENTIALS"),
+            ".GIT-CREDENTIALS without lowercasing must not be blocked"
+        );
+        assert!(is_sensitive_basename(&".ENV".to_lowercase()));
+        assert!(is_sensitive_basename(&".Session".to_lowercase()));
+        assert!(is_sensitive_basename(&".PEM".to_lowercase()));
+        assert!(is_sensitive_basename(&"ID_RSA".to_lowercase()));
+        assert!(is_sensitive_basename(&"CONFIG.TOML".to_lowercase()));
+        assert!(is_sensitive_basename(&".GIT-CREDENTIALS".to_lowercase()));
+        assert!(
+            !is_sensitive_basename("env"),
+            "env without dot must be allowed"
+        );
+        assert!(
+            !is_sensitive_basename("my_env"),
+            "my_env must be allowed"
+        );
+        assert!(
+            !is_sensitive_basename("credentials.bak"),
+            "credentials.bak must be allowed (exact only)"
+        );
+    }
+
+    #[test]
+    fn validate_markdown_rejects_additional_malformed_tg_urls() {
+        for bad in [
+            "[x](tg://user?id=)",
+            "[x](tg://user?id=0)",
+            "[x](tg://user?id=-1)",
+            "[x](tg://user?id= 123)",
+            "[x](tg://user?id=abc)",
+            "[x](tg://user?id=1.5)",
+            "tg://user?id=",
+            "tg://user?id=0",
+            "<tg://user?id=>",
+            "<tg://user?id=0>",
+            "<tg://user?id=-12>",
+            "[x](tg://user?id=999999999999999999999999)",
+        ] {
+            assert!(
+                matches!(validate_markdown(bad), Err(TeleError::Usage(_))),
+                "{bad:?} must be rejected"
+            );
+        }
+        for good in [
+            "[x](tg://user?id=1)",
+            "[x](tg://user?id=12345678)",
+            "<tg://user?id=1>",
+            "<tg://user?id=999>",
+            "plain text without mentions",
+            "[a](https://example.com)",
+        ] {
+            assert!(validate_markdown(good).is_ok(), "{good:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn validate_markdown_rejects_malformed_in_caption_and_text() {
+        let mut args = send_args("markdown");
+        args.text = Some("[x](tg://user?id=abc)".to_string());
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+        args.text = Some("hello".to_string());
+        args.caption = Some("[y](tg://user?id=)".to_string());
+        args.files = vec!["dummy.pdf".to_string()];
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
     fn serve_schemas_are_real_objects() {
         for schema in [
             crate::commands::serve::params_schema::<SendParams>(),
