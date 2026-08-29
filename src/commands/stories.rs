@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::helpers::looks_like_image;
 use crate::commands::msg::validate_upload_path;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{require_explicit_selection, run_fanout, GlobalFlags};
@@ -363,11 +364,6 @@ fn validate_send_args(args: &SendArgs) -> TeleResult<()> {
     }
     validate_privacy(&args.privacy)?;
     validate_period(args.period)
-}
-
-fn looks_like_image(path: &str) -> bool {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "heic")
 }
 
 fn mime_type_for(path: &str) -> &'static str {

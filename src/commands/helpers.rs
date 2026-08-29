@@ -32,6 +32,14 @@ pub(crate) fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Val
     }
 }
 
+pub(crate) fn looks_like_image(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,5 +78,28 @@ mod tests {
             stats_percent(&v),
             serde_json::json!({"part": 50.0, "total": 100.0})
         );
+    }
+
+    #[test]
+    fn looks_like_image_jpg_true() {
+        assert!(looks_like_image("photo.jpg"));
+    }
+
+    #[test]
+    fn looks_like_image_bmp_true() {
+        assert!(looks_like_image("photo.bmp"));
+    }
+
+    #[test]
+    fn looks_like_image_txt_false() {
+        assert!(!looks_like_image("photo.txt"));
+    }
+
+    #[test]
+    fn looks_like_image_case_insensitive() {
+        assert!(looks_like_image("photo.JPG"));
+        assert!(looks_like_image("photo.JpEg"));
+        assert!(looks_like_image("PHOTO.PNG"));
+        assert!(!looks_like_image("photo.TXT"));
     }
 }
