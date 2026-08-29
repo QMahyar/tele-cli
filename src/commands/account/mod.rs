@@ -19,7 +19,7 @@ mod staged_login;
 
 pub(crate) use password::{SrpParams, NO_SRP_CHALLENGE_MSG};
 pub use phone::PhoneArgs;
-pub(crate) use staged_login::{LoginStage, PendingLogin, StagedSignIn};
+pub(crate) use staged_login::{LoginStage, StagedSignIn};
 
 pub(crate) fn refuse_interactive_with_multiple_accounts(
     command: &str,
@@ -594,6 +594,32 @@ pub(crate) fn phone_pending_file(name: &str) -> String {
     format!("{name}.phone.json")
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PendingDocument {
+    pub(crate) version: u32,
+    pub(crate) account: String,
+    pub(crate) phone: String,
+    pub(crate) phone_code_hash: String,
+    pub(crate) created_at: String,
+}
+
+pub(crate) const PENDING_DOCUMENT_VERSION: u32 = 1;
+
+impl PendingDocument {
+    pub(crate) fn new(account: &str, phone: &str, phone_code_hash: String) -> Self {
+        Self {
+            version: PENDING_DOCUMENT_VERSION,
+            account: account.to_string(),
+            phone: phone.to_string(),
+            phone_code_hash,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+pub(crate) type PendingLogin = PendingDocument;
+pub(crate) type PendingPhone = PendingDocument;
+
 pub(crate) fn save_pending_document_under(
     base: &std::path::Path,
     file: &str,
@@ -641,6 +667,35 @@ pub(crate) fn remove_pending_document_under(
             "failed to remove pending state {file}: {e}"
         ))),
     }
+}
+
+pub(crate) fn save_pending_generic<T: serde::Serialize>(
+    base: &std::path::Path,
+    file: &str,
+    value: &T,
+) -> TeleResult<()> {
+    let text = serde_json::to_string_pretty(value)?;
+    save_pending_document_under(base, file, &text)
+}
+
+pub(crate) fn load_pending_generic<T: serde::de::DeserializeOwned>(
+    base: &std::path::Path,
+    file: &str,
+    corrupt: impl FnOnce(String) -> TeleError,
+) -> TeleResult<Option<T>> {
+    match load_pending_document_under(base, file)? {
+        Some(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| corrupt(e.to_string())),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn remove_pending_generic(
+    base: &std::path::Path,
+    file: &str,
+) -> TeleResult<bool> {
+    remove_pending_document_under(base, file)
 }
 
 pub(crate) fn purge_pending(name: &str) {

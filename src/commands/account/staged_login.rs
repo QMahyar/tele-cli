@@ -71,36 +71,16 @@ pub(crate) fn validate_staged(
     Ok(stage)
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PendingLogin {
-    pub(crate) version: u32,
-    pub(crate) account: String,
-    pub(crate) phone: String,
-    pub(crate) phone_code_hash: String,
-    pub(crate) created_at: String,
-}
-
-pub(crate) const PENDING_LOGIN_VERSION: u32 = 1;
-
-impl PendingLogin {
-    pub(crate) fn new(account: &str, phone: &str, phone_code_hash: String) -> Self {
-        Self {
-            version: PENDING_LOGIN_VERSION,
-            account: account.to_string(),
-            phone: phone.to_string(),
-            phone_code_hash,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        }
-    }
-}
+pub(crate) use crate::commands::account::PendingLogin;
+#[allow(dead_code)]
+pub(crate) const PENDING_LOGIN_VERSION: u32 = crate::commands::account::PENDING_DOCUMENT_VERSION;
 
 pub(crate) fn save_pending(pending: &PendingLogin) -> TeleResult<()> {
     save_pending_under(&config::app_data_dir(), pending)
 }
 
 pub(crate) fn save_pending_under(base: &std::path::Path, pending: &PendingLogin) -> TeleResult<()> {
-    let text = serde_json::to_string_pretty(pending)?;
-    save_pending_document_under(base, &login_pending_file(&pending.account), &text)
+    save_pending_generic(base, &login_pending_file(&pending.account), pending)
 }
 
 pub(crate) fn load_pending(name: &str) -> TeleResult<Option<PendingLogin>> {
@@ -111,14 +91,11 @@ pub(crate) fn load_pending_under(
     base: &std::path::Path,
     name: &str,
 ) -> TeleResult<Option<PendingLogin>> {
-    match load_pending_document_under(base, &login_pending_file(name))? {
-        Some(text) => serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|e| TeleError::Other(format!(
-                "pending login state for {name} is corrupt ({e}); run tele account login --stage begin again"
-            ))),
-        None => Ok(None),
-    }
+    load_pending_generic(base, &login_pending_file(name), |e| {
+        TeleError::Other(format!(
+            "pending login state for {name} is corrupt ({e}); run tele account login --stage begin again"
+        ))
+    })
 }
 
 pub(crate) fn require_pending(name: &str) -> TeleResult<PendingLogin> {
@@ -141,7 +118,7 @@ pub(crate) fn remove_pending(name: &str) -> TeleResult<bool> {
 }
 
 pub(crate) fn remove_pending_under(base: &std::path::Path, name: &str) -> TeleResult<bool> {
-    remove_pending_document_under(base, &login_pending_file(name))
+    remove_pending_generic(base, &login_pending_file(name))
 }
 
 pub(crate) fn stage_status_data(pending: Option<&PendingLogin>) -> serde_json::Value {
