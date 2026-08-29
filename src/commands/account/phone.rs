@@ -42,28 +42,9 @@ pub struct PhoneArgs {
     pub phone_hash: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PendingPhone {
-    pub(crate) version: u32,
-    pub(crate) account: String,
-    pub(crate) phone: String,
-    pub(crate) phone_code_hash: String,
-    pub(crate) created_at: String,
-}
-
-pub(crate) const PENDING_PHONE_VERSION: u32 = 1;
-
-impl PendingPhone {
-    pub(crate) fn new(account: &str, phone: &str, phone_code_hash: String) -> Self {
-        Self {
-            version: PENDING_PHONE_VERSION,
-            account: account.to_string(),
-            phone: phone.to_string(),
-            phone_code_hash,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        }
-    }
-}
+pub(crate) use crate::commands::account::PendingPhone;
+#[allow(dead_code)]
+pub(crate) const PENDING_PHONE_VERSION: u32 = crate::commands::account::PENDING_DOCUMENT_VERSION;
 
 pub(crate) fn save_pending_phone(pending: &PendingPhone) -> TeleResult<()> {
     save_pending_phone_under(&config::app_data_dir(), pending)
@@ -73,22 +54,18 @@ pub(crate) fn save_pending_phone_under(
     base: &std::path::Path,
     pending: &PendingPhone,
 ) -> TeleResult<()> {
-    let text = serde_json::to_string_pretty(pending)?;
-    save_pending_document_under(base, &phone_pending_file(&pending.account), &text)
+    save_pending_generic(base, &phone_pending_file(&pending.account), pending)
 }
 
 pub(crate) fn load_pending_phone_under(
     base: &std::path::Path,
     name: &str,
 ) -> TeleResult<Option<PendingPhone>> {
-    match load_pending_document_under(base, &phone_pending_file(name))? {
-        Some(text) => serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|e| TeleError::Other(format!(
-                "pending phone-change state for {name} is corrupt ({e}); run tele account phone --change-phone again"
-            ))),
-        None => Ok(None),
-    }
+    load_pending_generic(base, &phone_pending_file(name), |e| {
+        TeleError::Other(format!(
+            "pending phone-change state for {name} is corrupt ({e}); run tele account phone --change-phone again"
+        ))
+    })
 }
 
 pub(crate) fn require_pending_phone(name: &str) -> TeleResult<PendingPhone> {
@@ -111,7 +88,7 @@ pub(crate) fn remove_pending_phone(name: &str) -> TeleResult<bool> {
 }
 
 pub(crate) fn remove_pending_phone_under(base: &std::path::Path, name: &str) -> TeleResult<bool> {
-    remove_pending_document_under(base, &phone_pending_file(name))
+    remove_pending_generic(base, &phone_pending_file(name))
 }
 
 pub(crate) fn phone_hash_matches(pending: &PendingPhone, hash: &str) -> bool {
