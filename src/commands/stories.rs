@@ -428,10 +428,8 @@ fn upload_error(e: std::io::Error) -> TeleError {
         .get_ref()
         .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
     match invocation {
-        Some(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 420 => {
-            TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name.clone(), rpc.value)
-        }
-        _ => TeleError::Other(e.to_string()),
+        Some(inv) => crate::error::invocation_error_ref(inv),
+        None => TeleError::Other(e.to_string()),
     }
 }
 
@@ -2002,5 +2000,42 @@ mod tests {
         assert!(s
             .get("required")
             .is_none_or(|r| r.as_array().unwrap().is_empty()));
+    }
+
+    #[test]
+    fn upload_error_preserves_rpc_taxonomy() {
+        let e = std::io::Error::other(grammers_client::InvocationError::Rpc(
+            grammers_client::sender::RpcError {
+                code: 400,
+                name: "CHAT_INVALID".to_string(),
+                value: None,
+                caused_by: None,
+            },
+        ));
+        let err = upload_error(e);
+        assert!(matches!(err, TeleError::Rpc(_, 400, ref name, _) if name == "CHAT_INVALID"));
+        let v = err.as_json();
+        assert_eq!(v["code"], 400);
+        assert_eq!(v["name"], "CHAT_INVALID");
+        assert_eq!(v["type"], "InvocationError");
+    }
+
+    #[test]
+    fn upload_error_preserves_flood_seconds() {
+        let e = std::io::Error::other(grammers_client::InvocationError::Rpc(
+            grammers_client::sender::RpcError {
+                code: 420,
+                name: "FLOOD_WAIT".to_string(),
+                value: Some(17),
+                caused_by: None,
+            },
+        ));
+        let err = upload_error(e);
+        assert!(matches!(err, TeleError::Rpc(_, 420, _, Some(17))));
+        let v = err.as_json();
+        assert_eq!(v["code"], 420);
+        assert_eq!(v["name"], "FLOOD_WAIT");
+        assert_eq!(v["seconds"], 17);
+        assert_eq!(v["type"], "InvocationError");
     }
 }
