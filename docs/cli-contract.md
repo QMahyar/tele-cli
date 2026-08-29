@@ -202,6 +202,15 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 
 `results[].data` carries `requested` (how many ids you asked to delete) and `deleted` (how many the server actually removed). When `deleted < requested` (already-deleted ids, other people's messages, or missing permission), the row also carries `"partial": true` and the process exits 2. `--self-only` deletes only for yourself (private chats and basic groups; rejected for channels) via `messages.deleteMessages { revoke: false }`. It is mutually exclusive with `--all`.
 
+## `msg click`
+
+- `tele msg click --chat X --id N [--button TEXT | --button-index N | --button-contains SUBSTRING]` clicks an inline button on a bot message (`messages.getBotCallbackAnswer`). Only callback buttons can be clicked; reply-keyboard buttons error with a `tele msg send --chat <chat> --text "…" ` hint.
+- Selector precedence: `--button-index` > `--button-contains` > `--button`. The three flags are mutually exclusive (clap `conflicts_with`).
+- `--button-index N` is 1-based across all rows (row-major flatten). Example: a 2×2 inline keyboard has positions 1..4.
+- `--button TEXT` is an exact match (case-sensitive, then case-insensitive fallback). On miss, the error keeps `no button named …` and appends `Did you mean #i "text"? Available: [#1 "…", #2 "…"]` with real 1-based texts.
+- `--button-contains SUBSTRING` is a case-insensitive substring match against button `text`. It picks the first match; on ambiguous (≥2 hits) it exits 1 with `Did you mean #i "text" or #j "text"? Available: [#1 "…", #2 "…"]` (Persian+emoji resilient, substring is lowercased on both sides). On no match it suggests the available list like `--button`.
+- Dry-run (`--dry-run` or `"dry_run": true` via `msg click` serve/MCP `ClickParams.button_contains`) validates the selector and reports `would: "click button … on message N"` without network. `ClickParams` carries `button_contains` alongside `button` and `button_index` (`deny_unknown_fields`, `additionalProperties: false`).
+
 ## `profile set --username`
 
 - `--username <value|remove>` sets or clears the account username via raw `account.updateUsername`. Values accept `@name`, bare `name`, or a `t.me/…` or `telegram.me/…` link; the literal value `remove` (any case) clears the username. Client-side shape validation runs before connect: 5-32 chars, letters, digits, underscore, at least one letter, no leading digit, no trailing underscore.

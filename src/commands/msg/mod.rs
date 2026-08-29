@@ -1188,6 +1188,7 @@ pub(crate) async fn typing_core(
 enum ButtonSelector {
     Text(String),
     Index(usize),
+    Contains(String),
 }
 
 #[derive(Debug)]
@@ -1199,6 +1200,40 @@ struct LocatedButton {
 
 fn button_text(button: &serde_json::Value) -> Option<&str> {
     button.get("text").and_then(|v| v.as_str())
+}
+
+fn format_available(buttons: &[(usize, &serde_json::Value)]) -> String {
+    let parts: Vec<String> = buttons
+        .iter()
+        .map(|(pos, b)| {
+            let t = button_text(b).unwrap_or_default();
+            format!("#{} {:?}", pos, t)
+        })
+        .collect();
+    format!("[{}]", parts.join(", "))
+}
+
+fn did_you_mean_single(buttons: &[(usize, &serde_json::Value)]) -> String {
+    if let Some((pos, b)) = buttons.first() {
+        let t = button_text(b).unwrap_or_default();
+        format!("Did you mean #{} {:?}?", pos, t)
+    } else {
+        String::new()
+    }
+}
+
+fn did_you_mean_pair(matches: &[(usize, &serde_json::Value)]) -> String {
+    if matches.len() >= 2 {
+        let (p1, b1) = matches[0];
+        let (p2, b2) = matches[1];
+        let t1 = button_text(b1).unwrap_or_default();
+        let t2 = button_text(b2).unwrap_or_default();
+        format!("Did you mean #{} {:?} or #{} {:?}?", p1, t1, p2, t2)
+    } else if matches.len() == 1 {
+        did_you_mean_single(matches)
+    } else {
+        String::new()
+    }
 }
 
 fn locate_button(
@@ -1233,6 +1268,7 @@ fn locate_button(
             "message has no clickable buttons".to_string(),
         ));
     }
+    let all_buttons = buttons.clone();
     let matches: Vec<(usize, &serde_json::Value)> = match selector {
         ButtonSelector::Index(n) => {
             if *n == 0 {
@@ -1257,14 +1293,39 @@ fn locate_button(
                     .collect()
             }
         }
+        ButtonSelector::Contains(substr) => {
+            let needle = substr.to_lowercase();
+            buttons
+                .iter()
+                .copied()
+                .filter(|(_, b)| {
+                    button_text(b).is_some_and(|s| s.to_lowercase().contains(&needle))
+                })
+                .collect()
+        }
     };
     match matches.len() {
         0 => Err(TeleError::Usage(match selector {
             ButtonSelector::Index(n) => {
-                format!("no button at position {n} (markup has {total} button(s))")
+                let available = format_available(&all_buttons);
+                let suggestion = did_you_mean_single(&all_buttons);
+                format!(
+                    "no button at position {n} (markup has {total} button(s)). {suggestion} Available: {available}"
+                )
             }
             ButtonSelector::Text(text) => {
-                format!("no button named {text:?} in this message's inline keyboard")
+                let available = format_available(&all_buttons);
+                let suggestion = did_you_mean_single(&all_buttons);
+                format!(
+                    "no button named {text:?} in this message's inline keyboard. {suggestion} Available: {available}"
+                )
+            }
+            ButtonSelector::Contains(substr) => {
+                let available = format_available(&all_buttons);
+                let suggestion = did_you_mean_single(&all_buttons);
+                format!(
+                    "no button containing {substr:?} in this message's inline keyboard. {suggestion} Available: {available}"
+                )
             }
         })),
         1 => {
@@ -1293,12 +1354,15 @@ fn locate_button(
         }
         _ => {
             let positions: Vec<usize> = matches.iter().map(|(p, _)| *p).collect();
+            let available = format_available(&all_buttons);
+            let did_mean = did_you_mean_pair(&matches);
             let label = match selector {
                 ButtonSelector::Text(text) => format!("{text:?}"),
+                ButtonSelector::Contains(substr) => format!("containing {substr:?}"),
                 ButtonSelector::Index(_) => String::new(),
             };
             Err(TeleError::Usage(format!(
-                "button {label} matches multiple buttons at positions {positions:?}; use --button-index"
+                "button {label} matches multiple buttons at positions {positions:?}; use --button-index. {did_mean} Available: {available}"
             )))
         }
     }
@@ -1336,23 +1400,42 @@ pub(crate) fn validate_click(args: &ClickArgs) -> TeleResult<()> {
             "--password is not supported at this layer: grammers 0.10 exposes no public path to build the getBotCallbackAnswer SRP payload, so password-protected buttons cannot be clicked".to_string(),
         ));
     }
-    match (&args.button, args.button_index) {
-        (None, None) => Err(TeleError::Usage(
-            "--button TEXT or --button-index N required".to_string(),
-        )),
-        (Some(_), Some(_)) => Err(TeleError::Usage(
-            "--button and --button-index are mutually exclusive".to_string(),
-        )),
-        (_, Some(0)) => Err(TeleError::Usage("--button-index is 1-based".to_string())),
-        _ => Ok(()),
+    let count = args.button.is_some() as u8
+        + args.button_index.is_some() as u8
+        + args.button_contains.is_some() as u8;
+    if count == 0 {
+        return Err(TeleError::Usage(
+            "--button TEXT or --button-index N or --button-contains SUBSTRING required"
+                .to_string(),
+        ));
     }
+    if count > 1 {
+        return Err(TeleError::Usage(
+            "--button, --button-index and --button-contains are mutually exclusive".to_string(),
+        ));
+    }
+    if let Some(0) = args.button_index {
+        return Err(TeleError::Usage("--button-index is 1-based".to_string()));
+    }
+    if let Some(s) = &args.button_contains {
+        if s.trim().is_empty() {
+            return Err(TeleError::Usage(
+                "--button-contains must not be empty".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn click_selector(args: &ClickArgs) -> ButtonSelector {
-    if let Some(text) = &args.button {
+    if let Some(idx) = args.button_index {
+        ButtonSelector::Index(idx)
+    } else if let Some(substr) = &args.button_contains {
+        ButtonSelector::Contains(substr.clone())
+    } else if let Some(text) = &args.button {
         ButtonSelector::Text(text.clone())
     } else {
-        ButtonSelector::Index(args.button_index.unwrap_or_default())
+        ButtonSelector::Index(0)
     }
 }
 
@@ -1360,6 +1443,7 @@ fn click_selector_label(selector: &ButtonSelector) -> String {
     match selector {
         ButtonSelector::Text(t) => format!("button {t:?}"),
         ButtonSelector::Index(n) => format!("button #{n}"),
+        ButtonSelector::Contains(s) => format!("button containing {s:?}"),
     }
 }
 
@@ -2398,6 +2482,7 @@ mod tests {
             id: 4,
             button: Some("ok".to_string()),
             button_index: None,
+            button_contains: None,
             password: false,
         };
         assert!(matches!(validate_click(&click), Err(TeleError::Usage(_))));
@@ -3511,6 +3596,18 @@ mod tests {
             id: 5,
             button,
             button_index,
+            button_contains: None,
+            password: false,
+        }
+    }
+
+    fn click_args_contains(substr: &str) -> ClickArgs {
+        ClickArgs {
+            chat: "me".to_string(),
+            id: 5,
+            button: None,
+            button_index: None,
+            button_contains: Some(substr.to_string()),
             password: false,
         }
     }
@@ -4410,6 +4507,284 @@ mod tests {
         let send = crate::commands::serve::params_schema::<SendParams>();
         assert!(send["properties"]["chat"].is_object());
         assert!(send["properties"]["files"]["type"].is_string());
+    }
+
+    #[test]
+    fn locate_button_exact_miss_suggests_did_you_mean_and_available() {
+        let markup = inline_markup_json(vec![
+            vec![
+                tl_callback_button("🚀 ساخت پنل", b"a"),
+                tl_callback_button("🔗 Link", b"b"),
+            ],
+            vec![tl_callback_button("Other", b"c")],
+        ]);
+        let err = locate_button(&markup, &ButtonSelector::Text("nope".into())).unwrap_err();
+        let msg = err.message();
+        assert!(msg.contains("no button named"), "msg: {msg}");
+        assert!(msg.contains("Did you mean"), "msg: {msg}");
+        assert!(msg.contains("Available:"), "msg: {msg}");
+        assert!(msg.contains("ساخت پنل"), "msg: {msg}");
+        assert!(msg.contains("Link"), "msg: {msg}");
+        assert!(msg.contains("#1"), "msg: {msg}");
+        assert!(msg.contains("#2"), "msg: {msg}");
+        assert!(msg.contains("#3"), "msg: {msg}");
+    }
+
+    #[test]
+    fn locate_button_contains_picks_first_match_case_insensitive() {
+        let markup = inline_markup_json(vec![vec![
+            tl_callback_button("🚀 ساخت پنل", b"data1"),
+            tl_callback_button("🔗 Link", b"data2"),
+            tl_callback_button("Other", b"data3"),
+        ]]);
+        let found =
+            locate_button(&markup, &ButtonSelector::Contains("پنل".into())).unwrap();
+        assert_eq!(found.position, 1);
+        assert_eq!(found.text, "🚀 ساخت پنل");
+        assert_eq!(found.callback_data, b"data1".to_vec());
+        let found2 =
+            locate_button(&markup, &ButtonSelector::Contains("link".into())).unwrap();
+        assert_eq!(found2.position, 2);
+        assert_eq!(found2.text, "🔗 Link");
+        let found3 =
+            locate_button(&markup, &ButtonSelector::Contains("LINK".into())).unwrap();
+        assert_eq!(found3.position, 2);
+    }
+
+    #[test]
+    fn locate_button_contains_ambiguous_reports_did_you_mean_and_available_with_real_texts() {
+        let markup = inline_markup_json(vec![vec![
+            tl_callback_button("Foo Bar", b"a"),
+            tl_callback_button("Foo Baz", b"b"),
+            tl_callback_button("Qux", b"c"),
+        ]]);
+        let err =
+            locate_button(&markup, &ButtonSelector::Contains("Foo".into())).unwrap_err();
+        let msg = err.message();
+        assert!(msg.contains("Did you mean"), "msg: {msg}");
+        assert!(msg.contains("Available:"), "msg: {msg}");
+        assert!(msg.contains("Foo Bar"), "msg: {msg}");
+        assert!(msg.contains("Foo Baz"), "msg: {msg}");
+        assert!(msg.contains("#1"), "msg: {msg}");
+        assert!(msg.contains("#2"), "msg: {msg}");
+        assert!(msg.contains("#3"), "msg: {msg}");
+        assert!(msg.contains("\"Foo Bar\""), "msg: {msg}");
+        assert!(msg.contains("\"Foo Baz\""), "msg: {msg}");
+    }
+
+    #[test]
+    fn locate_button_contains_persian_substring_matches_emoji_button() {
+        let markup = inline_markup_json(vec![vec![
+            tl_callback_button("🚀 ساخت پنل", b"x"),
+            tl_callback_button("ساخت اکانت", b"y"),
+        ]]);
+        let found =
+            locate_button(&markup, &ButtonSelector::Contains("پنل".into())).unwrap();
+        assert_eq!(found.position, 1);
+        let err =
+            locate_button(&markup, &ButtonSelector::Contains("ساخت".into())).unwrap_err();
+        let msg = err.message();
+        assert!(msg.contains("Did you mean"), "msg: {msg}");
+        assert!(msg.contains("Available:"), "msg: {msg}");
+        assert!(msg.contains("ساخت پنل"), "msg: {msg}");
+        assert!(msg.contains("ساخت اکانت"), "msg: {msg}");
+    }
+
+    #[test]
+    fn click_selector_precedence_is_index_over_contains_over_button() {
+        let with_all = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: Some("a".to_string()),
+            button_index: Some(3),
+            button_contains: Some("b".to_string()),
+            password: false,
+        };
+        assert!(matches!(
+            click_selector(&with_all),
+            ButtonSelector::Index(3)
+        ));
+        let contains_over_text = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: Some("a".to_string()),
+            button_index: None,
+            button_contains: Some("b".to_string()),
+            password: false,
+        };
+        assert!(matches!(
+            click_selector(&contains_over_text),
+            ButtonSelector::Contains(_)
+        ));
+        let only_text = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: Some("a".to_string()),
+            button_index: None,
+            button_contains: None,
+            password: false,
+        };
+        assert!(matches!(click_selector(&only_text), ButtonSelector::Text(_)));
+    }
+
+    #[test]
+    fn validate_click_enforces_mutual_exclusivity_and_contains_not_empty() {
+        let both = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: Some("a".to_string()),
+            button_index: Some(1),
+            button_contains: None,
+            password: false,
+        };
+        assert!(matches!(validate_click(&both), Err(TeleError::Usage(_))));
+        let both2 = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: None,
+            button_index: Some(1),
+            button_contains: Some("x".to_string()),
+            password: false,
+        };
+        assert!(matches!(validate_click(&both2), Err(TeleError::Usage(_))));
+        let both3 = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: Some("a".to_string()),
+            button_index: None,
+            button_contains: Some("x".to_string()),
+            password: false,
+        };
+        assert!(matches!(validate_click(&both3), Err(TeleError::Usage(_))));
+        let empty_contains = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: None,
+            button_index: None,
+            button_contains: Some("   ".to_string()),
+            password: false,
+        };
+        assert!(matches!(
+            validate_click(&empty_contains),
+            Err(TeleError::Usage(_))
+        ));
+        let none = ClickArgs {
+            chat: "me".to_string(),
+            id: 1,
+            button: None,
+            button_index: None,
+            button_contains: None,
+            password: false,
+        };
+        assert!(matches!(validate_click(&none), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn click_params_schema_contains_button_contains_and_is_closed() {
+        let s = crate::commands::serve::params_schema::<ClickParams>();
+        assert_eq!(s["type"], "object");
+        assert_eq!(s["additionalProperties"], serde_json::json!(false));
+        let props = s["properties"].as_object().expect("properties");
+        assert!(props.contains_key("chat"), "chat missing");
+        assert!(props.contains_key("id"), "id missing");
+        assert!(props.contains_key("button"), "button missing");
+        assert!(props.contains_key("button_index"), "button_index missing");
+        assert!(
+            props.contains_key("button_contains"),
+            "button_contains missing from ClickParams schema; properties: {props:?}"
+        );
+        assert!(props.contains_key("password"), "password missing");
+        assert!(props.contains_key("dry_run"), "dry_run missing");
+    }
+
+    #[test]
+    fn click_help_documents_precedence_and_one_based_across_all_rows() {
+        let mut cmd = {
+            let mut c = clap::Command::new("click");
+            c = <ClickArgs as clap::Args>::augment_args(c);
+            c
+        };
+        let help = cmd.render_help().to_string();
+        assert!(
+            help.contains("--button-index > --button-contains > --button"),
+            "help must document precedence, got: {help}"
+        );
+        assert!(
+            help.contains("1-based"),
+            "help must mention 1-based, got: {help}"
+        );
+        assert!(
+            help.contains("across all rows"),
+            "help must mention across all rows, got: {help}"
+        );
+        let long_help = cmd.render_long_help().to_string();
+        assert!(
+            long_help.contains("--button-contains"),
+            "long help must contain --button-contains, got: {long_help}"
+        );
+    }
+
+    #[test]
+    fn click_button_contains_conflicts_with_button_and_index_via_clap() {
+        let base = crate::command_for_completions();
+        let res = base.clone().try_get_matches_from([
+            "tele",
+            "msg",
+            "click",
+            "--chat",
+            "me",
+            "--id",
+            "1",
+            "--button",
+            "a",
+            "--button-contains",
+            "b",
+        ]);
+        assert!(res.is_err(), "expected conflict for --button + --button-contains");
+        let err = res.unwrap_err();
+        assert!(
+            err.to_string().contains("cannot be used with")
+                || err.to_string().contains("mutually exclusive")
+                || err.to_string().contains("conflicts"),
+            "err: {}",
+            err
+        );
+        let res2 = base.clone().try_get_matches_from([
+            "tele",
+            "msg",
+            "click",
+            "--chat",
+            "me",
+            "--id",
+            "1",
+            "--button-index",
+            "1",
+            "--button-contains",
+            "b",
+        ]);
+        assert!(res2.is_err(), "expected conflict for --button-index + --button-contains");
+        let err2 = res2.unwrap_err();
+        assert!(
+            err2.to_string().contains("cannot be used with")
+                || err2.to_string().contains("mutually exclusive")
+                || err2.to_string().contains("conflicts"),
+            "err2: {}",
+            err2
+        );
+        let res3 = base.try_get_matches_from([
+            "tele",
+            "msg",
+            "click",
+            "--chat",
+            "me",
+            "--id",
+            "1",
+            "--button",
+            "a",
+            "--button-index",
+            "1",
+        ]);
+        assert!(res3.is_err(), "expected conflict for --button + --button-index");
     }
 }
 
