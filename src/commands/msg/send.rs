@@ -8,7 +8,6 @@ use crate::executor::{run_fanout, GlobalFlags};
 use crate::output;
 
 use super::params::{SendArgs, SendParams};
-use super::validate::validate_filename;
 use crate::commands::helpers::looks_like_image;
 
 fn effective_preview(args: &SendArgs) -> bool {
@@ -53,6 +52,18 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             ))
         }
         _ => {}
+    }
+    if args.copy_from.is_some() != args.copy_id.is_some() {
+        return Err(TeleError::Usage(
+            "--copy-from requires --copy-id and vice versa".to_string(),
+        ));
+    }
+    if args.copy_from.is_some()
+        && (args.text.is_some() || !args.files.is_empty() || args.url.is_some())
+    {
+        return Err(TeleError::Usage(
+            "--copy-from is mutually exclusive with --text/--file/--url".to_string(),
+        ));
     }
     if !args.files.is_empty() && args.files.len() > 10 {
         return Err(TeleError::Usage(
@@ -114,7 +125,7 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
         ));
     }
     if let Some(thumb) = &args.thumbnail {
-        validate_filename(thumb.rsplit(['/', '\\']).next().unwrap_or(thumb))?;
+        super::validate::validate_upload_path(thumb)?;
         if args.files.len() > 1 {
             return Err(TeleError::Usage(
                 "--thumbnail applies to a single document upload".to_string(),
@@ -378,6 +389,12 @@ pub(crate) async fn send_core(
     shares: &crate::client::ServeShares,
     params: SendParams,
 ) -> TeleResult<serde_json::Value> {
+    for path in &params.files {
+        super::validate::validate_upload_path(path)?;
+    }
+    if let Some(thumb) = &params.thumbnail {
+        super::validate::validate_upload_path(thumb)?;
+    }
     shares.rate_limiter.acquire().await;
     let chat_target = params.chat.clone();
     let text = params.text.clone();
@@ -569,13 +586,11 @@ pub(crate) async fn send_core(
 
 pub(crate) async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_send(&args)?;
-    if !flags.dry_run {
-        for path in &args.files {
-            super::validate::validate_upload_path(path)?;
-        }
-        if let Some(thumb) = &args.thumbnail {
-            super::validate::validate_upload_path(thumb)?;
-        }
+    for path in &args.files {
+        super::validate::validate_upload_path_inner(path, flags.dry_run)?;
+    }
+    if let Some(thumb) = &args.thumbnail {
+        super::validate::validate_upload_path_inner(thumb, flags.dry_run)?;
     }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;

@@ -1571,8 +1571,10 @@ mod tests {
     #[test]
     fn defaulted_params_missing_key_fall_through_to_validation() {
         let err = plan_for("msg send", serde_json::json!({"text": "hi"})).unwrap_err();
-        assert_eq!(err["type"], "UsageError");
-        assert!(err["message"].as_str().unwrap().contains("--chat"));
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("chat"), "{msg}");
+        assert!(msg.contains("missing field"), "{msg}");
 
         let err = plan_for(
             "msg search",

@@ -346,7 +346,6 @@ pub struct ClickArgs {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(crate) struct SendParams {
-    #[serde(default)]
     pub(crate) chat: String,
     pub(crate) text: Option<String>,
     pub(crate) schedule: Option<String>,
@@ -434,10 +433,8 @@ impl From<&SendParams> for SendArgs {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(crate) struct EditParams {
-    #[serde(default)]
     pub(crate) chat: String,
     pub(crate) id: i32,
-    #[serde(default)]
     pub(crate) text: String,
     #[serde(default)]
     pub(crate) dry_run: bool,
@@ -468,7 +465,6 @@ impl From<&EditParams> for EditArgs {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(crate) struct DeleteParams {
-    #[serde(default)]
     pub(crate) chat: String,
     #[serde(default)]
     pub(crate) ids: Vec<i32>,
@@ -507,11 +503,9 @@ impl From<&DeleteParams> for DeleteArgs {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(crate) struct ForwardParams {
-    #[serde(default)]
     pub(crate) from: String,
     #[serde(default)]
     pub(crate) ids: Vec<i32>,
-    #[serde(default)]
     pub(crate) to: String,
     #[serde(default)]
     pub(crate) dry_run: bool,
@@ -588,7 +582,6 @@ impl From<&PinParams> for PinArgs {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(crate) struct GetParams {
-    #[serde(default)]
     pub(crate) chat: String,
     #[serde(default)]
     pub(crate) id: Option<i32>,
