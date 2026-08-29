@@ -72,6 +72,7 @@ const VALID_EVENTS: &[&str] = &[
 const MAX_RECONNECT_BACKOFF: u32 = 30;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const ALBUM_FLUSH_MILLIS: u64 = 500;
+const MAX_ALBUM_LEN: usize = 20;
 const OBSERVED_PEER_CAP: usize = 10_000;
 const GAP_TRACKER_CAP: usize = 10_000;
 
@@ -430,14 +431,29 @@ fn album_ingest(
 ) -> Option<serde_json::Value> {
     let flush = match buf {
         None => None,
-        Some(pending) if pending.chat_id == chat_id && pending.grouped_id == grouped_id => None,
+        Some(pending) if pending.chat_id == chat_id && pending.grouped_id == grouped_id => {
+            if pending.rows.len() >= MAX_ALBUM_LEN {
+                Some(album_complete(account, pending))
+            } else {
+                None
+            }
+        }
         Some(pending) => Some(album_complete(account, pending)),
     };
     let deadline = now + std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS);
     match buf {
         Some(pending) if pending.chat_id == chat_id && pending.grouped_id == grouped_id => {
-            pending.rows.push(row);
-            pending.deadline = deadline;
+            if flush.is_some() {
+                *buf = Some(PendingAlbum {
+                    chat_id,
+                    grouped_id,
+                    rows: vec![row],
+                    deadline,
+                });
+            } else {
+                pending.rows.push(row);
+                pending.deadline = deadline;
+            }
         }
         _ => {
             *buf = Some(PendingAlbum {
@@ -477,8 +493,8 @@ fn album_complete(account: &str, pending: &PendingAlbum) -> serde_json::Value {
 }
 
 struct ObservedPeers {
-    by_id: HashMap<i32, PeerId>,
-    order: VecDeque<i32>,
+    by_id: HashMap<(PeerId, i32), PeerId>,
+    order: VecDeque<(PeerId, i32)>,
 }
 
 impl ObservedPeers {
@@ -490,7 +506,8 @@ impl ObservedPeers {
     }
 
     fn observe(&mut self, id: i32, peer: PeerId) {
-        if self.by_id.contains_key(&id) {
+        let key = (peer, id);
+        if self.by_id.contains_key(&key) {
             return;
         }
         if self.by_id.len() >= OBSERVED_PEER_CAP {
@@ -498,19 +515,19 @@ impl ObservedPeers {
                 self.by_id.remove(&oldest);
             }
         }
-        self.by_id.insert(id, peer);
-        self.order.push_back(id);
+        self.by_id.insert(key, peer);
+        self.order.push_back(key);
     }
 
-    fn peer_of(&self, id: i32) -> Option<PeerId> {
-        self.by_id.get(&id).copied()
+    fn peer_of(&self, peer: PeerId, id: i32) -> Option<PeerId> {
+        self.by_id.get(&(peer, id)).copied()
     }
 }
 
 fn observed_deletion_ids(ids: &[i32], observed: &ObservedPeers, target: PeerId) -> Vec<i32> {
     ids.iter()
         .copied()
-        .filter(|id| observed.peer_of(*id) == Some(target))
+        .filter(|id| observed.peer_of(target, *id) == Some(target))
         .collect()
 }
 
@@ -722,6 +739,18 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     loop {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
+                                if let Some(done) = album_flush(&name, &mut album) {
+                                    match emit_row(done).await {
+                                        Ok(()) => {}
+                                        Err(e) if e.is_broken_pipe() => return Ok(()),
+                                        Err(e) => {
+                                            output::log_line(
+                                                "error",
+                                                &format!("{name}: emit failed: {}", e.message()),
+                                            );
+                                        }
+                                    }
+                                }
                                 break;
                             }
                         }
@@ -772,6 +801,18 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         &format!("{name}: not authorized, stopping stream"),
                                     );
                                     return Err(crate::error::invocation_error(e));
+                                }
+                                if let Some(done) = album_flush(&name, &mut album) {
+                                    match emit_row(done).await {
+                                        Ok(()) => {}
+                                        Err(e) if e.is_broken_pipe() => return Ok(()),
+                                        Err(e) => {
+                                            output::log_line(
+                                                "error",
+                                                &format!("{name}: emit failed: {}", e.message()),
+                                            );
+                                        }
+                                    }
                                 }
                                 handle_stream_failure(
                                     &name,
@@ -2840,9 +2881,15 @@ mod tests {
     #[test]
     fn observed_peers_round_trips_lookup() {
         let o = observed_fixture();
-        assert_eq!(o.peer_of(101), Some(PeerId::user_unchecked(7)));
-        assert_eq!(o.peer_of(103), Some(PeerId::chat_unchecked(42)));
-        assert_eq!(o.peer_of(999), None);
+        assert_eq!(
+            o.peer_of(PeerId::user_unchecked(7), 101),
+            Some(PeerId::user_unchecked(7))
+        );
+        assert_eq!(
+            o.peer_of(PeerId::chat_unchecked(42), 103),
+            Some(PeerId::chat_unchecked(42))
+        );
+        assert_eq!(o.peer_of(PeerId::user_unchecked(7), 999), None);
     }
 
     #[test]
@@ -2852,9 +2899,13 @@ mod tests {
             o.observe(i, PeerId::user_unchecked(1));
         }
         o.observe(OBSERVED_PEER_CAP as i32, PeerId::user_unchecked(2));
-        assert_eq!(o.peer_of(0), None, "oldest entry evicted");
         assert_eq!(
-            o.peer_of(OBSERVED_PEER_CAP as i32),
+            o.peer_of(PeerId::user_unchecked(1), 0),
+            None,
+            "oldest entry evicted"
+        );
+        assert_eq!(
+            o.peer_of(PeerId::user_unchecked(2), OBSERVED_PEER_CAP as i32),
             Some(PeerId::user_unchecked(2))
         );
         assert_eq!(o.by_id.len(), OBSERVED_PEER_CAP);
@@ -2864,8 +2915,11 @@ mod tests {
     fn observed_peers_reinsert_keeps_first_mapping_without_double_queue_entry() {
         let mut o = ObservedPeers::new();
         o.observe(1, PeerId::user_unchecked(7));
-        o.observe(1, PeerId::user_unchecked(9));
-        assert_eq!(o.peer_of(1), Some(PeerId::user_unchecked(7)));
+        o.observe(1, PeerId::user_unchecked(7));
+        assert_eq!(
+            o.peer_of(PeerId::user_unchecked(7), 1),
+            Some(PeerId::user_unchecked(7))
+        );
         assert_eq!(o.order.len(), 1);
     }
 
