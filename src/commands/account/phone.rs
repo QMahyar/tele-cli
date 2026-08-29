@@ -283,7 +283,7 @@ pub(crate) async fn execute_phone_action(
             log_line(
                 "info",
                 &format!(
-                    "change-phone code sent to {}; finish with tele account phone --confirm-code <CODE> --phone-hash {phone_code_hash}",
+                    "change-phone code sent to {}; finish with tele account phone --confirm-code <CODE> --phone-hash <from --json output>",
                     redact_phone(phone)
                 ),
             );
