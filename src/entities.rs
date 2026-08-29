@@ -110,23 +110,44 @@ pub async fn resolve_peer(
             }
             if let Some(pref) = checked_fallback_ref(id) {
                 if id > 0 {
-                    return match client.resolve_peer(pref).await {
-                        Ok(peer) => Ok(peer),
-                        Err(grammers_client::InvocationError::Dropped) => {
-                            let chat_pref = tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
-                                chat_id: raw,
-                            });
-                            client.resolve_peer(chat_pref).await
+                    let candidates: Vec<PeerRef> = {
+                        let mut v = Vec::new();
+                        v.push(pref);
+                        if let Some(pid) = PeerId::channel(raw) {
+                            let _ = pid;
+                            v.push(
+                                tl::types::InputPeerChannel {
+                                    channel_id: raw,
+                                    access_hash: 0,
+                                }
+                                .into(),
+                            );
                         }
-                        Err(e) if e.is("PEER_ID_INVALID") => {
-                            let chat_pref = tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
-                                chat_id: raw,
-                            });
-                            client.resolve_peer(chat_pref).await
+                        v.push(tl::types::InputPeerChat { chat_id: raw }.into());
+                        v
+                    };
+                    let mut last_err: Option<grammers_client::InvocationError> = None;
+                    for cand in candidates {
+                        match client.resolve_peer(cand).await {
+                            Ok(peer) => return Ok(peer),
+                            Err(grammers_client::InvocationError::Dropped) => {
+                                last_err = Some(grammers_client::InvocationError::Dropped);
+                                continue;
+                            }
+                            Err(e)
+                                if e.is("PEER_ID_INVALID")
+                                    || e.is("CHANNEL_INVALID")
+                                    || e.is("CHAT_ID_INVALID") =>
+                            {
+                                last_err = Some(e);
+                                continue;
+                            }
+                            Err(e) => return Err(crate::error::invocation_error(e)),
                         }
-                        Err(e) => Err(e),
                     }
-                    .map_err(crate::error::invocation_error);
+                    if let Some(e) = last_err {
+                        return Err(crate::error::invocation_error(e));
+                    }
                 }
                 return client
                     .resolve_peer(pref)
@@ -526,6 +547,8 @@ async fn purge_peer(session: &SqliteSession, peer_id: PeerId) {
         database: tokio::sync::Mutex<FakeDatabase>,
         cache: std::sync::Mutex<FakeCache>,
     }
+    const _: () =
+        assert!(std::mem::size_of::<SqliteSession>() == std::mem::size_of::<FakeSqliteSession>());
     let fake = unsafe { &*(session as *const SqliteSession as *const FakeSqliteSession) };
     let Some(bot_id) = peer_id.bot_api_dialog_id() else {
         return;
