@@ -298,17 +298,24 @@ pub struct ClickArgs {
     #[arg(
         long,
         value_name = "TEXT",
-        help = "inline button text to click",
-        conflicts_with = "button_index"
+        help = "inline button text to click (exact match; precedence: --button-index > --button-contains > --button)",
+        conflicts_with_all = ["button_index", "button_contains"]
     )]
     pub(crate) button: Option<String>,
     #[arg(
         long,
         value_name = "N",
-        help = "1-based inline button position across all rows",
-        conflicts_with = "button"
+        help = "1-based inline button position across all rows (precedence: --button-index > --button-contains > --button)",
+        conflicts_with_all = ["button", "button_contains"]
     )]
     pub(crate) button_index: Option<usize>,
+    #[arg(
+        long,
+        value_name = "SUBSTRING",
+        help = "case-insensitive substring to match against button text (picks first match; precedence: --button-index > --button-contains > --button)",
+        conflicts_with_all = ["button", "button_index"]
+    )]
+    pub(crate) button_contains: Option<String>,
     #[arg(
         long,
         help = "reserved for 2FA-protected buttons; not supported at this layer"
@@ -825,6 +832,7 @@ pub(crate) struct ClickParams {
     pub(crate) id: i32,
     pub(crate) button: Option<String>,
     pub(crate) button_index: Option<usize>,
+    pub(crate) button_contains: Option<String>,
     #[serde(default)]
     pub(crate) password: bool,
     #[serde(default)]
@@ -838,6 +846,7 @@ impl From<&ClickArgs> for ClickParams {
             id: a.id,
             button: a.button.clone(),
             button_index: a.button_index,
+            button_contains: a.button_contains.clone(),
             password: a.password,
             dry_run: false,
         }
@@ -851,6 +860,7 @@ impl From<&ClickParams> for ClickArgs {
             id: p.id,
             button: p.button.clone(),
             button_index: p.button_index,
+            button_contains: p.button_contains.clone(),
             password: p.password,
         }
     }
