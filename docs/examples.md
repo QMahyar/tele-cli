@@ -100,8 +100,17 @@ tele msg vote --chat @team --id 123 --option 1,3
 
 ```bash
 tele msg click --chat @bot --id 123 --button "OK"
-tele msg click --chat @bot --id 123 --button-index 0
+tele msg click --chat @bot --id 123 --button-index 1
 ```
+
+### Bot buttons
+
+```bash
+tele msg click --chat @bot --id 123 --button-index 1
+tele msg click --chat @bot --id 123 --button-contains "ساخت پنل"
+```
+
+On ambiguous substring (≥2 matches) the command exits 1 with `Did you mean #i "text" or #j "text"? Available: [#1 "…", #2 "…"]` — use the shown 1-based index.
 
 ## Chat management
 
