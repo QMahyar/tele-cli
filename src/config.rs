@@ -196,13 +196,28 @@ impl FileStamp {
     }
 }
 
-static CONFIG_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, FileStamp), AppConfig>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+type EnvOverlayKey = (Option<String>, Option<String>);
 
-static CREDS_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, FileStamp), Credentials>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+type ConfigCacheMap = std::collections::HashMap<std::path::PathBuf, (FileStamp, AppConfig)>;
+
+type CredsCacheMap =
+    std::collections::HashMap<(std::path::PathBuf, FileStamp, EnvOverlayKey), Credentials>;
+
+static CONFIG_CACHE: std::sync::LazyLock<std::sync::Mutex<ConfigCacheMap>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+static CREDS_CACHE: std::sync::LazyLock<std::sync::Mutex<CredsCacheMap>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn env_overlay_key() -> EnvOverlayKey {
+    let id = std::env::var("TELE_API_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let hash = std::env::var("TELE_API_HASH")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    (id, hash)
+}
 
 #[cfg(test)]
 static ENV_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -220,11 +235,12 @@ pub fn credentials() -> anyhow::Result<Credentials> {
         let _ = crate::fs_util::restrict_file_private(&path);
     }
     let stamp = FileStamp::of(&path);
-    if let Some(creds) = CREDS_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&(path.clone(), stamp))
-    {
+    let overlay = env_overlay_key();
+    if let Some(creds) = CREDS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&(
+        path.clone(),
+        stamp,
+        overlay.clone(),
+    )) {
         return Ok(creds.clone());
     }
     let mut env = load_env(&path);
@@ -246,7 +262,7 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     CREDS_CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert((path, stamp), creds.clone());
+        .insert((path, stamp, overlay), creds.clone());
     #[cfg(test)]
     ENV_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     Ok(creds)
@@ -271,18 +287,20 @@ pub fn load_config(path: Option<&std::path::Path>) -> TeleResult<AppConfig> {
         None => app_data_dir().join("config.toml"),
     };
     let stamp = FileStamp::of(&cfg_path);
-    if let Some(cfg) = CONFIG_CACHE
+    if let Some((cached_stamp, cfg)) = CONFIG_CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&(cfg_path.clone(), stamp))
+        .get(&cfg_path)
     {
-        return Ok(cfg.clone());
+        if *cached_stamp == stamp {
+            return Ok(cfg.clone());
+        }
     }
     let cfg = read_config(&cfg_path).map_err(|e| TeleError::Config(format!("{e:#}")))?;
     CONFIG_CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert((cfg_path, stamp), cfg.clone());
+        .insert(cfg_path, (stamp, cfg.clone()));
     Ok(cfg)
 }
 
@@ -306,7 +324,17 @@ fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     let text = std::fs::read_to_string(cfg_path)?;
     let mut cfg: AppConfig = toml::from_str(&text)
         .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", config_display_name(cfg_path)))?;
-    cfg.parallel_max = cfg.parallel_max.clamp(1, 32);
+    let clamped = cfg.parallel_max.clamp(1, 32);
+    if clamped != cfg.parallel_max {
+        crate::output::log_line(
+            "warn",
+            &format!(
+                "parallel_max {} out of range 1..=32; clamped to {clamped}",
+                cfg.parallel_max
+            ),
+        );
+    }
+    cfg.parallel_max = clamped;
     Ok(cfg)
 }
 
@@ -381,12 +409,10 @@ fn preserve_unknown_account_keys(
 }
 
 pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<()> {
-    let app_dir = app_data_dir();
-    if path.starts_with(&app_dir) {
-        crate::fs_util::create_dir_private(&app_dir)?;
-    }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        if !parent.as_os_str().is_empty() {
+            crate::fs_util::create_dir_private(parent)?;
+        }
     }
     let text = if path.exists() {
         let existing = std::fs::read_to_string(path)?;
@@ -415,14 +441,16 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
-    let result = std::fs::write(&tmp_path, "")
-        .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
-        .and_then(|()| std::fs::write(&tmp_path, text))
+    let result = crate::fs_util::write_file_private(&tmp_path, text.as_bytes())
         .and_then(|()| std::fs::rename(&tmp_path, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
     result?;
+    CONFIG_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(path);
     Ok(())
 }
 

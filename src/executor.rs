@@ -26,6 +26,7 @@ pub async fn run_fanout(
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = TeleResult<serde_json::Value>> + Send>,
         > + Send
+        + Sync
         + 'static,
 ) -> TeleResult<crate::output::Envelope> {
     let cfg = crate::config::load_config(flags.config_path.as_deref())?;
@@ -37,15 +38,18 @@ pub async fn run_fanout(
     }
     let parallel = effective_parallel(flags.parallel, cfg.parallel_max)? as usize;
     let semaphore = Arc::new(Semaphore::new(parallel));
+    let handler = Arc::new(handler);
     let mut handles: Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)> =
         Vec::new();
     for name in names {
         let semaphore = Arc::clone(&semaphore);
-        let future = handler(name.clone());
+        let handler = Arc::clone(&handler);
         handles.push((
             name.clone(),
             tokio::task::spawn(async move {
-                run_one(name, semaphore.acquire_owned().await, future).await
+                let permit = semaphore.acquire_owned().await;
+                let future = handler(name.clone());
+                run_one(name, permit, future).await
             }),
         ));
     }
