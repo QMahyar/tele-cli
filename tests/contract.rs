@@ -138,8 +138,22 @@ fn help_lists_all_groups_and_exits_zero() {
     assert_eq!(out.status.code(), Some(0));
     let text = String::from_utf8_lossy(&out.stdout);
     for group in [
-        "account", "msg", "chat", "dialog", "topic", "sticker", "story", "contact", "profile",
-        "privacy", "takeout", "listen", "raw",
+        "account",
+        "msg",
+        "chat",
+        "dialog",
+        "topic",
+        "sticker",
+        "story",
+        "contact",
+        "profile",
+        "privacy",
+        "takeout",
+        "listen",
+        "serve",
+        "mcp",
+        "raw",
+        "completions",
     ] {
         assert!(
             text.contains(&format!(" {group} ")),
@@ -1847,5 +1861,267 @@ fn vendored_tl_api_matches_grammers_tl_types() {
             upstream_path.display(),
             upstream_path.display()
         );
+    }
+}
+
+#[test]
+fn profile_set_requires_at_least_one_flag_contract() {
+    let (code, _out, err) = run_isolated("profsetnone", &["profile", "set"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("at least one of"), "stderr: {err}");
+}
+
+#[test]
+fn profile_set_dry_run_json_contract() {
+    let dir = isolated_appdir("profsetdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "profile",
+            "set",
+            "--name",
+            "John",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    assert_eq!(v["ok"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert!(
+        data["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("set profile"),
+        "would: {data}"
+    );
+}
+
+#[test]
+fn profile_get_dry_run_json_contract() {
+    let dir = isolated_appdir("profgetdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "profile",
+            "get",
+            "--chat",
+            "me",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["chat"], serde_json::json!("me"));
+    assert!(
+        data["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("get profile"),
+        "would: {data}"
+    );
+}
+
+#[test]
+fn profile_photo_dry_run_json_contract() {
+    let dir = isolated_appdir("profphotodry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "profile",
+            "photo",
+            "--remove",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(
+        data["would"],
+        serde_json::json!("remove current profile photo")
+    );
+}
+
+#[test]
+fn profile_emoji_status_dry_run_json_contract() {
+    let dir = isolated_appdir("profemojidry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "profile",
+            "emoji-status",
+            "--emoji",
+            "5312345678",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(
+        data["would"],
+        serde_json::json!("set emoji status to emoji document 5312345678")
+    );
+}
+
+#[test]
+fn topic_create_dry_run_json_contract() {
+    let dir = isolated_appdir("topiccreatedry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "topic",
+            "create",
+            "--chat",
+            "@c",
+            "--title",
+            "T",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["chat"], serde_json::json!("@c"));
+    assert_eq!(data["title"], serde_json::json!("T"));
+    assert_eq!(
+        data["would"],
+        serde_json::json!("create topic \"T\" in chat @c")
+    );
+}
+
+#[test]
+fn takeout_start_dry_run_json_contract() {
+    let dir = isolated_appdir("takestartdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "takeout",
+            "start",
+            "--contacts",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["takeout"], serde_json::json!(true));
+    assert_eq!(data["contacts"], serde_json::json!(true));
+}
+
+#[test]
+fn takeout_export_rejects_zero_limit_contract() {
+    let (code, _out, err) = run_isolated(
+        "takeoutexportzero",
+        &[
+            "takeout",
+            "export",
+            "--message-limit",
+            "0",
+            "--account",
+            "work",
+        ],
+    );
+    assert_eq!(code, 1);
+    assert!(err.contains("must be >= 1"), "stderr: {err}");
+}
+
+#[test]
+fn takeout_finish_abandon_dry_run_json_contract() {
+    let dir = isolated_appdir("takefinishdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "takeout",
+            "finish",
+            "--abandon",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["abandon"], serde_json::json!(true));
+    assert_eq!(data["finished"], serde_json::json!(true));
+}
+
+#[test]
+fn completions_help_lists_all_shells_contract() {
+    let text = help(&["completions"]);
+    for shell in ["bash", "zsh", "fish", "powershell"] {
+        assert!(
+            text.contains(shell),
+            "shell {shell} missing from completions --help: {text}"
+        );
+    }
+}
+
+#[test]
+fn completions_shell_output_markers_contract() {
+    let cases: [(&str, &str); 4] = [
+        ("bash", "complete -F"),
+        ("zsh", "#compdef"),
+        ("fish", "complete -c"),
+        ("powershell", "Register-ArgumentCompleter"),
+    ];
+    for (shell, marker) in cases {
+        let (code, out, err) = run_isolated(&format!("comp{shell}"), &["completions", shell]);
+        assert_eq!(code, 0, "completions {shell} failed: stderr: {err}");
+        if shell == "bash" {
+            assert!(
+                out.contains("complete -F") || out.contains("_telecli"),
+                "bash marker missing: {out}"
+            );
+        } else {
+            assert!(
+                out.contains(marker),
+                "shell {shell} marker {marker} missing: {}",
+                out.chars().take(500).collect::<String>()
+            );
+        }
     }
 }

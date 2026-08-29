@@ -691,10 +691,7 @@ pub(crate) fn load_pending_generic<T: serde::de::DeserializeOwned>(
     }
 }
 
-pub(crate) fn remove_pending_generic(
-    base: &std::path::Path,
-    file: &str,
-) -> TeleResult<bool> {
+pub(crate) fn remove_pending_generic(base: &std::path::Path, file: &str) -> TeleResult<bool> {
     remove_pending_document_under(base, file)
 }
 
