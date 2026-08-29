@@ -326,13 +326,17 @@ fn keyboard_button_to_json(button: &tl::enums::KeyboardButton) -> serde_json::Va
         tl::enums::KeyboardButton::Url(b) => {
             out.insert("text".into(), serde_json::json!(b.text));
             out.insert("url".into(), serde_json::json!(b.url));
+            let encoded = STANDARD.encode(b.url.as_bytes());
+            out.insert("data".into(), serde_json::json!(&encoded));
+            out.insert("data_str".into(), serde_json::json!(b.url.clone()));
         }
         tl::enums::KeyboardButton::Callback(b) => {
             out.insert("text".into(), serde_json::json!(b.text));
-            out.insert(
-                "callback_data".into(),
-                serde_json::json!(STANDARD.encode(&b.data)),
-            );
+            let encoded = STANDARD.encode(&b.data);
+            let data_str = String::from_utf8(b.data.clone()).unwrap_or_default();
+            out.insert("callback_data".into(), serde_json::json!(&encoded));
+            out.insert("data".into(), serde_json::json!(&encoded));
+            out.insert("data_str".into(), serde_json::json!(data_str));
         }
         tl::enums::KeyboardButton::SwitchInline(b) => {
             out.insert("text".into(), serde_json::json!(b.text));
@@ -1496,6 +1500,33 @@ mod tests {
         let mut row = serde_json::json!({"peer": null, "sender": null});
         ensure_outer_peer_sender(&mut row, Some(peer_id), None);
         assert_eq!(row["peer"]["id"], outer_chat_id);
+    }
+
+    #[test]
+    fn callback_button_data_str_valid_utf8() {
+        let client = offline_client();
+        let data = "hello world".as_bytes();
+        let markup = inline_markup(vec![vec![callback_button("btn", data)]]);
+        let mut msg = make_message(&client, 1, false, "hi", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        let btn = &value["reply_markup"]["rows"][0][0];
+        assert_eq!(btn["data"], "aGVsbG8gd29ybGQ=");
+        assert_eq!(btn["data_str"], "hello world");
+        assert_eq!(btn["callback_data"], "aGVsbG8gd29ybGQ=");
+    }
+
+    #[test]
+    fn callback_button_data_str_invalid_utf8_is_empty() {
+        let client = offline_client();
+        let data = vec![0xff, 0xfe, 0xfd];
+        let markup = inline_markup(vec![vec![callback_button("btn", &data)]]);
+        let mut msg = make_message(&client, 1, false, "hi", None);
+        set_reply_markup(&mut msg, Some(markup));
+        let value = message_to_json(&msg).unwrap();
+        let btn = &value["reply_markup"]["rows"][0][0];
+        assert_eq!(btn["data_str"], "");
+        assert_eq!(btn["data"], btn["callback_data"]);
     }
 
     use proptest::prelude::*;

@@ -591,17 +591,70 @@ pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value>
     }))
 }
 
+fn buttons_summary(row: &serde_json::Value) -> Option<String> {
+    let rows = row.get("reply_markup")?.get("rows")?.as_array()?;
+    let mut parts = Vec::new();
+    let mut idx = 1usize;
+    for row in rows {
+        if let Some(buttons) = row.as_array() {
+            for btn in buttons {
+                if let Some(text) = btn.get("text").and_then(|v| v.as_str()) {
+                    let kind = if btn.get("url").is_some() {
+                        "url"
+                    } else if btn.get("callback_data").is_some() || btn.get("data").is_some() {
+                        "callback"
+                    } else if btn.get("switch_inline_query").is_some()
+                        || btn.get("switch_inline_query_current_chat").is_some()
+                    {
+                        "switch_inline"
+                    } else if btn.get("buy").is_some() {
+                        "buy"
+                    } else {
+                        btn.get("raw_kind")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("button")
+                    };
+                    parts.push(format!("[{idx}] {text} ({kind})"));
+                    idx += 1;
+                }
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn has_buttons(rows: &[serde_json::Value]) -> bool {
+    rows.iter().any(|r| buttons_summary(r).is_some())
+}
+
 fn message_table_rows(rows: &[serde_json::Value]) -> Vec<Vec<String>> {
+    let include_buttons = has_buttons(rows);
     rows.iter()
         .map(|r| {
-            vec![
+            let mut cols = vec![
                 r["id"].to_string(),
                 r["date"].as_str().unwrap_or_default().to_string(),
                 r["sender"]["name"].as_str().unwrap_or_default().to_string(),
                 truncate_text(r["text"].as_str().unwrap_or_default(), 80),
-            ]
+            ];
+            if include_buttons {
+                cols.push(buttons_summary(r).unwrap_or_default());
+            }
+            cols
         })
         .collect()
+}
+
+fn message_table_headers(rows: &[serde_json::Value]) -> Vec<&'static str> {
+    if has_buttons(rows) {
+        vec!["id", "date", "sender", "text", "buttons"]
+    } else {
+        vec!["id", "date", "sender", "text"]
+    }
 }
 
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -624,12 +677,9 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let result = get_core(&guard.shares(), GetParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
                 let empty = Vec::new();
-                output::print_account_table(
-                    &name,
-                    multi,
-                    &["id", "date", "sender", "text"],
-                    &message_table_rows(result["messages"].as_array().unwrap_or(&empty)),
-                )?;
+                let msgs = result["messages"].as_array().unwrap_or(&empty);
+                let headers = message_table_headers(msgs);
+                output::print_account_table(&name, multi, &headers, &message_table_rows(msgs))?;
             }
             Ok(result)
         })
@@ -1447,12 +1497,9 @@ async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let result = search_core(&guard.shares(), SearchParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
                 let empty = Vec::new();
-                output::print_account_table(
-                    &name,
-                    multi,
-                    &["id", "date", "sender", "text"],
-                    &message_table_rows(result["messages"].as_array().unwrap_or(&empty)),
-                )?;
+                let msgs = result["messages"].as_array().unwrap_or(&empty);
+                let headers = message_table_headers(msgs);
+                output::print_account_table(&name, multi, &headers, &message_table_rows(msgs))?;
             }
             Ok(result)
         })
