@@ -527,14 +527,10 @@ pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
 pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
     if args.timeout_secs == 0 {
-        return Err(TeleError::Usage(
-            "--timeout-secs must be >0".to_string(),
-        ));
+        return Err(TeleError::Usage("--timeout-secs must be >0".to_string()));
     }
     if args.poll_interval == 0 {
-        return Err(TeleError::Usage(
-            "--poll-interval must be >=1".to_string(),
-        ));
+        return Err(TeleError::Usage("--poll-interval must be >=1".to_string()));
     }
     if args.last && args.offset_id.is_some() {
         return Err(TeleError::Usage(
@@ -772,19 +768,13 @@ pub(crate) async fn get_watch_core(
     params: GetParams,
 ) -> TeleResult<serde_json::Value> {
     let target = get_target_message_id(&params)?.ok_or_else(|| {
-        TeleError::Usage(
-            "--watch requires --id (or a deep-link message id in --chat)".to_string(),
-        )
+        TeleError::Usage("--watch requires --id (or a deep-link message id in --chat)".to_string())
     })?;
     if params.timeout_secs == 0 {
-        return Err(TeleError::Usage(
-            "--timeout-secs must be >0".to_string(),
-        ));
+        return Err(TeleError::Usage("--timeout-secs must be >0".to_string()));
     }
     if params.poll_interval == 0 {
-        return Err(TeleError::Usage(
-            "--poll-interval must be >=1".to_string(),
-        ));
+        return Err(TeleError::Usage("--poll-interval must be >=1".to_string()));
     }
     let timeout = std::time::Duration::from_secs(params.timeout_secs);
     let poll = std::time::Duration::from_secs(params.poll_interval);
@@ -1411,9 +1401,7 @@ fn locate_button(
             buttons
                 .iter()
                 .copied()
-                .filter(|(_, b)| {
-                    button_text(b).is_some_and(|s| s.to_lowercase().contains(&needle))
-                })
+                .filter(|(_, b)| button_text(b).is_some_and(|s| s.to_lowercase().contains(&needle)))
                 .collect()
         }
     };
@@ -1518,8 +1506,7 @@ pub(crate) fn validate_click(args: &ClickArgs) -> TeleResult<()> {
         + args.button_contains.is_some() as u8;
     if count == 0 {
         return Err(TeleError::Usage(
-            "--button TEXT or --button-index N or --button-contains SUBSTRING required"
-                .to_string(),
+            "--button TEXT or --button-index N or --button-contains SUBSTRING required".to_string(),
         ));
     }
     if count > 1 {
@@ -1741,7 +1728,6 @@ pub(crate) async fn search_core(
     }
     Ok(serde_json::json!({"messages": rows}))
 }
-
 
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
@@ -2347,11 +2333,11 @@ mod tests {
             limit: 10,
             offset_id: Some(5),
             last: true,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-};
+        };
         assert!(matches!(validate_get(&args), Err(TeleError::Usage(_))));
         let no_offset = GetArgs {
             chat: "me".to_string(),
@@ -2359,11 +2345,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: true,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-};
+        };
         assert!(validate_get(&no_offset).is_ok());
         let no_last = GetArgs {
             chat: "me".to_string(),
@@ -2371,11 +2357,11 @@ mod tests {
             limit: 10,
             offset_id: Some(5),
             last: false,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-};
+        };
         assert!(validate_get(&no_last).is_ok());
     }
 
@@ -2387,11 +2373,11 @@ mod tests {
             offset_id: None,
             last: false,
             dry_run: false,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-}
+        }
     }
 
     #[test]
@@ -2445,11 +2431,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-};
+        };
         assert!(validate_get(&args).is_ok());
         let c_form = GetArgs {
             chat: "https://t.me/c/1234567890/8".to_string(),
@@ -2457,11 +2443,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-};
+        };
         assert!(validate_get(&c_form).is_ok());
     }
 
@@ -2473,11 +2459,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-};
+        };
         let err = validate_get(&args).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("conflicts"));
@@ -2497,11 +2483,11 @@ mod tests {
                 limit: 10,
                 offset_id,
                 last,
-            
-            watch: false,
-            timeout_secs: 60,
-            poll_interval: 2,
-};
+
+                watch: false,
+                timeout_secs: 60,
+                poll_interval: 2,
+            };
             assert!(
                 matches!(validate_get(&args), Err(TeleError::Usage(_))),
                 "id={id:?} offset={offset_id:?} last={last}"
@@ -2513,11 +2499,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        
+
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
-};
+        };
         assert!(validate_get(&explicit_ok).is_ok());
     }
 
@@ -2709,11 +2695,11 @@ mod tests {
                 limit: 10,
                 offset_id: None,
                 last: false,
-            
-            watch: false,
-            timeout_secs: 60,
-            poll_interval: 2,
-};
+
+                watch: false,
+                timeout_secs: 60,
+                poll_interval: 2,
+            };
             assert!(
                 matches!(validate_get(&get), Err(TeleError::Usage(_))),
                 "{chat:?}"
@@ -3447,11 +3433,11 @@ mod tests {
                 limit: 10,
                 offset_id: None,
                 last: false,
-            
-            watch: false,
-            timeout_secs: 60,
-            poll_interval: 2,
-},
+
+                watch: false,
+                timeout_secs: 60,
+                poll_interval: 2,
+            },
             &dryrun_flags("msg get", true),
         )
         .await
@@ -3473,11 +3459,11 @@ mod tests {
                 limit: 10,
                 offset_id: None,
                 last: false,
-            
-            watch: false,
-            timeout_secs: 60,
-            poll_interval: 2,
-},
+
+                watch: false,
+                timeout_secs: 60,
+                poll_interval: 2,
+            },
             &dryrun_flags("msg get", false),
         )
         .await
@@ -4562,10 +4548,7 @@ mod tests {
 
     #[test]
     fn is_sensitive_basename_edge_cases_empty_and_case_sensitivity() {
-        assert!(
-            !is_sensitive_basename(""),
-            "empty string must be allowed"
-        );
+        assert!(!is_sensitive_basename(""), "empty string must be allowed");
         assert!(
             !is_sensitive_basename(".ENV"),
             ".ENV without lowercasing must not be blocked (function is case-sensitive)"
@@ -4600,10 +4583,7 @@ mod tests {
             !is_sensitive_basename("env"),
             "env without dot must be allowed"
         );
-        assert!(
-            !is_sensitive_basename("my_env"),
-            "my_env must be allowed"
-        );
+        assert!(!is_sensitive_basename("my_env"), "my_env must be allowed");
         assert!(
             !is_sensitive_basename("credentials.bak"),
             "credentials.bak must be allowed (exact only)"
@@ -4698,17 +4678,14 @@ mod tests {
             tl_callback_button("🔗 Link", b"data2"),
             tl_callback_button("Other", b"data3"),
         ]]);
-        let found =
-            locate_button(&markup, &ButtonSelector::Contains("پنل".into())).unwrap();
+        let found = locate_button(&markup, &ButtonSelector::Contains("پنل".into())).unwrap();
         assert_eq!(found.position, 1);
         assert_eq!(found.text, "🚀 ساخت پنل");
         assert_eq!(found.callback_data, b"data1".to_vec());
-        let found2 =
-            locate_button(&markup, &ButtonSelector::Contains("link".into())).unwrap();
+        let found2 = locate_button(&markup, &ButtonSelector::Contains("link".into())).unwrap();
         assert_eq!(found2.position, 2);
         assert_eq!(found2.text, "🔗 Link");
-        let found3 =
-            locate_button(&markup, &ButtonSelector::Contains("LINK".into())).unwrap();
+        let found3 = locate_button(&markup, &ButtonSelector::Contains("LINK".into())).unwrap();
         assert_eq!(found3.position, 2);
     }
 
@@ -4719,8 +4696,7 @@ mod tests {
             tl_callback_button("Foo Baz", b"b"),
             tl_callback_button("Qux", b"c"),
         ]]);
-        let err =
-            locate_button(&markup, &ButtonSelector::Contains("Foo".into())).unwrap_err();
+        let err = locate_button(&markup, &ButtonSelector::Contains("Foo".into())).unwrap_err();
         let msg = err.message();
         assert!(msg.contains("Did you mean"), "msg: {msg}");
         assert!(msg.contains("Available:"), "msg: {msg}");
@@ -4739,11 +4715,9 @@ mod tests {
             tl_callback_button("🚀 ساخت پنل", b"x"),
             tl_callback_button("ساخت اکانت", b"y"),
         ]]);
-        let found =
-            locate_button(&markup, &ButtonSelector::Contains("پنل".into())).unwrap();
+        let found = locate_button(&markup, &ButtonSelector::Contains("پنل".into())).unwrap();
         assert_eq!(found.position, 1);
-        let err =
-            locate_button(&markup, &ButtonSelector::Contains("ساخت".into())).unwrap_err();
+        let err = locate_button(&markup, &ButtonSelector::Contains("ساخت".into())).unwrap_err();
         let msg = err.message();
         assert!(msg.contains("Did you mean"), "msg: {msg}");
         assert!(msg.contains("Available:"), "msg: {msg}");
@@ -4785,7 +4759,10 @@ mod tests {
             button_contains: None,
             password: false,
         };
-        assert!(matches!(click_selector(&only_text), ButtonSelector::Text(_)));
+        assert!(matches!(
+            click_selector(&only_text),
+            ButtonSelector::Text(_)
+        ));
     }
 
     #[test]
@@ -4901,7 +4878,10 @@ mod tests {
             "--button-contains",
             "b",
         ]);
-        assert!(res.is_err(), "expected conflict for --button + --button-contains");
+        assert!(
+            res.is_err(),
+            "expected conflict for --button + --button-contains"
+        );
         let err = res.unwrap_err();
         assert!(
             err.to_string().contains("cannot be used with")
@@ -4923,7 +4903,10 @@ mod tests {
             "--button-contains",
             "b",
         ]);
-        assert!(res2.is_err(), "expected conflict for --button-index + --button-contains");
+        assert!(
+            res2.is_err(),
+            "expected conflict for --button-index + --button-contains"
+        );
         let err2 = res2.unwrap_err();
         assert!(
             err2.to_string().contains("cannot be used with")
@@ -4945,7 +4928,10 @@ mod tests {
             "--button-index",
             "1",
         ]);
-        assert!(res3.is_err(), "expected conflict for --button + --button-index");
+        assert!(
+            res3.is_err(),
+            "expected conflict for --button + --button-index"
+        );
     }
 }
 

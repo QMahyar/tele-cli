@@ -23,6 +23,7 @@ pub struct ServeShares {
     pub client: Client,
     pub session: Arc<SqliteSession>,
     pub rate_limiter: Arc<RateLimiter>,
+    pub(crate) _session_lock: Option<crate::session::SessionLock>,
 }
 
 impl ClientGuard {
@@ -31,6 +32,7 @@ impl ClientGuard {
             client: self.client.clone(),
             session: Arc::clone(&self.session),
             rate_limiter: Arc::clone(&self.rate_limiter),
+            _session_lock: Some(self._session_lock.share()),
         }
     }
 }
