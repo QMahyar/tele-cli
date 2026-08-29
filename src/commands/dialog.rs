@@ -263,13 +263,30 @@ async fn dialog_list_folder_core(
             break;
         }
         let mut peers_map = std::collections::HashMap::new();
+        let mut peer_hashes: std::collections::HashMap<PeerId, i64> =
+            std::collections::HashMap::new();
         for u in users {
+            let hash = match &u {
+                tl::enums::User::Empty(_) => 0,
+                tl::enums::User::User(v) => v.access_hash.unwrap_or(0),
+            };
             let p = Peer::User(User::from_raw(&shares.client, u));
-            peers_map.insert(p.id(), p);
+            let id = p.id();
+            peer_hashes.insert(id, hash);
+            peers_map.insert(id, p);
         }
         for c in chats {
+            let hash = match &c {
+                tl::enums::Chat::Empty(_) => 0,
+                tl::enums::Chat::Chat(_) => 0,
+                tl::enums::Chat::Forbidden(_) => 0,
+                tl::enums::Chat::Channel(v) => v.access_hash.unwrap_or(0),
+                tl::enums::Chat::ChannelForbidden(v) => v.access_hash,
+            };
             let p = Peer::from_raw(&shares.client, c);
-            peers_map.insert(p.id(), p);
+            let id = p.id();
+            peer_hashes.insert(id, hash);
+            peers_map.insert(id, p);
         }
         let mut last_peer_id: Option<PeerId> = None;
         let mut last_msg_date: Option<i32> = None;
@@ -372,11 +389,12 @@ async fn dialog_list_folder_core(
         if let (Some(pid), Some(date), Some(id)) = (last_peer_id, last_msg_date, last_msg_id) {
             offset_date = date;
             offset_id = id;
+            let hash = peer_hashes.get(&pid).copied().unwrap_or(0);
             offset_peer = match pid.kind() {
                 grammers_session::types::PeerKind::User => {
                     tl::enums::InputPeer::User(tl::types::InputPeerUser {
                         user_id: pid.bare_id_unchecked(),
-                        access_hash: 0,
+                        access_hash: hash,
                     })
                 }
                 grammers_session::types::PeerKind::Chat => {
@@ -387,16 +405,17 @@ async fn dialog_list_folder_core(
                 grammers_session::types::PeerKind::Channel => {
                     tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
                         channel_id: pid.bare_id_unchecked(),
-                        access_hash: 0,
+                        access_hash: hash,
                     })
                 }
             };
         } else if let Some(pid) = last_peer_id {
+            let hash = peer_hashes.get(&pid).copied().unwrap_or(0);
             offset_peer = match pid.kind() {
                 grammers_session::types::PeerKind::User => {
                     tl::enums::InputPeer::User(tl::types::InputPeerUser {
                         user_id: pid.bare_id_unchecked(),
-                        access_hash: 0,
+                        access_hash: hash,
                     })
                 }
                 grammers_session::types::PeerKind::Chat => {
@@ -407,7 +426,7 @@ async fn dialog_list_folder_core(
                 grammers_session::types::PeerKind::Channel => {
                     tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
                         channel_id: pid.bare_id_unchecked(),
-                        access_hash: 0,
+                        access_hash: hash,
                     })
                 }
             };

@@ -178,6 +178,11 @@ fn strip_username_prefixes(raw: &str) -> &str {
             s = rest;
         }
     }
+    for sep in ['/', '?', '#'] {
+        if let Some(head) = s.split(sep).next() {
+            s = head;
+        }
+    }
     s.strip_prefix('@').unwrap_or(s)
 }
 
