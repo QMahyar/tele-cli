@@ -220,7 +220,7 @@ pub(crate) async fn staged_begin(
             Ok(guard) => guard,
             Err(e) => {
                 if !session_existed_before {
-                    cleanup_partial_session(&args.name);
+                    cleanup_partial_session(&args.name).await;
                 }
                 return Err(e.into());
             }
@@ -228,7 +228,7 @@ pub(crate) async fn staged_begin(
     let result = staged_begin_flow(&guard, &credentials, &args.name, phone, flags).await;
     drop(guard);
     if result.is_err() && !session_existed_before {
-        cleanup_partial_session(&args.name);
+        cleanup_partial_session(&args.name).await;
     }
     result
 }
@@ -357,7 +357,7 @@ pub(crate) async fn staged_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleRe
             Ok(guard) => guard,
             Err(e) => {
                 if !session_existed_before {
-                    cleanup_partial_session(&args.name);
+                    cleanup_partial_session(&args.name).await;
                 }
                 return Err(e.into());
             }
@@ -366,7 +366,7 @@ pub(crate) async fn staged_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleRe
     let result = staged_code_flow(&guard, &pending, flags, &mut signed_in).await;
     drop(guard);
     if result.is_err() && !session_existed_before && !signed_in {
-        cleanup_partial_session(&args.name);
+        cleanup_partial_session(&args.name).await;
     }
     result
 }
@@ -493,7 +493,7 @@ pub(crate) async fn staged_resend(args: &LoginArgs, flags: &GlobalFlags) -> Tele
             Ok(guard) => guard,
             Err(e) => {
                 if !session_existed_before {
-                    cleanup_partial_session(&args.name);
+                    cleanup_partial_session(&args.name).await;
                 }
                 return Err(e.into());
             }
@@ -501,7 +501,7 @@ pub(crate) async fn staged_resend(args: &LoginArgs, flags: &GlobalFlags) -> Tele
     let result = staged_resend_flow(&guard, &pending, flags).await;
     drop(guard);
     if result.is_err() && !session_existed_before {
-        cleanup_partial_session(&args.name);
+        cleanup_partial_session(&args.name).await;
     }
     result
 }
@@ -573,7 +573,7 @@ pub(crate) async fn staged_cancel_code(args: &LoginArgs, flags: &GlobalFlags) ->
             Ok(guard) => guard,
             Err(e) => {
                 if !session_existed_before {
-                    cleanup_partial_session(&args.name);
+                    cleanup_partial_session(&args.name).await;
                 }
                 return Err(e.into());
             }
@@ -581,7 +581,7 @@ pub(crate) async fn staged_cancel_code(args: &LoginArgs, flags: &GlobalFlags) ->
     let result = staged_cancel_code_flow(&guard, &pending).await;
     drop(guard);
     if result.is_err() && !session_existed_before {
-        cleanup_partial_session(&args.name);
+        cleanup_partial_session(&args.name).await;
     }
     match result {
         Ok(data) => crate::executor::finish(

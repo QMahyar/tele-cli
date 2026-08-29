@@ -542,7 +542,7 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             Ok(guard) => guard,
             Err(e) => {
                 if !session_existed_before {
-                    cleanup_partial_session(&args.name);
+                    cleanup_partial_session(&args.name).await;
                 }
                 return Err(e.into());
             }
@@ -567,13 +567,13 @@ async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let result = login_flow(args, flags, &credentials, &mut guard, phone.as_deref()).await;
     if result.is_err() && !session_existed_before {
         drop(guard);
-        cleanup_partial_session(&args.name);
+        cleanup_partial_session(&args.name).await;
     }
     result
 }
 
-pub(crate) fn cleanup_partial_session(name: &str) {
-    match session::remove_session(name) {
+pub(crate) async fn cleanup_partial_session(name: &str) {
+    match session::remove_session(name).await {
         Ok(()) => log_line("warn", "login failed; removed partial session files"),
         Err(e) => log_line(
             "warn",
@@ -943,7 +943,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     }
     purge_pending(&args.name);
     drop(guard);
-    if let Err(e) = session::remove_session(&args.name) {
+    if let Err(e) = session::remove_session(&args.name).await {
         log_line("warn", &format!("could not remove session files: {e:#}"));
     }
     log_line("info", &format!("account {} logged out", args.name));
@@ -964,7 +964,7 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         );
     }
     purge_pending(&args.name);
-    session::remove_session(&args.name)?;
+    session::remove_session(&args.name).await?;
     let mut cfg = config::load_config(flags.config_path.as_deref())?;
     cfg.accounts.remove(&args.name);
     let path = flags
@@ -1025,7 +1025,7 @@ async fn export_session(args: &ExportSessionArgs, flags: &GlobalFlags) -> TeleRe
         );
     }
     let exported =
-        session::export_session(&args.name, args.out.as_deref().map(std::path::Path::new))?;
+        session::export_session(&args.name, args.out.as_deref().map(std::path::Path::new)).await?;
     if !output::machine_mode(flags.json, flags.jsonl) {
         log_line("warn", session::SESSION_FILE_WARNING);
     }
@@ -3737,7 +3737,7 @@ mod tests {
         .to_string();
         assert!(!payload.contains("auth_key"), "{payload}");
         assert!(!payload.contains("92,"), "{payload}");
-        session::remove_session("telethon").unwrap();
+        session::remove_session("telethon").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         drop(_guard);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3811,7 +3811,7 @@ mod tests {
             drop(locked);
         }
         let dest = dir.join("leak-probe.session");
-        let exported = session::export_session("keyed", Some(&dest)).unwrap();
+        let exported = session::export_session("keyed", Some(&dest)).await.unwrap();
         let payload = export_data(&exported);
         assert_eq!(payload["sha256"].as_str().map(str::len), Some(64));
         let rendered = payload.to_string();
@@ -3824,7 +3824,7 @@ mod tests {
             "base64 key material leaked into machine payload: {rendered}"
         );
         let _ = std::fs::remove_file(&dest);
-        session::remove_session("keyed").unwrap();
+        session::remove_session("keyed").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         drop(_guard);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3875,8 +3875,8 @@ mod tests {
             std::fs::read(&reexport).unwrap(),
             "command-level roundtrip must be byte identical"
         );
-        session::remove_session("restored").unwrap();
-        session::remove_session("origin").unwrap();
+        session::remove_session("restored").await.unwrap();
+        session::remove_session("origin").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         drop(_guard);
         let _ = std::fs::remove_dir_all(&dir);

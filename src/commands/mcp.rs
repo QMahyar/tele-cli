@@ -393,6 +393,7 @@ mod tests {
             client,
             session,
             rate_limiter: RateLimiter::unlimited(),
+            _session_lock: None,
         }
     }
 

@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use grammers_client::session::storages::SqliteSession;
@@ -109,12 +110,7 @@ fn restrict_session_files(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn remove_session(name: &str) -> anyhow::Result<()> {
-    validate_name(name).map_err(anyhow::Error::msg)?;
-    if !session_path(name).try_exists()? {
-        return Ok(());
-    }
-    let lock = acquire_lock_file(name)?;
+fn sweep_session_artifacts(name: &str) -> anyhow::Result<()> {
     let mut targets = vec![session_path(name), lock_path(name)];
     for suffix in SESSION_SIDECAR_SUFFIXES {
         targets.push(sidecar_path(name, suffix));
@@ -127,47 +123,70 @@ pub fn remove_session(name: &str) -> anyhow::Result<()> {
             }
         }
     }
-    let result = targets
+    targets
         .iter()
         .try_for_each(|path| match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e),
-        });
-    drop(lock);
-    result?;
+        })?;
     Ok(())
 }
 
+pub async fn remove_session(name: &str) -> anyhow::Result<()> {
+    validate_name(name).map_err(anyhow::Error::msg)?;
+    if session_path(name).try_exists()? {
+        let lock = acquire_lock_file(name).await?;
+        let result = sweep_session_artifacts(name);
+        drop(lock);
+        result?;
+    } else {
+        sweep_session_artifacts(name)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
 pub struct SessionLock {
-    file: Option<std::fs::File>,
+    file: Option<Arc<std::fs::File>>,
 }
 
 impl SessionLock {
-    fn new(file: std::fs::File) -> Self {
-        Self { file: Some(file) }
+    pub(crate) fn new(file: std::fs::File) -> Self {
+        Self {
+            file: Some(Arc::new(file)),
+        }
+    }
+
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            file: self.file.clone(),
+        }
     }
 }
 
 impl Drop for SessionLock {
     fn drop(&mut self) {
-        drop(self.file.take());
+        self.file.take();
     }
 }
 
-fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(lock_path(name))?;
+async fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let lock = opts.open(lock_path(name))?;
     // On Linux, flock() release is asynchronous after File::drop. Retry a few
     // times with a short delay to handle the kernel delay.
     for attempt in 0..3 {
         match lock.try_lock() {
             Ok(()) => return Ok(lock),
             Err(std::fs::TryLockError::WouldBlock) if attempt < 2 => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 continue;
             }
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -182,9 +201,9 @@ fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
 }
 
 #[allow(dead_code)]
-pub fn probe_live_lock(name: &str) -> anyhow::Result<()> {
+pub async fn probe_live_lock(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
-    acquire_lock_file(name).map(|_| ())
+    acquire_lock_file(name).await.map(|_| ())
 }
 
 pub struct LockedSession {
@@ -198,7 +217,7 @@ pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
     let dir = session_dir();
     crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&dir)?;
-    let lock = acquire_lock_file(name)?;
+    let lock = acquire_lock_file(name).await?;
     pre_restrict_sidecars(name)?;
     let session = SqliteSession::open(&path).await?;
     restrict_session_files(name)?;
@@ -225,7 +244,7 @@ pub struct ImportedSession {
     pub bytes: u64,
 }
 
-pub fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<ExportedSession> {
+pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<ExportedSession> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     let source = session_path(name);
     if !source.try_exists()? {
@@ -234,7 +253,9 @@ pub fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Exported
             source.display()
         ));
     }
-    let _live_lock = acquire_lock_file(name)?;
+    let _live_lock = acquire_lock_file(name).await?;
+    let probe = SqliteSession::open(&source).await?;
+    drop(probe);
     let dest = match out {
         Some(path) => path.to_path_buf(),
         None => {
@@ -377,7 +398,7 @@ pub async fn import_session(
     let bytes = std::fs::read(file)?;
     crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&session_dir())?;
-    let _lock = acquire_lock_file(&name)?;
+    let _lock = acquire_lock_file(&name).await?;
     install_session_bytes(&name, &bytes).await
 }
 
@@ -665,7 +686,7 @@ pub async fn write_native_from_telethon(
     crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&session_dir())?;
     let path = session_path(name);
-    let lock = acquire_lock_file(name)?;
+    let lock = acquire_lock_file(name).await?;
     pre_restrict_sidecars(name)?;
     let tmp_path = tmp_session_path(name);
     let _ = std::fs::remove_file(&tmp_path);
@@ -912,7 +933,7 @@ mod tests {
                 );
             }
         }
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         assert!(!sidecar_path("work", "-journal").exists());
         assert!(!sidecar_path("work", "-wal").exists());
         assert!(!sidecar_path("work", "-shm").exists());
@@ -947,7 +968,7 @@ mod tests {
         seed_test_env(&dir);
         let held = open_session("work").await.unwrap();
         drop(held);
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         assert!(!session_path("work").exists());
         assert!(!lock_path("work").exists());
         std::env::remove_var("TELE_APP_DIR");
@@ -962,10 +983,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         seed_test_env(&dir);
         let held = open_session("work").await.unwrap();
-        let err = remove_session("work").unwrap_err();
-        assert!(err.to_string().contains("is in use by another process"));
+        let err = remove_session("work").await.unwrap_err();
+        assert!(
+            err.to_string().contains("is in use by another process"),
+            "{err}"
+        );
         drop(held);
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         assert!(!session_path("work").exists());
         assert!(!lock_path("work").exists());
         std::env::remove_var("TELE_APP_DIR");
@@ -979,7 +1003,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         seed_test_env(&dir);
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1014,7 +1038,7 @@ mod tests {
             drop(held);
         }
         let dest = out.join("work.session");
-        let exported = export_session("work", Some(&dest)).unwrap();
+        let exported = export_session("work", Some(&dest)).await.unwrap();
         assert_eq!(exported.account, "work");
         assert_eq!(exported.path, dest);
         let source_bytes = std::fs::read(session_path("work")).unwrap();
@@ -1035,7 +1059,7 @@ mod tests {
             let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "export must be owner-only");
         }
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1047,7 +1071,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         seed_test_env(&dir);
-        let err = export_session("ghost", None).unwrap_err();
+        let err = export_session("ghost", None).await.unwrap_err();
         assert!(err.to_string().contains("no session file"), "{err}");
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1063,7 +1087,9 @@ mod tests {
         seed_test_env(&dir);
         {
             let held = open_session("work").await.unwrap();
-            let err = export_session("work", Some(&out.join("w.session"))).unwrap_err();
+            let err = export_session("work", Some(&out.join("w.session")))
+                .await
+                .unwrap_err();
             assert!(
                 err.to_string().contains("in use by another process"),
                 "{err}"
@@ -1071,8 +1097,10 @@ mod tests {
             assert!(!out.join("w.session").exists(), "nothing may be written");
             drop(held);
         }
-        export_session("work", Some(&out.join("w.session"))).unwrap();
-        remove_session("work").unwrap();
+        export_session("work", Some(&out.join("w.session")))
+            .await
+            .unwrap();
+        remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1095,14 +1123,16 @@ mod tests {
             drop(held);
         }
         let backup = inbox.join("origin.session");
-        let first = export_session("origin", Some(&backup)).unwrap();
+        let first = export_session("origin", Some(&backup)).await.unwrap();
         let imported = import_session(&backup, Some("restored"), false)
             .await
             .unwrap();
         assert_eq!(imported.account, "restored");
         assert_eq!(imported.bytes, first.bytes);
         let reexport_path = dir.join("reexport.session");
-        let reexport = export_session("restored", Some(&reexport_path)).unwrap();
+        let reexport = export_session("restored", Some(&reexport_path))
+            .await
+            .unwrap();
         assert_eq!(reexport.sha256, first.sha256, "roundtrip identity");
         assert_eq!(
             std::fs::read(&reexport_path).unwrap(),
@@ -1117,8 +1147,8 @@ mod tests {
             .await
             .unwrap();
 
-        remove_session("restored").unwrap();
-        remove_session("origin").unwrap();
+        remove_session("restored").await.unwrap();
+        remove_session("origin").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1154,7 +1184,7 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("invalid account name"), "{err}");
 
-        remove_session("team_a").unwrap();
+        remove_session("team_a").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1298,7 +1328,7 @@ mod tests {
             "rejected fresh imports must leave nothing behind"
         );
 
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1314,7 +1344,7 @@ mod tests {
             let held = open_session("work").await.unwrap();
             drop(held);
         }
-        let exported = export_session("work", None).unwrap();
+        let exported = export_session("work", None).await.unwrap();
         assert_eq!(
             exported.path.parent().map(|p| p.to_path_buf()),
             Some(session_dir()),
@@ -1324,7 +1354,7 @@ mod tests {
         let source_bytes = std::fs::read(session_path("work")).unwrap();
         assert_eq!(std::fs::read(&exported.path).unwrap(), source_bytes);
         assert_eq!(exported.sha256, sha256_hex(&source_bytes));
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1347,14 +1377,14 @@ mod tests {
         std::fs::write(&decoy, b"do-not-touch").unwrap();
         let link = out.join("link.session");
         symlink(&decoy, &link).unwrap();
-        let err = export_session("work", Some(&link)).unwrap_err();
+        let err = export_session("work", Some(&link)).await.unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
         assert_eq!(
             std::fs::read(&decoy).unwrap(),
             b"do-not-touch",
             "symlink target must not be written through"
         );
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1377,7 +1407,7 @@ mod tests {
         std::fs::write(&stale_b, b"x").unwrap();
         std::fs::write(&foreign_tmp, b"x").unwrap();
 
-        remove_session("work").unwrap();
+        remove_session("work").await.unwrap();
 
         assert!(!session_path("work").exists());
         assert!(!lock_path("work").exists());
@@ -1405,7 +1435,7 @@ mod tests {
             drop(held);
         }
         let backup = inbox.join("busy.session");
-        export_session("busy", Some(&backup)).unwrap();
+        export_session("busy", Some(&backup)).await.unwrap();
         {
             let live = open_session("busy").await.unwrap();
             let err = import_session(&backup, Some("busy"), true)
@@ -1417,7 +1447,7 @@ mod tests {
             );
             drop(live);
         }
-        remove_session("busy").unwrap();
+        remove_session("busy").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1656,7 +1686,7 @@ mod tests {
             !failure_text.contains("167,") && !failure_text.contains(&"A7".repeat(256)),
             "error output leaked key material: {failure_text}"
         );
-        remove_session("fromtg").unwrap();
+        remove_session("fromtg").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1731,7 +1761,7 @@ mod tests {
             .await
             .unwrap();
 
-        remove_session("fromtg").unwrap();
+        remove_session("fromtg").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1762,7 +1792,7 @@ mod tests {
         write_native_from_telethon("ipv6case", &ipv6, false)
             .await
             .unwrap();
-        remove_session("ipv6case").unwrap();
+        remove_session("ipv6case").await.unwrap();
 
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
