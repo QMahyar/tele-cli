@@ -3,6 +3,7 @@ use grammers_client::tl;
 use grammers_client::update::Update;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
+use std::io::Write;
 use std::pin::Pin;
 
 use crate::client::ServeShares;
@@ -410,8 +411,16 @@ fn identity_json(me: &grammers_client::peer::User) -> serde_json::Value {
     })
 }
 
-fn emit(value: &serde_json::Value) -> TeleResult<()> {
-    output::print_json(value)
+async fn emit(value: &serde_json::Value) -> TeleResult<()> {
+    let line = serde_json::to_string(value)?;
+    tokio::task::spawn_blocking(move || {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{line}")?;
+        out.flush()
+    })
+    .await
+    .map_err(|e| TeleError::TaskPanic(e.to_string()))??;
+    Ok(())
 }
 
 #[macro_export]
@@ -843,7 +852,11 @@ async fn drain_and_flush(
         }
     }
     while let Some(value) = response_rx.recv().await {
-        emit(&value)?;
+        match emit(&value).await {
+            Ok(()) => {}
+            Err(e) if e.is_broken_pipe() => return Ok(()),
+            Err(e) => return Err(e),
+        }
     }
     Ok(())
 }
@@ -906,9 +919,17 @@ async fn serve_connection(
         output::log_line("info", "serve: reconnected");
         let mut row = event_row("Reconnected", name, None, None, None);
         apply_seq(&mut row, seq);
-        emit(&row)?;
+        match emit(&row).await {
+            Ok(()) => {}
+            Err(e) if e.is_broken_pipe() => return Ok(ConnExit::Eof),
+            Err(e) => return Err(e),
+        }
     } else {
-        emit(&hello_out(name, Some(identity.clone()), last_seq_of(seq)))?;
+        match emit(&hello_out(name, Some(identity.clone()), last_seq_of(seq))).await {
+            Ok(()) => {}
+            Err(e) if e.is_broken_pipe() => return Ok(ConnExit::Eof),
+            Err(e) => return Err(e),
+        }
     }
     let shares = guard.shares();
     let (mutations, mutation_rx) = tokio::sync::mpsc::channel::<Job>(MUTATE_QUEUE_CAPACITY);
@@ -1014,7 +1035,19 @@ async fn serve_connection(
                     }
                 }
             },
-            Tick::Response(value) => emit(&value)?,
+            Tick::Response(value) => match emit(&value).await {
+                Ok(()) => {}
+                Err(e) if e.is_broken_pipe() => {
+                    drop(dispatch_tx);
+                    drop(mutations);
+                    drop(reads);
+                    drop(main_response_tx);
+                    drain_and_flush(&mut workers, &mut response_rx).await?;
+                    guard.close().await;
+                    return Ok(ConnExit::Eof);
+                }
+                Err(e) => return Err(e),
+            },
             Tick::Resync => {
                 drop(dispatch_tx);
                 drop(mutations);
@@ -1090,7 +1123,16 @@ async fn serve_connection(
                 };
                 let mut ev = event_row(kind, name, chat_id, None, Some(row));
                 apply_seq(&mut ev, seq);
-                if let Err(e) = emit(&ev) {
+                if let Err(e) = emit(&ev).await {
+                    if e.is_broken_pipe() {
+                        drop(dispatch_tx);
+                        drop(mutations);
+                        drop(reads);
+                        drop(main_response_tx);
+                        drain_and_flush(&mut workers, &mut response_rx).await?;
+                        guard.close().await;
+                        return Ok(ConnExit::Eof);
+                    }
                     output::log_line("warn", &format!("serve: emit failed: {}", e.message()));
                     continue;
                 }
