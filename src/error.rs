@@ -86,9 +86,50 @@ impl std::fmt::Display for TeleError {
 
 impl std::error::Error for TeleError {}
 
+fn scrub_phones(s: String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '+' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j - i > 7 {
+                out.push_str("[REDACTED]");
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn scrub(s: String) -> String {
+    let mut out = scrub_phones(s);
+    if let Ok(v) = std::env::var("TELE_API_HASH") {
+        let hash = v.trim().to_string();
+        if !hash.is_empty() && out.contains(&hash) {
+            out = out.replace(&hash, "[REDACTED]");
+        }
+    }
+    let path = crate::config::app_data_dir().join(".env");
+    let map = crate::config::load_env(&path);
+    if let Some(hash) = map.get("TELE_API_HASH") {
+        let hash = hash.trim();
+        if !hash.is_empty() && out.contains(hash) {
+            out = out.replace(hash, "[REDACTED]");
+        }
+    }
+    out
+}
+
 impl From<anyhow::Error> for TeleError {
     fn from(e: anyhow::Error) -> Self {
-        TeleError::Other(format!("{e:#}"))
+        TeleError::Other(scrub(format!("{e:#}")))
     }
 }
 
@@ -104,7 +145,7 @@ impl From<std::io::Error> for TeleError {
 
 impl From<serde_json::Error> for TeleError {
     fn from(e: serde_json::Error) -> Self {
-        TeleError::Other(e.to_string())
+        TeleError::Usage(e.to_string())
     }
 }
 
