@@ -49,7 +49,7 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
     validate_upload_path_inner(path, false)
 }
 
-fn validate_upload_path_inner(path: &str, dry_run: bool) -> TeleResult<()> {
+pub(crate) fn validate_upload_path_inner(path: &str, dry_run: bool) -> TeleResult<()> {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     validate_filename(base)?;
     let app_dir = canonical_guard_path(&crate::config::app_data_dir().to_string_lossy());
