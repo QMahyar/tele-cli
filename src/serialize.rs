@@ -15,15 +15,21 @@ pub fn peer_id_kind(peer_id: PeerId) -> &'static str {
 
 pub fn peer_id_key(peer_id: PeerId) -> serde_json::Value {
     let mut out = serde_json::Map::new();
-    if let Some(id) = peer_id.bare_id() {
-        out.insert("id".into(), serde_json::json!(id));
-    }
+    match peer_id.bare_id() {
+        Some(id) => out.insert("id".into(), serde_json::json!(id)),
+        None => out.insert("id".into(), serde_json::Value::Null),
+    };
     out.insert("kind".into(), serde_json::json!(peer_id_kind(peer_id)));
     let name = peer_id
         .bare_id()
         .map(|id| id.to_string())
         .unwrap_or_else(|| "self".to_string());
-    out.insert("name".into(), serde_json::json!(name));
+    out.insert("name".into(), serde_json::json!(name.clone()));
+    out.insert("display_name".into(), serde_json::json!(name));
+    out.insert(
+        "is_self".into(),
+        serde_json::json!(peer_id == PeerId::self_user()),
+    );
     serde_json::Value::Object(out)
 }
 
@@ -145,11 +151,18 @@ pub fn message_to_json(
 
 pub fn peer_key(peer: &Peer) -> serde_json::Value {
     let mut out = serde_json::Map::new();
-    if let Some(id) = peer.id().bare_id() {
-        out.insert("id".into(), serde_json::json!(id));
-    }
+    match peer.id().bare_id() {
+        Some(id) => out.insert("id".into(), serde_json::json!(id)),
+        None => out.insert("id".into(), serde_json::Value::Null),
+    };
     out.insert("kind".into(), serde_json::json!(peer_kind(peer)));
-    out.insert("name".into(), serde_json::json!(peer_name(peer)));
+    let name = peer_name(peer);
+    out.insert("name".into(), serde_json::json!(name.clone()));
+    out.insert("display_name".into(), serde_json::json!(name));
+    out.insert(
+        "is_self".into(),
+        serde_json::json!(peer.id() == PeerId::self_user()),
+    );
     serde_json::Value::Object(out)
 }
 
