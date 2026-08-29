@@ -1738,11 +1738,17 @@ fn leave_serve_dry_run(args: &ChatArgs) -> TeleResult<serde_json::Value> {
 }
 
 fn create_serve_dry_run(args: &CreateArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
+    let mut value = serde_json::json!({
         "dry_run": true,
         "title": args.title,
+        "kind": args.kind,
+        "forum": args.forum,
         "would": format!("create {} chat \"{}\"", args.kind, args.title)
-    }))
+    });
+    if let Some(d) = args.description.as_deref() {
+        value["description"] = serde_json::json!(d);
+    }
+    Ok(value)
 }
 
 fn settings_serve_dry_run(args: &SettingsArgs) -> TeleResult<serde_json::Value> {
@@ -2406,6 +2412,7 @@ pub(crate) async fn chat_admin_core(
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "chat admin")?;
     let user_peer =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.user).await?;
     if rights.needs_raw_edit_admin() {
@@ -2485,6 +2492,7 @@ pub(crate) async fn chat_admin_log_core(
         .unwrap_or_default();
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "chat admin-log")?;
     let channel = entities::input_channel(&chat)
         .await
         .map_err(tele_invocation)?;
@@ -6015,6 +6023,8 @@ mod chat_serve_tests {
             serde_json::json!({
                 "dry_run": true,
                 "title": "T",
+                "kind": "supergroup",
+                "forum": true,
                 "would": "create supergroup chat \"T\""
             }),
         );

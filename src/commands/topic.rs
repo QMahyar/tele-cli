@@ -96,6 +96,7 @@ pub async fn run(cmd: TopicCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    require_chat_target(&args.chat, "chat")?;
     validate_emoji(args.emoji.as_deref())?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -104,7 +105,11 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let args = args.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(create_dry_run_payload(&args.chat, &args.title));
+                return Ok(create_dry_run_payload(
+                    &args.chat,
+                    &args.title,
+                    args.emoji.as_deref(),
+                ));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -116,13 +121,17 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-fn create_dry_run_payload(target: &str, title: &str) -> serde_json::Value {
-    serde_json::json!({
+fn create_dry_run_payload(target: &str, title: &str, emoji: Option<&str>) -> serde_json::Value {
+    let mut value = serde_json::json!({
         "dry_run": true,
         "chat": target,
         "title": title,
         "would": format!("create topic \"{title}\" in chat {target}")
-    })
+    });
+    if let Some(e) = emoji {
+        value["emoji"] = serde_json::json!(e);
+    }
+    value
 }
 
 pub(crate) async fn topic_create_core(
@@ -133,6 +142,7 @@ pub(crate) async fn topic_create_core(
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    crate::commands::chat::ensure_chat_peer(&chat, "topic create")?;
     let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
     let _: tl::enums::Updates = shares
         .client
@@ -172,6 +182,7 @@ async fn simple_action(
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
             topic_action_core(&guard.shares(), LifecycleParams::from(&args), kind).await
         })
     })
@@ -216,6 +227,7 @@ async fn topic_action_core(
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    crate::commands::chat::ensure_chat_peer(&chat, "topic")?;
     let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
     match kind {
         ActionKind::Close | ActionKind::Reopen => {
@@ -292,6 +304,7 @@ pub(crate) async fn topic_edit_core(
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    crate::commands::chat::ensure_chat_peer(&chat, "topic edit")?;
     let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
     let request = build_edit_request(peer, topic_id, params.title.as_deref(), params.closed);
     let _: tl::enums::Updates = shares
@@ -362,6 +375,7 @@ pub(crate) async fn topic_list_core(
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    crate::commands::chat::ensure_chat_peer(&chat, "topic list")?;
     let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
     let topics = {
         let client_ref = &shares.client;
@@ -761,6 +775,7 @@ pub(crate) fn validate_topic_id(id: i32) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_create(args: &CreateArgs) -> TeleResult<()> {
+    require_chat_target(&args.chat, "chat")?;
     validate_emoji(args.emoji.as_deref())?;
     Ok(())
 }
@@ -784,7 +799,11 @@ pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn create_serve_dry_run(args: &CreateArgs) -> TeleResult<serde_json::Value> {
-    Ok(create_dry_run_payload(&args.chat, &args.title))
+    Ok(create_dry_run_payload(
+        &args.chat,
+        &args.title,
+        args.emoji.as_deref(),
+    ))
 }
 
 pub(crate) fn list_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {
@@ -1045,7 +1064,7 @@ mod tests {
         )
         .unwrap();
         match plan {
-            Plan::DryRun(data) => assert_eq!(data, create_dry_run_payload("work", "T")),
+            Plan::DryRun(data) => assert_eq!(data, create_dry_run_payload("work", "T", None)),
             other => panic!("expected dry run plan, got {other:?}"),
         }
         let plan = plan_topic_op(
