@@ -47,23 +47,20 @@ impl Envelope {
 
 pub fn log_line(level: &str, message: &str) {
     let min = crate::logging::min_line_level();
-    let lv = match level {
-        "error" => 3,
-        "warn" => 2,
-        "info" => 1,
-        "debug" => 0,
-        other => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "[error] log_line: unknown level \"{other}\""
-            );
-            3
+    let (lv, eff) = match level {
+        "error" => (3, "error"),
+        "warn" => (2, "warn"),
+        "info" => (1, "info"),
+        "debug" => (0, "debug"),
+        _ => {
+            let _ = writeln!(std::io::stderr(), "[error] log_line: unknown level");
+            (3, "error")
         }
     };
     if lv < min {
         return;
     }
-    let _ = writeln!(std::io::stderr(), "[{level}] {message}");
+    let _ = writeln!(std::io::stderr(), "[{eff}] {message}");
 }
 
 pub fn print_json(value: &serde_json::Value) -> crate::error::TeleResult<()> {
@@ -93,7 +90,7 @@ fn print_table_to(
     w: &mut impl std::io::Write,
     headers: &[&str],
     rows: &[Vec<String>],
-) -> std::io::Result<()> {
+) -> crate::error::TeleResult<()> {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.set_header(headers.iter().map(|h| Cell::new(*h)));
@@ -131,7 +128,7 @@ fn print_account_table_to(
     multi: bool,
     headers: &[&str],
     rows: &[Vec<String>],
-) -> std::io::Result<()> {
+) -> crate::error::TeleResult<()> {
     if multi {
         writeln!(w, "== {account} ==")?;
     }
@@ -331,8 +328,8 @@ mod tests {
         let mut w = FailingWriter {
             kind: std::io::ErrorKind::BrokenPipe,
         };
-        let res = print_table_to(&mut w, &["a"], &sample_rows());
-        assert!(res.is_err(), "expected Err from failing writer");
+        let err = print_table_to(&mut w, &["a"], &sample_rows()).unwrap_err();
+        assert!(err.is_broken_pipe(), "expected BrokenPipe");
     }
 
     #[test]
