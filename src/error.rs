@@ -14,6 +14,7 @@ pub enum TeleError {
     Rpc(String, i32, String, Option<u32>),
     TaskPanic(String),
     BrokenPipe,
+    Timeout(String),
     Other(String),
 }
 
@@ -22,6 +23,7 @@ impl TeleError {
         match self {
             TeleError::Usage(_) => EXIT_USAGE,
             TeleError::Config(_) => EXIT_USAGE,
+            TeleError::Timeout(_) => EXIT_USAGE,
             TeleError::Auth(_) => EXIT_AUTH,
             TeleError::BrokenPipe => EXIT_OK,
             _ => EXIT_ALL_FAILED,
@@ -36,6 +38,7 @@ impl TeleError {
             | TeleError::Invocation(m, _)
             | TeleError::Rpc(m, ..)
             | TeleError::TaskPanic(m)
+            | TeleError::Timeout(m)
             | TeleError::Other(m) => m,
             TeleError::BrokenPipe => "output stream closed",
         }
@@ -49,6 +52,7 @@ impl TeleError {
             TeleError::Invocation(..) => "InvocationError",
             TeleError::Rpc(..) => "InvocationError",
             TeleError::TaskPanic(_) => "TaskPanicError",
+            TeleError::Timeout(_) => "Timeout",
             TeleError::Other(_) => "Error",
             TeleError::BrokenPipe => "Error",
         };

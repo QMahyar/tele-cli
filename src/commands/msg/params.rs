@@ -185,6 +185,25 @@ pub struct GetArgs {
     pub(crate) offset_id: Option<i32>,
     #[arg(long, help = "fetch only the most recent message")]
     pub(crate) last: bool,
+    #[arg(
+        long,
+        help = "poll until the message is edited or a newer message appears (requires --id)"
+    )]
+    pub(crate) watch: bool,
+    #[arg(
+        long,
+        default_value_t = 60,
+        value_name = "SECS",
+        help = "watch timeout in seconds (must be >0)"
+    )]
+    pub(crate) timeout_secs: u64,
+    #[arg(
+        long,
+        default_value_t = 2,
+        value_name = "SECS",
+        help = "poll interval in seconds (must be >=1)"
+    )]
+    pub(crate) poll_interval: u64,
 }
 
 #[derive(Args, Clone)]
@@ -580,6 +599,12 @@ pub(crate) struct GetParams {
     pub(crate) last: bool,
     #[serde(default)]
     pub(crate) dry_run: bool,
+    #[serde(default)]
+    pub(crate) watch: bool,
+    #[serde(default = "default_timeout_secs")]
+    pub(crate) timeout_secs: u64,
+    #[serde(default = "default_poll_interval")]
+    pub(crate) poll_interval: u64,
 }
 
 impl From<&GetArgs> for GetParams {
@@ -591,6 +616,9 @@ impl From<&GetArgs> for GetParams {
             offset_id: a.offset_id,
             last: a.last,
             dry_run: false,
+            watch: a.watch,
+            timeout_secs: a.timeout_secs,
+            poll_interval: a.poll_interval,
         }
     }
 }
@@ -603,6 +631,9 @@ impl From<&GetParams> for GetArgs {
             limit: p.limit,
             offset_id: p.offset_id,
             last: p.last,
+            watch: p.watch,
+            timeout_secs: p.timeout_secs,
+            poll_interval: p.poll_interval,
         }
     }
 }
@@ -876,4 +907,12 @@ fn default_format() -> String {
 
 fn default_limit() -> u32 {
     10
+}
+
+fn default_timeout_secs() -> u64 {
+    60
+}
+
+fn default_poll_interval() -> u64 {
+    2
 }

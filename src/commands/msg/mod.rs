@@ -526,6 +526,16 @@ pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
 
 pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
     require_chat_target(&args.chat, "chat")?;
+    if args.timeout_secs == 0 {
+        return Err(TeleError::Usage(
+            "--timeout-secs must be >0".to_string(),
+        ));
+    }
+    if args.poll_interval == 0 {
+        return Err(TeleError::Usage(
+            "--poll-interval must be >=1".to_string(),
+        ));
+    }
     if args.last && args.offset_id.is_some() {
         return Err(TeleError::Usage(
             "--last and --offset-id are mutually exclusive".to_string(),
@@ -533,6 +543,11 @@ pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
     }
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let target = get_target_message_id(&GetParams::from(args))?;
+    if args.watch && target.is_none() {
+        return Err(TeleError::Usage(
+            "--watch requires --id (or a deep-link message id in --chat)".to_string(),
+        ));
+    }
     if target.is_some() && (args.last || args.offset_id.is_some()) {
         return Err(TeleError::Usage(
             "--last/--offset-id are mutually exclusive with a target message (--id or deep-link)"
@@ -587,6 +602,9 @@ pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value>
         "limit": args.limit,
         "offset_id": args.offset_id,
         "last": args.last,
+        "watch": args.watch,
+        "timeout_secs": args.timeout_secs,
+        "poll_interval": args.poll_interval,
         "would": format!("get messages from chat {}", args.chat),
     }))
 }
@@ -674,7 +692,11 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            let result = get_core(&guard.shares(), GetParams::from(&args)).await?;
+            let result = if args.watch {
+                get_watch_core(&guard.shares(), GetParams::from(&args)).await?
+            } else {
+                get_core(&guard.shares(), GetParams::from(&args)).await?
+            };
             if !output::machine_mode(json, jsonl) {
                 let empty = Vec::new();
                 let msgs = result["messages"].as_array().unwrap_or(&empty);
@@ -726,6 +748,97 @@ pub(crate) async fn get_core(
         push_message_row(&mut rows, &msg)?;
     }
     Ok(serde_json::json!({"messages": rows}))
+}
+
+fn extract_edit_date(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("messages")?
+        .as_array()?
+        .first()?
+        .get("edit_date")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+fn extract_max_id(value: &serde_json::Value) -> Option<i32> {
+    let msgs = value.get("messages")?.as_array()?;
+    msgs.iter()
+        .filter_map(|m| m.get("id")?.as_i64().and_then(|v| i32::try_from(v).ok()))
+        .max()
+}
+
+pub(crate) async fn get_watch_core(
+    shares: &crate::client::ServeShares,
+    params: GetParams,
+) -> TeleResult<serde_json::Value> {
+    let target = get_target_message_id(&params)?.ok_or_else(|| {
+        TeleError::Usage(
+            "--watch requires --id (or a deep-link message id in --chat)".to_string(),
+        )
+    })?;
+    if params.timeout_secs == 0 {
+        return Err(TeleError::Usage(
+            "--timeout-secs must be >0".to_string(),
+        ));
+    }
+    if params.poll_interval == 0 {
+        return Err(TeleError::Usage(
+            "--poll-interval must be >=1".to_string(),
+        ));
+    }
+    let timeout = std::time::Duration::from_secs(params.timeout_secs);
+    let poll = std::time::Duration::from_secs(params.poll_interval);
+    let start = tokio::time::Instant::now();
+    let initial = get_core(shares, params.clone()).await?;
+    let initial_edit = extract_edit_date(&initial);
+    if initial
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true)
+    {
+        return Err(TeleError::Usage(format!("message {target} not found")));
+    }
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            return Err(TeleError::Timeout(format!(
+                "watch timed out after {}s",
+                params.timeout_secs
+            )));
+        }
+        let remaining = timeout - elapsed;
+        let sleep_dur = std::cmp::min(poll, remaining);
+        tokio::time::sleep(sleep_dur).await;
+        if start.elapsed() >= timeout {
+            return Err(TeleError::Timeout(format!(
+                "watch timed out after {}s",
+                params.timeout_secs
+            )));
+        }
+        let current = get_core(shares, params.clone()).await?;
+        let current_edit = extract_edit_date(&current);
+        if current_edit != initial_edit {
+            return Ok(current);
+        }
+        let latest_params = GetParams {
+            chat: params.chat.clone(),
+            id: None,
+            limit: 1,
+            offset_id: None,
+            last: true,
+            dry_run: false,
+            watch: false,
+            timeout_secs: params.timeout_secs,
+            poll_interval: params.poll_interval,
+        };
+        let latest = get_core(shares, latest_params).await?;
+        if let Some(max_id) = extract_max_id(&latest) {
+            if max_id > target {
+                return Ok(latest);
+            }
+        }
+    }
 }
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
@@ -2234,7 +2347,11 @@ mod tests {
             limit: 10,
             offset_id: Some(5),
             last: true,
-        };
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
         assert!(matches!(validate_get(&args), Err(TeleError::Usage(_))));
         let no_offset = GetArgs {
             chat: "me".to_string(),
@@ -2242,7 +2359,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: true,
-        };
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
         assert!(validate_get(&no_offset).is_ok());
         let no_last = GetArgs {
             chat: "me".to_string(),
@@ -2250,7 +2371,11 @@ mod tests {
             limit: 10,
             offset_id: Some(5),
             last: false,
-        };
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
         assert!(validate_get(&no_last).is_ok());
     }
 
@@ -2262,7 +2387,11 @@ mod tests {
             offset_id: None,
             last: false,
             dry_run: false,
-        }
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+}
     }
 
     #[test]
@@ -2316,7 +2445,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        };
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
         assert!(validate_get(&args).is_ok());
         let c_form = GetArgs {
             chat: "https://t.me/c/1234567890/8".to_string(),
@@ -2324,7 +2457,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        };
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
         assert!(validate_get(&c_form).is_ok());
     }
 
@@ -2336,7 +2473,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        };
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
         let err = validate_get(&args).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("conflicts"));
@@ -2356,7 +2497,11 @@ mod tests {
                 limit: 10,
                 offset_id,
                 last,
-            };
+            
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
             assert!(
                 matches!(validate_get(&args), Err(TeleError::Usage(_))),
                 "id={id:?} offset={offset_id:?} last={last}"
@@ -2368,7 +2513,11 @@ mod tests {
             limit: 10,
             offset_id: None,
             last: false,
-        };
+        
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
         assert!(validate_get(&explicit_ok).is_ok());
     }
 
@@ -2560,7 +2709,11 @@ mod tests {
                 limit: 10,
                 offset_id: None,
                 last: false,
-            };
+            
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+};
             assert!(
                 matches!(validate_get(&get), Err(TeleError::Usage(_))),
                 "{chat:?}"
@@ -3294,7 +3447,11 @@ mod tests {
                 limit: 10,
                 offset_id: None,
                 last: false,
-            },
+            
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+},
             &dryrun_flags("msg get", true),
         )
         .await
@@ -3316,7 +3473,11 @@ mod tests {
                 limit: 10,
                 offset_id: None,
                 last: false,
-            },
+            
+            watch: false,
+            timeout_secs: 60,
+            poll_interval: 2,
+},
             &dryrun_flags("msg get", false),
         )
         .await
