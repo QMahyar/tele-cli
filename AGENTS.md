@@ -61,6 +61,7 @@ cargo test                               # 1387 tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
+target\debug\telecli.exe --help          # hot loops: prefer binary over cargo run -- (0.5s compile tax)
 $env:TELE_LOG="debug"; cargo run ...     # stderr logs (trace = grammers internals)
 ```
 

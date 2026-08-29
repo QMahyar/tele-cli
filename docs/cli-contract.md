@@ -211,6 +211,30 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 - `--button-contains SUBSTRING` is a case-insensitive substring match against button `text`. It picks the first match; on ambiguous (≥2 hits) it exits 1 with `Did you mean #i "text" or #j "text"? Available: [#1 "…", #2 "…"]` (Persian+emoji resilient, substring is lowercased on both sides). On no match it suggests the available list like `--button`.
 - Dry-run (`--dry-run` or `"dry_run": true` via `msg click` serve/MCP `ClickParams.button_contains`) validates the selector and reports `would: "click button … on message N"` without network. `ClickParams` carries `button_contains` alongside `button` and `button_index` (`deny_unknown_fields`, `additionalProperties: false`).
 
+### Bot QA recipe (Windows pwsh)
+
+Copy-pasteable bot loop (`/start` → inspect buttons → click → watch edited message):
+
+```pwsh
+tele msg send --chat @BOT --text "/start" --json | python -m json.tool
+tele msg get --chat @BOT --id 123 --json | python -m json.tool   # see reply_markup.buttons[].data_str
+tele msg click --chat @BOT --id 123 --button-index 1 --json
+# watch edited bot message (progress bar):
+tele msg get --chat @BOT --id 123 --watch --timeout-secs 60 --json
+```
+
+`jq` alternatives (same envelope):
+
+```bash
+tele msg get --chat @BOT --id 123 --json | jq .results[0].data.messages[0].text
+tele msg get --chat @BOT --id 123 --json | jq '.results[0].data.messages[0].reply_markup.rows[].buttons[]'
+```
+
+Notes:
+
+- stdout is UTF-8 JSON; on pwsh set `chcp 65001` or `$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new()` if Persian mangles; prefer `target\debug\telecli.exe` over `cargo run --` for hot loops (0.5s compile tax).
+- For hot loops prefer `target\debug\telecli.exe` over `cargo run --` (0.5s compile tax) — hot loops avoid the ~0.5s `cargo run` check.
+
 ## `profile set --username`
 
 - `--username <value|remove>` sets or clears the account username via raw `account.updateUsername`. Values accept `@name`, bare `name`, or a `t.me/…` or `telegram.me/…` link; the literal value `remove` (any case) clears the username. Client-side shape validation runs before connect: 5-32 chars, letters, digits, underscore, at least one letter, no leading digit, no trailing underscore.
