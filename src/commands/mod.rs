@@ -17,6 +17,7 @@ pub mod stories;
 pub mod takeout;
 pub mod topic;
 
+#[allow(unused_imports)]
 pub use crate::error::{TeleError, TeleResult};
 
 pub fn validate_limit(value: u32, max: u32, flag: &str) -> Result<u32, TeleError> {
