@@ -59,6 +59,3 @@ codegen-units = 1
 
 [lints.rust]
 warnings = "deny"
-
-[lints.clippy]
-warnings = "deny"
