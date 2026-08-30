@@ -8,6 +8,17 @@ pub(crate) fn peer_id(peer: &tl::enums::Peer) -> i64 {
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn peer_to_id(peer: &tl::enums::Peer) -> grammers_session::types::PeerId {
+    match peer {
+        tl::enums::Peer::User(p) => grammers_session::types::PeerId::user_unchecked(p.user_id),
+        tl::enums::Peer::Chat(p) => grammers_session::types::PeerId::chat_unchecked(p.chat_id),
+        tl::enums::Peer::Channel(p) => {
+            grammers_session::types::PeerId::channel_unchecked(p.channel_id)
+        }
+    }
+}
+
 pub(crate) fn stats_period(v: &tl::enums::StatsDateRangeDays) -> serde_json::Value {
     match v {
         tl::enums::StatsDateRangeDays::Days(d) => {

@@ -228,7 +228,18 @@ fn normalize_raw_target(raw: &str) -> String {
             s = rest;
         }
     }
+    for sep in ['/', '?', '#'] {
+        if let Some(head) = s.split(sep).next() {
+            s = head;
+        }
+    }
     let s = s.strip_prefix('@').unwrap_or(s);
+    if let Some(stripped) = s.strip_prefix('+') {
+        let digits: String = stripped.chars().filter(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            return digits;
+        }
+    }
     match s.parse::<i64>() {
         Ok(n) => n.to_string(),
         Err(_) => s.to_ascii_lowercase(),
