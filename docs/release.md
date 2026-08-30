@@ -23,6 +23,8 @@ git tag -a -m "vX.Y.Z" vX.Y.Z
 git push origin vX.Y.Z
 ```
 
+Tags must be annotated (`-a`). Lightweight tags are not valid releases — the workflow and changelog extraction expect an annotated tag object. Verify with `git cat-file -t vX.Y.Z` (should print `tag`, not `commit`).
+
 The push triggers the `release` workflow.
 
 ## What the workflow builds
