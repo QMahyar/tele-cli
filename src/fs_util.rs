@@ -205,18 +205,61 @@ pub fn resolve_for_guard(path: &Path) -> std::path::PathBuf {
             }
             break rebuilt;
         }
-        match cursor.file_name() {
+        let last = match cursor.components().next_back() {
             None => break path.to_path_buf(),
-            Some(name) => tail.push(name.to_os_string()),
+            Some(c) => c,
+        };
+        match last {
+            std::path::Component::Normal(name) => tail.push(name.to_os_string()),
+            std::path::Component::ParentDir => tail.push("..".into()),
+            std::path::Component::CurDir => tail.push(".".into()),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                break path.to_path_buf()
+            }
         }
         match cursor.parent() {
             None => break path.to_path_buf(),
             Some(parent) => cursor = parent,
         }
     };
+    let normalized = lexical_normalize(&resolved);
     #[cfg(windows)]
-    let resolved = strip_verbatim_prefix(resolved);
-    resolved
+    let normalized = strip_verbatim_prefix(normalized);
+    normalized
+}
+
+fn lexical_normalize(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut prefix: Option<std::ffi::OsString> = None;
+    let mut has_root = false;
+    let mut stack: Vec<std::ffi::OsString> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::Prefix(p) => prefix = Some(p.as_os_str().to_os_string()),
+            Component::RootDir => has_root = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if stack.pop().is_none() && !has_root && prefix.is_none() {
+                    stack.push("..".into());
+                }
+            }
+            Component::Normal(c) => stack.push(c.to_os_string()),
+        }
+    }
+    let mut out = std::path::PathBuf::new();
+    if let Some(p) = prefix {
+        out.push(p);
+    }
+    if has_root {
+        out.push(Component::RootDir.as_os_str());
+    }
+    for part in stack {
+        out.push(part);
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
 }
 
 #[cfg(windows)]
@@ -333,6 +376,79 @@ mod tests {
         #[cfg(windows)]
         let canon = canon.trim_start_matches(r"\\?\");
         assert_eq!(resolve_for_guard(&base).to_string_lossy(), canon);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_for_guard_normalizes_dot_and_dot_dot() {
+        let base = temp_path("resolve-dot");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let with_dot = base.join(".").join("a").join(".").join("b.txt");
+        let resolved_dot = resolve_for_guard(&with_dot);
+        assert!(
+            !resolved_dot.to_string_lossy().contains(".."),
+            "dot should be stripped: {resolved_dot:?}"
+        );
+        assert!(
+            resolved_dot.ends_with(std::path::Path::new("a").join("b.txt")),
+            "resolved {resolved_dot:?} should end with a/b.txt"
+        );
+        let with_dotdot = base.join("tmp").join("..").join("a.txt");
+        let resolved_dd = resolve_for_guard(&with_dotdot);
+        assert!(
+            !resolved_dd.to_string_lossy().contains(".."),
+            "dot-dot should be normalized: {resolved_dd:?}"
+        );
+        assert!(
+            resolved_dd.ends_with("a.txt"),
+            "resolved {resolved_dd:?} should end with a.txt"
+        );
+        let canon = std::fs::canonicalize(&base).unwrap();
+        let expected =
+            std::path::Path::new(canon.to_string_lossy().trim_start_matches(r"\\?\")).join("a.txt");
+        assert_eq!(
+            resolved_dd
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_lowercase(),
+            expected
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_lowercase()
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_path_traversal_blocked() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let base = temp_path("traversal-guard");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::env::set_var("TELE_APP_DIR", &base);
+        let app_dir = crate::config::app_data_dir();
+        let parent = base.parent().unwrap().to_path_buf();
+        let traversal = parent
+            .join("dummy")
+            .join("..")
+            .join(base.file_name().unwrap())
+            .join(".env");
+        let candidate = traversal.to_string_lossy().to_string();
+        let resolved = resolve_for_guard(std::path::Path::new(&candidate));
+        assert!(
+            path_under_guard(&resolved, &app_dir),
+            "resolved {resolved:?} should be under guard {app_dir:?} for candidate {candidate:?}"
+        );
+        let err = crate::commands::msg::validate::validate_upload_path_inner(&candidate, true)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("app data directory"),
+            "traversal should be blocked: {err}"
+        );
+        std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
