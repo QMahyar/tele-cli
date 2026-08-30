@@ -2,10 +2,10 @@
 use clap::Subcommand;
 use grammers_client::message::InputMessage;
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::looks_like_image;
-use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -75,8 +75,7 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     if args.text.trim().is_empty() {
         return Err(TeleError::Usage("--text must not be empty".to_string()));
     }
@@ -89,12 +88,15 @@ fn edit_dry_run_payload(chat: &str, text: &str, id: i32) -> serde_json::Value {
         "id": id,
         "chat": chat,
         "text": text,
-        "would": format!("edit message {id}"),
-    })
+        "would": format!("edit message {id}")})
 }
 
 pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Value> {
-    Ok(edit_dry_run_payload(&args.chat, &args.text, args.id))
+    Ok(edit_dry_run_payload(
+        args.chat.as_str(),
+        &args.text,
+        args.id,
+    ))
 }
 
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -135,8 +137,7 @@ pub(crate) async fn edit_core(
 }
 
 pub(crate) fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     if args.all && !args.ids.is_empty() {
         return Err(TeleError::Usage(
             "--all and --ids are mutually exclusive".to_string(),
@@ -170,15 +171,14 @@ fn delete_report(requested: usize, deleted: usize) -> (serde_json::Value, bool) 
 
 pub(crate) fn delete_serve_dry_run(args: &DeleteArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
-        "dry_run": true,
-        "ids": args.ids,
-        "self_only": args.self_only,
-        "would": if args.all {
-            format!("delete all messages in chat {}", args.chat)
-        } else {
-            format!("delete {} message(s) by id", args.ids.len())
-        },
-    }))
+    "dry_run": true,
+    "ids": args.ids,
+    "self_only": args.self_only,
+    "would": if args.all {
+        format!("delete all messages in chat {}", args.chat)
+    } else {
+        format!("delete {} message(s) by id", args.ids.len())
+    }}))
 }
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -288,10 +288,10 @@ pub(crate) async fn delete_core(
 }
 
 pub(crate) fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
-    require_chat_target(&args.from, "from")?;
-    require_chat_target(&args.to, "to")?;
-    reject_deep_link_msg_id(&args.from, "from")?;
-    reject_deep_link_msg_id(&args.to, "to")?;
+    crate::chat_target::ChatTarget::parse_flag(args.from.as_str(), "from")?;
+    crate::chat_target::ChatTarget::parse_flag(args.to.as_str(), "to")?;
+    crate::chat_target::ChatTarget::parse_flag(args.from.as_str(), "from")?;
+    crate::chat_target::ChatTarget::parse_flag(args.to.as_str(), "to")?;
     if args.ids.is_empty() {
         return Err(TeleError::Usage("--ids required".to_string()));
     }
@@ -472,8 +472,7 @@ pub(crate) async fn pin_core(
         return Ok(serde_json::json!({
             "pinned_message": match &pinned {
                 Some(m) => crate::serialize::message_to_json(m)?,
-                None => serde_json::Value::Null,
-            }
+                None => serde_json::Value::Null}
         }));
     }
     if params.all {
@@ -511,8 +510,7 @@ pub(crate) async fn pin_core(
 }
 
 pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     if args.show || args.all {
         return Ok(());
     }
@@ -525,7 +523,9 @@ pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    if args.chat.trim().is_empty() {
+        return Err(TeleError::Usage("--chat must not be empty".into()));
+    }
     if args.timeout_secs == 0 {
         return Err(TeleError::Usage("--timeout-secs must be >0".to_string()));
     }
@@ -553,17 +553,6 @@ pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
     Ok(())
 }
 
-const DEEP_LINK_MSG_ID_CONSUMERS: &str = "tele msg get";
-
-fn reject_deep_link_msg_id(target: &str, flag: &str) -> TeleResult<()> {
-    if entities::parse_target(target)?.msg_id.is_some() {
-        return Err(TeleError::Usage(format!(
-            "--{flag} \"{target}\" carries a deep-link message id; deep-link message ids are only accepted by: {DEEP_LINK_MSG_ID_CONSUMERS}"
-        )));
-    }
-    Ok(())
-}
-
 fn get_target_message_id(params: &GetParams) -> TeleResult<Option<i32>> {
     let carried = entities::parse_target(&params.chat)?.msg_id;
     match (params.id, carried) {
@@ -576,8 +565,7 @@ fn get_target_message_id(params: &GetParams) -> TeleResult<Option<i32>> {
 }
 
 pub(crate) fn validate_read(args: &ReadArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat").map(|_| ())
 }
 
 fn upload_error(e: std::io::Error) -> TeleError {
@@ -601,8 +589,7 @@ pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value>
         "watch": args.watch,
         "timeout_secs": args.timeout_secs,
         "poll_interval": args.poll_interval,
-        "would": format!("get messages from chat {}", args.chat),
-    }))
+        "would": format!("get messages from chat {}", args.chat)}))
 }
 
 fn buttons_summary(row: &serde_json::Value) -> Option<String> {
@@ -853,21 +840,20 @@ fn push_message_row(
 
 pub(crate) fn read_serve_dry_run(args: &ReadArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
-        "dry_run": true,
-        "unread": args.mark_unread,
-        "mentions": args.mentions,
-        "would": format!(
-            "mark chat {} as {}",
-            args.chat,
-            if args.mentions {
-                "mentions-cleared"
-            } else if args.mark_unread {
-                "unread"
-            } else {
-                "read"
-            }
-        ),
-    }))
+    "dry_run": true,
+    "unread": args.mark_unread,
+    "mentions": args.mentions,
+    "would": format!(
+        "mark chat {} as {}",
+        args.chat,
+        if args.mentions {
+            "mentions-cleared"
+        } else if args.mark_unread {
+            "unread"
+        } else {
+            "read"
+        }
+    )}))
 }
 
 async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -934,8 +920,7 @@ pub(crate) async fn read_core(
 }
 
 pub(crate) fn validate_react(args: &ReactArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     if args.reaction.is_some() && args.remove {
         return Err(TeleError::Usage(
             "use --reaction or --remove, not both".to_string(),
@@ -1008,8 +993,7 @@ pub(crate) async fn react_core(
 }
 
 pub(crate) fn validate_vote(args: &VoteArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     if args.id <= 0 {
         return Err(TeleError::Usage(
             "--id must be a positive message ID".to_string(),
@@ -1081,8 +1065,7 @@ pub(crate) fn vote_serve_dry_run(args: &VoteArgs) -> TeleResult<serde_json::Valu
         "chat": args.chat,
         "id": args.id,
         "options": option_indexes,
-        "would": format!("vote on poll {} with option(s) {option_indexes:?}", args.id),
-    }))
+        "would": format!("vote on poll {} with option(s) {option_indexes:?}", args.id)}))
 }
 
 async fn vote(args: VoteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1153,8 +1136,7 @@ pub(crate) async fn vote_core(
     Ok(serde_json::json!({
         "id": id,
         "voted": true,
-        "options": option_indexes,
-    }))
+        "options": option_indexes}))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1214,8 +1196,7 @@ fn typing_action(name: Option<&str>) -> TeleResult<TypingChoice> {
 }
 
 pub(crate) fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     typing_action(args.action.as_deref())?;
     Ok(())
 }
@@ -1227,10 +1208,10 @@ pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
         ));
     }
     if !args.global {
-        require_chat_target(&args.chat, "chat")?;
+        crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     }
     if !args.chat.trim().is_empty() {
-        reject_deep_link_msg_id(&args.chat, "chat")?;
+        crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     }
     crate::commands::validate_limit(args.limit, 10_000, "limit").map(|_| ())
 }
@@ -1244,8 +1225,7 @@ pub(crate) fn typing_serve_dry_run(args: &TypingArgs) -> TeleResult<serde_json::
         "dry_run": true,
         "chat": args.chat,
         "action": action_name,
-        "would": format!("send {action_name} chat action to {}", args.chat),
-    }))
+        "would": format!("send {action_name} chat action to {}", args.chat)}))
 }
 
 async fn typing(args: TypingArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1489,8 +1469,7 @@ fn button_requires_password(
 }
 
 pub(crate) fn validate_click(args: &ClickArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
-    reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     if args.id <= 0 {
         return Err(TeleError::Usage(
             "--id must be a positive message ID".to_string(),
@@ -1555,8 +1534,7 @@ pub(crate) fn click_serve_dry_run(args: &ClickArgs) -> TeleResult<serde_json::Va
         "chat": args.chat,
         "id": args.id,
         "selector": selector_label,
-        "would": format!("click {selector_label} on message {}", args.id),
-    }))
+        "would": format!("click {selector_label} on message {}", args.id)}))
 }
 
 async fn click(args: ClickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1632,8 +1610,7 @@ pub(crate) async fn click_core(
         "id": id,
         "clicked": true,
         "button": located.text,
-        "position": located.position,
-    });
+        "position": located.position});
     let tl::enums::messages::BotCallbackAnswer::Answer(a) = answer;
     row["alert"] = serde_json::json!(a.alert);
     if let Some(message) = a.message {
@@ -1648,17 +1625,16 @@ pub(crate) async fn click_core(
 
 pub(crate) fn search_serve_dry_run(args: &SearchArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
-        "dry_run": true,
-        "chat": if args.global { serde_json::Value::Null } else { serde_json::json!(args.chat) },
-        "global": args.global,
-        "query": args.query,
-        "limit": args.limit,
-        "would": if args.global {
-            format!("search all dialogs for \"{}\"", args.query)
-        } else {
-            format!("search messages in chat {}", args.chat)
-        },
-    }))
+    "dry_run": true,
+    "chat": if args.global { serde_json::Value::Null } else { serde_json::json!(args.chat) },
+    "global": args.global,
+    "query": args.query,
+    "limit": args.limit,
+    "would": if args.global {
+        format!("search all dialogs for \"{}\"", args.query)
+    } else {
+        format!("search messages in chat {}", args.chat)
+    }}))
 }
 
 async fn search(args: SearchArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1776,7 +1752,7 @@ mod tests {
 
     fn send_args(format: &str) -> SendArgs {
         SendArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             text: Some("hi".to_string()),
             schedule: None,
             files: vec![],
@@ -1812,7 +1788,7 @@ mod tests {
         assert!(!p.background);
         assert!(!p.dry_run);
         let args = SendArgs::from(&p);
-        assert_eq!(args.chat, "@game");
+        assert_eq!(args.chat.as_str(), "@game");
         assert_eq!(args.format, "plain");
     }
 
@@ -1982,7 +1958,7 @@ mod tests {
     #[test]
     fn edit_rejects_empty_text() {
         let args = EditArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             text: "".to_string(),
         };
@@ -1992,7 +1968,7 @@ mod tests {
     #[test]
     fn edit_rejects_whitespace_text() {
         let args = EditArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             text: "   \t ".to_string(),
         };
@@ -2002,7 +1978,7 @@ mod tests {
     #[test]
     fn edit_allows_normal_text() {
         let args = EditArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             text: "hello".to_string(),
         };
@@ -2191,7 +2167,7 @@ mod tests {
     #[test]
     fn delete_requires_ids_unless_all() {
         let args = DeleteArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             ids: Vec::new(),
             all: false,
             self_only: false,
@@ -2201,7 +2177,7 @@ mod tests {
         with_all.all = true;
         assert!(validate_delete(&with_all).is_ok());
         let with_ids = DeleteArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             ids: vec![1, 2],
             all: false,
             self_only: false,
@@ -2212,7 +2188,7 @@ mod tests {
     #[test]
     fn delete_rejects_all_with_ids() {
         let args = DeleteArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             ids: vec![1, 2],
             all: true,
             self_only: false,
@@ -2243,14 +2219,14 @@ mod tests {
     #[test]
     fn validate_delete_rejects_self_only_with_all() {
         let args = DeleteArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             ids: Vec::new(),
             all: true,
             self_only: true,
         };
         assert!(matches!(validate_delete(&args), Err(TeleError::Usage(_))));
         let with_ids = DeleteArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             ids: vec![1],
             all: false,
             self_only: true,
@@ -2315,9 +2291,9 @@ mod tests {
     #[test]
     fn forward_requires_ids() {
         let args = ForwardArgs {
-            from: "a".to_string(),
+            from: crate::chat_target::ChatTarget::new_unchecked("a".to_string()),
             ids: Vec::new(),
-            to: "b".to_string(),
+            to: crate::chat_target::ChatTarget::new_unchecked("b".to_string()),
         };
         assert!(matches!(validate_forward(&args), Err(TeleError::Usage(_))));
         let mut with_ids = args;
@@ -2523,22 +2499,22 @@ mod tests {
         let plain = "t.me/durov";
 
         let mut send = send_args("plain");
-        send.chat = link.to_string();
+        send.chat = crate::chat_target::ChatTarget::new_unchecked(link.to_string());
         let err = validate_send(&send).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("tele msg get"), "msg: {err}");
-        send.chat = plain.to_string();
+        send.chat = crate::chat_target::ChatTarget::new_unchecked(plain.to_string());
         assert!(validate_send(&send).is_ok());
 
         let edit = EditArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             id: 1,
             text: "x".to_string(),
         };
         assert!(matches!(validate_edit(&edit), Err(TeleError::Usage(_))));
 
         let delete = DeleteArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             ids: vec![1],
             all: false,
             self_only: false,
@@ -2546,15 +2522,15 @@ mod tests {
         assert!(matches!(validate_delete(&delete), Err(TeleError::Usage(_))));
 
         let fwd = ForwardArgs {
-            from: link.to_string(),
+            from: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             ids: vec![1],
-            to: "b".to_string(),
+            to: crate::chat_target::ChatTarget::new_unchecked("b".to_string()),
         };
         assert!(matches!(validate_forward(&fwd), Err(TeleError::Usage(_))));
         let fwd_to = ForwardArgs {
-            from: "a".to_string(),
+            from: crate::chat_target::ChatTarget::new_unchecked("a".to_string()),
             ids: vec![1],
-            to: link.to_string(),
+            to: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
         };
         assert!(matches!(
             validate_forward(&fwd_to),
@@ -2562,7 +2538,7 @@ mod tests {
         ));
 
         let react = ReactArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             id: 1,
             reaction: Some("+1".to_string()),
             remove: false,
@@ -2571,14 +2547,14 @@ mod tests {
         assert!(err.message().contains("tele msg get"), "msg: {err}");
 
         let vote = VoteArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             id: 4,
             option: "1".to_string(),
         };
         assert!(matches!(validate_vote(&vote), Err(TeleError::Usage(_))));
 
         let download = DownloadArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             id: 4,
             dir: std::env::temp_dir().to_string_lossy().to_string(),
             force: false,
@@ -2590,14 +2566,14 @@ mod tests {
         ));
 
         let read = ReadArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             mark_unread: false,
             mentions: false,
         };
         assert!(matches!(validate_read(&read), Err(TeleError::Usage(_))));
 
         let pin = PinArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             id: Some(4),
             unpin: false,
             notify: false,
@@ -2607,13 +2583,13 @@ mod tests {
         assert!(matches!(validate_pin(&pin), Err(TeleError::Usage(_))));
 
         let typing = TypingArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             action: None,
         };
         assert!(matches!(validate_typing(&typing), Err(TeleError::Usage(_))));
 
         let click = ClickArgs {
-            chat: link.to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
             id: 4,
             button: Some("ok".to_string()),
             button_index: None,
@@ -2643,14 +2619,14 @@ mod tests {
     fn msg_validators_reject_empty_or_whitespace_chat() {
         for chat in ["", "   ", "\t"] {
             let mut send = send_args("plain");
-            send.chat = chat.to_string();
+            send.chat = crate::chat_target::ChatTarget::new_unchecked(chat.to_string());
             assert!(
                 matches!(validate_send(&send), Err(TeleError::Usage(_))),
                 "{chat:?}"
             );
 
             let edit = EditArgs {
-                chat: chat.to_string(),
+                chat: crate::chat_target::ChatTarget::new_unchecked(chat.to_string()),
                 id: 1,
                 text: "x".to_string(),
             };
@@ -2660,7 +2636,7 @@ mod tests {
             );
 
             let delete = DeleteArgs {
-                chat: chat.to_string(),
+                chat: crate::chat_target::ChatTarget::new_unchecked(chat.to_string()),
                 ids: vec![1],
                 all: false,
                 self_only: false,
@@ -2671,18 +2647,18 @@ mod tests {
             );
 
             let fwd_from = ForwardArgs {
-                from: chat.to_string(),
+                from: crate::chat_target::ChatTarget::new_unchecked(chat.to_string()),
                 ids: vec![1],
-                to: "b".to_string(),
+                to: crate::chat_target::ChatTarget::new_unchecked("b".to_string()),
             };
             assert!(
                 matches!(validate_forward(&fwd_from), Err(TeleError::Usage(_))),
                 "{chat:?}"
             );
             let fwd_to = ForwardArgs {
-                from: "a".to_string(),
+                from: crate::chat_target::ChatTarget::new_unchecked("a".to_string()),
                 ids: vec![1],
-                to: chat.to_string(),
+                to: crate::chat_target::ChatTarget::new_unchecked(chat.to_string()),
             };
             assert!(
                 matches!(validate_forward(&fwd_to), Err(TeleError::Usage(_))),
@@ -2706,7 +2682,7 @@ mod tests {
             );
 
             let react = ReactArgs {
-                chat: chat.to_string(),
+                chat: crate::chat_target::ChatTarget::new_unchecked(chat.to_string()),
                 id: 1,
                 reaction: Some("+1".to_string()),
                 remove: false,
@@ -2722,7 +2698,7 @@ mod tests {
     async fn pin_read_search_download_reject_empty_chat_before_connect() {
         let err = pin(
             PinArgs {
-                chat: String::new(),
+                chat: crate::chat_target::ChatTarget::new_unchecked(String::new()),
                 id: Some(1),
                 unpin: false,
                 notify: false,
@@ -2736,7 +2712,7 @@ mod tests {
 
         let err = read(
             ReadArgs {
-                chat: "   ".to_string(),
+                chat: crate::chat_target::ChatTarget::new_unchecked("   ".to_string()),
                 mark_unread: false,
                 mentions: false,
             },
@@ -2761,7 +2737,7 @@ mod tests {
             std::env::temp_dir().join(format!("telecli-msg-emptychat-{}", std::process::id()));
         let err = download(
             DownloadArgs {
-                chat: "\t".to_string(),
+                chat: crate::chat_target::ChatTarget::new_unchecked("\t".to_string()),
                 id: 1,
                 dir: out.to_string_lossy().into_owned(),
                 force: false,
@@ -2776,7 +2752,7 @@ mod tests {
     #[test]
     fn validate_pin_requires_mode() {
         let no_mode = PinArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: None,
             unpin: false,
             notify: false,
@@ -2785,7 +2761,7 @@ mod tests {
         };
         assert!(matches!(validate_pin(&no_mode), Err(TeleError::Usage(_))));
         let with_id = PinArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: Some(7),
             unpin: false,
             notify: false,
@@ -2794,7 +2770,7 @@ mod tests {
         };
         assert!(validate_pin(&with_id).is_ok());
         let show = PinArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: None,
             unpin: false,
             notify: false,
@@ -2826,7 +2802,7 @@ mod tests {
     #[test]
     fn react_rejects_reaction_with_remove() {
         let both = ReactArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             reaction: Some("+1".to_string()),
             remove: true,
@@ -2839,21 +2815,21 @@ mod tests {
     #[test]
     fn react_requires_reaction_or_remove() {
         let none = ReactArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             reaction: None,
             remove: false,
         };
         assert!(matches!(validate_react(&none), Err(TeleError::Usage(_))));
         let with_remove = ReactArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             reaction: None,
             remove: true,
         };
         assert!(validate_react(&with_remove).is_ok());
         let with_reaction = ReactArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             reaction: Some("+1".to_string()),
             remove: false,
@@ -3545,7 +3521,7 @@ mod tests {
             std::env::temp_dir().join(format!("telecli-msg-dl-dryrun-{}", std::process::id()));
         let code = download(
             DownloadArgs {
-                chat: "me".to_string(),
+                chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
                 id: 1,
                 dir: out.to_string_lossy().to_string(),
                 force: false,
@@ -3573,7 +3549,7 @@ mod tests {
     #[test]
     fn send_dry_run_carries_argument_keys() {
         let mut args = send_args("plain");
-        args.chat = "@x".to_string();
+        args.chat = crate::chat_target::ChatTarget::new_unchecked("@x".to_string());
         let value = send_dry_run_payload(&args, None);
         assert_eq!(value["dry_run"], serde_json::json!(true));
         assert_eq!(value["chat"], serde_json::json!("@x"));
@@ -3623,7 +3599,7 @@ mod tests {
     #[test]
     fn validate_send_url_requires_kind_and_conflicts_with_text() {
         let url_only = SendArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             text: Some("hi".to_string()),
             schedule: None,
             files: vec![],
@@ -3710,7 +3686,7 @@ mod tests {
     #[test]
     fn edit_dry_run_carries_argument_keys() {
         let args = EditArgs {
-            chat: "@x".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("@x".to_string()),
             id: 5,
             text: "new text".to_string(),
         };
@@ -3724,7 +3700,7 @@ mod tests {
 
     fn vote_args(option: &str) -> VoteArgs {
         VoteArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             option: option.to_string(),
         }
@@ -3732,14 +3708,14 @@ mod tests {
 
     fn typing_args(action: Option<&str>) -> TypingArgs {
         TypingArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             action: action.map(str::to_string),
         }
     }
 
     fn click_args(button: Option<String>, button_index: Option<usize>) -> ClickArgs {
         ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             button,
             button_index,
@@ -3750,7 +3726,7 @@ mod tests {
 
     fn click_args_contains(substr: &str) -> ClickArgs {
         ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 5,
             button: None,
             button_index: None,
@@ -3787,7 +3763,7 @@ mod tests {
     fn validate_vote_matrix() {
         assert!(validate_vote(&vote_args("1")).is_ok());
         let mut bad = vote_args("1");
-        bad.chat = "  ".to_string();
+        bad.chat = crate::chat_target::ChatTarget::new_unchecked("  ".to_string());
         assert!(matches!(validate_vote(&bad), Err(TeleError::Usage(_))));
         let mut zero_id = vote_args("1");
         zero_id.id = 0;
@@ -3888,7 +3864,7 @@ mod tests {
         assert!(validate_typing(&typing_args(None)).is_ok());
         assert!(validate_typing(&typing_args(Some("cancel"))).is_ok());
         let mut bad = typing_args(None);
-        bad.chat = String::new();
+        bad.chat = crate::chat_target::ChatTarget::new_unchecked(String::new());
         assert!(matches!(validate_typing(&bad), Err(TeleError::Usage(_))));
     }
 
@@ -4118,7 +4094,7 @@ mod tests {
         let both = click_args(Some("Yes".to_string()), Some(2));
         assert!(matches!(validate_click(&both), Err(TeleError::Usage(_))));
         let mut empty_chat = click_args(None, Some(1));
-        empty_chat.chat = "".to_string();
+        empty_chat.chat = crate::chat_target::ChatTarget::new_unchecked("".to_string());
         assert!(matches!(
             validate_click(&empty_chat),
             Err(TeleError::Usage(_))
@@ -4463,7 +4439,7 @@ mod tests {
     #[test]
     fn validate_search_rejects_zero_limit() {
         let args = SearchArgs {
-            chat: "me".to_string(),
+                chat: "me".to_string(),
             query: "q".to_string(),
             limit: 0,
             global: false,
@@ -4728,7 +4704,7 @@ mod tests {
     #[test]
     fn click_selector_precedence_is_index_over_contains_over_button() {
         let with_all = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: Some("a".to_string()),
             button_index: Some(3),
@@ -4740,7 +4716,7 @@ mod tests {
             ButtonSelector::Index(3)
         ));
         let contains_over_text = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: Some("a".to_string()),
             button_index: None,
@@ -4752,7 +4728,7 @@ mod tests {
             ButtonSelector::Contains(_)
         ));
         let only_text = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: Some("a".to_string()),
             button_index: None,
@@ -4768,7 +4744,7 @@ mod tests {
     #[test]
     fn validate_click_enforces_mutual_exclusivity_and_contains_not_empty() {
         let both = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: Some("a".to_string()),
             button_index: Some(1),
@@ -4777,7 +4753,7 @@ mod tests {
         };
         assert!(matches!(validate_click(&both), Err(TeleError::Usage(_))));
         let both2 = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: None,
             button_index: Some(1),
@@ -4786,7 +4762,7 @@ mod tests {
         };
         assert!(matches!(validate_click(&both2), Err(TeleError::Usage(_))));
         let both3 = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: Some("a".to_string()),
             button_index: None,
@@ -4795,7 +4771,7 @@ mod tests {
         };
         assert!(matches!(validate_click(&both3), Err(TeleError::Usage(_))));
         let empty_contains = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: None,
             button_index: None,
@@ -4807,7 +4783,7 @@ mod tests {
             Err(TeleError::Usage(_))
         ));
         let none = ClickArgs {
-            chat: "me".to_string(),
+            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: None,
             button_index: None,

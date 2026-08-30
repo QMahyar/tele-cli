@@ -10,11 +10,10 @@ use std::collections::HashMap;
 
 use crate::client::{self, ClientGuard};
 
+use crate::chat_target::ChatTarget;
 use crate::commands::credentials::creds_api_id;
 
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
-
-use crate::commands::require_chat_target;
 
 use crate::entities;
 
@@ -430,7 +429,7 @@ pub async fn run(cmd: ChatCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -487,7 +486,7 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -565,7 +564,7 @@ struct ValidatedRequests {
 }
 
 fn validate_requests(args: &RequestsArgs) -> TeleResult<ValidatedRequests> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     if args.approve && args.dismiss {
         return Err(TeleError::Usage(
             "--approve and --dismiss are mutually exclusive".to_string(),
@@ -726,8 +725,7 @@ async fn requests(args: RequestsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             Ok(serde_json::json!({
                                 "chat": target,
                                 "user": user,
-                                "action": if approved { "approved" } else { "dismissed" },
-                            }))
+                                "action": if approved { "approved" } else { "dismissed" }}))
                         }
                         None => {
                             guard.rate_limiter.acquire().await;
@@ -743,8 +741,7 @@ async fn requests(args: RequestsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             let mut v = serde_json::json!({
                                 "chat": target,
                                 "all": plan.all,
-                                "action": if approved { "approved" } else { "dismissed" },
-                            });
+                                "action": if approved { "approved" } else { "dismissed" }});
                             if let Some(link) = &plan.link {
                                 v["link"] = serde_json::json!(link);
                             }
@@ -771,8 +768,7 @@ fn requests_dry_run_payload(chat: &str, plan: &ValidatedRequests) -> serde_json:
                 "dry_run": true,
                 "chat": chat,
                 "action": action,
-                "would": format!("list pending join requests of chat {chat}"),
-            });
+                "would": format!("list pending join requests of chat {chat}")});
             if let Some(link) = &plan.link {
                 v["link"] = serde_json::json!(link);
             }
@@ -785,8 +781,7 @@ fn requests_dry_run_payload(chat: &str, plan: &ValidatedRequests) -> serde_json:
                     "chat": chat,
                     "action": action,
                     "user": user,
-                    "would": format!("{action} join request of {user} in chat {chat}"),
-                });
+                    "would": format!("{action} join request of {user} in chat {chat}")});
                 if let Some(link) = &plan.link {
                     v["link"] = serde_json::json!(link);
                 }
@@ -803,8 +798,7 @@ fn requests_dry_run_payload(chat: &str, plan: &ValidatedRequests) -> serde_json:
                     "chat": chat,
                     "action": action,
                     "all": plan.all,
-                    "would": would,
-                });
+                    "would": would});
                 if let Some(link) = &plan.link {
                     v["link"] = serde_json::json!(link);
                 }
@@ -867,12 +861,11 @@ fn stats_dry_run_payload(chat: &str, broadcast: bool) -> serde_json::Value {
         "dry_run": true,
         "chat": chat,
         "broadcast": broadcast,
-        "would": format!("show stats of chat {chat}"),
-    })
+        "would": format!("show stats of chat {chat}")})
 }
 
 async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let broadcast = args.broadcast;
@@ -910,8 +903,7 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "shares_per_post": stats_abs(&r.shares_per_post),
                     "reactions_per_post": stats_abs(&r.reactions_per_post),
                     "enabled_notifications": stats_percent(&r.enabled_notifications),
-                    "recent_posts_interactions": r.recent_posts_interactions.len(),
-                })
+                    "recent_posts_interactions": r.recent_posts_interactions.len()})
             } else {
                 let r: tl::enums::stats::MegagroupStats = guard
                     .client
@@ -930,8 +922,7 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "posters": stats_abs(&r.posters),
                     "top_posters": r.top_posters.len(),
                     "top_admins": r.top_admins.len(),
-                    "top_inviters": r.top_inviters.len(),
-                })
+                    "top_inviters": r.top_inviters.len()})
             };
             Ok(serde_json::json!({"chat": target, "stats": raw}))
         })
@@ -1669,26 +1660,26 @@ impl From<&ParticipantsServeParams> for ParticipantsArgs {
 }
 
 fn validate_join(args: &ChatArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")
+    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
 }
 
 fn validate_leave(args: &ChatArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")
+    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
 }
 
 fn validate_stats(args: &StatsArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")
+    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
 }
 
 fn validate_participants(args: &ParticipantsArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     parse_participant_role(args.role.as_deref())?;
     Ok(())
 }
 
 fn validate_admin_log(args: &AdminLogArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let since = args
         .since
@@ -1761,14 +1752,13 @@ fn settings_serve_dry_run(args: &SettingsArgs) -> TeleResult<serde_json::Value> 
         || pre_history.is_some()
         || join_request.is_some();
     let mut data = serde_json::json!({
-        "dry_run": true,
-        "chat": args.chat,
-        "would": if has_toggles {
-            format!("update settings of chat {}", args.chat)
-        } else {
-            format!("read settings of chat {}", args.chat)
-        },
-    });
+    "dry_run": true,
+    "chat": args.chat,
+    "would": if has_toggles {
+        format!("update settings of chat {}", args.chat)
+    } else {
+        format!("read settings of chat {}", args.chat)
+    }});
     if let Some(secs) = slow_mode {
         data["slow_mode"] = serde_json::json!(secs);
     }
@@ -1788,8 +1778,7 @@ fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Value> {
     let mut data = serde_json::json!({
         "dry_run": true,
         "chat": args.chat,
-        "would": format!("edit metadata of chat {}", args.chat),
-    });
+        "would": format!("edit metadata of chat {}", args.chat)});
     if let Some(t) = &args.title {
         data["title"] = serde_json::json!(t.trim());
     }
@@ -1808,14 +1797,12 @@ fn link_serve_dry_run(args: &LinkArgs) -> TeleResult<serde_json::Value> {
         None => serde_json::json!({
             "dry_run": true,
             "chat": args.chat,
-            "would": format!("read discussion link of chat {}", args.chat),
-        }),
+            "would": format!("read discussion link of chat {}", args.chat)}),
         Some(to) => serde_json::json!({
             "dry_run": true,
             "chat": args.chat,
             "to": to,
-            "would": format!("link chat {} with discussion group {}", args.chat, to),
-        }),
+            "would": format!("link chat {} with discussion group {}", args.chat, to)}),
     })
 }
 
@@ -1848,8 +1835,7 @@ fn admin_serve_dry_run(args: &AdminArgs) -> TeleResult<serde_json::Value> {
         "user": args.user,
         "promote": args.promote,
         "demote": args.demote,
-        "would": format!("change admin status of user {} in chat {}", args.user, args.chat),
-    }))
+        "would": format!("change admin status of user {} in chat {}", args.user, args.chat)}))
 }
 
 fn adminlog_serve_dry_run(args: &AdminLogArgs) -> TeleResult<serde_json::Value> {
@@ -2133,8 +2119,7 @@ pub(crate) async fn chat_settings_core(
         }
         return Ok(serde_json::json!({
             "chat": params.chat,
-            "applied": applied,
-        }));
+            "applied": applied}));
     }
     shares.rate_limiter.acquire().await;
     let full = shares
@@ -2161,8 +2146,7 @@ pub(crate) async fn chat_settings_core(
         "signatures": channel.map(|c| c.signatures),
         "pre_history_hidden": full_chat.hidden_prehistory,
         "join_request": channel.map(|c| c.join_request),
-        "linked_chat_id": full_chat.linked_chat_id,
-    }))
+        "linked_chat_id": full_chat.linked_chat_id}))
 }
 
 pub(crate) async fn chat_edit_core(
@@ -2278,8 +2262,7 @@ pub(crate) async fn chat_edit_core(
     }
     Ok(serde_json::json!({
         "chat": params.chat,
-        "applied": applied,
-    }))
+        "applied": applied}))
 }
 
 pub(crate) async fn chat_link_core(
@@ -2299,8 +2282,7 @@ pub(crate) async fn chat_link_core(
         };
         return Ok(serde_json::json!({
             "chat": params.chat,
-            "linked_chat_id": linked,
-        }));
+            "linked_chat_id": linked}));
     };
     let to_peer =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &to_target).await?;
@@ -2322,8 +2304,7 @@ pub(crate) async fn chat_link_core(
     Ok(serde_json::json!({
         "chat": params.chat,
         "to": to_target,
-        "linked": true,
-    }))
+        "linked": true}))
 }
 
 pub(crate) async fn chat_kick_core(
@@ -2383,8 +2364,7 @@ pub(crate) async fn chat_kick_core(
         "chat": params.chat,
         "user": params.user,
         "kicked": true,
-        "banned": ban,
-    });
+        "banned": ban});
     if let Some(secs) = until_secs {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2434,8 +2414,7 @@ pub(crate) async fn chat_admin_core(
             "chat": params.chat,
             "user": params.user,
             "promote": params.promote,
-            "demote": params.demote,
-        }));
+            "demote": params.demote}));
     }
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     let user_ref = entities::peer_ref(&user_peer)
@@ -2461,8 +2440,7 @@ pub(crate) async fn chat_admin_core(
         "chat": params.chat,
         "user": params.user,
         "promote": params.promote,
-        "demote": params.demote,
-    }))
+        "demote": params.demote}))
 }
 
 pub(crate) async fn chat_admin_log_core(
@@ -2557,8 +2535,7 @@ pub(crate) async fn chat_admin_log_core(
             "id": event.id,
             "date": date,
             "actor": actor_value(&shares.client, &collected.users, event.user_id),
-            "action": admin_action_summary(&event.action, own_id),
-        }));
+            "action": admin_action_summary(&event.action, own_id)}));
     }
     let rows = filter_events_by_range(rows, since, until);
     Ok(serde_json::json!({"events": rows}))
@@ -2591,8 +2568,7 @@ pub(crate) async fn chat_stats_core(
             "shares_per_post": stats_abs(&r.shares_per_post),
             "reactions_per_post": stats_abs(&r.reactions_per_post),
             "enabled_notifications": stats_percent(&r.enabled_notifications),
-            "recent_posts_interactions": r.recent_posts_interactions.len(),
-        })
+            "recent_posts_interactions": r.recent_posts_interactions.len()})
     } else {
         let r: tl::enums::stats::MegagroupStats = shares
             .client
@@ -2611,8 +2587,7 @@ pub(crate) async fn chat_stats_core(
             "posters": stats_abs(&r.posters),
             "top_posters": r.top_posters.len(),
             "top_admins": r.top_admins.len(),
-            "top_inviters": r.top_inviters.len(),
-        })
+            "top_inviters": r.top_inviters.len()})
     };
     Ok(serde_json::json!({"chat": params.chat, "stats": raw}))
 }
@@ -2920,8 +2895,7 @@ pub(crate) async fn chat_requests_core(
                     Ok(serde_json::json!({
                         "chat": params.chat,
                         "user": user,
-                        "action": if approved { "approved" } else { "dismissed" },
-                    }))
+                        "action": if approved { "approved" } else { "dismissed" }}))
                 }
                 None => {
                     shares.rate_limiter.acquire().await;
@@ -2937,8 +2911,7 @@ pub(crate) async fn chat_requests_core(
                     let mut v = serde_json::json!({
                         "chat": params.chat,
                         "all": plan.all,
-                        "action": if approved { "approved" } else { "dismissed" },
-                    });
+                        "action": if approved { "approved" } else { "dismissed" }});
                     if let Some(link) = &plan.link {
                         v["link"] = serde_json::json!(link);
                     }
@@ -3018,8 +2991,7 @@ pub(crate) async fn chat_participants_core(
                     rows.push(serde_json::json!({
                         "id": p.user.id().bare_id().unwrap_or_default(),
                         "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
-                        "role": role_name(&p.role),
-                    }));
+                        "role": role_name(&p.role)}));
                     count += 1;
                 }
                 None => break,
@@ -4032,7 +4004,7 @@ mod tests {
                     edit: None,
                     revoke: false,
                     delete_revoked: false,
-                    check: None,
+                    check: None
                 },
                 &flags,
             )
@@ -4047,7 +4019,7 @@ mod tests {
                     chat: "\t".to_string(),
                     role: None,
                     search: None,
-                    limit: 10,
+                    limit: 10
                 },
                 &flags,
             )
@@ -4063,7 +4035,7 @@ mod tests {
                     user: "u".to_string(),
                     ban: false,
                     duration: None,
-                    rights: None,
+                    rights: None
                 },
                 &flags,
             )
@@ -4081,7 +4053,7 @@ mod tests {
                     search: None,
                     since: None,
                     until: None,
-                    events: None,
+                    events: None
                 },
                 &flags,
             )
@@ -4094,7 +4066,7 @@ mod tests {
             stats(
                 StatsArgs {
                     chat: String::new(),
-                    broadcast: false,
+                    broadcast: false
                 },
                 &flags,
             )

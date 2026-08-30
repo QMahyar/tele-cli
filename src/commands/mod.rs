@@ -17,6 +17,7 @@ pub mod stories;
 pub mod takeout;
 pub mod topic;
 
+#[allow(unused_imports)]
 pub use crate::error::{TeleError, TeleResult};
 
 pub fn validate_limit(value: u32, max: u32, flag: &str) -> Result<u32, TeleError> {
@@ -31,14 +32,6 @@ pub fn validate_limit(value: u32, max: u32, flag: &str) -> Result<u32, TeleError
         )))
     } else {
         Ok(value)
-    }
-}
-
-pub fn require_chat_target(value: &str, flag: &str) -> TeleResult<()> {
-    if value.trim().is_empty() {
-        Err(TeleError::Usage(format!("--{flag} must not be empty")))
-    } else {
-        Ok(())
     }
 }
 

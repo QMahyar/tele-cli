@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
-use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -368,8 +367,7 @@ pub(crate) fn invite_dry_run_payload(chat: &str, plan: &ValidatedInvite) -> serd
                 "dry_run": true,
                 "chat": chat,
                 "mode": "export",
-                "would": format!("export invite link of chat {chat}"),
-            });
+                "would": format!("export invite link of chat {chat}")});
             invite_echo_options(&mut v, plan);
             v
         }
@@ -387,8 +385,7 @@ pub(crate) fn invite_dry_run_payload(chat: &str, plan: &ValidatedInvite) -> serd
                 "mode": "list",
                 "revoked": plan.revoked,
                 "importers": plan.link,
-                "would": would,
-            })
+                "would": would})
         }
         InviteMode::Edit => {
             let link = plan.link.clone().unwrap_or_default();
@@ -399,8 +396,7 @@ pub(crate) fn invite_dry_run_payload(chat: &str, plan: &ValidatedInvite) -> serd
                 "mode": "edit",
                 "link": link,
                 "revoke": plan.revoked,
-                "would": format!("{action} invite link {link} in chat {chat}"),
-            });
+                "would": format!("{action} invite link {link} in chat {chat}")});
             invite_echo_options(&mut v, plan);
             v
         }
@@ -409,8 +405,7 @@ pub(crate) fn invite_dry_run_payload(chat: &str, plan: &ValidatedInvite) -> serd
                 "dry_run": true,
                 "chat": chat,
                 "mode": "delete_revoked",
-                "would": format!("delete revoked invite links exported from chat {chat}"),
-            })
+                "would": format!("delete revoked invite links exported from chat {chat}")})
         }
         InviteMode::Check => {
             let link = plan.link.clone().unwrap_or_default();
@@ -419,8 +414,7 @@ pub(crate) fn invite_dry_run_payload(chat: &str, plan: &ValidatedInvite) -> serd
                 "chat": chat,
                 "mode": "check",
                 "link": link,
-                "would": format!("preview invite link {link}"),
-            })
+                "would": format!("preview invite link {link}")})
         }
     }
 }
@@ -449,7 +443,7 @@ pub(crate) fn has_any_option(args: &InviteArgs) -> bool {
 
 pub(crate) fn validate_invite(args: &InviteArgs) -> TeleResult<ValidatedInvite> {
     if args.check.is_none() {
-        require_chat_target(args.chat.as_deref().unwrap_or_default(), "chat")?;
+        ChatTarget::parse_flag(args.chat.as_deref().unwrap_or_default(), "chat")?;
     }
     if args.check.is_some() && args.chat.as_deref().is_some_and(|c| !c.trim().is_empty()) {
         return Err(TeleError::Usage(
@@ -659,8 +653,7 @@ pub(crate) fn exported_invite_row(invite: &tl::enums::ExportedChatInvite) -> ser
                 "usage": i.usage,
                 "requested": i.requested,
                 "admin_id": i.admin_id,
-                "date": rfc3339_or_empty(Some(i.date)),
-            })
+                "date": rfc3339_or_empty(Some(i.date))})
         }
         tl::enums::ExportedChatInvite::ChatInvitePublicJoinRequests => {
             serde_json::json!({"public_join_requests": true})
@@ -714,8 +707,7 @@ pub(crate) fn chat_invite_importers_rows(
                 "name": user_display_name(client, &users, imp.user_id),
                 "date": rfc3339_or_empty(Some(imp.date)),
                 "requested": imp.requested,
-                "approved_by": imp.approved_by,
-            })
+                "approved_by": imp.approved_by})
         })
         .collect()
 }
@@ -729,22 +721,18 @@ pub(crate) fn chat_row(chat: &tl::enums::Chat) -> serde_json::Value {
             "id": c.id,
             "title": c.title,
             "chat_kind": "group",
-            "participants_count": c.participants_count,
-        }),
+            "participants_count": c.participants_count}),
         tl::enums::Chat::Forbidden(f) => serde_json::json!({
-            "id": f.id, "title": f.title, "chat_kind": "forbidden",
-        }),
+            "id": f.id, "title": f.title, "chat_kind": "forbidden"}),
         tl::enums::Chat::Channel(c) => serde_json::json!({
             "id": c.id,
             "title": c.title,
             "chat_kind": if c.broadcast { "channel" } else { "supergroup" },
-            "participants_count": c.participants_count,
-        }),
+            "participants_count": c.participants_count}),
         tl::enums::Chat::ChannelForbidden(f) => serde_json::json!({
             "id": f.id,
             "title": f.title,
-            "chat_kind": if f.broadcast { "channel" } else { "supergroup" },
-        }),
+            "chat_kind": if f.broadcast { "channel" } else { "supergroup" }}),
     }
 }
 
@@ -779,8 +767,7 @@ pub(crate) fn check_invite_row(invite: &tl::enums::ChatInvite) -> serde_json::Va
             "scam": w.scam,
             "fake": w.fake,
             "participants_preview": w.participants.as_ref().map(|u| u.len()),
-            "expires": null,
-        }),
+            "expires": null}),
     }
 }
 

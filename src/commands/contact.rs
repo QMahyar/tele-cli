@@ -352,7 +352,7 @@ fn validate_list(args: &ListArgs) -> TeleResult<()> {
 }
 
 fn require_contact_user(op: &str, user: &str) -> TeleResult<()> {
-    crate::commands::require_chat_target(user, &format!("contact {op} --user"))
+    crate::chat_target::ChatTarget::parse_flag(user, &format!("contact {op} --user")).map(|_| ())
 }
 
 fn validate_add(args: &AddArgs) -> TeleResult<()> {
@@ -425,8 +425,7 @@ pub(crate) async fn list_core(
                     user.last_name.clone().unwrap_or_default()
                 ).trim().to_string(),
                 "phone": user.phone.as_deref().unwrap_or_default(),
-                "username": user.username.as_deref().unwrap_or_default(),
-            }));
+                "username": user.username.as_deref().unwrap_or_default()}));
         }
     }
     Ok(serde_json::json!({"contacts": rows}))
@@ -480,8 +479,7 @@ pub(crate) async fn add_core(
         "user": user_target,
         "added": true,
         "contact": contact,
-        "mutual": mutual,
-    }))
+        "mutual": mutual}))
 }
 
 pub(crate) async fn remove_core(

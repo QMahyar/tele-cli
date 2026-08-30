@@ -1,9 +1,9 @@
 use clap::{Args, Subcommand};
 use grammers_client::tl;
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
-use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -96,7 +96,7 @@ pub async fn run(cmd: TopicCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     validate_emoji(args.emoji.as_deref())?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -160,8 +160,7 @@ pub(crate) async fn topic_create_core(
     Ok(serde_json::json!({
         "chat": params.chat,
         "title": params.title,
-        "ok": true,
-    }))
+        "ok": true}))
 }
 
 async fn simple_action(
@@ -169,7 +168,7 @@ async fn simple_action(
     flags: &GlobalFlags,
     kind: ActionKind,
 ) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_topic_id(&args.topic)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -269,12 +268,11 @@ async fn topic_action_core(
     Ok(serde_json::json!({
         "chat": params.chat,
         "topic": topic_id,
-        "ok": true,
-    }))
+        "ok": true}))
 }
 
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_topic_id(&args.topic)?;
     validate_edit_changes(args.title.as_deref(), args.closed)?;
     let config_path = flags.config_path.clone();
@@ -621,8 +619,7 @@ fn topic_row(topic: &tl::enums::ForumTopic) -> Option<serde_json::Value> {
             "title": t.title,
             "icon_emoji_id": t.icon_emoji_id,
             "closed": t.closed,
-            "pinned": t.pinned,
-        })),
+            "pinned": t.pinned})),
         tl::enums::ForumTopic::Deleted(_) => None,
     }
 }
@@ -775,7 +772,7 @@ pub(crate) fn validate_topic_id(id: i32) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_create(args: &CreateArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     validate_emoji(args.emoji.as_deref())?;
     Ok(())
 }
@@ -786,13 +783,13 @@ pub(crate) fn validate_list(args: &ListArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_lifecycle(args: &LifecycleArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     validate_topic_id(parse_topic_id(&args.topic)?)?;
     Ok(())
 }
 
 pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     validate_topic_id(parse_topic_id(&args.topic)?)?;
     validate_edit_changes(args.title.as_deref(), args.closed)?;
     Ok(())
@@ -1498,7 +1495,7 @@ mod tests {
                     ForumCursor {
                         date: 9,
                         message_id: 90,
-                        topic_id: 9,
+                        topic_id: 9
                     },
                     3
                 ),
@@ -1535,7 +1532,7 @@ mod tests {
                     ForumCursor {
                         date: 8,
                         message_id: 80,
-                        topic_id: 8,
+                        topic_id: 8
                     },
                     2
                 ),
@@ -1586,7 +1583,7 @@ mod tests {
                     ForumCursor {
                         date: 901,
                         message_id: 9010,
-                        topic_id: 901,
+                        topic_id: 901
                     },
                     100
                 ),
@@ -1594,7 +1591,7 @@ mod tests {
                     ForumCursor {
                         date: 801,
                         message_id: 8010,
-                        topic_id: 801,
+                        topic_id: 801
                     },
                     50
                 ),
@@ -1632,7 +1629,7 @@ mod tests {
                     ForumCursor {
                         date: 0,
                         message_id: 0,
-                        topic_id: 9,
+                        topic_id: 9
                     },
                     3
                 ),

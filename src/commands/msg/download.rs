@@ -1,3 +1,4 @@
+use crate::chat_target::ChatTarget;
 use crate::client::ClientGuard;
 use crate::commands::credentials::creds_api_id;
 use crate::entities;
@@ -7,8 +8,7 @@ use crate::executor::{run_fanout, GlobalFlags};
 use super::params::{DownloadArgs, DownloadParams};
 
 pub(crate) fn validate_download(args: &DownloadArgs) -> TeleResult<()> {
-    crate::commands::require_chat_target(&args.chat, "chat")?;
-    super::reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     super::validate::validate_download_dir(&args.dir)?;
     if let Some(kb) = args.chunk_size_kb {
         validate_chunk_size_kb(kb)?;

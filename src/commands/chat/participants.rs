@@ -4,10 +4,10 @@ use grammers_session::types::PeerInfo;
 use grammers_session::Session;
 use std::collections::HashMap;
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
-use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -63,7 +63,7 @@ pub(crate) fn participant_filter(
 }
 
 pub(crate) async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let role = parse_participant_role(args.role.as_deref())?;
     let search = args
@@ -109,8 +109,7 @@ pub(crate) async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) ->
                 let full = guard
                     .client
                     .invoke(&tl::functions::messages::GetFullChat {
-                        chat_id: chat.id().bare_id().unwrap_or_default(),
-                    })
+                        chat_id: chat.id().bare_id().unwrap_or_default()})
                     .await
                     .map_err(tele_invocation)?;
                 let tl::enums::messages::ChatFull::Full(full) = full;
@@ -152,12 +151,10 @@ pub(crate) async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) ->
                             rows.push(serde_json::json!({
                                 "id": p.user.id().bare_id().unwrap_or_default(),
                                 "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
-                                "role": role_name(&p.role),
-                            }));
+                                "role": role_name(&p.role)}));
                             count += 1;
                         }
-                        None => break,
-                    }
+                        None => break}
                 }
             }
             if !output::machine_mode(json, jsonl) {
@@ -249,7 +246,7 @@ pub(crate) fn parse_banned_rights_csv(csv: &str) -> TeleResult<Vec<(String, bool
 }
 
 pub(crate) fn validate_kick(args: &KickArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let has_duration = args.duration.is_some();
     if has_duration && !args.ban && args.rights.is_none() {
         return Err(TeleError::Usage(
@@ -345,8 +342,7 @@ pub(crate) async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32>
                 "chat": target,
                 "user": user,
                 "kicked": true,
-                "banned": ban,
-            });
+                "banned": ban});
             if let Some(secs) = until_secs {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -370,7 +366,7 @@ pub(crate) async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32>
 }
 
 pub(crate) fn validate_admin(args: &AdminArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     if args.promote && args.demote {
         return Err(TeleError::Usage(
             "--promote and --demote are mutually exclusive".to_string(),
@@ -572,8 +568,7 @@ pub(crate) async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i3
                     "user": user,
                     "promote": promote,
                     "demote": demote,
-                    "would": format!("change admin status of user {user} in chat {target}"),
-                }));
+                    "would": format!("change admin status of user {user} in chat {target}")}));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -603,8 +598,7 @@ pub(crate) async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i3
                     "chat": target,
                     "user": user,
                     "promote": promote,
-                    "demote": demote,
-                }));
+                    "demote": demote}));
             }
             let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
             let user_ref = entities::peer_ref(&user_peer)
@@ -630,8 +624,7 @@ pub(crate) async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i3
                 "chat": target,
                 "user": user,
                 "promote": promote,
-                "demote": demote,
-            }))
+                "demote": demote}))
         })
     })
     .await?;
@@ -668,8 +661,7 @@ pub(crate) fn participant_rows(
                 "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(
                     grammers_client::peer::User::from_raw(client, user.clone()),
                 )),
-                "role": role,
-            })),
+                "role": role})),
             None => missing += 1,
         }
     }
