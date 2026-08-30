@@ -2125,3 +2125,181 @@ fn completions_shell_output_markers_contract() {
         }
     }
 }
+#[test]
+fn msg_get_dry_run_json_contract() {
+    let dir = isolated_appdir("msggetdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg",
+            "get",
+            "--chat",
+            "@test",
+            "--id",
+            "123",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("msg get"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["chat"], serde_json::json!("@test"));
+    assert_eq!(data["id"], serde_json::json!(123));
+    assert!(
+        data["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("get messages"),
+        "would: {data}"
+    );
+}
+
+#[test]
+fn msg_forward_dry_run_json_contract() {
+    let dir = isolated_appdir("msgfwdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg",
+            "forward",
+            "--from",
+            "@a",
+            "--to",
+            "@b",
+            "--ids",
+            "1,2",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("msg forward"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["ids"], serde_json::json!([1, 2]));
+    assert!(
+        data["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("forward"),
+        "would: {data}"
+    );
+    assert!(
+        data["would"].as_str().unwrap_or_default().contains("@b"),
+        "would: {data}"
+    );
+}
+
+#[test]
+fn contact_list_dry_run_json_contract() {
+    let dir = isolated_appdir("contactlistdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &["contact", "list", "--account", "work", "--dry-run", "--json"],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("contact list"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["would"], serde_json::json!("list contacts"));
+}
+
+#[test]
+fn chat_join_dry_run_json_contract() {
+    let dir = isolated_appdir("chatjoindry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "chat",
+            "join",
+            "--chat",
+            "@test",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("chat join"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["chat"], serde_json::json!("@test"));
+    assert_eq!(data["would"], serde_json::json!("join chat @test"));
+}
+
+#[test]
+fn dialog_list_dry_run_json_contract() {
+    let dir = isolated_appdir("dialoglistdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "dialog",
+            "list",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("dialog list"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["limit"], serde_json::json!(20));
+    assert_eq!(data["would"], serde_json::json!("list dialogs"));
+}
+
+#[test]
+fn topic_list_dry_run_json_contract() {
+    let dir = isolated_appdir("topiclistdry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "topic",
+            "list",
+            "--chat",
+            "@test",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("topic list"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert_eq!(data["chat"], serde_json::json!("@test"));
+    assert_eq!(data["would"], serde_json::json!("list topics in chat @test"));
+}
