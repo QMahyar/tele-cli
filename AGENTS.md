@@ -254,9 +254,9 @@ Anti-patterns that hurt this repo:
 - CLI contract: `docs/cli-contract.md`
 - Security: `docs/security.md`
 - Observability: `docs/observability.md`
-- Release: `docs/release.md` (7 build targets; npm publishes 8 packages via OIDC trusted publishing)
-- npm packaging: `npm/` — main package + JS launcher (`bin/telecli.js` resolves `@qmahyar/telecli-<os>-<arch>` platform packages); platform packages are generated in the release workflow, never committed
-- ADRs: `docs/decisions/` (001 = session kernel; 002 = capability matrix; 003 = CLI JSON contract; 004 = flood and parallel (superseded); 005 = release gate; 006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights)
+- Release: `docs/release.md` (13 build targets; npm publishes 1 bundled package via OIDC trusted publishing)
+- npm packaging: `npm/` — single package bundles all 13 platform binaries; JS launcher (`bin/telecli.js`) selects correct binary for platform
+- ADRs: `docs/decisions/` (001 = session kernel; 002 = capability matrix; 003 = CLI JSON contract; 004 = flood and parallel (superseded by 008); 005 = release gate; 006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights)
 
 ## Verification
 

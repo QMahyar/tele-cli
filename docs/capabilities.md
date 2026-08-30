@@ -123,7 +123,7 @@ Note on topic icons: `tele topic create --emoji` accepts only a single-codepoint
 | collectibles.* | Fragment collectibles | never | Not this product |
 | smsjobs.* | Official-client SMS jobs | never | Official only |
 | mcp | MCP stdio server: tele mcp exposes 67 ops as tools via rmcp 3.1 (stdio, legacy handshake, inputSchema via schemars, annotations, confirm gate, read-only/groups filters) | tele mcp --account NAME | done |
-| skill | Agent skill — end of development | — | — | — | want |
+| skill | Agent skill | tele skill | Telegram | grammers | CLI | later |
 
 ## Kernel
 

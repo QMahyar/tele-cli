@@ -19,7 +19,7 @@ preserves them for the Rust era.
 - Full grammers user-client surface (friendly methods + `tele raw` registry)
 - Named accounts with persistent sessions (one `FileSession` per account, outside
   CWD, never shared across processes)
-- Sequential default; `--parallel N` (N clamped 1–3) with FloodWait /
+- Sequential default; `--parallel N` (N clamped 1–32) with FloodWait /
   SlowModeWait honour
 - Human CLI (`tele` binary) + `--json` / JSONL for agents
 - Stay-connected listen mode (`tele listen`, filtered events)
