@@ -442,6 +442,7 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
     let result = crate::fs_util::write_file_private(&tmp_path, text.as_bytes())
+        .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
         .and_then(|()| std::fs::rename(&tmp_path, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp_path);

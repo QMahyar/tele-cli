@@ -49,7 +49,33 @@ pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut file = match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => {
+            set_user_only_dacl(path, false)?;
+            f
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)?;
+            set_user_only_dacl(path, false)?;
+            f
+        }
+        Err(e) => return Err(e),
+    };
+    file.write_all(bytes)?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
