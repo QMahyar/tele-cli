@@ -99,23 +99,21 @@ pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Valu
 
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_edit(&args)?;
-    let config_path = flags.config_path.clone();
-    let dry_run = flags.dry_run;
-    let envelope = run_fanout(flags, move |name| {
-        let config_path = config_path.clone();
-        let args = args.clone();
-        Box::pin(async move {
-            if dry_run {
-                return edit_serve_dry_run(&args);
+    crate::commands::fanout::with_client(
+        flags,
+        {
+            let args = args.clone();
+            move || edit_serve_dry_run(&args)
+        },
+        {
+            let args = args.clone();
+            move |shares| {
+                let params = EditParams::from(&args);
+                async move { edit_core(&shares, params).await }
             }
-            let guard =
-                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client).await?;
-            edit_core(&guard.shares(), EditParams::from(&args)).await
-        })
-    })
-    .await?;
-    crate::executor::finish(flags, &envelope)
+        },
+    )
+    .await
 }
 
 pub(crate) async fn edit_core(
@@ -5149,3 +5147,4 @@ crate::serve_runner!(run_download, download_core, DownloadParams);
 crate::serve_runner!(run_vote, vote_core, VoteParams);
 crate::serve_runner!(run_typing, typing_core, TypingParams);
 crate::serve_runner!(run_click, click_core, ClickParams);
+

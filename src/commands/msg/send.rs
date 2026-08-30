@@ -1,10 +1,8 @@
 use grammers_client::message::InputMessage;
 
-use crate::client::{self, ClientGuard};
-use crate::commands::credentials::creds_api_id;
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
-use crate::executor::{run_fanout, GlobalFlags};
+use crate::executor::GlobalFlags;
 use crate::output;
 
 use super::params::{SendArgs, SendParams};
@@ -592,26 +590,23 @@ pub(crate) async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32>
     if let Some(thumb) = &args.thumbnail {
         super::validate::validate_upload_path_inner(thumb, flags.dry_run)?;
     }
-    let config_path = flags.config_path.clone();
-    let dry_run = flags.dry_run;
-    let json = flags.json;
-    let jsonl = flags.jsonl;
     let schedule = parse_schedule(args.schedule.as_deref())?.map(|s| s as u64);
-    let envelope = run_fanout(flags, move |name| {
-        let config_path = config_path.clone();
-        let args = args.clone();
-        Box::pin(async move {
-            if dry_run {
-                return Ok(send_dry_run_payload(&args, schedule));
+    let envelope = crate::commands::fanout::run_with_client(
+        flags,
+        {
+            let args = args.clone();
+            move || Ok(send_dry_run_payload(&args, schedule))
+        },
+        {
+            let args = args.clone();
+            move |shares| {
+                let params = SendParams::from(&args);
+                async move { send_core(&shares, params).await }
             }
-            let guard =
-                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client).await?;
-            send_core(&guard.shares(), SendParams::from(&args)).await
-        })
-    })
+        },
+    )
     .await?;
-    if dry_run && !output::machine_mode(json, jsonl) {
+    if flags.dry_run && !output::machine_mode(flags.json, flags.jsonl) {
         if let Some(first) = envelope.accounts.first() {
             if let Some(data) = &first.data {
                 if let Some(would) = data.get("would").and_then(|w| w.as_str()) {
@@ -622,3 +617,5 @@ pub(crate) async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32>
     }
     crate::executor::finish(flags, &envelope)
 }
+
+

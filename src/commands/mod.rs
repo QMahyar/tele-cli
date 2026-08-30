@@ -4,6 +4,7 @@ pub mod completions;
 pub mod contact;
 pub mod credentials;
 pub mod dialog;
+pub mod fanout;
 pub mod helpers;
 pub mod listen;
 pub mod mcp;
@@ -69,3 +70,5 @@ mod tests {
         ));
     }
 }
+
+
