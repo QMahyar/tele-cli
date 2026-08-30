@@ -31,7 +31,7 @@ The push triggers the `release` workflow.
 
 **Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries up to 28 assets: 14 archives plus their checksum files (the windows-arm64 build is best-effort with `continue-on-error`).
 
-**npm job.** Publishes 8 packages through OIDC trusted publishing (no token). Seven platform packages (`@qmahyar/telecli-<os>-<arch>`, napi-rs naming) each bundle one binary with `os`/`cpu` guards; the main `@qmahyar/telecli` package ships only the JS launcher and pins every platform package under `optionalDependencies`, so `npm install -g @qmahyar/telecli` downloads just the matching binary. The `linux-arm64-musl` binary is static and runs in Termux/Android.
+**npm job.** Publishes 1 bundled package (`@qmahyar/telecli`) through OIDC trusted publishing (no token). The single package bundles all 13 target binaries (`telecli-<triple>` plus launcher `bin/telecli.js` which picks the correct binary for the current platform); no separate platform packages. The `linux-arm64-musl` binary is static and runs in Termux/Android.
 
 ## Verify the release
 

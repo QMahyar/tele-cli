@@ -31,7 +31,7 @@ preserves them for the Rust era.
 - Bot-token-first product (phone accounts only)
 - Custom recurring scheduler (Telegram `schedule_date` only; no cron)
 - TUI / farm control plane
-- MCP server + agent skill (Phase 6, deferred to end of development)
+- MCP server + agent skill (Phase 6, deferred to end of development) — MCP now `done`, skill still deferred (see `mcp` row in capabilities)
 - Voice/video calls, secret chats, Passport, Stories as day-1
 - Going public mid-build
 
@@ -51,7 +51,6 @@ preserves them for the Rust era.
 
 - Every row in the capability matrix that is `never` in v1 should stay `never`
   unless the product scope is re-evaluated.
-- MCP and agent skill remain deferred (Phase 6) — see matrix `Explicitly later /
-  never` section.
+- MCP now `done` (shipped as `tele mcp`); agent skill remains deferred (Phase 6) — see matrix `Explicitly later / never` section.
 - The out-of-scope list is a living contract; flip a row to `later` only via a
   matrix update in the same commit that ships the capability.
