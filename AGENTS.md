@@ -57,7 +57,7 @@ Wasteful: pasting all of `docs/capabilities.md` when you touch one `privacy.*` r
 ```bash
 cargo build                              # debug build
 cargo build --release                    # optimized build
-cargo test                               # 1387 tests, no network
+cargo test                               # 1421 tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
@@ -81,9 +81,9 @@ src/
 ├── logging.rs           stderr-only structured logging
 ├── fs_util.rs           Permission helpers (create_dir_private, restrict_file_private); sensitive-file detection lives in msg.rs validate_upload_path()
 └── commands/    ├── mod.rs           Subcommand enum dispatch
-    ├── account.rs       add, login (code/QR), logout, remove, status, list, sessions, password, export-session, import-session, ttl, delete, phone
-    ├── msg.rs           send, get, edit, delete, forward, search, react, download, read, pin, vote, typing, click
-    ├── chat.rs          join, create, leave, participants, kick, admin, admin-log, stats, invite, requests, settings, edit, link
+    ├── account/     mod.rs, password.rs, phone.rs, staged_login.rs (add, login (code/QR), logout, remove, status, list, sessions, password, export-session, import-session, ttl, delete, phone)
+    ├── msg/         mod.rs, params.rs, send.rs, download.rs, validate.rs (send, get, edit, delete, forward, search, react, download, read, pin, vote, typing, click)
+    ├── chat/        mod.rs, admin_log.rs, invite.rs, participants.rs, settings.rs (join, create, leave, participants, kick, admin, admin-log, stats, invite, requests, settings, edit, link)
     ├── dialog.rs        list, drafts, archive/unarchive, delete, pin, draft
     ├── topic.rs         list, create, close, reopen, edit, delete, pin
     ├── contact.rs       list, add, remove, block, unblock
@@ -254,9 +254,9 @@ Anti-patterns that hurt this repo:
 - CLI contract: `docs/cli-contract.md`
 - Security: `docs/security.md`
 - Observability: `docs/observability.md`
-- Release: `docs/release.md` (7 build targets; npm publishes 8 packages via OIDC trusted publishing)
-- npm packaging: `npm/` — main package + JS launcher (`bin/telecli.js` resolves `@qmahyar/telecli-<os>-<arch>` platform packages); platform packages are generated in the release workflow, never committed
-- ADRs: `docs/decisions/` (006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights; 005 = release gate)
+- Release: `docs/release.md` (13 build targets; npm publishes 1 bundled package via OIDC trusted publishing)
+- npm packaging: `npm/` — single package bundles all 13 platform binaries; JS launcher (`bin/telecli.js`) selects correct binary for platform
+- ADRs: `docs/decisions/` (001 = session kernel; 002 = capability matrix; 003 = CLI JSON contract; 004 = flood and parallel (superseded by 008); 005 = release gate; 006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights)
 
 ## Verification
 

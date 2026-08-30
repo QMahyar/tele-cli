@@ -35,6 +35,6 @@ Chosen: **option 2, pure Rust + grammers** (`grammers-client`, `grammers-tl-type
   Unregistered names fail with a clear error and a pointer to add an arm.
 - Flood/slowmode handling: `ClientConfiguration` + `AutoSleep` retry policy
   (sleeps and retries once on flood). Executor still sequential default,
-  `--parallel` clamped 1–3.
+  `--parallel` clamped 1–32.
 - Sessions: `grammers_session::FileSession` per account, one file per account,
   never two clients on one file.

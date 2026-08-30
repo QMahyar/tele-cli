@@ -9,17 +9,7 @@ npm install -g @qmahyar/telecli
 telecli --version
 ```
 
-The right native binary for your platform installs automatically via `optionalDependencies`:
-
-| Package | Platform |
-|---|---|
-| `@qmahyar/telecli-win32-x64` | Windows, Intel/AMD 64-bit |
-| `@qmahyar/telecli-linux-x64-gnu` | Linux x86_64 (glibc) |
-| `@qmahyar/telecli-linux-x64-musl` | Linux x86_64 (static musl) |
-| `@qmahyar/telecli-linux-arm64-gnu` | Linux ARM64 (glibc) |
-| `@qmahyar/telecli-linux-arm64-musl` | Linux ARM64 (static musl — also runs in **Termux/Android**) |
-| `@qmahyar/telecli-darwin-arm64` | macOS Apple Silicon |
-| `@qmahyar/telecli-darwin-x64` | macOS Intel |
+The single bundled package contains all 13 platform binaries; `bin/telecli.js` picks the correct one for your OS/arch automatically — no separate `optionalDependencies` platform packages. The `linux-arm64-musl` binary is static and runs in **Termux/Android**.
 
 ## Termux / Android (no npm needed)
 
