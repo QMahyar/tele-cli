@@ -152,7 +152,7 @@ fn takeout_state_path(dir: &std::path::Path) -> std::path::PathBuf {
 fn write_takeout_state(dir: &std::path::Path, state: &TakeoutStateFile) -> TeleResult<()> {
     crate::fs_util::create_dir_private(dir)?;
     let json = serde_json::to_string_pretty(state)?;
-    std::fs::write(takeout_state_path(dir), json)?;
+    crate::fs_util::write_file_private(&takeout_state_path(dir), json.as_bytes())?;
     Ok(())
 }
 
@@ -356,7 +356,7 @@ async fn run_export(
     }
     let contacts_path = dir.join("contacts.json");
     let contacts_json = serde_json::to_string_pretty(&contacts)?;
-    tokio::task::spawn_blocking(move || std::fs::write(&contacts_path, &contacts_json))
+    tokio::task::spawn_blocking(move || crate::fs_util::write_file_private(&contacts_path, contacts_json.as_bytes()))
         .await
         .map_err(|e| TeleError::Other(e.to_string()))??;
 
@@ -579,7 +579,7 @@ async fn run_export(
         .map_err(|e| TeleError::Other(e.to_string()))??;
     let dialogs_path = dir.join("dialogs.json");
     let dialogs_json = serde_json::to_string_pretty(&dialogs)?;
-    tokio::task::spawn_blocking(move || std::fs::write(&dialogs_path, &dialogs_json))
+    tokio::task::spawn_blocking(move || crate::fs_util::write_file_private(&dialogs_path, dialogs_json.as_bytes()))
         .await
         .map_err(|e| TeleError::Other(e.to_string()))??;
     Ok(serde_json::json!({
