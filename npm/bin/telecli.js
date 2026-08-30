@@ -35,7 +35,10 @@ function pickExe() {
     if (isMusl()) candidates.push("aarch64-unknown-linux-musl");
     candidates.push("aarch64-unknown-linux-gnu");
   }
-  if (platform === "linux" && arch === "arm") candidates.push("armv7-unknown-linux-gnueabihf");
+  if (platform === "linux" && arch === "arm") {
+    if (isMusl()) candidates.push("armv7-unknown-linux-musleabihf");
+    candidates.push("armv7-unknown-linux-gnueabihf");
+  }
   if (platform === "linux" && arch === "ia32") candidates.push("i686-unknown-linux-musl");
   if (platform === "linux" && arch === "ppc64") candidates.push("powerpc64le-unknown-linux-gnu");
   if (platform === "linux" && arch === "riscv64") candidates.push("riscv64gc-unknown-linux-gnu");
