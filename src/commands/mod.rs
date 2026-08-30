@@ -4,7 +4,6 @@ pub mod completions;
 pub mod contact;
 pub mod credentials;
 pub mod dialog;
-pub mod fanout;
 pub mod helpers;
 pub mod listen;
 pub mod mcp;
@@ -32,14 +31,6 @@ pub fn validate_limit(value: u32, max: u32, flag: &str) -> Result<u32, TeleError
         )))
     } else {
         Ok(value)
-    }
-}
-
-pub fn require_chat_target(value: &str, flag: &str) -> TeleResult<()> {
-    if value.trim().is_empty() {
-        Err(TeleError::Usage(format!("--{flag} must not be empty")))
-    } else {
-        Ok(())
     }
 }
 
