@@ -1,3 +1,8 @@
+use std::sync::LazyLock;
+
+use base64::Engine as _;
+use regex::Regex;
+
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_USAGE: i32 = 1;
 pub const EXIT_PARTIAL: i32 = 2;
@@ -39,7 +44,14 @@ impl TeleError {
             | TeleError::Rpc(m, ..)
             | TeleError::TaskPanic(m)
             | TeleError::Timeout(m)
-            | TeleError::Other(m) => m,
+            | TeleError::Other(m) => {
+                let scrubbed = scrub(m.clone());
+                if scrubbed == *m {
+                    m.as_str()
+                } else {
+                    Box::leak(scrubbed.into_boxed_str())
+                }
+            }
             TeleError::BrokenPipe => "output stream closed",
         }
     }
@@ -63,7 +75,7 @@ impl TeleError {
             }
             TeleError::Rpc(_, code, name, seconds) => {
                 value["code"] = serde_json::json!(code);
-                value["name"] = serde_json::json!(name);
+                value["name"] = serde_json::json!(scrub(name.clone()));
                 if let Some(seconds) = seconds {
                     value["seconds"] = serde_json::json!(seconds);
                 }
@@ -86,44 +98,106 @@ impl std::fmt::Display for TeleError {
 
 impl std::error::Error for TeleError {}
 
-fn scrub_phones(s: String) -> String {
-    let mut out = String::with_capacity(s.len());
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '+' {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j - i > 7 {
-                out.push_str("[REDACTED]");
-                i = j;
-                continue;
+static PHONE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{7,15}\b").unwrap());
+static PHONE_PLUS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\+\d{7,15}\b").unwrap());
+static FORMATTED_PHONE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\+?\d[\d\s\-\(\)]{5,30}\d").unwrap());
+static LONG_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{40,}").unwrap());
+static QR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").unwrap());
+static PASSWORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(password\s*[:=]\s*)\S+").unwrap());
+
+static CACHED_FILE_SECRETS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let path = crate::config::app_data_dir().join(".env");
+    let map = crate::config::load_env(&path);
+    let mut secrets = Vec::new();
+    for key in ["TELE_API_HASH", "TELE_API_ID"] {
+        if let Some(v) = map.get(key) {
+            let t = v.trim();
+            if !t.is_empty() {
+                secrets.push(t.to_string());
+                let enc = url_encode(t);
+                if enc != t {
+                    secrets.push(enc);
+                }
             }
         }
-        out.push(chars[i]);
-        i += 1;
+    }
+    secrets
+});
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        let c = b as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
     }
     out
 }
 
+fn scrub_phones(s: String) -> String {
+    let out = PHONE_RE.replace_all(&s, "[REDACTED]").into_owned();
+    let out = PHONE_PLUS_RE.replace_all(&out, "[REDACTED]").into_owned();
+    FORMATTED_PHONE_RE
+        .replace_all(&out, |caps: &regex::Captures| {
+            let m = caps.get(0).unwrap().as_str();
+            if m.contains("[REDACTED]") {
+                return "[REDACTED]".to_string();
+            }
+            let digits: String = m.chars().filter(|c| c.is_ascii_digit()).collect();
+            if (7..=15).contains(&digits.len()) {
+                "[REDACTED]".to_string()
+            } else {
+                m.to_string()
+            }
+        })
+        .into_owned()
+}
+
 fn scrub(s: String) -> String {
     let mut out = scrub_phones(s);
-    if let Ok(v) = std::env::var("TELE_API_HASH") {
-        let hash = v.trim().to_string();
-        if !hash.is_empty() && out.contains(&hash) {
-            out = out.replace(&hash, "[REDACTED]");
+    for key in ["TELE_API_HASH", "TELE_API_ID"] {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim().to_string();
+            if !t.is_empty() && out.contains(&t) {
+                out = out.replace(&t, "[REDACTED]");
+            }
+            let enc = url_encode(&t);
+            if enc != t && out.contains(&enc) {
+                out = out.replace(&enc, "[REDACTED]");
+            }
+            if !t.is_empty() {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(t.as_bytes());
+                if b64 != t && out.contains(&b64) {
+                    out = out.replace(&b64, "[REDACTED]");
+                }
+            }
         }
     }
-    let path = crate::config::app_data_dir().join(".env");
-    let map = crate::config::load_env(&path);
-    if let Some(hash) = map.get("TELE_API_HASH") {
-        let hash = hash.trim();
-        if !hash.is_empty() && out.contains(hash) {
-            out = out.replace(hash, "[REDACTED]");
+    for secret in CACHED_FILE_SECRETS.iter() {
+        if out.contains(secret) {
+            out = out.replace(secret, "[REDACTED]");
+        }
+        let enc = url_encode(secret);
+        if enc != *secret && out.contains(&enc) {
+            out = out.replace(&enc, "[REDACTED]");
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
+        if out.contains(&b64) {
+            out = out.replace(&b64, "[REDACTED]");
         }
     }
+    out = LONG_TOKEN_RE.replace_all(&out, "[REDACTED]").into_owned();
+    out = QR_RE.replace_all(&out, "[REDACTED]").into_owned();
+    out = PASSWORD_RE.replace_all(&out, "${1}[REDACTED]").into_owned();
     out
 }
 
@@ -138,14 +212,14 @@ impl From<std::io::Error> for TeleError {
         if e.kind() == std::io::ErrorKind::BrokenPipe {
             TeleError::BrokenPipe
         } else {
-            TeleError::Other(e.to_string())
+            TeleError::Other(scrub(e.to_string()))
         }
     }
 }
 
 impl From<serde_json::Error> for TeleError {
     fn from(e: serde_json::Error) -> Self {
-        TeleError::Usage(e.to_string())
+        TeleError::Usage(scrub(e.to_string()))
     }
 }
 
@@ -201,9 +275,9 @@ pub fn invocation_error_ref(e: &grammers_client::InvocationError) -> TeleError {
         match e {
             grammers_client::InvocationError::Rpc(rpc) => {
                 let seconds = if rpc.code == 420 { rpc.value } else { None };
-                TeleError::Rpc(rpc.to_string(), rpc.code, rpc.name.clone(), seconds)
+                TeleError::Rpc(scrub(rpc.to_string()), rpc.code, scrub(rpc.name.clone()), seconds)
             }
-            other => TeleError::Invocation(invocation_message(other), None),
+            other => TeleError::Invocation(scrub(invocation_message(other)), None),
         }
     }
 }
@@ -472,5 +546,130 @@ mod tests {
     #[test]
     fn aggregate_exit_code_empty_failed_is_ok() {
         assert_eq!(aggregate_exit_code(0, &[]), EXIT_OK);
+    }
+
+    #[test]
+    fn test_scrub_phones_bare_number() {
+        let err = TeleError::Usage("call 1234567 now".to_string());
+        assert!(!err.message().contains("1234567"));
+        assert!(err.message().contains("[REDACTED]"));
+        let err2 = TeleError::Other("number 123456789012345 is secret".to_string());
+        assert!(!err2.message().contains("123456789012345"));
+        assert!(err2.message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_scrub_phones_with_plus() {
+        let err = TeleError::Usage("phone +1234567890 failed".to_string());
+        assert!(!err.message().contains("1234567890"));
+        assert!(err.message().contains("[REDACTED]"));
+        assert!(!err.as_json()["message"].as_str().unwrap().contains("1234567890"));
+    }
+
+    #[test]
+    fn test_scrub_phones_with_spaces_and_dashes() {
+        let err = TeleError::Usage("contact 123 456 7890 error".to_string());
+        assert!(!err.message().contains("123 456 7890"));
+        assert!(err.message().contains("[REDACTED]"));
+        let err2 = TeleError::Usage("dial 123-456-7890 now".to_string());
+        assert!(!err2.message().contains("123-456-7890"));
+        assert!(err2.message().contains("[REDACTED]"));
+        let err3 = TeleError::Usage("dial (123) 456-7890".to_string());
+        assert!(err3.message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_scrub_phones_boundary_7_to_15() {
+        let err_short = TeleError::Usage("code 123456 is ok".to_string());
+        assert_eq!(err_short.message(), "code 123456 is ok");
+        let err_long = TeleError::Usage("id 1234567890123456 is long".to_string());
+        assert_eq!(err_long.message(), "id 1234567890123456 is long");
+        let err_ok = TeleError::Usage("phone 1234567".to_string());
+        assert!(err_ok.message().contains("[REDACTED]"));
+        let err_ok2 = TeleError::Usage("phone 123456789012345".to_string());
+        assert!(err_ok2.message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_scrub_hash_exact_and_encoded() {
+        let hash = "deadbeefdeadbeefdeadbeefdeadbeef";
+        let encoded = url_encode(hash);
+        let err = TeleError::Usage(format!("hash {hash} leaked"));
+        assert!(!err.message().contains(hash));
+        assert!(err.message().contains("[REDACTED]"));
+        let err2 = TeleError::Rpc(format!("hash {encoded}"), 400, "TEST".to_string(), None);
+        if encoded != hash {
+            assert!(!err2.message().contains(&encoded));
+        }
+        assert!(err2.as_json()["message"].as_str().unwrap().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_scrub_api_id() {
+        let id = "1234567";
+        let err = TeleError::Usage(format!("api_id {id} leaked"));
+        assert!(!err.message().contains(id));
+        assert!(err.message().contains("[REDACTED]"));
+        let err2 = TeleError::Auth(format!("id {id} in auth"));
+        assert!(!err2.as_json()["message"].as_str().unwrap().contains(id));
+    }
+
+    #[test]
+    fn test_scrub_all_variants() {
+        let secret = "1234567890";
+        for err in [
+            TeleError::Usage(format!("bad {secret}")),
+            TeleError::Auth(format!("auth {secret}")),
+            TeleError::Config(format!("cfg {secret}")),
+            TeleError::Invocation(format!("inv {secret}"), None),
+            TeleError::Rpc(format!("rpc {secret}"), 400, "TEST".to_string(), None),
+            TeleError::TaskPanic(format!("panic {secret}")),
+            TeleError::Timeout(format!("timeout {secret}")),
+            TeleError::Other(format!("other {secret}")),
+        ] {
+            assert!(
+                !err.message().contains(secret),
+                "variant {} leaked: {}",
+                err.as_json()["type"],
+                err.message()
+            );
+            assert!(
+                !err.as_json()["message"].as_str().unwrap().contains(secret),
+                "json leaked for {}",
+                err.as_json()["type"]
+            );
+        }
+    }
+
+    #[test]
+    fn test_scrub_session_and_qr_and_password() {
+        let session = "A".repeat(50);
+        let err = TeleError::Usage(format!("session {session} leaked"));
+        assert!(!err.message().contains(&session));
+        assert!(err.message().contains("[REDACTED]"));
+        let qr = "tg://login?token=abc123DEF456";
+        let err2 = TeleError::Other(format!("qr {qr}"));
+        assert!(!err2.message().contains("abc123"));
+        assert!(err2.message().contains("[REDACTED]"));
+        let err3 = TeleError::Usage("password: supersecret123".to_string());
+        assert!(!err3.message().contains("supersecret123"));
+        assert!(err3.message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_scrub_no_secrets_passthrough() {
+        let msg = "rpc error 420: FLOOD_WAIT (value: 30)";
+        let err = TeleError::Rpc(msg.to_string(), 420, "FLOOD_WAIT".to_string(), Some(30));
+        assert_eq!(err.message(), msg);
+    }
+
+    #[test]
+    fn test_scrub_via_from_impls() {
+        let err: TeleError = anyhow::anyhow!("phone +1234567890 leaked").into();
+        assert!(!err.message().contains("1234567890"));
+        assert!(err.message().contains("[REDACTED]"));
+        let io_err = std::io::Error::other("hash deadbeefdeadbeef");
+        let err2: TeleError = io_err.into();
+        assert!(!err2.message().contains("deadbeef") || err2.message().contains("[REDACTED]"));
     }
 }
