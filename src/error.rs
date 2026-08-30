@@ -98,16 +98,13 @@ impl std::fmt::Display for TeleError {
 
 impl std::error::Error for TeleError {}
 
-static PHONE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b\d{7,15}\b").unwrap());
-static PHONE_PLUS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\+\d{7,15}\b").unwrap());
+static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{7,15}\b").unwrap());
+static PHONE_PLUS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\+\d{7,15}\b").unwrap());
 static FORMATTED_PHONE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\+?\d[\d\s\-\(\)]{5,30}\d").unwrap());
 static LONG_TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{40,}").unwrap());
-static QR_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").unwrap());
+static QR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").unwrap());
 static PASSWORD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(password\s*[:=]\s*)\S+").unwrap());
 
@@ -275,7 +272,12 @@ pub fn invocation_error_ref(e: &grammers_client::InvocationError) -> TeleError {
         match e {
             grammers_client::InvocationError::Rpc(rpc) => {
                 let seconds = if rpc.code == 420 { rpc.value } else { None };
-                TeleError::Rpc(scrub(rpc.to_string()), rpc.code, scrub(rpc.name.clone()), seconds)
+                TeleError::Rpc(
+                    scrub(rpc.to_string()),
+                    rpc.code,
+                    scrub(rpc.name.clone()),
+                    seconds,
+                )
             }
             other => TeleError::Invocation(scrub(invocation_message(other)), None),
         }
@@ -563,7 +565,10 @@ mod tests {
         let err = TeleError::Usage("phone +1234567890 failed".to_string());
         assert!(!err.message().contains("1234567890"));
         assert!(err.message().contains("[REDACTED]"));
-        assert!(!err.as_json()["message"].as_str().unwrap().contains("1234567890"));
+        assert!(!err.as_json()["message"]
+            .as_str()
+            .unwrap()
+            .contains("1234567890"));
     }
 
     #[test]
@@ -592,6 +597,8 @@ mod tests {
 
     #[test]
     fn test_scrub_hash_exact_and_encoded() {
+        // Set env var so scrubbing can find it
+        std::env::set_var("TELE_API_HASH", "deadbeefdeadbeefdeadbeefdeadbeef");
         let hash = "deadbeefdeadbeefdeadbeefdeadbeef";
         let encoded = url_encode(hash);
         let err = TeleError::Usage(format!("hash {hash} leaked"));
@@ -601,7 +608,11 @@ mod tests {
         if encoded != hash {
             assert!(!err2.message().contains(&encoded));
         }
-        assert!(err2.as_json()["message"].as_str().unwrap().contains("[REDACTED]"));
+        assert!(err2.as_json()["message"]
+            .as_str()
+            .unwrap()
+            .contains("[REDACTED]"));
+        std::env::remove_var("TELE_API_HASH");
     }
 
     #[test]
@@ -668,8 +679,11 @@ mod tests {
         let err: TeleError = anyhow::anyhow!("phone +1234567890 leaked").into();
         assert!(!err.message().contains("1234567890"));
         assert!(err.message().contains("[REDACTED]"));
-        let io_err = std::io::Error::other("hash deadbeefdeadbeef");
+        // Use a 40+ char token that will be caught by LONG_TOKEN_RE
+        let long_token = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let io_err = std::io::Error::other(format!("hash {long_token}"));
         let err2: TeleError = io_err.into();
-        assert!(!err2.message().contains("deadbeef") || err2.message().contains("[REDACTED]"));
+        assert!(!err2.message().contains(long_token));
+        assert!(err2.message().contains("[REDACTED]"));
     }
 }
