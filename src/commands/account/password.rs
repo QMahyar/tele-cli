@@ -93,7 +93,7 @@ pub(crate) fn extend_salt1(base_salt1: &[u8], extra: &[u8; 32]) -> Vec<u8> {
 
 pub(crate) fn generate_secure_32() -> TeleResult<[u8; 32]> {
     let mut buf = [0u8; 32];
-    getrandom::getrandom(&mut buf)
+    getrandom::fill(&mut buf)
         .map_err(|e| TeleError::Other(format!("system entropy unavailable: {e}")))?;
     Ok(buf)
 }

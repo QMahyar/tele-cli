@@ -21,7 +21,7 @@ comfy-table = "7"
 grammers-client = { version = "0.10", features = ["proxy", "parse_invite_link", "markdown", "fs"] }
 grammers-crypto = "0.10"
 grammers-session = { version = "=0.10.0", features = ["sqlite-storage"] }
-getrandom = { version = "0.2" }
+getrandom = { version = "0.4" }
 hmac = { version = "0.13", default-features = false }
 # libsql pinned to =0.9.30 — required by grammers-session 0.10 sqlite-storage; do not bump without testing session compat
 libsql = { version = "=0.9.30", default-features = false, features = ["core"] }
