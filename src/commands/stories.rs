@@ -2,6 +2,7 @@ use clap::{Args, Subcommand};
 use grammers_client::tl;
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::looks_like_image;
@@ -355,7 +356,7 @@ fn privacy_rules(value: &str) -> Vec<tl::enums::InputPrivacyRule> {
 }
 
 fn validate_send_args(args: &SendArgs) -> TeleResult<()> {
-    crate::commands::require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     if args.file.trim().is_empty() {
         return Err(TeleError::Usage("--file must not be empty".to_string()));
     }
@@ -473,8 +474,7 @@ fn views_row(views: &tl::enums::StoryViews) -> serde_json::Value {
     serde_json::json!({
         "views_count": v.views_count,
         "forwards_count": v.forwards_count,
-        "reactions_count": v.reactions_count,
-    })
+        "reactions_count": v.reactions_count})
 }
 
 fn story_item_id(item: &tl::enums::StoryItem) -> i32 {
@@ -489,16 +489,14 @@ fn story_row(item: &tl::enums::StoryItem) -> serde_json::Value {
     match item {
         tl::enums::StoryItem::Deleted(d) => serde_json::json!({
             "id": d.id,
-            "deleted": true,
-        }),
+            "deleted": true}),
         tl::enums::StoryItem::Skipped(s) => serde_json::json!({
             "id": s.id,
             "date": s.date,
             "expire_date": s.expire_date,
             "skipped": true,
             "close_friends": s.close_friends,
-            "live": s.live,
-        }),
+            "live": s.live}),
         tl::enums::StoryItem::Item(i) => {
             let mut row = serde_json::json!({
                 "id": i.id,
@@ -511,8 +509,7 @@ fn story_row(item: &tl::enums::StoryItem) -> serde_json::Value {
                 "noforwards": i.noforwards,
                 "out": i.out,
                 "edited": i.edited,
-                "media_kind": media_kind_raw(&i.media),
-            });
+                "media_kind": media_kind_raw(&i.media)});
             if let Some(v) = &i.views {
                 row["views"] = views_row(v);
             }
@@ -599,8 +596,7 @@ fn send_dry_run_payload(args: &SendArgs) -> serde_json::Value {
         "pinned": args.pinned,
         "noforwards": args.noforwards,
         "period": args.period,
-        "would": format!("send story {} to {}", args.file, args.chat),
-    })
+        "would": format!("send story {} to {}", args.file, args.chat)})
 }
 
 fn list_dry_run_payload(chat: &str, mode: &str, limit: u32) -> serde_json::Value {
@@ -609,8 +605,7 @@ fn list_dry_run_payload(chat: &str, mode: &str, limit: u32) -> serde_json::Value
         "chat": chat,
         "mode": mode,
         "limit": limit,
-        "would": format!("list {mode} stories of {chat}"),
-    })
+        "would": format!("list {mode} stories of {chat}")})
 }
 
 fn read_dry_run_payload(chat: &str, max_id: i32) -> serde_json::Value {
@@ -618,8 +613,7 @@ fn read_dry_run_payload(chat: &str, max_id: i32) -> serde_json::Value {
         "dry_run": true,
         "chat": chat,
         "max_id": max_id,
-        "would": format!("mark stories up to {max_id} as read for {chat}"),
-    })
+        "would": format!("mark stories up to {max_id} as read for {chat}")})
 }
 
 fn delete_dry_run_payload(chat: &str, ids: &[i32]) -> serde_json::Value {
@@ -628,8 +622,7 @@ fn delete_dry_run_payload(chat: &str, ids: &[i32]) -> serde_json::Value {
         "dry_run": true,
         "chat": chat,
         "ids": ids,
-        "would": would,
-    })
+        "would": would})
 }
 
 fn toggle_dry_run_payload(chat: &str, ids: &[i32], pinned: bool) -> serde_json::Value {
@@ -640,8 +633,7 @@ fn toggle_dry_run_payload(chat: &str, ids: &[i32], pinned: bool) -> serde_json::
         "chat": chat,
         "ids": ids,
         "pinned": pinned,
-        "would": would,
-    })
+        "would": would})
 }
 
 pub(crate) fn validate_story_send(args: &SendArgs) -> TeleResult<()> {
@@ -660,7 +652,7 @@ fn list_mode(archive: bool, pinned: bool) -> &'static str {
 }
 
 pub(crate) fn validate_story_list(args: &ListArgs) -> TeleResult<()> {
-    crate::commands::require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     if args.archive && args.pinned {
         return Err(TeleError::Usage(
             "--archive and --pinned are mutually exclusive".to_string(),
@@ -671,7 +663,7 @@ pub(crate) fn validate_story_list(args: &ListArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_story_read(args: &ReadArgs) -> TeleResult<()> {
-    crate::commands::require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     if args.max_id <= 0 {
         return Err(TeleError::Usage(
             "--max-id must be a positive story id".to_string(),
@@ -681,13 +673,13 @@ pub(crate) fn validate_story_read(args: &ReadArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_story_delete(args: &DeleteArgs) -> TeleResult<()> {
-    crate::commands::require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_ids(&args.ids)?;
     Ok(())
 }
 
 pub(crate) fn validate_story_toggle(args: &PinArgs) -> TeleResult<()> {
-    crate::commands::require_chat_target(&args.chat, "chat")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_ids(&args.ids)?;
     Ok(())
 }
@@ -811,8 +803,7 @@ pub(crate) async fn send_core(
         "story_ids": story_ids,
         "privacy": params.privacy,
         "pinned": params.pinned,
-        "noforwards": params.noforwards,
-    }))
+        "noforwards": params.noforwards}))
 }
 
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -911,8 +902,7 @@ pub(crate) async fn list_core(
         "count": count,
         "stories": rows,
         "pinned_to_top": pinned_to_top,
-        "max_read_id": max_read_id,
-    }))
+        "max_read_id": max_read_id}))
 }
 
 async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -978,8 +968,7 @@ pub(crate) async fn read_core(
     Ok(serde_json::json!({
         "read_max_id": params.max_id,
         "chat": chat_target,
-        "returned_ids": returned,
-    }))
+        "returned_ids": returned}))
 }
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1042,8 +1031,7 @@ pub(crate) async fn delete_core(
     Ok(serde_json::json!({
         "chat": chat_target,
         "requested_ids": ids,
-        "deleted_ids": deleted,
-    }))
+        "deleted_ids": deleted}))
 }
 
 async fn toggle_pinned(args: PinArgs, pinned: bool, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1112,8 +1100,7 @@ pub(crate) async fn toggle_core(
         "chat": chat_target,
         "pinned": pinned,
         "requested_ids": ids,
-        "updated_ids": updated,
-    }))
+        "updated_ids": updated}))
 }
 
 pub(crate) async fn pin_core(

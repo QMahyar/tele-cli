@@ -1,5 +1,6 @@
 use grammers_client::message::InputMessage;
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::entities;
@@ -15,8 +16,7 @@ fn effective_preview(args: &SendArgs) -> bool {
 }
 
 pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
-    crate::commands::require_chat_target(&args.chat, "chat")?;
-    super::reject_deep_link_msg_id(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     if let Some(topic) = args.topic {
         if topic <= 0 {
             return Err(TeleError::Usage(
@@ -366,8 +366,7 @@ pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> se
         "silent": args.silent,
         "noforwards": args.noforwards,
         "background": args.background,
-        "would": would,
-    })
+        "would": would})
 }
 
 pub(crate) fn send_serve_dry_run(args: &SendArgs) -> TeleResult<serde_json::Value> {

@@ -1,9 +1,10 @@
 use clap::{Args, Subcommand};
 use grammers_client::tl;
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
-use crate::commands::{require_chat_target, validate_limit};
+use crate::commands::validate_limit;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -511,8 +512,7 @@ pub(crate) async fn dialog_drafts_core(
                 rows.push(serde_json::json!({
                     "id": id,
                     "kind": kind,
-                    "draft": d.message.clone(),
-                }));
+                    "draft": d.message.clone()}));
                 if rows.len() >= params.limit as usize {
                     break;
                 }
@@ -551,8 +551,7 @@ fn dialog_row(
         "unread_reactions": d.unread_reactions_count,
         "draft": draft,
         "last_message": last_message,
-        "last_message_date": last_message_date,
-    })
+        "last_message_date": last_message_date})
 }
 
 fn matches_folder(raw: &tl::enums::Dialog, folder: i32) -> bool {
@@ -583,7 +582,7 @@ fn collect_updates(updates: &tl::enums::Updates) -> Vec<&tl::enums::Update> {
 }
 
 async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -608,8 +607,7 @@ fn archive_dry_run_data(target: &str, unarchive: bool) -> serde_json::Value {
         "dry_run": true,
         "chat": target,
         "archive": !unarchive,
-        "would": format!("{} chat {target}", if unarchive { "unarchive" } else { "archive" }),
-    })
+        "would": format!("{} chat {target}", if unarchive { "unarchive" } else { "archive" })})
 }
 
 pub(crate) async fn dialog_archive_core(
@@ -632,8 +630,7 @@ pub(crate) async fn dialog_archive_core(
         .map_err(tele_invocation)?;
     Ok(serde_json::json!({
         "chat": params.chat,
-        "archive": !params.unarchive,
-    }))
+        "archive": !params.unarchive}))
 }
 
 #[derive(Clone, Debug)]
@@ -708,12 +705,11 @@ fn delete_result(target: &str, left: bool, cleared: bool) -> serde_json::Value {
         "chat": target,
         "deleted": true,
         "left": left,
-        "cleared": cleared,
-    })
+        "cleared": cleared})
 }
 
 async fn draft(args: DraftArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let action = draft_action(&args.text, args.clear)?;
     let cleared = matches!(action, DraftAction::Clear);
     let config_path = flags.config_path.clone();
@@ -753,7 +749,7 @@ pub(crate) async fn dialog_draft_core(
 }
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let pinned = !args.unpin;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -789,8 +785,7 @@ pub(crate) async fn dialog_pin_core(
         .map_err(tele_invocation)?;
     Ok(serde_json::json!({
         "chat": params.chat,
-        "pinned": !params.unpin,
-    }))
+        "pinned": !params.unpin}))
 }
 
 fn draft_result(target: &str, action: &DraftAction) -> serde_json::Value {
@@ -798,54 +793,49 @@ fn draft_result(target: &str, action: &DraftAction) -> serde_json::Value {
         DraftAction::Set(text) => serde_json::json!({
             "chat": target,
             "cleared": false,
-            "draft": text,
-        }),
+            "draft": text}),
         DraftAction::Clear => serde_json::json!({
             "chat": target,
             "cleared": true,
-            "draft": "",
-        }),
+            "draft": ""}),
     }
 }
 
 fn draft_dry_run_data(target: &str, cleared: bool) -> serde_json::Value {
     serde_json::json!({
-        "dry_run": true,
-        "chat": target,
-        "cleared": cleared,
-        "would": format!(
-            "{} draft for chat {target}",
-            if cleared { "clear" } else { "save" }
-        ),
-    })
+    "dry_run": true,
+    "chat": target,
+    "cleared": cleared,
+    "would": format!(
+        "{} draft for chat {target}",
+        if cleared { "clear" } else { "save" }
+    )})
 }
 
 fn pin_dry_run_data(target: &str, pinned: bool) -> serde_json::Value {
     serde_json::json!({
-        "dry_run": true,
-        "chat": target,
-        "pinned": pinned,
-        "would": format!(
-            "{} dialog with chat {target}",
-            if pinned { "pin" } else { "unpin" }
-        ),
-    })
+    "dry_run": true,
+    "chat": target,
+    "pinned": pinned,
+    "would": format!(
+        "{} dialog with chat {target}",
+        if pinned { "pin" } else { "unpin" }
+    )})
 }
 
 fn delete_dry_run_data(target: &str, revoke: bool) -> serde_json::Value {
     serde_json::json!({
-        "dry_run": true,
-        "chat": target,
-        "revoke": revoke,
-        "would": format!(
-            "delete dialog with chat {target} (leaves channels/groups; clears private-chat history{})",
-            if revoke { " for both sides" } else { "" }
-        ),
-    })
+    "dry_run": true,
+    "chat": target,
+    "revoke": revoke,
+    "would": format!(
+        "delete dialog with chat {target} (leaves channels/groups; clears private-chat history{})",
+        if revoke { " for both sides" } else { "" }
+    )})
 }
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -1116,21 +1106,21 @@ pub(crate) fn validate_drafts(args: &ListArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_draft(args: &DraftArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     draft_action(&args.text, args.clear)?;
     Ok(())
 }
 
 pub(crate) fn validate_archive(args: &ArchiveArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")
+    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
 }
 
 pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")
+    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
 }
 
 pub(crate) fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")
+    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
 }
 
 pub(crate) fn list_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {

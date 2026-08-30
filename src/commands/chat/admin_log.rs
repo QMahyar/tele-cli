@@ -4,10 +4,10 @@ use grammers_session::types::PeerInfo;
 use grammers_session::Session;
 use std::collections::HashMap;
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
-use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -16,7 +16,7 @@ use crate::output;
 
 use super::*;
 pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let since = args
         .since
@@ -143,8 +143,7 @@ pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleRe
                     "id": event.id,
                     "date": date,
                     "actor": actor_value(&guard.client, &collected.users, event.user_id),
-                    "action": admin_action_summary(&event.action, own_id),
-                }));
+                    "action": admin_action_summary(&event.action, own_id)}));
             }
             let rows = filter_events_by_range(rows, since, until);
             if !output::machine_mode(json, jsonl) {
@@ -185,8 +184,7 @@ pub(crate) fn admin_log_dry_run_payload(
         "search": if q.is_empty() { None::<&str> } else { Some(q) },
         "events_filter": has_events_filter,
         "admins": has_admins,
-        "would": format!("list admin log of chat {chat}"),
-    })
+        "would": format!("list admin log of chat {chat}")})
 }
 
 pub(crate) fn actor_value(
@@ -196,8 +194,7 @@ pub(crate) fn actor_value(
 ) -> serde_json::Value {
     serde_json::json!({
         "id": user_id,
-        "name": user_display_name(client, users, user_id),
-    })
+        "name": user_display_name(client, users, user_id)})
 }
 
 pub(crate) fn filter_events_by_range(
@@ -377,22 +374,19 @@ pub(crate) fn admin_action_summary(
             serde_json::json!({
                 "kind": "change_title",
                 "title": v.new_value,
-                "prev_title": v.prev_value,
-            })
+                "prev_title": v.prev_value})
         }
         tl::enums::ChannelAdminLogEventAction::ChangeAbout(v) => {
             serde_json::json!({
                 "kind": "change_about",
                 "text": v.new_value,
-                "prev_text": v.prev_value,
-            })
+                "prev_text": v.prev_value})
         }
         tl::enums::ChannelAdminLogEventAction::ChangeUsername(v) => {
             serde_json::json!({
                 "kind": "change_username",
                 "username": v.new_value,
-                "prev_username": v.prev_value,
-            })
+                "prev_username": v.prev_value})
         }
         tl::enums::ChannelAdminLogEventAction::SendMessage(v) => {
             message_action_summary("send_message", &v.message)
@@ -401,8 +395,7 @@ pub(crate) fn admin_action_summary(
             "kind": "edit_message",
             "id": message_id(&v.new_message),
             "text": message_text(&v.new_message),
-            "prev_text": message_text(&v.prev_message),
-        }),
+            "prev_text": message_text(&v.prev_message)}),
         tl::enums::ChannelAdminLogEventAction::DeleteMessage(v) => match &v.message {
             tl::enums::Message::Message(m) => {
                 serde_json::json!({"kind": "delete_message", "id": m.id})
@@ -418,14 +411,12 @@ pub(crate) fn admin_action_summary(
         tl::enums::ChannelAdminLogEventAction::ParticipantInvite(v) => {
             serde_json::json!({
                 "kind": "participant_invite",
-                "user_id": participant_user_id(&v.participant, own_id),
-            })
+                "user_id": participant_user_id(&v.participant, own_id)})
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantToggleBan(v) => {
             let mut value = serde_json::json!({
                 "kind": "toggle_ban",
-                "user_id": participant_user_id(&v.new_participant, own_id),
-            });
+                "user_id": participant_user_id(&v.new_participant, own_id)});
             if let Some(ban) = participant_ban_summary(&v.new_participant) {
                 value["ban"] = ban;
             }
@@ -437,8 +428,7 @@ pub(crate) fn admin_action_summary(
         tl::enums::ChannelAdminLogEventAction::ParticipantToggleAdmin(v) => {
             let mut value = serde_json::json!({
                 "kind": "toggle_admin",
-                "user_id": participant_user_id(&v.new_participant, own_id),
-            });
+                "user_id": participant_user_id(&v.new_participant, own_id)});
             if let Some(admin) = participant_admin_summary(&v.new_participant) {
                 value["admin"] = admin;
             }
@@ -451,8 +441,7 @@ pub(crate) fn admin_action_summary(
             serde_json::json!({
                 "kind": "change_photo",
                 "photo": photo_summary(&v.new_photo),
-                "prev_photo": photo_summary(&v.prev_photo),
-            })
+                "prev_photo": photo_summary(&v.prev_photo)})
         }
         tl::enums::ChannelAdminLogEventAction::ToggleInvites(v) => {
             serde_json::json!({"kind": "toggle_invites", "enabled": v.new_value})
@@ -467,15 +456,13 @@ pub(crate) fn admin_action_summary(
             serde_json::json!({
                 "kind": "join_by_invite",
                 "invite_link": invite_link(&v.invite),
-                "via_chatlist": v.via_chatlist,
-            })
+                "via_chatlist": v.via_chatlist})
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantJoinByRequest(v) => {
             serde_json::json!({
                 "kind": "join_by_request",
                 "approved_by": v.approved_by,
-                "invite_link": invite_link(&v.invite),
-            })
+                "invite_link": invite_link(&v.invite)})
         }
         tl::enums::ChannelAdminLogEventAction::TogglePreHistoryHidden(v) => {
             serde_json::json!({"kind": "toggle_pre_history_hidden", "enabled": v.new_value})
@@ -484,8 +471,7 @@ pub(crate) fn admin_action_summary(
             serde_json::json!({
                 "kind": "toggle_slow_mode",
                 "seconds": v.new_value,
-                "prev_seconds": v.prev_value,
-            })
+                "prev_seconds": v.prev_value})
         }
         tl::enums::ChannelAdminLogEventAction::ToggleNoForwards(v) => {
             serde_json::json!({"kind": "toggle_noforwards", "enabled": v.new_value})
@@ -495,42 +481,36 @@ pub(crate) fn admin_action_summary(
                 "kind": "default_banned_rights",
                 "rights": banned_rights_denied(&v.new_banned_rights),
                 "until_date": banned_rights_until(&v.new_banned_rights),
-                "prev_rights": banned_rights_denied(&v.prev_banned_rights),
-            })
+                "prev_rights": banned_rights_denied(&v.prev_banned_rights)})
         }
         tl::enums::ChannelAdminLogEventAction::ChangeLinkedChat(v) => {
             serde_json::json!({
                 "kind": "change_linked_chat",
                 "linked_chat_id": v.new_value,
-                "prev_linked_chat_id": v.prev_value,
-            })
+                "prev_linked_chat_id": v.prev_value})
         }
         tl::enums::ChannelAdminLogEventAction::ExportedInviteDelete(v) => {
             serde_json::json!({
                 "kind": "exported_invite_delete",
-                "invite_link": invite_link_from_exported(&v.invite),
-            })
+                "invite_link": invite_link_from_exported(&v.invite)})
         }
         tl::enums::ChannelAdminLogEventAction::ExportedInviteRevoke(v) => {
             serde_json::json!({
                 "kind": "exported_invite_revoke",
-                "invite_link": invite_link_from_exported(&v.invite),
-            })
+                "invite_link": invite_link_from_exported(&v.invite)})
         }
         tl::enums::ChannelAdminLogEventAction::ExportedInviteEdit(v) => {
             serde_json::json!({
                 "kind": "exported_invite_edit",
                 "invite_link": invite_link_from_exported(&v.new_invite),
-                "prev_invite_link": invite_link_from_exported(&v.prev_invite),
-            })
+                "prev_invite_link": invite_link_from_exported(&v.prev_invite)})
         }
         tl::enums::ChannelAdminLogEventAction::ParticipantEditRank(v) => {
             serde_json::json!({
                 "kind": "edit_rank",
                 "user_id": v.user_id,
                 "rank": v.new_rank,
-                "prev_rank": v.prev_rank,
-            })
+                "prev_rank": v.prev_rank})
         }
         _ => serde_json::json!({"kind": "other"}),
     }
@@ -569,8 +549,7 @@ pub(crate) fn photo_summary(photo: &tl::enums::Photo) -> serde_json::Value {
         tl::enums::Photo::Photo(p) => serde_json::json!({
             "id": p.id,
             "date": rfc3339_or_empty(Some(p.date)),
-            "sizes": p.sizes.len(),
-        }),
+            "sizes": p.sizes.len()}),
     }
 }
 
@@ -582,8 +561,7 @@ pub(crate) fn participant_ban_summary(
             let mut value = serde_json::json!({
                 "left": p.left,
                 "denied": banned_rights_denied(&p.banned_rights),
-                "until_date": banned_rights_until(&p.banned_rights),
-            });
+                "until_date": banned_rights_until(&p.banned_rights)});
             if p.rank.as_deref().is_some_and(|r| !r.is_empty()) {
                 value["rank"] = serde_json::json!(p.rank);
             }

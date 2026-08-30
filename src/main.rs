@@ -1,3 +1,4 @@
+mod chat_target;
 mod client;
 mod commands;
 mod config;

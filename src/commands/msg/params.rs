@@ -1,12 +1,15 @@
 use clap::Args;
 
+use crate::chat_target::ChatTarget;
+
 #[derive(Args, Clone)]
 pub struct SendArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "message text (mutually exclusive with --file)")]
     pub(crate) text: Option<String>,
     #[arg(
@@ -91,9 +94,10 @@ pub struct SendArgs {
 pub struct EditArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "message ID to edit")]
     pub(crate) id: i32,
     #[arg(long, help = "new message text")]
@@ -104,9 +108,10 @@ pub struct EditArgs {
 pub struct DeleteArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(
         long,
         value_delimiter = ',',
@@ -124,25 +129,26 @@ pub struct DeleteArgs {
 
 #[derive(Args, Clone)]
 pub struct ForwardArgs {
-    #[arg(long, help = "source chat to forward from")]
-    pub(crate) from: String,
+    #[arg(long, value_parser = clap::value_parser!(ChatTarget), help = "source chat to forward from")]
+    pub(crate) from: ChatTarget,
     #[arg(
         long,
         value_delimiter = ',',
         help = "comma-separated message IDs to forward"
     )]
     pub(crate) ids: Vec<i32>,
-    #[arg(long, help = "destination chat to forward to")]
-    pub(crate) to: String,
+    #[arg(long, value_parser = clap::value_parser!(ChatTarget), help = "destination chat to forward to")]
+    pub(crate) to: ChatTarget,
 }
 
 #[derive(Args, Clone)]
 pub struct PinArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "message ID to pin or unpin")]
     pub(crate) id: Option<i32>,
     #[arg(long, help = "remove pin instead of adding")]
@@ -210,9 +216,10 @@ pub struct GetArgs {
 pub struct ReadArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "mark as unread instead of read")]
     pub(crate) mark_unread: bool,
     #[arg(
@@ -227,9 +234,10 @@ pub struct ReadArgs {
 pub struct ReactArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "message ID to react to")]
     pub(crate) id: i32,
     #[arg(long, help = "emoji reaction to add")]
@@ -262,9 +270,10 @@ pub struct SearchArgs {
 pub struct DownloadArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "message ID to download media from")]
     pub(crate) id: i32,
     #[arg(long, help = "output directory for downloaded media")]
@@ -279,9 +288,10 @@ pub struct DownloadArgs {
 pub struct VoteArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "message ID of the poll")]
     pub(crate) id: i32,
     #[arg(
@@ -295,9 +305,10 @@ pub struct VoteArgs {
 pub struct TypingArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(
         long,
         help = "chat action: typing | upload-photo | upload-file | cancel (default typing; actions auto-expire)"
@@ -309,9 +320,10 @@ pub struct TypingArgs {
 pub struct ClickArgs {
     #[arg(
         long,
+        value_parser = clap::value_parser!(ChatTarget),
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
-    pub(crate) chat: String,
+    pub(crate) chat: ChatTarget,
     #[arg(long, help = "message ID carrying the inline keyboard")]
     pub(crate) id: i32,
     #[arg(
@@ -379,7 +391,7 @@ pub(crate) struct SendParams {
 impl From<&SendArgs> for SendParams {
     fn from(a: &SendArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             text: a.text.clone(),
             schedule: a.schedule.clone(),
             files: a.files.clone(),
@@ -406,7 +418,7 @@ impl From<&SendArgs> for SendParams {
 impl From<&SendParams> for SendArgs {
     fn from(p: &SendParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             text: p.text.clone(),
             schedule: p.schedule.clone(),
             files: p.files.clone(),
@@ -443,7 +455,7 @@ pub(crate) struct EditParams {
 impl From<&EditArgs> for EditParams {
     fn from(a: &EditArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             id: a.id,
             text: a.text.clone(),
             dry_run: false,
@@ -454,7 +466,7 @@ impl From<&EditArgs> for EditParams {
 impl From<&EditParams> for EditArgs {
     fn from(p: &EditParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             id: p.id,
             text: p.text.clone(),
         }
@@ -479,7 +491,7 @@ pub(crate) struct DeleteParams {
 impl From<&DeleteArgs> for DeleteParams {
     fn from(a: &DeleteArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             ids: a.ids.clone(),
             all: a.all,
             self_only: a.self_only,
@@ -491,7 +503,7 @@ impl From<&DeleteArgs> for DeleteParams {
 impl From<&DeleteParams> for DeleteArgs {
     fn from(p: &DeleteParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             ids: p.ids.clone(),
             all: p.all,
             self_only: p.self_only,
@@ -514,9 +526,9 @@ pub(crate) struct ForwardParams {
 impl From<&ForwardArgs> for ForwardParams {
     fn from(a: &ForwardArgs) -> Self {
         Self {
-            from: a.from.clone(),
+            from: a.from.as_str().to_string(),
             ids: a.ids.clone(),
-            to: a.to.clone(),
+            to: a.to.as_str().to_string(),
             dry_run: false,
         }
     }
@@ -525,9 +537,9 @@ impl From<&ForwardArgs> for ForwardParams {
 impl From<&ForwardParams> for ForwardArgs {
     fn from(p: &ForwardParams) -> Self {
         Self {
-            from: p.from.clone(),
+            from: ChatTarget::new_unchecked(p.from.clone()),
             ids: p.ids.clone(),
-            to: p.to.clone(),
+            to: ChatTarget::new_unchecked(p.to.clone()),
         }
     }
 }
@@ -554,7 +566,7 @@ pub(crate) struct PinParams {
 impl From<&PinArgs> for PinParams {
     fn from(a: &PinArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             id: a.id,
             unpin: a.unpin,
             notify: a.notify,
@@ -568,7 +580,7 @@ impl From<&PinArgs> for PinParams {
 impl From<&PinParams> for PinArgs {
     fn from(p: &PinParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             id: p.id,
             unpin: p.unpin,
             notify: p.notify,
@@ -648,7 +660,7 @@ pub(crate) struct ReadParams {
 impl From<&ReadArgs> for ReadParams {
     fn from(a: &ReadArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             mark_unread: a.mark_unread,
             mentions: a.mentions,
             dry_run: false,
@@ -659,7 +671,7 @@ impl From<&ReadArgs> for ReadParams {
 impl From<&ReadParams> for ReadArgs {
     fn from(p: &ReadParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             mark_unread: p.mark_unread,
             mentions: p.mentions,
         }
@@ -683,7 +695,7 @@ pub(crate) struct ReactParams {
 impl From<&ReactArgs> for ReactParams {
     fn from(a: &ReactArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             id: a.id,
             reaction: a.reaction.clone(),
             remove: a.remove,
@@ -695,7 +707,7 @@ impl From<&ReactArgs> for ReactParams {
 impl From<&ReactParams> for ReactArgs {
     fn from(p: &ReactParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             id: p.id,
             reaction: p.reaction.clone(),
             remove: p.remove,
@@ -761,7 +773,7 @@ pub(crate) struct DownloadParams {
 impl From<&DownloadArgs> for DownloadParams {
     fn from(a: &DownloadArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             id: a.id,
             dir: a.dir.clone(),
             force: a.force,
@@ -774,7 +786,7 @@ impl From<&DownloadArgs> for DownloadParams {
 impl From<&DownloadParams> for DownloadArgs {
     fn from(p: &DownloadParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             id: p.id,
             dir: p.dir.clone(),
             force: p.force,
@@ -799,7 +811,7 @@ pub(crate) struct VoteParams {
 impl From<&VoteArgs> for VoteParams {
     fn from(a: &VoteArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             id: a.id,
             option: a.option.clone(),
             dry_run: false,
@@ -810,7 +822,7 @@ impl From<&VoteArgs> for VoteParams {
 impl From<&VoteParams> for VoteArgs {
     fn from(p: &VoteParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             id: p.id,
             option: p.option.clone(),
         }
@@ -831,7 +843,7 @@ pub(crate) struct TypingParams {
 impl From<&TypingArgs> for TypingParams {
     fn from(a: &TypingArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             action: a.action.clone(),
             dry_run: false,
         }
@@ -841,7 +853,7 @@ impl From<&TypingArgs> for TypingParams {
 impl From<&TypingParams> for TypingArgs {
     fn from(p: &TypingParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             action: p.action.clone(),
         }
     }
@@ -866,7 +878,7 @@ pub(crate) struct ClickParams {
 impl From<&ClickArgs> for ClickParams {
     fn from(a: &ClickArgs) -> Self {
         Self {
-            chat: a.chat.clone(),
+            chat: a.chat.as_str().to_string(),
             id: a.id,
             button: a.button.clone(),
             button_index: a.button_index,
@@ -880,7 +892,7 @@ impl From<&ClickArgs> for ClickParams {
 impl From<&ClickParams> for ClickArgs {
     fn from(p: &ClickParams) -> Self {
         Self {
-            chat: p.chat.clone(),
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
             id: p.id,
             button: p.button.clone(),
             button_index: p.button_index,

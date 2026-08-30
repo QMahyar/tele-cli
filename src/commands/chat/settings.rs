@@ -4,10 +4,10 @@ use grammers_session::types::PeerInfo;
 use grammers_session::Session;
 use std::collections::HashMap;
 
+use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
-use crate::commands::require_chat_target;
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
@@ -45,7 +45,7 @@ pub(crate) fn parse_slow_mode(value: Option<&str>) -> TeleResult<Option<i32>> {
 }
 
 pub(crate) fn validate_settings(args: &SettingsArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_slow_mode(args.slow_mode.as_deref())?;
     parse_on_off(args.noforwards.as_deref())?;
     if let Some(value) = args.noforwards.as_deref() {
@@ -97,8 +97,7 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                         format!("update settings of chat {target}")
                     } else {
                         format!("read settings of chat {target}")
-                    },
-                });
+                    }});
                 if let Some(secs) = slow_mode {
                     data["slow_mode"] = serde_json::json!(secs);
                 }
@@ -136,8 +135,7 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                         .client
                         .invoke(&tl::functions::channels::ToggleSlowMode {
                             channel: input_channel.clone(),
-                            seconds: secs,
-                        })
+                            seconds: secs})
                         .await
                         .map_err(tele_invocation)?;
                 }
@@ -149,8 +147,7 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                         .invoke(&tl::functions::channels::ToggleSignatures {
                             signatures_enabled: enabled,
                             profiles_enabled: false,
-                            channel: input_channel.clone(),
-                        })
+                            channel: input_channel.clone()})
                         .await
                         .map_err(tele_invocation)?;
                 }
@@ -161,8 +158,7 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                         .client
                         .invoke(&tl::functions::channels::TogglePreHistoryHidden {
                             channel: input_channel.clone(),
-                            enabled,
-                        })
+                            enabled})
                         .await
                         .map_err(tele_invocation)?;
                 }
@@ -175,22 +171,19 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                             apply_to_invites: enabled,
                             channel: input_channel.clone(),
                             enabled,
-                            guard_bot: None,
-                        })
+                            guard_bot: None})
                         .await
                         .map_err(tele_invocation)?;
                 }
                 return Ok(serde_json::json!({
                     "chat": target,
-                    "applied": applied,
-                }));
+                    "applied": applied}));
             }
             guard.rate_limiter.acquire().await;
             let full = guard
                 .client
                 .invoke(&tl::functions::channels::GetFullChannel {
-                    channel: input_channel,
-                })
+                    channel: input_channel})
                 .await
                 .map_err(tele_invocation)?;
             let tl::enums::messages::ChatFull::Full(full) = full;
@@ -211,8 +204,7 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                 "signatures": channel.map(|c| c.signatures),
                 "pre_history_hidden": full_chat.hidden_prehistory,
                 "join_request": channel.map(|c| c.join_request),
-                "linked_chat_id": full_chat.linked_chat_id,
-            }))
+                "linked_chat_id": full_chat.linked_chat_id}))
         })
     })
     .await?;
@@ -224,7 +216,7 @@ pub(crate) const CHAT_TITLE_MAX_CHARS: usize = 128;
 pub(crate) const CHAT_ABOUT_MAX_CHARS: usize = 255;
 
 pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     if args.title.is_none() && args.about.is_none() && args.photo.is_none() {
         return Err(TeleError::Usage(
             "at least one of --title, --about, --photo required".to_string(),
@@ -275,7 +267,7 @@ pub(crate) fn parse_link_target(target: Option<&str>) -> TeleResult<Option<Strin
 }
 
 pub(crate) fn validate_link(args: &LinkArgs) -> TeleResult<()> {
-    require_chat_target(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_link_target(args.to.as_deref())?;
     Ok(())
 }
@@ -333,8 +325,7 @@ pub(crate) async fn edit_chat(args: EditArgs, flags: &GlobalFlags) -> TeleResult
                 let mut data = serde_json::json!({
                     "dry_run": true,
                     "chat": target,
-                    "would": format!("edit metadata of chat {target}"),
-                });
+                    "would": format!("edit metadata of chat {target}")});
                 if let Some(t) = &title {
                     data["title"] = serde_json::json!(t.trim());
                 }
@@ -460,8 +451,7 @@ pub(crate) async fn edit_chat(args: EditArgs, flags: &GlobalFlags) -> TeleResult
             }
             Ok(serde_json::json!({
                 "chat": target,
-                "applied": applied,
-            }))
+                "applied": applied}))
         })
     })
     .await?;
@@ -518,14 +508,12 @@ pub(crate) async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult
                     None => serde_json::json!({
                         "dry_run": true,
                         "chat": target,
-                        "would": format!("read discussion link of chat {target}"),
-                    }),
+                        "would": format!("read discussion link of chat {target}")}),
                     Some(to) => serde_json::json!({
                         "dry_run": true,
                         "chat": target,
                         "to": to,
-                        "would": format!("link chat {target} with discussion group {to}"),
-                    }),
+                        "would": format!("link chat {target} with discussion group {to}")}),
                 });
             }
             let guard =
@@ -544,8 +532,7 @@ pub(crate) async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult
                 };
                 return Ok(serde_json::json!({
                     "chat": target,
-                    "linked_chat_id": linked,
-                }));
+                    "linked_chat_id": linked}));
             };
             let to_peer =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &to_target).await?;
@@ -567,8 +554,7 @@ pub(crate) async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult
             Ok(serde_json::json!({
                 "chat": target,
                 "to": to_target,
-                "linked": true,
-            }))
+                "linked": true}))
         })
     })
     .await?;
