@@ -1026,10 +1026,12 @@ async fn export_session(args: &ExportSessionArgs, flags: &GlobalFlags) -> TeleRe
     }
     let exported =
         session::export_session(&args.name, args.out.as_deref().map(std::path::Path::new)).await?;
-    if !output::machine_mode(flags.json, flags.jsonl) {
+    let mut data = export_data(&exported);
+    if output::machine_mode(flags.json, flags.jsonl) {
+        data["warning"] = serde_json::Value::String(session::SESSION_FILE_WARNING.to_string());
+    } else {
         log_line("warn", session::SESSION_FILE_WARNING);
     }
-    let data = export_data(&exported);
     if !output::machine_mode(flags.json, flags.jsonl) {
         output::print_table(
             &["account", "path", "bytes", "sha256"],
@@ -1086,10 +1088,12 @@ async fn finish_import(
     flags: &GlobalFlags,
     imported: &session::ImportedSession,
 ) -> TeleResult<i32> {
-    if !output::machine_mode(flags.json, flags.jsonl) {
+    let mut data = import_data(imported);
+    if output::machine_mode(flags.json, flags.jsonl) {
+        data["warning"] = serde_json::Value::String(session::SESSION_FILE_WARNING.to_string());
+    } else {
         log_line("warn", session::SESSION_FILE_WARNING);
     }
-    let data = import_data(imported);
     if !output::machine_mode(flags.json, flags.jsonl) {
         output::print_table(&["account", "path", "bytes"], &[import_row(imported)])?;
     }
