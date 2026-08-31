@@ -263,6 +263,58 @@ fn listen_dry_run_exits_0_with_session() {
 }
 
 #[test]
+fn serve_multi_account_dry_run_lists_all_accounts() {
+    let dir = isolated_appdir("svmulti");
+    write_session(&dir, "alpha");
+    write_session(&dir, "beta");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "serve",
+            "--account",
+            "alpha",
+            "--account",
+            "beta",
+            "--events",
+            "NewMessage",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let accounts: Vec<String> = out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .unwrap_or_else(|e| panic!("line must be JSON: {e}; got: {l}"))
+        })
+        .filter_map(|v| v["account"].as_str().map(str::to_string))
+        .collect();
+    assert!(accounts.contains(&"alpha".to_string()), "lines: {out}");
+    assert!(accounts.contains(&"beta".to_string()), "lines: {out}");
+}
+
+#[test]
+fn serve_unknown_account_in_multi_dry_run_still_offline_error() {
+    let dir = isolated_appdir("svmulti-bad");
+    write_session(&dir, "alpha");
+    let (code, _out, err) = run_in(
+        &dir,
+        &[
+            "serve",
+            "--account",
+            "alpha",
+            "--account",
+            "ghost",
+            "--dry-run",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("ghost"), "stderr: {err}");
+}
+
+#[test]
 fn listen_valid_events_reach_selection() {
     let (code, _out, err) =
         run_isolated("lsok", &["listen", "--events", "NewMessage,MessageDeleted"]);

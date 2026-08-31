@@ -29,13 +29,67 @@ const MUTATE_QUEUE_CAPACITY: usize = 64;
 const READ_QUEUE_CAPACITY: usize = 64;
 const READ_POOL_SIZE: usize = 2;
 const RESPONSE_CAPACITY: usize = 64;
+const SERVE_MAX_ACCOUNTS: usize = 32;
+const ACCOUNT_TICK_CAPACITY: usize = 256;
+
+type ShareMap = std::sync::RwLock<HashMap<String, ServeShares>>;
+
+pub(crate) struct ServePool {
+    shares: ShareMap,
+    resync: HashMap<String, tokio::sync::mpsc::Sender<()>>,
+}
+
+impl ServePool {
+    fn shares_for(&self, account: &str) -> Result<ServeShares, serde_json::Value> {
+        self.shares
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(account)
+            .cloned()
+            .ok_or_else(|| {
+                err_json(
+                    "ServeError",
+                    format!("account {account} is not connected right now"),
+                )
+            })
+    }
+
+    fn publish(&self, account: &str, shares: ServeShares) {
+        self.shares
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(account.to_string(), shares);
+    }
+
+    fn served(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.resync.keys().cloned().collect();
+        names.sort();
+        names
+    }
+}
+
+enum AccountTick {
+    Ready {
+        name: String,
+        identity: Option<serde_json::Value>,
+    },
+    Reconnected {
+        name: String,
+    },
+    Event {
+        ev: serde_json::Value,
+    },
+    Fatal {
+        err: TeleError,
+    },
+}
 
 pub(crate) const OP_TIMEOUT_SIMPLE: Duration = Duration::from_secs(30);
 pub(crate) const OP_TIMEOUT_PAGINATED: Duration = Duration::from_secs(120);
 
 pub(crate) struct ServeDedupe {
-    seen: HashMap<(i64, i32, i32), ()>,
-    order: VecDeque<(i64, i32, i32)>,
+    seen: HashMap<(String, i64, i32, i32), ()>,
+    order: VecDeque<(String, i64, i32, i32)>,
 }
 
 impl ServeDedupe {
@@ -45,7 +99,7 @@ impl ServeDedupe {
             order: VecDeque::new(),
         }
     }
-    pub(crate) fn check(&mut self, key: (i64, i32, i32)) -> bool {
+    pub(crate) fn check(&mut self, key: (String, i64, i32, i32)) -> bool {
         if self.seen.contains_key(&key) {
             return true;
         }
@@ -54,14 +108,19 @@ impl ServeDedupe {
                 self.seen.remove(&old);
             }
         }
-        self.seen.insert(key, ());
+        self.seen.insert(key.clone(), ());
         self.order.push_back(key);
         false
     }
 }
 
-pub(crate) fn dedupe_key(chat_id: Option<i64>, msg_id: i32, pts: i32) -> (i64, i32, i32) {
-    (chat_id.unwrap_or(0), msg_id, pts)
+pub(crate) fn dedupe_key(
+    account: &str,
+    chat_id: Option<i64>,
+    msg_id: i32,
+    pts: i32,
+) -> (String, i64, i32, i32) {
+    (account.to_string(), chat_id.unwrap_or(0), msg_id, pts)
 }
 
 pub(crate) fn pts_from_state(state: &grammers_session::updates::State) -> i32 {
@@ -204,12 +263,6 @@ const INLINE_OPS: &[(&str, &str, bool, bool, bool)] = &[
     ),
 ];
 
-enum ConnExit {
-    Eof,
-    StreamDown,
-    Resync,
-}
-
 #[derive(Parser)]
 pub struct ServeArgs {
     #[arg(
@@ -291,29 +344,102 @@ pub fn parse_incoming(line: &str) -> Result<ServeIn, serde_json::Value> {
     Ok(ServeIn::Action { id, op, params })
 }
 
-pub fn hello_out(
-    account: &str,
-    identity: Option<serde_json::Value>,
+pub(crate) fn apply_seq(row: &mut serde_json::Value, counter: &mut u64) -> u64 {
+    *counter += 1;
+    row["seq"] = serde_json::json!(*counter);
+    *counter
+}
+
+pub fn hello_out_accounts(
+    accounts: &[(String, Option<serde_json::Value>)],
     last_seq: Option<u64>,
 ) -> serde_json::Value {
+    let (default_name, default_identity) = accounts
+        .first()
+        .cloned()
+        .unwrap_or_else(|| (String::new(), None));
     let mut out = serde_json::json!({
         "type": "hello",
         "protocol": SERVE_PROTOCOL,
         "min_protocol": SERVE_PROTOCOL_MIN,
         "max_protocol": SERVE_PROTOCOL,
-        "account": account,
+        "account": default_name,
         "last_seq": last_seq,
     });
-    if let Some(identity) = identity {
+    if let Some(identity) = default_identity {
         out["identity"] = identity;
     }
+    let listed: Vec<serde_json::Value> = accounts
+        .iter()
+        .map(|(name, identity)| {
+            let mut row = serde_json::json!({ "name": name });
+            if let Some(identity) = identity {
+                row["identity"] = identity.clone();
+            }
+            row
+        })
+        .collect();
+    out["accounts"] = serde_json::Value::Array(listed);
     out
 }
 
-pub(crate) fn apply_seq(row: &mut serde_json::Value, counter: &mut u64) -> u64 {
-    *counter += 1;
-    row["seq"] = serde_json::json!(*counter);
-    *counter
+pub(crate) fn select_op_account(
+    served: &[String],
+    params: &mut serde_json::Value,
+) -> Result<String, serde_json::Value> {
+    let requested = match params.get("account") {
+        None => None,
+        Some(serde_json::Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(err_json(
+                    "ServeError",
+                    "account must be a non-empty string when present",
+                ));
+            }
+            Some(trimmed.to_string())
+        }
+        Some(_) => {
+            return Err(err_json(
+                "ServeError",
+                "account must be a string naming one of the served accounts",
+            ))
+        }
+    };
+    if let Some(obj) = params.as_object_mut() {
+        obj.remove("account");
+    }
+    match requested {
+        None => Ok(served.first().cloned().unwrap_or_default()),
+        Some(name) => {
+            if served.iter().any(|s| s == &name) {
+                Ok(name)
+            } else {
+                Err(err_json(
+                    "ServeError",
+                    format!(
+                        "unknown account {name}; this connection serves: {}",
+                        served.join(", ")
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+pub(crate) fn validate_serve_selection(names: &[String]) -> TeleResult<()> {
+    if names.is_empty() {
+        return Err(TeleError::Usage(
+            "no accounts selected: use --account <name> or --tag <tag>".to_string(),
+        ));
+    }
+    if names.len() > SERVE_MAX_ACCOUNTS {
+        return Err(TeleError::Usage(format!(
+            "tele serve supports at most {SERVE_MAX_ACCOUNTS} accounts per process, got {}",
+            names.len()
+        )));
+    }
+    Ok(())
 }
 
 fn last_seq_of(seq: &u64) -> Option<u64> {
@@ -655,7 +781,8 @@ pub(crate) fn apply_confirm_gate(
 
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_action(
-    shares: &ServeShares,
+    pool: &ServePool,
+    served: &[String],
     mutations: &tokio::sync::mpsc::Sender<Job>,
     reads: &[tokio::sync::mpsc::Sender<Job>],
     read_counter: &std::sync::atomic::AtomicUsize,
@@ -663,7 +790,6 @@ async fn dispatch_action(
     id: u64,
     op: &str,
     params: serde_json::Value,
-    resync_requested: &mut bool,
 ) -> TeleResult<()> {
     if op == "ping" {
         let _ = responses
@@ -672,11 +798,21 @@ async fn dispatch_action(
         return Ok(());
     }
     if op == "stream.resync" {
+        let mut params = params;
+        let selected = match select_op_account(served, &mut params) {
+            Ok(a) => a,
+            Err(error) => {
+                let _ = responses.send(response_err(Some(id), error)).await;
+                return Ok(());
+            }
+        };
         if let Err(error) = validate_no_params(op, &params) {
             let _ = responses.send(response_err(Some(id), error)).await;
             return Ok(());
         }
-        *resync_requested = true;
+        if let Some(tx) = pool.resync.get(&selected) {
+            let _ = tx.send(()).await;
+        }
         let _ = responses
             .send(response_ok(id, serde_json::json!({ "resync": "started" })))
             .await;
@@ -697,6 +833,13 @@ async fn dispatch_action(
         return Ok(());
     };
     let mut raw = params;
+    let account = match select_op_account(served, &mut raw) {
+        Ok(a) => a,
+        Err(error) => {
+            let _ = responses.send(response_err(Some(id), error)).await;
+            return Ok(());
+        }
+    };
     if let Err(error) = apply_confirm_gate(op, route.destructive, route.planner, &mut raw) {
         let _ = responses.send(response_err(Some(id), error)).await;
         return Ok(());
@@ -711,11 +854,18 @@ async fn dispatch_action(
             Ok(())
         }
         Ok(Plan::Execute(raw)) => {
+            let shares = match pool.shares_for(&account) {
+                Ok(shares) => shares,
+                Err(error) => {
+                    let _ = responses.send(response_err(Some(id), error)).await;
+                    return Ok(());
+                }
+            };
             let job = Job {
                 id,
                 op: route.op,
                 timeout: route.timeout,
-                future: (route.runner)(shares.clone(), raw),
+                future: (route.runner)(shares, raw),
                 guard: JobCompletionGuard {
                     id,
                     op: route.op,
@@ -741,6 +891,29 @@ async fn dispatch_action(
             Ok(())
         }
     }
+}
+const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn drain_and_flush(
+    workers: &mut Vec<tokio::task::JoinHandle<()>>,
+    response_rx: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
+) -> TeleResult<()> {
+    let deadline = tokio::time::sleep(DRAIN_BUDGET);
+    tokio::pin!(deadline);
+    for mut worker in workers.drain(..) {
+        tokio::select! {
+            _ = &mut worker => {}
+            _ = &mut deadline => worker.abort(),
+        }
+    }
+    while let Some(value) = response_rx.recv().await {
+        match emit(&value).await {
+            Ok(()) => {}
+            Err(e) if e.is_broken_pipe() => return Ok(()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 fn event_kind_allowed(update: &Update, kinds: &[String]) -> Option<&'static str> {
@@ -769,26 +942,26 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let mut names = crate::executor::select_accounts(flags)?;
     names.sort();
     names.dedup();
-    if names.len() != 1 {
-        return Err(TeleError::Usage(
-            "tele serve owns exactly one session: pass exactly one --account <name>".to_string(),
-        ));
-    }
-    let name = names.remove(0);
+    validate_serve_selection(&names)?;
     if flags.dry_run {
         output::log_line("info", "[dry-run] would serve duplex JSONL");
         if flags.json || flags.jsonl {
-            output::print_json_result(&event_row(
-                "Serve",
-                &name,
-                None,
-                None,
-                Some(serde_json::json!({
-                    "dry_run": true,
-                    "would": format!("stream {} updates from account {name}", args.events.join(",")),
-                    "protocol": SERVE_PROTOCOL,
-                })),
-            ))?;
+            for name in &names {
+                output::print_json_result(&event_row(
+                    "Serve",
+                    name,
+                    None,
+                    None,
+                    Some(serde_json::json!({
+                        "dry_run": true,
+                        "would": format!(
+                            "stream {} updates from account {name}",
+                            args.events.join(",")
+                        ),
+                        "protocol": SERVE_PROTOCOL,
+                    })),
+                ))?;
+            }
         }
         return Ok(EXIT_OK);
     }
@@ -807,134 +980,33 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         }
     });
 
-    let mut failures: u32 = 0;
-    let mut greeted = false;
-    let mut dedupe = ServeDedupe::new();
-    let mut seq: u64 = 0;
-    let mut resync_pending = false;
-    loop {
-        let catch_up_now = args.catch_up || resync_pending;
-        resync_pending = false;
-        match serve_connection(
-            &name,
-            &args.events,
-            catch_up_now,
-            &creds,
-            config_path.as_deref(),
-            &mut rx,
-            &mut failures,
-            greeted,
-            &mut dedupe,
-            &mut seq,
-        )
-        .await?
-        {
-            ConnExit::Eof => return Ok(EXIT_OK),
-            ConnExit::StreamDown => {}
-            ConnExit::Resync => {
-                resync_pending = true;
-                output::log_line("info", "serve: stream.resync — rebuilding with catch-up");
-            }
-        }
-        greeted = true;
-    }
-}
-
-const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
-
-async fn drain_and_flush(
-    workers: &mut Vec<tokio::task::JoinHandle<()>>,
-    response_rx: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
-) -> TeleResult<()> {
-    let deadline = tokio::time::sleep(DRAIN_BUDGET);
-    tokio::pin!(deadline);
-    for mut worker in workers.drain(..) {
-        tokio::select! {
-            _ = &mut worker => {}
-            _ = &mut deadline => worker.abort(),
-        }
-    }
-    while let Some(value) = response_rx.recv().await {
-        match emit(&value).await {
-            Ok(()) => {}
-            Err(e) if e.is_broken_pipe() => return Ok(()),
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn serve_connection(
-    name: &str,
-    events: &[String],
-    catch_up: bool,
-    creds: &crate::config::Credentials,
-    config_path: Option<&std::path::Path>,
-    rx: &mut tokio::sync::mpsc::Receiver<String>,
-    failures: &mut u32,
-    greet: bool,
-    dedupe: &mut ServeDedupe,
-    seq: &mut u64,
-) -> TeleResult<ConnExit> {
-    let mut guard = loop {
-        match crate::client::ClientGuard::connect(name, creds.api_id, config_path).await {
-            Ok(guard) => break guard,
-            Err(e) => {
-                handle_stream_failure(name, TeleError::from(e), failures, None).await?;
-            }
-        }
+    let mut pool = ServePool {
+        shares: std::sync::RwLock::new(HashMap::new()),
+        resync: HashMap::new(),
     };
-    crate::client::authorize(&guard.client).await?;
-    let me = guard
-        .client
-        .get_me()
-        .await
-        .map_err(|e| TeleError::Other(format!("serve: get_me failed: {e}")))?;
-    let identity = identity_json(&me);
-    if let Err(e) = guard
-        .client
-        .invoke(&tl::functions::updates::GetState {})
-        .await
-    {
-        let err = getstate_probe_error(e);
-        guard.close().await;
-        if matches!(err, TeleError::Auth(_)) {
-            return Err(err);
-        }
-        handle_stream_failure(name, err, failures, None).await?;
-        return Ok(ConnExit::StreamDown);
+    let mut resync_rxs: HashMap<String, tokio::sync::mpsc::Receiver<()>> = HashMap::new();
+    for name in &names {
+        let (resync_tx, resync_rx) = tokio::sync::mpsc::channel::<()>(1);
+        pool.resync.insert(name.clone(), resync_tx);
+        resync_rxs.insert(name.clone(), resync_rx);
     }
-    let receiver = std::mem::replace(&mut guard.updates, tokio::sync::mpsc::unbounded_channel().1);
-    let mut stream = guard
-        .client
-        .stream_updates(
-            receiver,
-            grammers_client::client::UpdatesConfiguration {
-                catch_up,
-                update_queue_limit: Some(1000),
-            },
-        )
-        .await
-        .map_err(|e| TeleError::Other(e.to_string()))?;
-    *failures = 0;
-    if greet {
-        output::log_line("info", "serve: reconnected");
-        let mut row = event_row("Reconnected", name, None, None, None);
-        apply_seq(&mut row, seq);
-        match emit(&row).await {
-            Ok(()) => {}
-            Err(e) if e.is_broken_pipe() => return Ok(ConnExit::Eof),
-            Err(e) => return Err(e),
-        }
-    } else {
-        match emit(&hello_out(name, Some(identity.clone()), last_seq_of(seq))).await {
-            Ok(()) => {}
-            Err(e) if e.is_broken_pipe() => return Ok(ConnExit::Eof),
-            Err(e) => return Err(e),
-        }
+    let pool = std::sync::Arc::new(pool);
+
+    let (tick_tx, mut tick_rx) = tokio::sync::mpsc::channel::<AccountTick>(ACCOUNT_TICK_CAPACITY);
+    for name in &names {
+        tokio::spawn(account_task(
+            name.clone(),
+            args.events.clone(),
+            args.catch_up,
+            creds.clone(),
+            config_path.clone(),
+            std::sync::Arc::clone(&pool),
+            resync_rxs.remove(name).expect("resync receiver"),
+            tick_tx.clone(),
+        ));
     }
-    let shares = guard.shares();
+    drop(tick_tx);
+
     let (mutations, mutation_rx) = tokio::sync::mpsc::channel::<Job>(MUTATE_QUEUE_CAPACITY);
     let mut read_senders = Vec::with_capacity(READ_POOL_SIZE);
     let mut read_receivers = Vec::with_capacity(READ_POOL_SIZE);
@@ -952,18 +1024,18 @@ async fn serve_connection(
     }
     let (dispatch_tx, mut dispatch_rx) =
         tokio::sync::mpsc::unbounded_channel::<(u64, String, serde_json::Value)>();
-    let (resync_tx, mut resync_rx) = tokio::sync::mpsc::channel::<()>(1);
     let disp_response_tx = response_tx.clone();
-    let disp_shares = shares.clone();
+    let disp_pool = std::sync::Arc::clone(&pool);
     let disp_mutations = mutations.clone();
     let disp_read_senders = read_senders.clone();
     let disp_read_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let disp_read_counter_clone = std::sync::Arc::clone(&disp_read_counter);
     let dispatcher = tokio::spawn(async move {
-        let mut resync_requested = false;
         while let Some((id, op, params)) = dispatch_rx.recv().await {
+            let served = disp_pool.served();
             let _ = dispatch_action(
-                &disp_shares,
+                &disp_pool,
+                &served,
                 &disp_mutations,
                 &disp_read_senders,
                 &disp_read_counter_clone,
@@ -971,44 +1043,45 @@ async fn serve_connection(
                 id,
                 &op,
                 params,
-                &mut resync_requested,
             )
             .await;
-            if resync_requested {
-                let _ = resync_tx.send(()).await;
-                break;
-            }
         }
     });
     let main_response_tx = response_tx.clone();
     drop(response_tx);
+
+    let mut identities: HashMap<String, Option<serde_json::Value>> = HashMap::new();
+    let mut greeted = false;
+    let mut seq: u64 = 0;
+    let hello_entries = |identities: &HashMap<String, Option<serde_json::Value>>| {
+        let mut entries: Vec<(String, Option<serde_json::Value>)> = pool
+            .served()
+            .into_iter()
+            .map(|name| (name.clone(), identities.get(&name).cloned().flatten()))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    };
     loop {
         enum Tick {
             Line(String),
             Eof,
-            Update(Box<Update>),
-            StreamError(grammers_client::InvocationError),
+            Account(AccountTick),
             Response(serde_json::Value),
-            Resync,
         }
         let tick = tokio::select! {
             line = rx.recv() => match line {
                 Some(l) => Tick::Line(l),
                 None => Tick::Eof,
             },
-            res = tokio::time::timeout(
-                poll_timeout(None, std::time::Instant::now()),
-                stream.next(),
-            ) => match res {
-                Ok(Ok(u)) => Tick::Update(Box::new(u)),
-                Ok(Err(e)) => Tick::StreamError(e),
-                Err(_) => continue,
+            tick = tick_rx.recv() => match tick {
+                Some(t) => Tick::Account(t),
+                None => continue,
             },
             response = response_rx.recv() => match response {
                 Some(value) => Tick::Response(value),
                 None => continue,
             },
-            _ = resync_rx.recv() => Tick::Resync,
         };
         match tick {
             Tick::Eof => {
@@ -1019,8 +1092,7 @@ async fn serve_connection(
                 drop(main_response_tx);
                 let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
                 drain_and_flush(&mut workers, &mut response_rx).await?;
-                guard.close().await;
-                return Ok(ConnExit::Eof);
+                return Ok(EXIT_OK);
             }
             Tick::Line(line) => match parse_incoming(&line) {
                 Err(error) => {
@@ -1028,10 +1100,9 @@ async fn serve_connection(
                 }
                 Ok(ServeIn::Hello { protocol }) => {
                     let _ = protocol;
-                    let _ = main_response_tx.try_send(hello_out(
-                        name,
-                        Some(identity.clone()),
-                        last_seq_of(seq),
+                    let _ = main_response_tx.try_send(hello_out_accounts(
+                        &hello_entries(&identities),
+                        last_seq_of(&seq),
                     ));
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
@@ -1047,105 +1118,90 @@ async fn serve_connection(
                     drop(mutations);
                     drop(read_senders);
                     drop(main_response_tx);
+                    let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
                     drain_and_flush(&mut workers, &mut response_rx).await?;
-                    guard.close().await;
-                    return Ok(ConnExit::Eof);
+                    return Ok(EXIT_OK);
                 }
                 Err(e) => {
-                    // TODO: ensure guard cleanup on non-broken-pipe emit errors
                     drop(dispatch_tx);
                     drop(mutations);
                     drop(read_senders);
                     drop(main_response_tx);
+                    let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
                     drain_and_flush(&mut workers, &mut response_rx).await?;
-                    guard.close().await;
                     return Err(e);
                 }
             },
-            Tick::Resync => {
-                drop(dispatch_tx);
-                drop(mutations);
-                drop(read_senders);
-                drop(main_response_tx);
-                drain_and_flush(&mut workers, &mut response_rx).await?;
-                guard.close().await;
-                break;
-            }
-            Tick::StreamError(e) => {
-                if crate::error::invocation_is_unauthorized(&e) {
-                    drop(dispatch_tx);
-                    dispatcher.abort();
-                    drop(mutations);
-                    drop(read_senders);
-                    drop(main_response_tx);
-                    for w in &mut workers {
-                        w.abort();
-                    }
-                    drain_and_flush(&mut workers, &mut response_rx).await?;
-                    guard.close().await;
-                    return Err(crate::error::invocation_error(e));
-                }
-                drop(dispatch_tx);
+            Tick::Account(AccountTick::Fatal { err }) => {
                 dispatcher.abort();
-                drop(mutations);
-                drop(read_senders);
-                drop(main_response_tx);
                 for w in &mut workers {
                     w.abort();
                 }
-                drain_and_flush(&mut workers, &mut response_rx).await?;
-                handle_stream_failure(name, crate::error::invocation_error(e), failures, None)
-                    .await?;
-                guard.close().await;
-                return Ok(ConnExit::StreamDown);
+                drop(dispatch_tx);
+                drop(mutations);
+                drop(read_senders);
+                drop(main_response_tx);
+                return Err(err);
             }
-            Tick::Update(update) => {
-                *failures = 0;
-                if let Err(e) = stream.sync_update_state().await {
-                    output::log_line("warn", &format!("serve: sync_update_state failed: {e}"));
-                }
-                let Some(kind) = event_kind_allowed(&update, events) else {
-                    continue;
-                };
-                if is_empty_update(update.raw()) {
+            Tick::Account(AccountTick::Ready { name, identity }) => {
+                identities.insert(name, identity);
+                if greeted {
                     continue;
                 }
-                let message = match &*update {
-                    Update::NewMessage(m) | Update::MessageEdited(m) => m,
-                    _ => continue,
-                };
-                let peer = update_peer(update.raw());
-                let chat_id = peer.and_then(|p| p.bare_id());
-                let pts = pts_from_state(update.state());
-                let key = dedupe_key(chat_id, message.id(), pts);
-                if dedupe.check(key) {
+                if identities.len() < pool.served().len() {
                     continue;
                 }
-                let row = match crate::serialize::message_to_json(message) {
-                    Ok(mut r) => {
-                        crate::serialize::enrich_message_row(&mut r, message);
-                        crate::serialize::ensure_outer_peer_sender(&mut r, peer, None);
-                        r
+                match emit(&hello_out_accounts(
+                    &hello_entries(&identities),
+                    last_seq_of(&seq),
+                ))
+                .await
+                {
+                    Ok(()) => greeted = true,
+                    Err(e) if e.is_broken_pipe() => {
+                        drop(dispatch_tx);
+                        drop(mutations);
+                        drop(read_senders);
+                        drop(main_response_tx);
+                        let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
+                        drain_and_flush(&mut workers, &mut response_rx).await?;
+                        return Ok(EXIT_OK);
                     }
-                    Err(e) => {
-                        output::log_line(
-                            "warn",
-                            &format!("serve: message_to_json failed: {}", e.message()),
-                        );
-                        continue;
+                    Err(e) => return Err(e),
+                }
+            }
+            Tick::Account(AccountTick::Reconnected { name }) => {
+                if !greeted {
+                    continue;
+                }
+                output::log_line("info", &format!("serve: account {name} reconnected"));
+                let mut row = event_row("Reconnected", &name, None, None, None);
+                apply_seq(&mut row, &mut seq);
+                match emit(&row).await {
+                    Ok(()) => {}
+                    Err(e) if e.is_broken_pipe() => {
+                        drop(dispatch_tx);
+                        drop(mutations);
+                        drop(read_senders);
+                        drop(main_response_tx);
+                        let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
+                        drain_and_flush(&mut workers, &mut response_rx).await?;
+                        return Ok(EXIT_OK);
                     }
-                };
-                let mut ev = event_row(kind, name, chat_id, None, Some(row));
-                apply_seq(&mut ev, seq);
+                    Err(e) => return Err(e),
+                }
+            }
+            Tick::Account(AccountTick::Event { mut ev }) => {
+                apply_seq(&mut ev, &mut seq);
                 if let Err(e) = emit(&ev).await {
                     if e.is_broken_pipe() {
                         drop(dispatch_tx);
                         drop(mutations);
                         drop(read_senders);
                         drop(main_response_tx);
+                        let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
                         drain_and_flush(&mut workers, &mut response_rx).await?;
-                        guard.close().await;
-                        return Ok(ConnExit::Eof);
+                        return Ok(EXIT_OK);
                     }
                     output::log_line("warn", &format!("serve: emit failed: {}", e.message()));
                     continue;
@@ -1153,9 +1209,196 @@ async fn serve_connection(
             }
         }
     }
-    Ok(ConnExit::Resync)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn account_task(
+    name: String,
+    events: Vec<String>,
+    catch_up: bool,
+    creds: crate::config::Credentials,
+    config_path: Option<std::path::PathBuf>,
+    pool: std::sync::Arc<ServePool>,
+    resync_rx: tokio::sync::mpsc::Receiver<()>,
+    ticks: tokio::sync::mpsc::Sender<AccountTick>,
+) {
+    let initial_catch_up = catch_up;
+    let mut catch_up = catch_up;
+    let mut resync_rx = resync_rx;
+    let mut failures: u32 = 0;
+    let mut greeted = false;
+    let mut dedupe = ServeDedupe::new();
+    loop {
+        let mut guard = loop {
+            match crate::client::ClientGuard::connect(&name, creds.api_id, config_path.as_deref())
+                .await
+            {
+                Ok(guard) => break guard,
+                Err(e) => {
+                    if let Err(fatal) =
+                        handle_stream_failure(&name, TeleError::from(e), &mut failures, None).await
+                    {
+                        let _ = ticks.send(AccountTick::Fatal { err: fatal }).await;
+                        return;
+                    }
+                }
+            }
+        };
+        if let Err(e) = crate::client::authorize(&guard.client).await {
+            guard.close().await;
+            let _ = ticks.send(AccountTick::Fatal { err: e }).await;
+            return;
+        }
+        let me = match guard.client.get_me().await {
+            Ok(me) => me,
+            Err(e) => {
+                guard.close().await;
+                let _ = ticks
+                    .send(AccountTick::Fatal {
+                        err: TeleError::Other(format!("serve: get_me failed: {e}")),
+                    })
+                    .await;
+                return;
+            }
+        };
+        let identity = identity_json(&me);
+        if let Err(e) = guard
+            .client
+            .invoke(&tl::functions::updates::GetState {})
+            .await
+        {
+            let err = getstate_probe_error(e);
+            guard.close().await;
+            if matches!(err, TeleError::Auth(_)) {
+                let _ = ticks.send(AccountTick::Fatal { err }).await;
+                return;
+            }
+            if let Err(fatal) = handle_stream_failure(&name, err, &mut failures, None).await {
+                let _ = ticks.send(AccountTick::Fatal { err: fatal }).await;
+                return;
+            }
+            continue;
+        }
+        let receiver =
+            std::mem::replace(&mut guard.updates, tokio::sync::mpsc::unbounded_channel().1);
+        let mut stream = match guard
+            .client
+            .stream_updates(
+                receiver,
+                grammers_client::client::UpdatesConfiguration {
+                    catch_up,
+                    update_queue_limit: Some(1000),
+                },
+            )
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                guard.close().await;
+                let _ = ticks
+                    .send(AccountTick::Fatal {
+                        err: TeleError::Other(e.to_string()),
+                    })
+                    .await;
+                return;
+            }
+        };
+        catch_up = initial_catch_up;
+        let shares = guard.shares();
+        pool.publish(&name, shares);
+        if greeted {
+            output::log_line("info", &format!("serve: account {name} reconnected"));
+            let _ = ticks
+                .send(AccountTick::Reconnected { name: name.clone() })
+                .await;
+        } else {
+            let _ = ticks
+                .send(AccountTick::Ready {
+                    name: name.clone(),
+                    identity: Some(identity),
+                })
+                .await;
+        }
+        greeted = true;
+        failures = 0;
+        loop {
+            enum Tick {
+                Update(Box<Update>),
+                StreamError(grammers_client::InvocationError),
+                Resync,
+            }
+            let tick = tokio::select! {
+                res = tokio::time::timeout(
+                    poll_timeout(None, std::time::Instant::now()),
+                    stream.next(),
+                ) => match res {
+                    Ok(Ok(u)) => Tick::Update(Box::new(u)),
+                    Ok(Err(e)) => Tick::StreamError(e),
+                    Err(_) => continue,
+                },
+                _ = resync_rx.recv() => Tick::Resync,
+            };
+            match tick {
+                Tick::Resync => break,
+                Tick::StreamError(e) => {
+                    if let Err(fatal) = handle_stream_failure(
+                        &name,
+                        crate::error::invocation_error(e),
+                        &mut failures,
+                        None,
+                    )
+                    .await
+                    {
+                        let _ = ticks.send(AccountTick::Fatal { err: fatal }).await;
+                        return;
+                    }
+                    break;
+                }
+                Tick::Update(update) => {
+                    if let Err(e) = stream.sync_update_state().await {
+                        output::log_line("warn", &format!("serve: sync_update_state failed: {e}"));
+                    }
+                    let Some(kind) = event_kind_allowed(&update, &events) else {
+                        continue;
+                    };
+                    if is_empty_update(update.raw()) {
+                        continue;
+                    }
+                    let message = match &*update {
+                        Update::NewMessage(m) | Update::MessageEdited(m) => m,
+                        _ => continue,
+                    };
+                    let peer = update_peer(update.raw());
+                    let chat_id = peer.and_then(|p| p.bare_id());
+                    let pts = pts_from_state(update.state());
+                    let key = dedupe_key(&name, chat_id, message.id(), pts);
+                    if dedupe.check(key) {
+                        continue;
+                    }
+                    let row = match crate::serialize::message_to_json(message) {
+                        Ok(mut r) => {
+                            crate::serialize::enrich_message_row(&mut r, message);
+                            crate::serialize::ensure_outer_peer_sender(&mut r, peer, None);
+                            r
+                        }
+                        Err(e) => {
+                            output::log_line(
+                                "warn",
+                                &format!("serve: message_to_json failed: {}", e.message()),
+                            );
+                            continue;
+                        }
+                    };
+                    let ev = event_row(kind, &name, chat_id, None, Some(row));
+                    if ticks.send(AccountTick::Event { ev }).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        guard.close().await;
+    }
+}
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 mod tests {
@@ -1248,9 +1491,11 @@ mod tests {
 
     #[test]
     fn hello_out_carries_protocol_account_range_and_identity() {
-        let hello = hello_out(
-            "work",
-            Some(serde_json::json!({"user_id": 7, "username": "w"})),
+        let hello = hello_out_accounts(
+            &[(
+                "work".to_string(),
+                Some(serde_json::json!({"user_id": 7, "username": "w"})),
+            )],
             None,
         );
         assert_eq!(hello["type"], "hello");
@@ -1260,15 +1505,15 @@ mod tests {
         assert_eq!(hello["account"], "work");
         assert_eq!(hello["identity"]["user_id"], 7);
 
-        let bare = hello_out("work", None, None);
+        let bare = hello_out_accounts(&[("work".to_string(), None)], None);
         assert!(bare.get("identity").is_none());
     }
 
     #[test]
     fn hello_out_echoes_last_seq_null_then_value() {
-        let first = hello_out("work", None, last_seq_of(&0));
+        let first = hello_out_accounts(&[("work".to_string(), None)], last_seq_of(&0));
         assert_eq!(first["last_seq"], serde_json::Value::Null);
-        let later = hello_out("work", None, last_seq_of(&7));
+        let later = hello_out_accounts(&[("work".to_string(), None)], last_seq_of(&7));
         assert_eq!(later["last_seq"], 7);
     }
 
@@ -1852,29 +2097,129 @@ mod tests {
     #[test]
     fn serve_dedupe_suppresses_replay_and_bounces_flaky_reconnect() {
         let mut d = ServeDedupe::new();
-        let k1 = dedupe_key(Some(123), 5, 10);
-        let k2 = dedupe_key(Some(123), 5, 11);
-        let k3 = dedupe_key(Some(456), 5, 10);
-        assert!(!d.check(k1));
-        assert!(d.check(k1));
-        assert!(!d.check(k2));
-        assert!(d.check(k2));
-        assert!(!d.check(k3));
-        assert!(d.check(k3));
-        assert!(!d.check(dedupe_key(None, 9, 0)));
-        assert!(d.check(dedupe_key(None, 9, 0)));
+        assert!(!d.check(dedupe_key("work", Some(123), 5, 10)));
+        assert!(d.check(dedupe_key("work", Some(123), 5, 10)));
+        assert!(!d.check(dedupe_key("work", Some(123), 5, 11)));
+        assert!(d.check(dedupe_key("work", Some(123), 5, 11)));
+        assert!(!d.check(dedupe_key("work", Some(456), 5, 10)));
+        assert!(d.check(dedupe_key("work", Some(456), 5, 10)));
+        assert!(!d.check(dedupe_key("work", None, 9, 0)));
+        assert!(d.check(dedupe_key("work", None, 9, 0)));
+    }
+
+    #[test]
+    fn serve_dedupe_key_distinguishes_accounts() {
+        let a = dedupe_key("alpha", Some(777), 5, 10);
+        let b = dedupe_key("beta", Some(777), 5, 10);
+        assert_ne!(a, b, "same chat/msg/pts on two accounts must not collide");
+    }
+
+    #[test]
+    fn select_op_account_defaults_to_first_when_absent() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({"chat": "@x"});
+        let picked = select_op_account(&served, &mut params).unwrap();
+        assert_eq!(picked, "alpha");
+        assert!(
+            params.get("account").is_none(),
+            "params must stay untouched"
+        );
+    }
+
+    #[test]
+    fn select_op_account_routes_requested_and_strips_param() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({"account": "beta", "chat": "@x"});
+        let picked = select_op_account(&served, &mut params).unwrap();
+        assert_eq!(picked, "beta");
+        assert!(
+            params.get("account").is_none(),
+            "account param must be stripped before op parsing"
+        );
+        assert_eq!(params["chat"], "@x");
+    }
+
+    #[test]
+    fn select_op_account_rejects_unknown_account_with_served_list() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({"account": "ghost"});
+        let err = select_op_account(&served, &mut params).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("ghost"), "msg: {msg}");
+        assert!(msg.contains("alpha") && msg.contains("beta"), "msg: {msg}");
+    }
+
+    #[test]
+    fn select_op_account_rejects_non_string_account() {
+        let served = vec!["alpha".to_string()];
+        let mut params = serde_json::json!({"account": 7});
+        let err = select_op_account(&served, &mut params).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+    }
+
+    #[test]
+    fn select_op_account_blank_account_is_an_error() {
+        let served = vec!["alpha".to_string()];
+        let mut params = serde_json::json!({"account": "   "});
+        assert!(select_op_account(&served, &mut params).is_err());
+    }
+
+    #[test]
+    fn hello_out_accounts_keeps_legacy_fields_and_adds_accounts() {
+        let id_a = serde_json::json!({"user_id": 1});
+        let id_b = serde_json::json!({"user_id": 2});
+        let hello = hello_out_accounts(
+            &[
+                ("alpha".to_string(), Some(id_a.clone())),
+                ("beta".to_string(), Some(id_b.clone())),
+            ],
+            Some(3),
+        );
+        assert_eq!(hello["type"], "hello");
+        assert_eq!(
+            hello["account"], "alpha",
+            "legacy field stays first account"
+        );
+        assert_eq!(hello["identity"], id_a);
+        assert_eq!(hello["last_seq"], 3);
+        let listed = hello["accounts"].as_array().expect("accounts array");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0]["name"], "alpha");
+        assert_eq!(listed[0]["identity"], id_a);
+        assert_eq!(listed[1]["name"], "beta");
+        assert_eq!(listed[1]["identity"], id_b);
+    }
+
+    #[test]
+    fn hello_out_accounts_single_account_omits_identity_when_none() {
+        let hello = hello_out_accounts(&[("work".to_string(), None)], None);
+        assert_eq!(hello["account"], "work");
+        assert!(hello.get("identity").is_none());
+        assert_eq!(hello["accounts"][0]["name"], "work");
+        assert!(hello["accounts"][0].get("identity").is_none());
+    }
+
+    #[test]
+    fn serve_selection_accepts_multi_and_caps_at_32() {
+        let two: Vec<String> = ["a".to_string(), "b".to_string()].into();
+        assert!(validate_serve_selection(&two).is_ok());
+        let many: Vec<String> = (0..33).map(|i| format!("a{i}")).collect();
+        let err = validate_serve_selection(&many).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+        assert!(validate_serve_selection(&[]).is_err());
     }
 
     #[test]
     fn serve_dedupe_evicts_oldest_beyond_cap() {
         let mut d = ServeDedupe::new();
         for i in 0..(SERVE_DEDUPE_CAP as i32) {
-            assert!(!d.check(dedupe_key(Some(1), i, i)));
+            assert!(!d.check(dedupe_key("work", Some(1), i, i)));
         }
         assert_eq!(d.seen.len(), SERVE_DEDUPE_CAP);
-        let first = dedupe_key(Some(1), 0, 0);
-        assert!(d.check(first));
+        assert!(d.check(dedupe_key("work", Some(1), 0, 0)));
         assert!(!d.check(dedupe_key(
+            "work",
             Some(1),
             SERVE_DEDUPE_CAP as i32,
             SERVE_DEDUPE_CAP as i32

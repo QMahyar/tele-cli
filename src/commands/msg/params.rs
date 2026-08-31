@@ -329,24 +329,31 @@ pub struct ClickArgs {
     #[arg(
         long,
         value_name = "TEXT",
-        help = "inline button text to click (exact match; precedence: --button-index > --button-contains > --button)",
-        conflicts_with_all = ["button_index", "button_contains"]
+        help = "inline button text to click (exact match; precedence: --button-index > --button-data > --button-contains > --button)",
+        conflicts_with_all = ["button_index", "button_contains", "button_data"]
     )]
     pub(crate) button: Option<String>,
     #[arg(
         long,
         value_name = "N",
-        help = "1-based inline button position across all rows (precedence: --button-index > --button-contains > --button)",
-        conflicts_with_all = ["button", "button_contains"]
+        help = "1-based inline button position across all rows (precedence: --button-index > --button-data > --button-contains > --button)",
+        conflicts_with_all = ["button", "button_contains", "button_data"]
     )]
     pub(crate) button_index: Option<usize>,
     #[arg(
         long,
         value_name = "SUBSTRING",
-        help = "case-insensitive substring to match against button text (picks first match; precedence: --button-index > --button-contains > --button)",
-        conflicts_with_all = ["button", "button_index"]
+        help = "case-insensitive substring to match against button text (picks first match; precedence: --button-index > --button-data > --button-contains > --button)",
+        conflicts_with_all = ["button", "button_index", "button_data"]
     )]
     pub(crate) button_contains: Option<String>,
+    #[arg(
+        long,
+        value_name = "DATA",
+        help = "match the button's decoded callback data exactly, e.g. force_sub:refresh (precedence: --button-index > --button-data > --button-contains > --button)",
+        conflicts_with_all = ["button", "button_index", "button_contains"]
+    )]
+    pub(crate) button_data: Option<String>,
     #[arg(
         long,
         help = "reserved for 2FA-protected buttons; not supported at this layer"
@@ -869,6 +876,7 @@ pub(crate) struct ClickParams {
     pub(crate) button: Option<String>,
     pub(crate) button_index: Option<usize>,
     pub(crate) button_contains: Option<String>,
+    pub(crate) button_data: Option<String>,
     #[serde(default)]
     pub(crate) password: bool,
     #[serde(default)]
@@ -883,6 +891,7 @@ impl From<&ClickArgs> for ClickParams {
             button: a.button.clone(),
             button_index: a.button_index,
             button_contains: a.button_contains.clone(),
+            button_data: a.button_data.clone(),
             password: a.password,
             dry_run: false,
         }
@@ -897,6 +906,7 @@ impl From<&ClickParams> for ClickArgs {
             button: p.button.clone(),
             button_index: p.button_index,
             button_contains: p.button_contains.clone(),
+            button_data: p.button_data.clone(),
             password: p.password,
         }
     }

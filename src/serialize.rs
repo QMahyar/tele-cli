@@ -156,6 +156,13 @@ pub fn peer_key(peer: &Peer) -> serde_json::Value {
         None => out.insert("id".into(), serde_json::Value::Null),
     };
     out.insert("kind".into(), serde_json::json!(peer_kind(peer)));
+    out.insert(
+        "username".into(),
+        match peer.username() {
+            Some(u) => serde_json::json!(u),
+            None => serde_json::Value::Null,
+        },
+    );
     let name = peer_name(peer);
     out.insert("name".into(), serde_json::json!(name.clone()));
     out.insert("display_name".into(), serde_json::json!(name));
@@ -334,9 +341,11 @@ fn keyboard_button_to_json(button: &tl::enums::KeyboardButton) -> serde_json::Va
     let mut out = serde_json::Map::new();
     match button {
         tl::enums::KeyboardButton::Button(b) => {
+            out.insert("type".into(), serde_json::json!("text"));
             out.insert("text".into(), serde_json::json!(b.text));
         }
         tl::enums::KeyboardButton::Url(b) => {
+            out.insert("type".into(), serde_json::json!("url"));
             out.insert("text".into(), serde_json::json!(b.text));
             out.insert("url".into(), serde_json::json!(b.url));
             let encoded = STANDARD.encode(b.url.as_bytes());
@@ -344,15 +353,22 @@ fn keyboard_button_to_json(button: &tl::enums::KeyboardButton) -> serde_json::Va
             out.insert("data_str".into(), serde_json::json!(b.url.clone()));
         }
         tl::enums::KeyboardButton::Callback(b) => {
+            out.insert("type".into(), serde_json::json!("callback"));
             out.insert("text".into(), serde_json::json!(b.text));
             let encoded = STANDARD.encode(&b.data);
             let data_str = String::from_utf8(b.data.clone()).unwrap_or_default();
             out.insert("callback_data".into(), serde_json::json!(&encoded));
             out.insert("data".into(), serde_json::json!(&encoded));
             out.insert("data_str".into(), serde_json::json!(data_str));
+            if b.requires_password {
+                out.insert("requires_password".into(), serde_json::Value::Bool(true));
+            }
         }
         tl::enums::KeyboardButton::SwitchInline(b) => {
+            out.insert("type".into(), serde_json::json!("switch_inline"));
             out.insert("text".into(), serde_json::json!(b.text));
+            out.insert("query".into(), serde_json::json!(b.query));
+            out.insert("same_peer".into(), serde_json::json!(b.same_peer));
             let key = if b.same_peer {
                 "switch_inline_query_current_chat"
             } else {
@@ -361,11 +377,42 @@ fn keyboard_button_to_json(button: &tl::enums::KeyboardButton) -> serde_json::Va
             out.insert(key.into(), serde_json::json!(b.query));
         }
         tl::enums::KeyboardButton::Buy(b) => {
+            out.insert("type".into(), serde_json::json!("buy"));
             out.insert("text".into(), serde_json::json!(b.text));
             out.insert("buy".into(), serde_json::Value::Bool(true));
         }
+        tl::enums::KeyboardButton::Game(b) => {
+            out.insert("type".into(), serde_json::json!("game"));
+            out.insert("text".into(), serde_json::json!(b.text));
+        }
+        tl::enums::KeyboardButton::RequestPhone(b) => {
+            out.insert("type".into(), serde_json::json!("request_phone"));
+            out.insert("text".into(), serde_json::json!(b.text));
+        }
+        tl::enums::KeyboardButton::RequestGeoLocation(b) => {
+            out.insert("type".into(), serde_json::json!("request_location"));
+            out.insert("text".into(), serde_json::json!(b.text));
+        }
+        tl::enums::KeyboardButton::RequestPoll(b) => {
+            out.insert("type".into(), serde_json::json!("request_poll"));
+            out.insert("text".into(), serde_json::json!(b.text));
+        }
+        tl::enums::KeyboardButton::UrlAuth(b) => {
+            out.insert("type".into(), serde_json::json!("url_auth"));
+            out.insert("text".into(), serde_json::json!(b.text));
+            out.insert("url".into(), serde_json::json!(b.url));
+            if let Some(fwd) = &b.fwd_text {
+                out.insert("fwd_text".into(), serde_json::json!(fwd));
+            }
+        }
+        tl::enums::KeyboardButton::Copy(b) => {
+            out.insert("type".into(), serde_json::json!("copy_text"));
+            out.insert("text".into(), serde_json::json!(b.text));
+            out.insert("copy_text".into(), serde_json::json!(b.copy_text));
+        }
         other => {
             let (text, kind) = keyboard_button_info(other);
+            out.insert("type".into(), serde_json::json!("unknown"));
             out.insert("text".into(), serde_json::json!(text));
             out.insert("raw_kind".into(), serde_json::json!(kind));
         }
@@ -634,6 +681,8 @@ mod tests {
             "switch_inline_query",
             "switch_inline_query_current_chat",
             "buy",
+            "query",
+            "copy_text",
         ]
         .iter()
         .filter(|key| button.get(*key).is_some())
@@ -930,13 +979,18 @@ mod tests {
         let rows = rm["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].as_array().unwrap().len(), 2);
+        assert_eq!(rows[0][0]["type"], "callback");
         assert_eq!(rows[0][0]["text"], "Hit");
         assert_eq!(rows[0][0]["callback_data"], "AAH+/w==");
         assert_eq!(action_keys(&rows[0][0]), 1);
+        assert_eq!(rows[0][1]["type"], "url");
         assert_eq!(rows[0][1]["text"], "Go");
         assert_eq!(rows[0][1]["url"], "https://example.com");
         assert_eq!(action_keys(&rows[0][1]), 1);
-        assert_eq!(rows[1][0], serde_json::json!({"text": "Plain"}));
+        assert_eq!(
+            rows[1][0],
+            serde_json::json!({"type": "text", "text": "Plain"})
+        );
     }
 
     #[test]
@@ -997,14 +1051,15 @@ mod tests {
             value["reply_markup"]["rows"][0][0]["switch_inline_query"],
             "search q"
         );
-        assert_eq!(action_keys(&value["reply_markup"]["rows"][0][0]), 1);
+        assert_eq!(value["reply_markup"]["rows"][0][0]["type"], "switch_inline");
+        assert_eq!(action_keys(&value["reply_markup"]["rows"][0][0]), 2);
         set_reply_markup(&mut msg, Some(local));
         let value = message_to_json(&msg).unwrap();
         assert_eq!(
             value["reply_markup"]["rows"][0][0]["switch_inline_query_current_chat"],
             "search here"
         );
-        assert_eq!(action_keys(&value["reply_markup"]["rows"][0][0]), 1);
+        assert_eq!(action_keys(&value["reply_markup"]["rows"][0][0]), 2);
     }
 
     #[test]
@@ -1015,20 +1070,21 @@ mod tests {
         set_reply_markup(&mut msg, Some(markup));
         let value = message_to_json(&msg).unwrap();
         let button = &value["reply_markup"]["rows"][0][0];
+        assert_eq!(button["type"], "buy");
         assert_eq!(button["buy"], true);
         assert_eq!(button["text"], "buy");
         assert_eq!(action_keys(button), 1);
     }
 
     #[test]
-    fn message_to_json_unmapped_button_variant_falls_back_to_raw_kind() {
+    fn message_to_json_mapped_button_variants_carry_typed_marker() {
         let client = offline_client();
         let markup = inline_markup(vec![vec![request_phone_button()]]);
         let mut msg = make_message(&client, 16, false, "contact", None);
         set_reply_markup(&mut msg, Some(markup));
         let value = message_to_json(&msg).unwrap();
         let button = &value["reply_markup"]["rows"][0][0];
-        assert_eq!(button["raw_kind"], "RequestPhone");
+        assert_eq!(button["type"], "request_phone");
         assert_eq!(button["text"], "phone");
         assert_eq!(action_keys(button), 0);
     }

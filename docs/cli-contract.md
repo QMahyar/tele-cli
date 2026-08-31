@@ -217,8 +217,9 @@ Copy-pasteable bot loop (`/start` → inspect buttons → click → watch edited
 
 ```pwsh
 tele msg send --chat @BOT --text "/start" --json | python -m json.tool
-tele msg get --chat @BOT --id 123 --json | python -m json.tool   # see reply_markup.buttons[].data_str
+tele msg get --chat @BOT --id 123 --json | python -m json.tool   # see reply_markup rows[].type markers
 tele msg click --chat @BOT --id 123 --button-index 1 --json
+tele msg click --chat @BOT --id 123 --button-data "force_sub:refresh" --json   # match decoded callback data exactly
 # watch edited bot message (progress bar):
 tele msg get --chat @BOT --id 123 --watch --timeout-secs 60 --json
 ```
@@ -325,15 +326,15 @@ Runtime semantics:
 ## `tele serve`
 
 ```
-tele serve --account NAME [--events NewMessage,MessageEdited] [--catch-up]
+tele serve --account NAME [--account NAME ...] [--events NewMessage,MessageEdited] [--catch-up]
 ```
 
 `tele serve` is a duplex control plane for embedding scripts. It runs as a child process that owns one account session and speaks newline-delimited JSON over stdio. Stdout carries server frames (handshake, responses, events); stdin carries driver frames (hello, requests); stderr carries the usual freeform log lines. The driving script is the supervisor: it spawns, feeds, parses, and terminates the process.
 
 Process model:
 
-- Exactly one account: selection must resolve to a single session, otherwise the process exits 1 before anything connects.
-- Exclusive ownership: the standard OS-level per-account session lock applies. While `tele serve` holds the session, no other tele process can open it, and the reverse holds too ("session <name> is in use by another process").
+- One or more accounts: selection resolves to at least one and at most 32 sessions, otherwise the process exits 1 before anything connects. Each account session is locked exclusively (OS-level per-account lock); other tele processes cannot open the same sessions while serve runs.
+- Exclusive ownership: the standard OS-level per-account session lock applies. While `tele serve` holds the sessions, no other tele process can open them, and the reverse holds too ("session <name> is in use by another process").
 - Frames are single-line JSON objects terminated by `\n`; writers must flush per line.
 - EOF on stdin shuts down cleanly: queued jobs drain, pending responses are flushed to stdout, the client disconnects, and the exit code is 0.
 - `--events` allowlist: `NewMessage` and `MessageEdited` (default `NewMessage`). Any other name exits 1 before connect.
@@ -360,6 +361,16 @@ The driver answers with its own hello to complete negotiation:
 - `last_seq` is the highest event `seq` assigned in this process so far (null before the first event).
 - Sending another hello later re-emits the server hello with current identity and `last_seq` values.
 - After an internal stream rebuild, the server does not re-handshake; it emits a `Reconnected` event row instead.
+
+### Multi-account serve
+
+`tele serve --account a --account b` (or `--account all`, up to 32 accounts) serves every selected account from one process and one stdio connection. All of the above protocol rules are unchanged; the additions are:
+
+- The hello gains an additive `accounts` array: one entry per served account, `{"name":..., "identity":{...}}`, sorted by name. The legacy `account` and `identity` fields stay and describe the first account (sorted alphabetically).
+- Every account has its own connection, session lock, rate limiter, and update stream. Each account reconnects independently; a rebuild of one account does not disturb the others. Event rows carry the `account` field of the emitting account. The mutate lane stays a single ordered queue across all accounts.
+- Requests may target an account by adding a top-level `"account": "<name>"` key to the params object (stripped by the server before op parsing). With one account served, omitting it keeps working exactly as before. With multiple accounts, omitting `"account"` on a routed op returns a `ServeError` naming the served accounts; an unknown name returns a `ServeError` listing the valid names.
+- `stream.resync` follows the same rule: `"account"` resyncs that account only; omitted with multiple accounts resyncs every account. The response is still `{"resync":"started"}` and the server emits a `Reconnected` row per rebuilt account afterward.
+- A fatal account error (auth failure, or 5 consecutive stream failures) exits the process with that error, same as single-account mode.
 
 ### Requests and correlation
 

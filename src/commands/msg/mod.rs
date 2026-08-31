@@ -1268,6 +1268,7 @@ enum ButtonSelector {
     Text(String),
     Index(usize),
     Contains(String),
+    Data(String),
 }
 
 #[derive(Debug)]
@@ -1279,6 +1280,13 @@ struct LocatedButton {
 
 fn button_text(button: &serde_json::Value) -> Option<&str> {
     button.get("text").and_then(|v| v.as_str())
+}
+
+fn button_data_str(button: &serde_json::Value) -> Option<&str> {
+    button
+        .get("data_str")
+        .and_then(|v| v.as_str())
+        .or_else(|| button.get("data").and_then(|v| v.as_str()))
 }
 
 fn format_available(buttons: &[(usize, &serde_json::Value)]) -> String {
@@ -1380,6 +1388,11 @@ fn locate_button(
                 .filter(|(_, b)| button_text(b).is_some_and(|s| s.to_lowercase().contains(&needle)))
                 .collect()
         }
+        ButtonSelector::Data(data) => buttons
+            .iter()
+            .copied()
+            .filter(|(_, b)| button_data_str(b) == Some(data.as_str()))
+            .collect(),
     };
     match matches.len() {
         0 => Err(TeleError::Usage(match selector {
@@ -1402,6 +1415,12 @@ fn locate_button(
                 let suggestion = did_you_mean_single(&all_buttons);
                 format!(
                     "no button containing {substr:?} in this message's inline keyboard. {suggestion} Available: {available}"
+                )
+            }
+            ButtonSelector::Data(data) => {
+                let available = format_available(&all_buttons);
+                format!(
+                    "no button with callback data {data:?} in this message's inline keyboard. Available: {available}"
                 )
             }
         })),
@@ -1436,6 +1455,7 @@ fn locate_button(
             let label = match selector {
                 ButtonSelector::Text(text) => format!("{text:?}"),
                 ButtonSelector::Contains(substr) => format!("containing {substr:?}"),
+                ButtonSelector::Data(data) => format!("data {data:?}"),
                 ButtonSelector::Index(_) => String::new(),
             };
             Err(TeleError::Usage(format!(
@@ -1478,15 +1498,17 @@ pub(crate) fn validate_click(args: &ClickArgs) -> TeleResult<()> {
     }
     let count = args.button.is_some() as u8
         + args.button_index.is_some() as u8
-        + args.button_contains.is_some() as u8;
+        + args.button_contains.is_some() as u8
+        + args.button_data.is_some() as u8;
     if count == 0 {
         return Err(TeleError::Usage(
-            "--button TEXT or --button-index N or --button-contains SUBSTRING required".to_string(),
+            "--button TEXT or --button-index N or --button-contains SUBSTRING or --button-data DATA required".to_string(),
         ));
     }
     if count > 1 {
         return Err(TeleError::Usage(
-            "--button, --button-index and --button-contains are mutually exclusive".to_string(),
+            "--button, --button-index, --button-contains and --button-data are mutually exclusive"
+                .to_string(),
         ));
     }
     if let Some(0) = args.button_index {
@@ -1505,6 +1527,8 @@ pub(crate) fn validate_click(args: &ClickArgs) -> TeleResult<()> {
 fn click_selector(args: &ClickArgs) -> ButtonSelector {
     if let Some(idx) = args.button_index {
         ButtonSelector::Index(idx)
+    } else if let Some(data) = &args.button_data {
+        ButtonSelector::Data(data.clone())
     } else if let Some(substr) = &args.button_contains {
         ButtonSelector::Contains(substr.clone())
     } else if let Some(text) = &args.button {
@@ -1519,6 +1543,7 @@ fn click_selector_label(selector: &ButtonSelector) -> String {
         ButtonSelector::Text(t) => format!("button {t:?}"),
         ButtonSelector::Index(n) => format!("button #{n}"),
         ButtonSelector::Contains(s) => format!("button containing {s:?}"),
+        ButtonSelector::Data(d) => format!("button data {d:?}"),
     }
 }
 
@@ -1562,10 +1587,13 @@ pub(crate) async fn click_core(
     params: ClickParams,
 ) -> TeleResult<serde_json::Value> {
     shares.rate_limiter.acquire().await;
-    if params.button.is_none() && params.button_index.is_none() && params.button_contains.is_none()
+    if params.button.is_none()
+        && params.button_index.is_none()
+        && params.button_contains.is_none()
+        && params.button_data.is_none()
     {
         return Err(TeleError::Usage(
-            "--button/--button-index/--button-contains required".to_string(),
+            "--button/--button-index/--button-contains/--button-data required".to_string(),
         ));
     }
     let id = params.id;
@@ -2596,6 +2624,7 @@ mod tests {
             button: Some("ok".to_string()),
             button_index: None,
             button_contains: None,
+            button_data: None,
             password: false,
         };
         assert!(matches!(validate_click(&click), Err(TeleError::Usage(_))));
@@ -3722,6 +3751,7 @@ mod tests {
             button,
             button_index,
             button_contains: None,
+            button_data: None,
             password: false,
         }
     }
@@ -3733,6 +3763,7 @@ mod tests {
             button: None,
             button_index: None,
             button_contains: Some(substr.to_string()),
+            button_data: None,
             password: false,
         }
     }
@@ -3981,6 +4012,23 @@ mod tests {
     }
 
     #[test]
+    fn button_json_has_type_markers() {
+        let callback = inline_markup_json(vec![vec![tl_callback_button(
+            "Refresh",
+            b"force_sub:refresh",
+        )]]);
+        let button = &callback["rows"][0][0];
+        assert_eq!(button["type"], "callback");
+        assert_eq!(button["data_str"], "force_sub:refresh");
+        assert!(button["callback_data"].as_str().is_some());
+
+        let url = inline_markup_json(vec![vec![tl_url_button("Join", "https://t.me/x")]]);
+        let button = &url["rows"][0][0];
+        assert_eq!(button["type"], "url");
+        assert_eq!(button["url"], "https://t.me/x");
+    }
+
+    #[test]
     fn locate_button_finds_callback_by_exact_text() {
         let found =
             locate_button(&two_row_inline_markup(), &ButtonSelector::Text("No".into())).unwrap();
@@ -3990,6 +4038,23 @@ mod tests {
     }
 
     #[test]
+    fn locate_button_finds_callback_by_data_str() {
+        let found = locate_button(
+            &two_row_inline_markup(),
+            &ButtonSelector::Data("q:no".into()),
+        )
+        .unwrap();
+        assert_eq!(found.position, 3);
+        assert_eq!(found.text, "No");
+        assert_eq!(found.callback_data, b"q:no".to_vec());
+        let err = locate_button(
+            &two_row_inline_markup(),
+            &ButtonSelector::Data("q:zzz".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+    }
+
     fn locate_button_finds_by_index_across_rows() {
         let found = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(1)).unwrap();
         assert_eq!(found.position, 1);
@@ -4711,6 +4776,7 @@ mod tests {
             button: Some("a".to_string()),
             button_index: Some(3),
             button_contains: Some("b".to_string()),
+            button_data: None,
             password: false,
         };
         assert!(matches!(
@@ -4722,6 +4788,7 @@ mod tests {
             id: 1,
             button: Some("a".to_string()),
             button_index: None,
+            button_data: None,
             button_contains: Some("b".to_string()),
             password: false,
         };
@@ -4735,6 +4802,7 @@ mod tests {
             button: Some("a".to_string()),
             button_index: None,
             button_contains: None,
+            button_data: None,
             password: false,
         };
         assert!(matches!(
@@ -4751,6 +4819,7 @@ mod tests {
             button: Some("a".to_string()),
             button_index: Some(1),
             button_contains: None,
+            button_data: None,
             password: false,
         };
         assert!(matches!(validate_click(&both), Err(TeleError::Usage(_))));
@@ -4758,6 +4827,7 @@ mod tests {
             chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
             button: None,
+            button_data: None,
             button_index: Some(1),
             button_contains: Some("x".to_string()),
             password: false,
@@ -4766,6 +4836,7 @@ mod tests {
         let both3 = ClickArgs {
             chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 1,
+            button_data: None,
             button: Some("a".to_string()),
             button_index: None,
             button_contains: Some("x".to_string()),
@@ -4774,6 +4845,7 @@ mod tests {
         assert!(matches!(validate_click(&both3), Err(TeleError::Usage(_))));
         let empty_contains = ClickArgs {
             chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+            button_data: None,
             id: 1,
             button: None,
             button_index: None,
@@ -4790,6 +4862,7 @@ mod tests {
             button: None,
             button_index: None,
             button_contains: None,
+            button_data: None,
             password: false,
         };
         assert!(matches!(validate_click(&none), Err(TeleError::Usage(_))));
@@ -4822,8 +4895,12 @@ mod tests {
         };
         let help = cmd.render_help().to_string();
         assert!(
-            help.contains("--button-index > --button-contains > --button"),
+            help.contains("--button-index > --button-data > --button-contains > --button"),
             "help must document precedence, got: {help}"
+        );
+        assert!(
+            help.contains("--button-data"),
+            "help must document --button-data, got: {help}"
         );
         assert!(
             help.contains("1-based"),
