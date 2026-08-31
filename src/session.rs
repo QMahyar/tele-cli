@@ -200,12 +200,6 @@ async fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
     unreachable!()
 }
 
-#[allow(dead_code)]
-pub async fn probe_live_lock(name: &str) -> anyhow::Result<()> {
-    validate_name(name).map_err(anyhow::Error::msg)?;
-    acquire_lock_file(name).await.map(|_| ())
-}
-
 pub struct LockedSession {
     pub session: SqliteSession,
     pub(crate) lock: SessionLock,

@@ -1664,18 +1664,6 @@ impl From<&ParticipantsServeParams> for ParticipantsArgs {
     }
 }
 
-fn validate_join(args: &ChatArgs) -> TeleResult<()> {
-    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
-}
-
-fn validate_leave(args: &ChatArgs) -> TeleResult<()> {
-    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
-}
-
-fn validate_stats(args: &StatsArgs) -> TeleResult<()> {
-    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
-}
-
 fn validate_participants(args: &ParticipantsArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
@@ -1705,32 +1693,6 @@ fn validate_admin_log(args: &AdminLogArgs) -> TeleResult<()> {
     }
     parse_admin_events_filter(args.events.as_deref())?;
     Ok(())
-}
-
-fn validate_invite_serve(args: &InviteArgs) -> TeleResult<()> {
-    validate_invite(args)?;
-    Ok(())
-}
-
-fn validate_requests_serve(args: &RequestsArgs) -> TeleResult<()> {
-    validate_requests(args)?;
-    Ok(())
-}
-
-fn join_serve_dry_run(args: &ChatArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "chat": args.chat,
-        "would": format!("join chat {}", args.chat)
-    }))
-}
-
-fn leave_serve_dry_run(args: &ChatArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "chat": args.chat,
-        "would": format!("leave chat {}", args.chat)
-    }))
 }
 
 fn create_serve_dry_run(args: &CreateArgs) -> TeleResult<serde_json::Value> {
@@ -1833,29 +1795,6 @@ fn kick_serve_dry_run(args: &KickArgs) -> TeleResult<serde_json::Value> {
     Ok(data)
 }
 
-fn admin_serve_dry_run(args: &AdminArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "chat": args.chat,
-        "user": args.user,
-        "promote": args.promote,
-        "demote": args.demote,
-        "would": format!("change admin status of user {} in chat {}", args.user, args.chat)}))
-}
-
-fn adminlog_serve_dry_run(args: &AdminLogArgs) -> TeleResult<serde_json::Value> {
-    Ok(admin_log_dry_run_payload(
-        &args.chat,
-        args.search.as_deref().unwrap_or_default(),
-        args.events.is_some(),
-        args.admin.is_some(),
-    ))
-}
-
-fn stats_serve_dry_run(args: &StatsArgs) -> TeleResult<serde_json::Value> {
-    Ok(stats_dry_run_payload(&args.chat, args.broadcast))
-}
-
 fn invite_serve_dry_run(args: &InviteArgs) -> TeleResult<serde_json::Value> {
     let plan = validate_invite(args)?;
     Ok(invite_dry_run_payload(
@@ -1867,14 +1806,6 @@ fn invite_serve_dry_run(args: &InviteArgs) -> TeleResult<serde_json::Value> {
 fn requests_serve_dry_run(args: &RequestsArgs) -> TeleResult<serde_json::Value> {
     let plan = validate_requests(args)?;
     Ok(requests_dry_run_payload(&args.chat, &plan))
-}
-
-fn participants_serve_dry_run(args: &ParticipantsArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "chat": args.chat,
-        "would": format!("list participants of chat {}", args.chat)
-    }))
 }
 
 pub(crate) async fn chat_join_core(
@@ -3038,8 +2969,12 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "join a chat by target or invite link",
             JoinParams,
             ChatArgs,
-            validate_join,
-            join_serve_dry_run,
+            |a: &ChatArgs| ChatTarget::parse_flag(&a.chat, "chat").map(|_| ()),
+            |a: &ChatArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "chat": a.chat,
+                "would": format!("join chat {}", a.chat)
+            })),
             run_join,
             crate::commands::serve::params_schema::<JoinParams>
         ),
@@ -3053,8 +2988,12 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "leave a chat or channel",
             LeaveParams,
             ChatArgs,
-            validate_leave,
-            leave_serve_dry_run,
+            |a: &ChatArgs| ChatTarget::parse_flag(&a.chat, "chat").map(|_| ()),
+            |a: &ChatArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "chat": a.chat,
+                "would": format!("leave chat {}", a.chat)
+            })),
             run_leave,
             crate::commands::serve::params_schema::<LeaveParams>
         ),
@@ -3144,7 +3083,13 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             AdminServeParams,
             AdminArgs,
             validate_admin,
-            admin_serve_dry_run,
+            |a: &AdminArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "chat": a.chat,
+                "user": a.user,
+                "promote": a.promote,
+                "demote": a.demote,
+                "would": format!("change admin status of user {} in chat {}", a.user, a.chat)})),
             run_admin,
             crate::commands::serve::params_schema::<AdminServeParams>
         ),
@@ -3159,7 +3104,12 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             AdminLogServeParams,
             AdminLogArgs,
             validate_admin_log,
-            adminlog_serve_dry_run,
+            |a: &AdminLogArgs| Ok::<_, TeleError>(admin_log_dry_run_payload(
+                &a.chat,
+                a.search.as_deref().unwrap_or_default(),
+                a.events.is_some(),
+                a.admin.is_some(),
+            )),
             run_admin_log,
             crate::commands::serve::params_schema::<AdminLogServeParams>
         ),
@@ -3173,8 +3123,8 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "show broadcast or megagroup stats",
             StatsServeParams,
             StatsArgs,
-            validate_stats,
-            stats_serve_dry_run,
+            |a: &StatsArgs| ChatTarget::parse_flag(&a.chat, "chat").map(|_| ()),
+            |a: &StatsArgs| Ok::<_, TeleError>(stats_dry_run_payload(&a.chat, a.broadcast)),
             run_stats,
             crate::commands::serve::params_schema::<StatsServeParams>
         ),
@@ -3188,7 +3138,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "invite users or manage invite links",
             InviteServeParams,
             InviteArgs,
-            validate_invite_serve,
+            |a: &InviteArgs| validate_invite(a).map(|_| ()),
             invite_serve_dry_run,
             run_invite,
             crate::commands::serve::params_schema::<InviteServeParams>
@@ -3203,7 +3153,7 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "list or act on pending join requests",
             RequestsServeParams,
             RequestsArgs,
-            validate_requests_serve,
+            |a: &RequestsArgs| validate_requests(a).map(|_| ()),
             requests_serve_dry_run,
             run_requests,
             crate::commands::serve::params_schema::<RequestsServeParams>
@@ -3219,7 +3169,11 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ParticipantsServeParams,
             ParticipantsArgs,
             validate_participants,
-            participants_serve_dry_run,
+            |a: &ParticipantsArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "chat": a.chat,
+                "would": format!("list participants of chat {}", a.chat)
+            })),
             run_participants,
             crate::commands::serve::params_schema::<ParticipantsServeParams>
         ),

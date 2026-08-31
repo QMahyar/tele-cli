@@ -326,22 +326,7 @@ fn validate_set(args: &SetArgs) -> TeleResult<tl::enums::InputPrivacyKey> {
 }
 
 fn normalize_raw_target(raw: &str) -> String {
-    let mut s = raw.trim();
-    for scheme in ["https://", "http://"] {
-        if let Some(rest) = s.strip_prefix(scheme) {
-            s = rest;
-        }
-    }
-    for prefix in ["t.me/", "telegram.me/"] {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            s = rest;
-        }
-    }
-    for sep in ['/', '?', '#'] {
-        if let Some(head) = s.split(sep).next() {
-            s = head;
-        }
-    }
+    let s = crate::entities::strip_link_prefixes(raw.trim());
     let s = s.strip_prefix('@').unwrap_or(s);
     if let Some(stripped) = s.strip_prefix('+') {
         let digits: String = stripped.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -446,14 +431,6 @@ fn privacy_rule_summary(r: &tl::enums::PrivacyRule) -> serde_json::Value {
     }
 }
 
-#[allow(dead_code)]
-fn input_user_from_id(user_id: i64) -> tl::enums::InputUser {
-    tl::enums::InputUser::User(tl::types::InputUser {
-        user_id,
-        access_hash: 0,
-    })
-}
-
 fn input_user_from_map(
     user_id: i64,
     map: &HashMap<i64, tl::enums::InputUser>,
@@ -471,14 +448,6 @@ struct PrivacyTargets {
     allow_chats: Vec<i64>,
     disallow_users: Vec<tl::enums::InputUser>,
     disallow_chats: Vec<i64>,
-}
-
-#[allow(dead_code)]
-fn merge_privacy_rules(
-    base: &[tl::enums::PrivacyRule],
-    targets: &PrivacyTargets,
-) -> Vec<tl::enums::InputPrivacyRule> {
-    merge_privacy_rules_with_map(base, targets, &HashMap::new())
 }
 
 fn merge_privacy_rules_with_map(
@@ -1100,7 +1069,17 @@ mod tests {
     }
 
     fn iu(user_id: i64) -> tl::enums::InputUser {
-        input_user_from_id(user_id)
+        tl::enums::InputUser::User(tl::types::InputUser {
+            user_id,
+            access_hash: 0,
+        })
+    }
+
+    fn merge_privacy_rules(
+        base: &[tl::enums::PrivacyRule],
+        targets: &PrivacyTargets,
+    ) -> Vec<tl::enums::InputPrivacyRule> {
+        merge_privacy_rules_with_map(base, targets, &HashMap::new())
     }
 
     fn targets(

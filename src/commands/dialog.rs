@@ -386,30 +386,11 @@ async fn dialog_list_folder_core(
             break;
         }
         exclude_pinned = true;
-        if let (Some(pid), Some(date), Some(id)) = (last_peer_id, last_msg_date, last_msg_id) {
-            offset_date = date;
-            offset_id = id;
-            let hash = peer_hashes.get(&pid).copied().unwrap_or(0);
-            offset_peer = match pid.kind() {
-                grammers_session::types::PeerKind::User => {
-                    tl::enums::InputPeer::User(tl::types::InputPeerUser {
-                        user_id: pid.bare_id_unchecked(),
-                        access_hash: hash,
-                    })
-                }
-                grammers_session::types::PeerKind::Chat => {
-                    tl::enums::InputPeer::Chat(tl::types::InputPeerChat {
-                        chat_id: pid.bare_id_unchecked(),
-                    })
-                }
-                grammers_session::types::PeerKind::Channel => {
-                    tl::enums::InputPeer::Channel(tl::types::InputPeerChannel {
-                        channel_id: pid.bare_id_unchecked(),
-                        access_hash: hash,
-                    })
-                }
-            };
-        } else if let Some(pid) = last_peer_id {
+        if let Some(pid) = last_peer_id {
+            if let (Some(date), Some(id)) = (last_msg_date, last_msg_id) {
+                offset_date = date;
+                offset_id = id;
+            }
             let hash = peer_hashes.get(&pid).copied().unwrap_or(0);
             offset_peer = match pid.kind() {
                 grammers_session::types::PeerKind::User => {
@@ -1116,42 +1097,6 @@ pub(crate) fn validate_draft(args: &DraftArgs) -> TeleResult<()> {
     Ok(())
 }
 
-pub(crate) fn validate_archive(args: &ArchiveArgs) -> TeleResult<()> {
-    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
-}
-
-pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
-    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
-}
-
-pub(crate) fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
-    ChatTarget::parse_flag(&args.chat, "chat").map(|_| ())
-}
-
-pub(crate) fn list_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {
-    Ok(list_dry_run_data(args.limit, args.folder))
-}
-
-pub(crate) fn drafts_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {
-    Ok(drafts_dry_run_data(args.limit as usize))
-}
-
-pub(crate) fn draft_serve_dry_run(args: &DraftArgs) -> TeleResult<serde_json::Value> {
-    Ok(draft_dry_run_data(&args.chat, args.clear))
-}
-
-pub(crate) fn archive_serve_dry_run(args: &ArchiveArgs) -> TeleResult<serde_json::Value> {
-    Ok(archive_dry_run_data(&args.chat, args.unarchive))
-}
-
-pub(crate) fn pin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Value> {
-    Ok(pin_dry_run_data(&args.chat, !args.unpin))
-}
-
-pub(crate) fn delete_serve_dry_run(args: &DeleteArgs) -> TeleResult<serde_json::Value> {
-    Ok(delete_dry_run_data(&args.chat, args.revoke))
-}
-
 pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
     use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
     vec![
@@ -1165,8 +1110,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "archive or unarchive a dialog",
             ArchiveParams,
             ArchiveArgs,
-            validate_archive,
-            archive_serve_dry_run,
+            |a: &ArchiveArgs| ChatTarget::parse_flag(&a.chat, "chat").map(|_| ()),
+            |a: &ArchiveArgs| Ok::<_, TeleError>(archive_dry_run_data(&a.chat, a.unarchive)),
             run_archive,
             crate::commands::serve::params_schema::<ArchiveParams>
         ),
@@ -1180,8 +1125,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "remove a dialog from the chat list",
             DeleteParams,
             DeleteArgs,
-            validate_delete,
-            delete_serve_dry_run,
+            |a: &DeleteArgs| ChatTarget::parse_flag(&a.chat, "chat").map(|_| ()),
+            |a: &DeleteArgs| Ok::<_, TeleError>(delete_dry_run_data(&a.chat, a.revoke)),
             run_delete,
             crate::commands::serve::params_schema::<DeleteParams>
         ),
@@ -1196,7 +1141,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             DraftParams,
             DraftArgs,
             validate_draft,
-            draft_serve_dry_run,
+            |a: &DraftArgs| Ok::<_, TeleError>(draft_dry_run_data(&a.chat, a.clear)),
             run_draft,
             crate::commands::serve::params_schema::<DraftParams>
         ),
@@ -1211,7 +1156,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             DraftsParams,
             ListArgs,
             validate_drafts,
-            drafts_serve_dry_run,
+            |a: &ListArgs| Ok::<_, TeleError>(drafts_dry_run_data(a.limit as usize)),
             run_drafts,
             crate::commands::serve::params_schema::<DraftsParams>
         ),
@@ -1226,7 +1171,7 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             ListParams,
             ListArgs,
             validate_list,
-            list_serve_dry_run,
+            |a: &ListArgs| Ok::<_, TeleError>(list_dry_run_data(a.limit, a.folder)),
             run_list,
             crate::commands::serve::params_schema::<ListParams>
         ),
@@ -1240,8 +1185,8 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "pin or unpin a dialog in the chat list",
             PinParams,
             PinArgs,
-            validate_pin,
-            pin_serve_dry_run,
+            |a: &PinArgs| ChatTarget::parse_flag(&a.chat, "chat").map(|_| ()),
+            |a: &PinArgs| Ok::<_, TeleError>(pin_dry_run_data(&a.chat, !a.unpin)),
             run_pin,
             crate::commands::serve::params_schema::<PinParams>
         ),

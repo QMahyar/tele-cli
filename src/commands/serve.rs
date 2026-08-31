@@ -452,7 +452,7 @@ macro_rules! serve_runner {
 
 #[macro_export]
 macro_rules! serve_route {
-    ($op:literal, $lane:expr, $timeout:expr, $read_only:expr, $destructive:expr, $retry_safe:expr, $summary:literal, $params:ty, $args:ty, $validate:path, $dry:path, $runner:expr, $schema:expr) => {
+    ($op:literal, $lane:expr, $timeout:expr, $read_only:expr, $destructive:expr, $retry_safe:expr, $summary:literal, $params:ty, $args:ty, $validate:expr, $dry:expr, $runner:expr, $schema:expr) => {
         $crate::commands::serve::OpRoute {
             op: $op,
             lane: $lane,
@@ -509,15 +509,13 @@ pub(crate) fn prep<P: serde::de::DeserializeOwned>(
     })
 }
 
-fn known_op_names() -> String {
-    route_table().names().to_string()
-}
-
 fn not_implemented(op: &str) -> serde_json::Value {
-    let ops = known_op_names();
     err_json(
         "NotImplemented",
-        format!("unknown op {op}; supported ops: ping, stream.resync, ops.list, {ops}"),
+        format!(
+            "unknown op {op}; supported ops: ping, stream.resync, ops.list, {}",
+            route_table().names()
+        ),
     )
 }
 

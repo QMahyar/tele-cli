@@ -365,66 +365,40 @@ fn keyboard_button_to_json(button: &tl::enums::KeyboardButton) -> serde_json::Va
             out.insert("buy".into(), serde_json::Value::Bool(true));
         }
         other => {
-            out.insert(
-                "text".into(),
-                serde_json::json!(keyboard_button_text(other)),
-            );
-            out.insert(
-                "raw_kind".into(),
-                serde_json::json!(keyboard_button_raw_kind(other)),
-            );
+            let (text, kind) = keyboard_button_info(other);
+            out.insert("text".into(), serde_json::json!(text));
+            out.insert("raw_kind".into(), serde_json::json!(kind));
         }
     }
     serde_json::Value::Object(out)
 }
 
-fn keyboard_button_text(button: &tl::enums::KeyboardButton) -> &str {
+fn keyboard_button_info(button: &tl::enums::KeyboardButton) -> (&str, &'static str) {
     match button {
-        tl::enums::KeyboardButton::Button(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::Url(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::Callback(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::RequestPhone(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::RequestGeoLocation(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::SwitchInline(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::Game(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::Buy(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::UrlAuth(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::InputKeyboardButtonUrlAuth(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::InputKeyboardButtonUserProfile(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::InputKeyboardButtonRequestPeer(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::RequestPoll(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::UserProfile(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::WebView(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::SimpleWebView(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::RequestPeer(b) => b.text.as_str(),
-        tl::enums::KeyboardButton::Copy(b) => b.text.as_str(),
-    }
-}
-
-fn keyboard_button_raw_kind(button: &tl::enums::KeyboardButton) -> &'static str {
-    match button {
-        tl::enums::KeyboardButton::Button(_) => "Button",
-        tl::enums::KeyboardButton::Url(_) => "Url",
-        tl::enums::KeyboardButton::Callback(_) => "Callback",
-        tl::enums::KeyboardButton::RequestPhone(_) => "RequestPhone",
-        tl::enums::KeyboardButton::RequestGeoLocation(_) => "RequestGeoLocation",
-        tl::enums::KeyboardButton::SwitchInline(_) => "SwitchInline",
-        tl::enums::KeyboardButton::Game(_) => "Game",
-        tl::enums::KeyboardButton::Buy(_) => "Buy",
-        tl::enums::KeyboardButton::UrlAuth(_) => "UrlAuth",
-        tl::enums::KeyboardButton::InputKeyboardButtonUrlAuth(_) => "InputKeyboardButtonUrlAuth",
-        tl::enums::KeyboardButton::InputKeyboardButtonUserProfile(_) => {
-            "InputKeyboardButtonUserProfile"
+        tl::enums::KeyboardButton::Button(b) => (b.text.as_str(), "Button"),
+        tl::enums::KeyboardButton::Url(b) => (b.text.as_str(), "Url"),
+        tl::enums::KeyboardButton::Callback(b) => (b.text.as_str(), "Callback"),
+        tl::enums::KeyboardButton::RequestPhone(b) => (b.text.as_str(), "RequestPhone"),
+        tl::enums::KeyboardButton::RequestGeoLocation(b) => (b.text.as_str(), "RequestGeoLocation"),
+        tl::enums::KeyboardButton::SwitchInline(b) => (b.text.as_str(), "SwitchInline"),
+        tl::enums::KeyboardButton::Game(b) => (b.text.as_str(), "Game"),
+        tl::enums::KeyboardButton::Buy(b) => (b.text.as_str(), "Buy"),
+        tl::enums::KeyboardButton::UrlAuth(b) => (b.text.as_str(), "UrlAuth"),
+        tl::enums::KeyboardButton::InputKeyboardButtonUrlAuth(b) => {
+            (b.text.as_str(), "InputKeyboardButtonUrlAuth")
         }
-        tl::enums::KeyboardButton::InputKeyboardButtonRequestPeer(_) => {
-            "InputKeyboardButtonRequestPeer"
+        tl::enums::KeyboardButton::InputKeyboardButtonUserProfile(b) => {
+            (b.text.as_str(), "InputKeyboardButtonUserProfile")
         }
-        tl::enums::KeyboardButton::RequestPoll(_) => "RequestPoll",
-        tl::enums::KeyboardButton::UserProfile(_) => "UserProfile",
-        tl::enums::KeyboardButton::WebView(_) => "WebView",
-        tl::enums::KeyboardButton::SimpleWebView(_) => "SimpleWebView",
-        tl::enums::KeyboardButton::RequestPeer(_) => "RequestPeer",
-        tl::enums::KeyboardButton::Copy(_) => "Copy",
+        tl::enums::KeyboardButton::InputKeyboardButtonRequestPeer(b) => {
+            (b.text.as_str(), "InputKeyboardButtonRequestPeer")
+        }
+        tl::enums::KeyboardButton::RequestPoll(b) => (b.text.as_str(), "RequestPoll"),
+        tl::enums::KeyboardButton::UserProfile(b) => (b.text.as_str(), "UserProfile"),
+        tl::enums::KeyboardButton::WebView(b) => (b.text.as_str(), "WebView"),
+        tl::enums::KeyboardButton::SimpleWebView(b) => (b.text.as_str(), "SimpleWebView"),
+        tl::enums::KeyboardButton::RequestPeer(b) => (b.text.as_str(), "RequestPeer"),
+        tl::enums::KeyboardButton::Copy(b) => (b.text.as_str(), "Copy"),
     }
 }
 

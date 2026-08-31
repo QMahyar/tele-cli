@@ -172,22 +172,7 @@ fn validate_username_arg(raw: Option<&str>) -> TeleResult<()> {
 }
 
 fn strip_username_prefixes(raw: &str) -> &str {
-    let mut s = raw;
-    for scheme in ["https://", "http://"] {
-        if let Some(rest) = s.strip_prefix(scheme) {
-            s = rest;
-        }
-    }
-    for prefix in ["t.me/", "telegram.me/"] {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            s = rest;
-        }
-    }
-    for sep in ['/', '?', '#'] {
-        if let Some(head) = s.split(sep).next() {
-            s = head;
-        }
-    }
+    let s = crate::entities::strip_link_prefixes(raw);
     s.strip_prefix('@').unwrap_or(s)
 }
 

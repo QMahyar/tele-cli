@@ -525,7 +525,7 @@ fn checked_fallback_ref(id: i64) -> Option<PeerRef> {
     }
 }
 
-fn parse_username(raw: &str) -> &str {
+pub(crate) fn strip_link_prefixes(raw: &str) -> &str {
     let mut s = raw;
     for scheme in ["https://", "http://"] {
         if let Some(rest) = s.strip_prefix(scheme) {
@@ -542,6 +542,11 @@ fn parse_username(raw: &str) -> &str {
             s = head;
         }
     }
+    s
+}
+
+fn parse_username(raw: &str) -> &str {
+    let s = crate::entities::strip_link_prefixes(raw);
     s.strip_prefix('@').unwrap_or(s)
 }
 
@@ -568,20 +573,15 @@ fn log_stale_cache_retry(id: i64, e: &InvocationError) {
 static EVICTED_PEERS: LazyLock<Mutex<BTreeSet<i64>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
-fn evict_peer(id: i64) {
-    if let Ok(mut set) = EVICTED_PEERS.lock() {
-        set.insert(id);
-    }
-}
-
 fn is_evicted(id: i64) -> bool {
     EVICTED_PEERS.lock().is_ok_and(|set| set.contains(&id))
 }
 
 fn evict_stale_peers(id: i64) {
-    evict_peer(id);
-    let raw = if id < 0 { negative_id_raw(id) } else { id };
-    evict_peer(raw);
+    if let Ok(mut set) = EVICTED_PEERS.lock() {
+        set.insert(id);
+        set.insert(if id < 0 { negative_id_raw(id) } else { id });
+    }
 }
 
 fn stale_or_invalid_peer_error() -> crate::error::TeleError {

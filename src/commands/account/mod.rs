@@ -2287,22 +2287,6 @@ impl From<&SessionsWebParams> for SessionsWebArgs {
     }
 }
 
-fn validate_serve_status(_args: &AccountStatusArgs) -> TeleResult<()> {
-    Ok(())
-}
-
-fn validate_serve_ttl_get(_args: &TtlGetArgs) -> TeleResult<()> {
-    Ok(())
-}
-
-fn validate_serve_sessions_list(_args: &SessionsListArgs) -> TeleResult<()> {
-    Ok(())
-}
-
-fn validate_serve_sessions_web(_args: &SessionsWebArgs) -> TeleResult<()> {
-    Ok(())
-}
-
 fn validate_serve_ttl_set(args: &TtlSetArgs) -> TeleResult<()> {
     let parsed = i32::try_from(args.days)
         .map_err(|_| TeleError::Usage("--days must be between 1 and 365".to_string()))?;
@@ -2312,42 +2296,6 @@ fn validate_serve_ttl_set(args: &TtlSetArgs) -> TeleResult<()> {
         )));
     }
     Ok(())
-}
-
-fn status_serve_dry_run(_args: &AccountStatusArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "would": "probe authorization status",
-    }))
-}
-
-fn ttl_get_serve_dry_run(_args: &TtlGetArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "would": "show the inactive-account TTL",
-    }))
-}
-
-fn ttl_set_serve_dry_run(args: &TtlSetArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "days": args.days,
-        "would": format!("set the inactive-account TTL to {} days", args.days),
-    }))
-}
-
-fn sessions_list_serve_dry_run(_args: &SessionsListArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "would": "list device sessions",
-    }))
-}
-
-fn sessions_web_serve_dry_run(_args: &SessionsWebArgs) -> TeleResult<serde_json::Value> {
-    Ok(serde_json::json!({
-        "dry_run": true,
-        "would": "list web login sessions",
-    }))
 }
 
 pub(crate) async fn account_status_core(
@@ -2473,8 +2421,11 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "probe authorization and account-level API health",
             AccountStatusParams,
             AccountStatusArgs,
-            validate_serve_status,
-            status_serve_dry_run,
+            |_: &AccountStatusArgs| Ok::<_, TeleError>(()),
+            |_: &AccountStatusArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "would": "probe authorization status",
+            })),
             run_account_status,
             crate::commands::serve::params_schema::<AccountStatusParams>
         ),
@@ -2488,8 +2439,11 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "list active device sessions",
             SessionsListParams,
             SessionsListArgs,
-            validate_serve_sessions_list,
-            sessions_list_serve_dry_run,
+            |_: &SessionsListArgs| Ok::<_, TeleError>(()),
+            |_: &SessionsListArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "would": "list device sessions",
+            })),
             run_sessions_list,
             crate::commands::serve::params_schema::<SessionsListParams>
         ),
@@ -2503,8 +2457,11 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "list active web login sessions",
             SessionsWebParams,
             SessionsWebArgs,
-            validate_serve_sessions_web,
-            sessions_web_serve_dry_run,
+            |_: &SessionsWebArgs| Ok::<_, TeleError>(()),
+            |_: &SessionsWebArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "would": "list web login sessions",
+            })),
             run_sessions_web,
             crate::commands::serve::params_schema::<SessionsWebParams>
         ),
@@ -2518,8 +2475,11 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "show the inactive-account self-destruct TTL",
             TtlGetParams,
             TtlGetArgs,
-            validate_serve_ttl_get,
-            ttl_get_serve_dry_run,
+            |_: &TtlGetArgs| Ok::<_, TeleError>(()),
+            |_: &TtlGetArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "would": "show the inactive-account TTL",
+            })),
             run_ttl_get,
             crate::commands::serve::params_schema::<TtlGetParams>
         ),
@@ -2534,7 +2494,11 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             TtlSetParams,
             TtlSetArgs,
             validate_serve_ttl_set,
-            ttl_set_serve_dry_run,
+            |a: &TtlSetArgs| Ok::<_, TeleError>(serde_json::json!({
+                "dry_run": true,
+                "days": a.days,
+                "would": format!("set the inactive-account TTL to {} days", a.days),
+            })),
             run_ttl_set,
             crate::commands::serve::params_schema::<TtlSetParams>
         ),
