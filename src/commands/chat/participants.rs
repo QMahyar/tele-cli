@@ -265,6 +265,7 @@ pub(crate) fn validate_kick(args: &KickArgs) -> TeleResult<()> {
 
 pub(crate) async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_kick(&args)?;
+    crate::executor::require_explicit_selection("chat kick", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let ban = args.ban;

@@ -74,6 +74,48 @@ fn unknown_account_is_usage_error_and_creates_no_session() {
 }
 
 #[test]
+fn msg_delete_requires_explicit_account() {
+    let dir = appdir("delneedacct");
+    write_session(&dir, "work");
+    let (code, _out, err) = run_in(
+        &dir,
+        &["msg", "delete", "--chat", "me", "--ids", "1", "--dry-run"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(
+        err.contains("msg delete requires --account"),
+        "stderr: {err}"
+    );
+}
+
+#[test]
+fn chat_kick_requires_explicit_account() {
+    let dir = appdir("kickneedacct");
+    write_session(&dir, "work");
+    let (code, _out, err) = run_in(
+        &dir,
+        &["chat", "kick", "--chat", "me", "--user", "me", "--dry-run"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(
+        err.contains("chat kick requires --account"),
+        "stderr: {err}"
+    );
+}
+
+#[test]
+fn dialog_delete_requires_explicit_account() {
+    let dir = appdir("dialogdelneedacct");
+    write_session(&dir, "work");
+    let (code, _out, err) = run_in(&dir, &["dialog", "delete", "--chat", "me", "--dry-run"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(
+        err.contains("dialog delete requires --account"),
+        "stderr: {err}"
+    );
+}
+
+#[test]
 fn account_name_traversal_rejected() {
     let dir = appdir("traversal");
     write_session(&dir, "work");

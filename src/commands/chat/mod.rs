@@ -487,6 +487,7 @@ async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    crate::executor::require_explicit_selection("chat leave", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
