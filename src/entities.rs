@@ -1,3 +1,6 @@
+use std::collections::BTreeSet;
+use std::sync::{LazyLock, Mutex};
+
 use grammers_client::tl;
 use grammers_client::{Client, InvocationError};
 use grammers_session::storages::SqliteSession;
@@ -92,7 +95,7 @@ pub async fn resolve_peer(
                     Ok(peer) => return Ok(peer),
                     Err(e) if is_stale_cache_error(&e) => {
                         log_stale_cache_retry(id, &e);
-                        evict_stale_peers(session, id).await;
+                        evict_stale_peers(id);
                     }
                     Err(e) => return Err(crate::error::invocation_error(e)),
                 }
@@ -103,7 +106,7 @@ pub async fn resolve_peer(
                     Ok(peer) => return Ok(peer),
                     Err(e) if is_stale_cache_error(&e) => {
                         log_stale_cache_retry(id, &e);
-                        evict_stale_peers(session, id).await;
+                        evict_stale_peers(id);
                     }
                     Err(e) => return Err(crate::error::invocation_error(e)),
                 }
@@ -425,6 +428,9 @@ fn classify_target(raw: &str) -> Target {
 }
 
 async fn cached_dialog_ref<S: Session>(session: &S, id: i64) -> Option<PeerRef> {
+    if is_evicted(id) {
+        return None;
+    }
     let pid = match PeerId::from_bot_api_dialog_id(id) {
         Some(pid) => pid,
         None => return None,
@@ -460,6 +466,9 @@ fn in_peer_raw_range(raw: i64) -> bool {
 }
 
 async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRef> {
+    if is_evicted(id) || is_evicted(raw) {
+        return None;
+    }
     if id < 0 && !in_peer_raw_range(raw) {
         return None;
     }
@@ -556,53 +565,23 @@ fn log_stale_cache_retry(id: i64, e: &InvocationError) {
     );
 }
 
-async fn evict_stale_peers(session: &SqliteSession, id: i64) {
-    let mut pids = Vec::new();
-    if let Some(pid) = PeerId::from_bot_api_dialog_id(id) {
-        pids.push(pid);
-    }
-    let raw = if id < 0 { negative_id_raw(id) } else { id };
-    for pid in [PeerId::user(raw), PeerId::chat(raw), PeerId::channel(raw)]
-        .into_iter()
-        .flatten()
-    {
-        if !pids.contains(&pid) {
-            pids.push(pid);
-        }
-    }
-    for pid in pids {
-        purge_peer(session, pid).await;
+static EVICTED_PEERS: LazyLock<Mutex<BTreeSet<i64>>> =
+    LazyLock::new(|| Mutex::new(BTreeSet::new()));
+
+fn evict_peer(id: i64) {
+    if let Ok(mut set) = EVICTED_PEERS.lock() {
+        set.insert(id);
     }
 }
 
-async fn purge_peer(session: &SqliteSession, peer_id: PeerId) {
-    use std::collections::HashMap;
-    #[allow(dead_code)]
-    struct FakeDatabase(libsql::Connection);
-    #[allow(dead_code)]
-    struct FakeCache {
-        home_dc: i32,
-        dc_options: HashMap<i32, grammers_session::types::DcOption>,
-    }
-    #[allow(dead_code)]
-    struct FakeSqliteSession {
-        database: tokio::sync::Mutex<FakeDatabase>,
-        cache: std::sync::Mutex<FakeCache>,
-    }
-    const _: () =
-        assert!(std::mem::size_of::<SqliteSession>() == std::mem::size_of::<FakeSqliteSession>());
-    let fake = unsafe { &*(session as *const SqliteSession as *const FakeSqliteSession) };
-    let Some(bot_id) = peer_id.bot_api_dialog_id() else {
-        return;
-    };
-    let guard = fake.database.lock().await;
-    let _ = guard
-        .0
-        .execute(
-            "DELETE FROM peer_info WHERE peer_id = :peer_id",
-            libsql::named_params! {":peer_id": bot_id},
-        )
-        .await;
+fn is_evicted(id: i64) -> bool {
+    EVICTED_PEERS.lock().is_ok_and(|set| set.contains(&id))
+}
+
+fn evict_stale_peers(id: i64) {
+    evict_peer(id);
+    let raw = if id < 0 { negative_id_raw(id) } else { id };
+    evict_peer(raw);
 }
 
 fn stale_or_invalid_peer_error() -> crate::error::TeleError {
@@ -980,6 +959,25 @@ mod tests {
     async fn cached_ref_misses_for_unknown_peer() {
         let session = MemorySession::default();
         assert!(cached_ref(&session, 12345, 12345).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn evicted_cached_ref_returns_none() {
+        let session = MemorySession::default();
+        session
+            .cache_peer(&PeerInfo::User {
+                id: 424242,
+                auth: Some(PeerAuth::from_hash(222)),
+                bot: Some(false),
+                is_self: Some(false),
+            })
+            .await
+            .unwrap();
+        assert!(cached_ref(&session, 424242, 424242).await.is_some());
+        assert!(cached_dialog_ref(&session, 424242).await.is_some());
+        evict_stale_peers(424242);
+        assert!(cached_ref(&session, 424242, 424242).await.is_none());
+        assert!(cached_dialog_ref(&session, 424242).await.is_none());
     }
 
     #[tokio::test]
