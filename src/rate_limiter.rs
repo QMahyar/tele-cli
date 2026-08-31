@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 
 pub const PAGE_ITEMS: usize = 100;
 
@@ -90,7 +90,7 @@ impl RateLimiter {
         if deficit == 0 {
             return Instant::now();
         }
-        let frac = *self.fractional.lock().unwrap_or_else(|e| e.into_inner());
+        let frac = self.fractional.try_lock().map(|g| *g).unwrap_or(0.0);
         let needed = deficit as f64 - frac;
         if needed <= 0.0 {
             return Instant::now();
@@ -113,27 +113,51 @@ impl RateLimiter {
         if tokens >= self.capacity {
             return;
         }
-        let mut last = self.last_refill.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = match self.last_refill.try_lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
         let elapsed = last.elapsed().as_secs_f64();
         if elapsed < 0.01 {
             return;
         }
-        let mut frac = self.fractional.lock().unwrap_or_else(|e| e.into_inner());
+        let mut frac = match self.fractional.try_lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
         *frac += elapsed * self.refill_rate;
         let whole = *frac as u64;
-        if whole > 0 {
-            *frac -= whole as f64;
-            let new_tokens = tokens.saturating_add(whole).min(self.capacity);
-            let credited = new_tokens - tokens;
-            *last += Duration::from_secs_f64(credited as f64 / self.refill_rate);
-            drop(last);
-            if self
+        if whole == 0 {
+            return;
+        }
+        let mut current = self.tokens.load(Ordering::Acquire);
+        loop {
+            if current >= self.capacity {
+                return;
+            }
+            let add = whole.min(self.capacity - current);
+            if add == 0 {
+                return;
+            }
+            let new = current + add;
+            match self
                 .tokens
-                .compare_exchange(tokens, new_tokens, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
+                .compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire)
             {
-                self.needs_wait.store(false, Ordering::Release);
-                self.notify.notify_waiters();
+                Ok(_) => {
+                    *frac -= add as f64;
+                    *last += Duration::from_secs_f64(add as f64 / self.refill_rate);
+                    self.needs_wait.store(false, Ordering::Release);
+                    self.notify.notify_waiters();
+                    break;
+                }
+                Err(actual) => {
+                    current = actual;
+                    if current >= self.capacity {
+                        return;
+                    }
+                    continue;
+                }
             }
         }
     }
@@ -348,11 +372,11 @@ mod tests {
             rl.acquire().await;
         }
         assert_eq!(rl.available_tokens(), 0);
-        *rl.fractional.lock().unwrap() = 0.0;
-        *rl.last_refill.lock().unwrap() = Instant::now() - Duration::from_millis(150);
+        *rl.fractional.try_lock().unwrap() = 0.0;
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_millis(150);
         rl.maybe_refill();
         assert_eq!(rl.available_tokens(), 0);
-        let frac = *rl.fractional.lock().unwrap();
+        let frac = *rl.fractional.try_lock().unwrap();
         assert!(frac > 0.0, "remainder should accumulate, got {frac}");
     }
 }

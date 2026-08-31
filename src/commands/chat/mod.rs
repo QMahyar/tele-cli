@@ -529,10 +529,14 @@ async fn leave(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 }
                 grammers_client::peer::Peer::Group(_) => {
                     let user_id: tl::enums::InputUser = tl::types::InputUserSelf {}.into();
+                    let chat_id = peer
+                        .id()
+                        .bare_id()
+                        .ok_or_else(|| TeleError::Usage("peer id missing".to_string()))?;
                     guard
                         .client
                         .invoke(&tl::functions::messages::DeleteChatUser {
-                            chat_id: peer.id().bare_id().unwrap_or_default(),
+                            chat_id,
                             user_id,
                             revoke_history: false,
                         })
@@ -2487,10 +2491,11 @@ pub(crate) async fn chat_admin_log_core(
                 .map_err(tele_invocation)?])
         }
     };
+    let until_ts = until.map(|u| u.timestamp() as i32);
     let collected = {
         let client_ref = &shares.client;
         let channel_ref = &channel;
-        collect_admin_log(params.limit, None, move |max_id, page_limit| {
+        collect_admin_log(params.limit, until_ts, move |max_id, page_limit| {
             let q = search_q.clone();
             let filter = events_filter.clone();
             let admins = admins.clone();

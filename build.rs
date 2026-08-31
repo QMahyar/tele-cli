@@ -277,10 +277,71 @@ fn main() {
     )
     .unwrap();
     writeln!(f, "                }}").unwrap();
-    // string / bytes / TextWithEntities / complex TL types passed as strings
     writeln!(
         f,
-        r#"                else if arg.tl_type == "string" || arg.tl_type == "bytes" || arg.tl_type.starts_with("Text") || arg.tl_type == "InputPeer" || arg.tl_type == "InputChannel" || arg.tl_type == "InputUser" || arg.tl_type == "InputPhoto" || arg.tl_type == "InputFile" || arg.tl_type == "InputMedia" || arg.tl_type == "InputWebFile" {{"#
+        r#"                else if arg.tl_type == "InputPeer" || arg.tl_type == "InputUser" || arg.tl_type == "InputChannel" {{"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                    if !val.is_string() && !val.is_number() {{ return Err(TeleError::Usage(format!("--args field {{}} must be a string or integer", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(f, r#"                    if let Some(s) = val.as_str() {{"#).unwrap();
+    writeln!(
+        f,
+        r#"                        if s.trim().is_empty() {{ return Err(TeleError::Usage(format!("--args field {{}} is required (non-empty string)", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                        if s.len() > 4096 {{ return Err(TeleError::Usage(format!("--args field {{}} exceeds 4096 characters", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(f, r#"                    }}"#).unwrap();
+    writeln!(f, "                }}").unwrap();
+    writeln!(
+        f,
+        r#"                else if arg.tl_type == "Vector<InputUser>" || arg.tl_type == "Vector<InputPeer>" || arg.tl_type == "Vector<InputChannel>" {{"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                    let arr = val.as_array().ok_or_else(|| TeleError::Usage(format!("--args field {{}} must be an array", arg.name)))?;"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                    if arr.is_empty() {{ return Err(TeleError::Usage(format!("--args field {{}} must be a non-empty array", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(f, r#"                    for item in arr {{"#).unwrap();
+    writeln!(
+        f,
+        r#"                        if !item.is_string() && !item.is_number() {{ return Err(TeleError::Usage(format!("--args field {{}} must contain only strings or integers", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                        if let Some(s) = item.as_str() {{"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                            if s.trim().is_empty() {{ return Err(TeleError::Usage(format!("--args field {{}} must contain non-empty strings", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                            if s.len() > 4096 {{ return Err(TeleError::Usage(format!("--args field {{}} exceeds 4096 characters", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(f, r#"                        }}"#).unwrap();
+    writeln!(f, r#"                    }}"#).unwrap();
+    writeln!(f, "                }}").unwrap();
+    writeln!(
+        f,
+        r#"                else if arg.tl_type == "string" || arg.tl_type == "bytes" || arg.tl_type.starts_with("Text") || arg.tl_type == "InputPhoto" || arg.tl_type == "InputFile" || arg.tl_type == "InputMedia" || arg.tl_type == "InputWebFile" {{"#
     )
     .unwrap();
     writeln!(
@@ -290,9 +351,42 @@ fn main() {
     .unwrap();
     writeln!(
         f,
-        r#"                    if !arg.optional && val.as_str().is_some_and(|s| s.trim().is_empty()) {{ return Err(TeleError::Usage(format!("--args field {{}} is required (non-empty string)", arg.name))); }}"#
+        r#"                    if val.as_str().is_some_and(|s| s.trim().is_empty()) {{ return Err(TeleError::Usage(format!("--args field {{}} is required (non-empty string)", arg.name))); }}"#
     )
     .unwrap();
+    writeln!(
+        f,
+        r#"                    if val.as_str().is_some_and(|s| s.len() > 4096) {{ return Err(TeleError::Usage(format!("--args field {{}} exceeds 4096 characters", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(f, "                }}").unwrap();
+    writeln!(
+        f,
+        r#"                else if arg.tl_type == "Vector<string>" || arg.tl_type == "Vector<bytes>" {{"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                    let arr = val.as_array().ok_or_else(|| TeleError::Usage(format!("--args field {{}} must be an array", arg.name)))?;"#
+    )
+    .unwrap();
+    writeln!(f, r#"                    for item in arr {{"#).unwrap();
+    writeln!(
+        f,
+        r#"                        let s = item.as_str().ok_or_else(|| TeleError::Usage(format!("--args field {{}} must contain only strings", arg.name)))?;"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                        if s.trim().is_empty() {{ return Err(TeleError::Usage(format!("--args field {{}} must contain non-empty strings", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(
+        f,
+        r#"                        if s.len() > 4096 {{ return Err(TeleError::Usage(format!("--args field {{}} exceeds 4096 characters", arg.name))); }}"#
+    )
+    .unwrap();
+    writeln!(f, r#"                    }}"#).unwrap();
     writeln!(f, "                }}").unwrap();
     // int
     writeln!(f, r#"                else if arg.tl_type == "int" {{"#).unwrap();

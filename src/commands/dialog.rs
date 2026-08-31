@@ -179,8 +179,6 @@ pub(crate) async fn dialog_list_core(
     while count < params.limit {
         match iter.next().await.map_err(tele_invocation)? {
             Some(dialog) => {
-                seen += 1;
-                shares.rate_limiter.acquire_for_items(seen).await;
                 if !is_dialog_row(&dialog.raw) {
                     continue;
                 }
@@ -188,13 +186,15 @@ pub(crate) async fn dialog_list_core(
                     tl::enums::Dialog::Dialog(d) => d,
                     tl::enums::Dialog::Folder(_) => continue,
                 };
+                if !matches_folder(&dialog.raw, folder) {
+                    continue;
+                }
+                seen += 1;
+                shares.rate_limiter.acquire_for_items(seen).await;
                 let draft = match &d.draft {
                     Some(tl::enums::DraftMessage::Message(dm)) => dm.message.clone(),
                     _ => String::new(),
                 };
-                if !matches_folder(&dialog.raw, folder) {
-                    continue;
-                }
                 let last = dialog
                     .last_message
                     .as_ref()
@@ -334,7 +334,7 @@ async fn dialog_list_folder_core(
                     tl::enums::Message::Message(m) => {
                         let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
                             .map(|d| d.to_rfc3339());
-                        if idx == 0 {
+                        if last_msg_date.is_none() {
                             last_msg_date = Some(m.date);
                             last_msg_id = Some(m.id);
                         }
@@ -343,14 +343,13 @@ async fn dialog_list_folder_core(
                     tl::enums::Message::Service(m) => {
                         let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
                             .map(|d| d.to_rfc3339());
-                        if idx == 0 {
+                        if last_msg_date.is_none() {
                             last_msg_date = Some(m.date);
                             last_msg_id = Some(m.id);
                         }
                         (String::new(), dt)
                     }
                 };
-                // ensure last msg tracking uses actual last processed dialog's msg if not set yet
                 if last_msg_date.is_none() {
                     match &raw_msg {
                         tl::enums::Message::Message(m) => {
@@ -366,12 +365,12 @@ async fn dialog_list_folder_core(
                 }
                 (txt, date)
             } else {
+                if last_msg_date.is_none() {
+                    last_msg_date = Some(0);
+                    last_msg_id = Some(0);
+                }
                 (String::new(), None)
             };
-            // fallback last tracking if no msg found, use dialog's last values for pagination
-            if last_msg_date.is_none() {
-                // keep previous offsets
-            }
             rows.push(dialog_row(
                 d,
                 crate::serialize::peer_key(peer),
@@ -383,7 +382,7 @@ async fn dialog_list_folder_core(
                 break;
             }
         }
-        if rows.len() as u32 >= limit || is_last {
+        if (dialogs.len() as i32) < fetch || rows.len() as u32 >= limit || is_last {
             break;
         }
         exclude_pinned = true;
@@ -1092,6 +1091,11 @@ impl From<&DeleteParams> for DeleteArgs {
 
 pub(crate) fn validate_list(args: &ListArgs) -> TeleResult<()> {
     validate_limit(args.limit, 10_000, "limit")?;
+    if let Some(v) = args.folder {
+        if v != 0 && v != 1 {
+            return Err(TeleError::Usage("--folder must be 0 or 1".to_string()));
+        }
+    }
     Ok(())
 }
 

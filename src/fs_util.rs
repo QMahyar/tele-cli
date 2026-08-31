@@ -2,6 +2,12 @@ use std::path::Path;
 
 pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
     if path.exists() {
+        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "refusing to follow symlink at {}",
+                path.display()
+            )));
+        }
         #[cfg(unix)]
         restrict(path, 0o700)?;
         #[cfg(windows)]
@@ -15,7 +21,23 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
             path.display()
         ))
     })?;
-    let tmp = parent.join(format!(".{}_tmp", stem.to_string_lossy()));
+    let rand: u16 = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        std::process::id().hash(&mut h);
+        std::time::SystemTime::now().hash(&mut h);
+        h.finish() as u16
+    };
+    let tmp = parent.join(format!(
+        ".{}_tmp-{}-{}",
+        stem.to_string_lossy(),
+        std::process::id(),
+        rand
+    ));
+    if std::fs::symlink_metadata(&tmp).is_ok() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
     std::fs::create_dir_all(&tmp)?;
     #[cfg(unix)]
     restrict(&tmp, 0o700)?;
@@ -26,6 +48,15 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
         Err(e) => {
             let _ = std::fs::remove_dir_all(&tmp);
             if e.kind() == std::io::ErrorKind::AlreadyExists {
+                if std::fs::symlink_metadata(path)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    return Err(std::io::Error::other(format!(
+                        "refusing to follow symlink at {}",
+                        path.display()
+                    )));
+                }
                 #[cfg(unix)]
                 restrict(path, 0o700)?;
                 #[cfg(windows)]

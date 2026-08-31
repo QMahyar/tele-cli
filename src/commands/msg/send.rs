@@ -95,7 +95,11 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
     if args.caption.as_ref().is_some_and(|c| c.trim().is_empty()) {
         return Err(TeleError::Usage("--caption must not be empty".to_string()));
     }
-    if args.caption.is_some() && args.files.is_empty() {
+    if args.caption.is_some()
+        && args.files.is_empty()
+        && args.copy_from.is_none()
+        && args.url.is_none()
+    {
         return Err(TeleError::Usage("--caption requires --file".to_string()));
     }
     if args.noforwards && (!args.files.is_empty() || args.url.is_some() || args.copy_from.is_some())

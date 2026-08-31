@@ -411,7 +411,11 @@ pub(crate) async fn list_core(
         .await
         .map_err(tele_invocation)?;
     let users = match raw {
-        tl::enums::contacts::Contacts::NotModified => Vec::new(),
+        tl::enums::contacts::Contacts::NotModified => {
+            return Err(TeleError::Other(
+                "contacts not modified: server returned NotModified for hash 0".to_string(),
+            ))
+        }
         tl::enums::contacts::Contacts::Contacts(contacts) => contacts.users,
     };
     let mut rows = Vec::new();

@@ -65,13 +65,15 @@ struct Cli {
         long,
         short = 'q',
         global = true,
-        help = "quiet: only [error] lines on stderr"
+        conflicts_with = "verbose",
+        help = "quiet: only [error] lines on stderr (overrides -v/TELE_LOG)"
     )]
     quiet: bool,
     #[arg(
         long,
         short = 'v',
         global = true,
+        conflicts_with = "quiet",
         action = clap::ArgAction::Count,
         help = "verbose stderr logs (-vv = debug)"
     )]
@@ -330,7 +332,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
             if e.is_broken_pipe() {
                 return error::EXIT_OK;
             }
-            output::log_line("error", e.message());
+            output::log_line("error", &e.message());
             if output::machine_mode(flags.json, flags.jsonl) {
                 let envelope = output::Envelope::failed(flags.dry_run, &flags.command, e.as_json());
                 let value = serde_json::to_value(&envelope).expect("envelope serializes");

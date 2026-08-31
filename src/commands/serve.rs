@@ -28,6 +28,7 @@ const SERVE_INTAKE_CAPACITY: usize = 64;
 const MUTATE_QUEUE_CAPACITY: usize = 64;
 const READ_QUEUE_CAPACITY: usize = 64;
 const READ_POOL_SIZE: usize = 2;
+const RESPONSE_CAPACITY: usize = 64;
 
 pub(crate) const OP_TIMEOUT_SIMPLE: Duration = Duration::from_secs(30);
 pub(crate) const OP_TIMEOUT_PAGINATED: Duration = Duration::from_secs(120);
@@ -105,14 +106,16 @@ pub(crate) enum Lane {
 pub(crate) struct JobCompletionGuard {
     pub(crate) id: u64,
     pub(crate) op: &'static str,
-    pub(crate) responses: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    pub(crate) responses: tokio::sync::mpsc::Sender<serde_json::Value>,
     pub(crate) completed: bool,
 }
 
 impl Drop for JobCompletionGuard {
     fn drop(&mut self) {
         if !self.completed {
-            let _ = self.responses.send(undelivered_envelope(self.id, self.op));
+            let _ = self
+                .responses
+                .try_send(undelivered_envelope(self.id, self.op));
         }
     }
 }
@@ -551,29 +554,16 @@ async fn execute_job(job: Job) -> serde_json::Value {
     value
 }
 
-type JobQueue = std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Job>>>;
-
 async fn job_worker(
-    jobs: JobQueue,
-    responses: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    mut jobs: tokio::sync::mpsc::Receiver<Job>,
+    responses: tokio::sync::mpsc::Sender<serde_json::Value>,
 ) {
-    loop {
-        let next = {
-            let mut queue = jobs.lock().await;
-            queue.recv().await
-        };
-        let Some(job) = next else {
-            break;
-        };
+    while let Some(job) = jobs.recv().await {
         let value = execute_job(job).await;
-        if responses.send(value).is_err() {
+        if responses.send(value).await.is_err() {
             break;
         }
     }
-}
-
-fn job_queue(receiver: tokio::sync::mpsc::Receiver<Job>) -> JobQueue {
-    std::sync::Arc::new(tokio::sync::Mutex::new(receiver))
 }
 
 fn validate_no_params(op: &str, params: &serde_json::Value) -> Result<(), serde_json::Value> {
@@ -669,50 +659,57 @@ pub(crate) fn apply_confirm_gate(
 async fn dispatch_action(
     shares: &ServeShares,
     mutations: &tokio::sync::mpsc::Sender<Job>,
-    reads: &tokio::sync::mpsc::Sender<Job>,
-    responses: &tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    reads: &[tokio::sync::mpsc::Sender<Job>],
+    read_counter: &std::sync::atomic::AtomicUsize,
+    responses: &tokio::sync::mpsc::Sender<serde_json::Value>,
     id: u64,
     op: &str,
     params: serde_json::Value,
     resync_requested: &mut bool,
 ) -> TeleResult<()> {
     if op == "ping" {
-        let _ = responses.send(response_ok(id, serde_json::json!({ "pong": true })));
+        let _ = responses
+            .send(response_ok(id, serde_json::json!({ "pong": true })))
+            .await;
         return Ok(());
     }
     if op == "stream.resync" {
         if let Err(error) = validate_no_params(op, &params) {
-            let _ = responses.send(response_err(Some(id), error));
+            let _ = responses.send(response_err(Some(id), error)).await;
             return Ok(());
         }
         *resync_requested = true;
-        let _ = responses.send(response_ok(id, serde_json::json!({ "resync": "started" })));
+        let _ = responses
+            .send(response_ok(id, serde_json::json!({ "resync": "started" })))
+            .await;
         return Ok(());
     }
     if op == "ops.list" {
         if let Err(error) = validate_no_params(op, &params) {
-            let _ = responses.send(response_err(Some(id), error));
+            let _ = responses.send(response_err(Some(id), error)).await;
             return Ok(());
         }
-        let _ = responses.send(response_ok(id, ops_list_data()));
+        let _ = responses.send(response_ok(id, ops_list_data())).await;
         return Ok(());
     }
     let Some(route) = find_route(op) else {
-        let _ = responses.send(response_err(Some(id), not_implemented(op)));
+        let _ = responses
+            .send(response_err(Some(id), not_implemented(op)))
+            .await;
         return Ok(());
     };
     let mut raw = params;
     if let Err(error) = apply_confirm_gate(op, route.destructive, route.planner, &mut raw) {
-        let _ = responses.send(response_err(Some(id), error));
+        let _ = responses.send(response_err(Some(id), error)).await;
         return Ok(());
     }
     match (route.planner)(op, raw) {
         Err(error) => {
-            let _ = responses.send(response_err(Some(id), error));
+            let _ = responses.send(response_err(Some(id), error)).await;
             Ok(())
         }
         Ok(Plan::DryRun(data)) => {
-            let _ = responses.send(response_ok(id, data));
+            let _ = responses.send(response_ok(id, data)).await;
             Ok(())
         }
         Ok(Plan::Execute(raw)) => {
@@ -728,11 +725,19 @@ async fn dispatch_action(
                     completed: false,
                 },
             };
-            let queue = match route.lane {
-                Lane::Mutate => mutations,
-                Lane::Read => reads,
+            let send_res = match route.lane {
+                Lane::Mutate => mutations.send(job).await,
+                Lane::Read => {
+                    let idx = read_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        % reads.len().max(1);
+                    if reads.is_empty() {
+                        Err(tokio::sync::mpsc::error::SendError(job))
+                    } else {
+                        reads[idx].send(job).await
+                    }
+                }
             };
-            if queue.send(job).await.is_err() {
+            if send_res.is_err() {
                 output::log_line("warn", "serve: op queue closed before dispatch");
             }
             Ok(())
@@ -841,7 +846,7 @@ const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn drain_and_flush(
     workers: &mut Vec<tokio::task::JoinHandle<()>>,
-    response_rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    response_rx: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
 ) -> TeleResult<()> {
     let deadline = tokio::time::sleep(DRAIN_BUDGET);
     tokio::pin!(deadline);
@@ -933,20 +938,19 @@ async fn serve_connection(
     }
     let shares = guard.shares();
     let (mutations, mutation_rx) = tokio::sync::mpsc::channel::<Job>(MUTATE_QUEUE_CAPACITY);
-    let (reads, read_rx) = tokio::sync::mpsc::channel::<Job>(READ_QUEUE_CAPACITY);
-    let (response_tx, mut response_rx) =
-        tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-    let mut workers = Vec::new();
-    workers.push(tokio::spawn(job_worker(
-        job_queue(mutation_rx),
-        response_tx.clone(),
-    )));
-    let shared_reads = job_queue(read_rx);
+    let mut read_senders = Vec::with_capacity(READ_POOL_SIZE);
+    let mut read_receivers = Vec::with_capacity(READ_POOL_SIZE);
     for _ in 0..READ_POOL_SIZE {
-        workers.push(tokio::spawn(job_worker(
-            std::sync::Arc::clone(&shared_reads),
-            response_tx.clone(),
-        )));
+        let (tx, rx) = tokio::sync::mpsc::channel::<Job>(READ_QUEUE_CAPACITY);
+        read_senders.push(tx);
+        read_receivers.push(rx);
+    }
+    let (response_tx, mut response_rx) =
+        tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
+    let mut workers = Vec::new();
+    workers.push(tokio::spawn(job_worker(mutation_rx, response_tx.clone())));
+    for rx in read_receivers {
+        workers.push(tokio::spawn(job_worker(rx, response_tx.clone())));
     }
     let (dispatch_tx, mut dispatch_rx) =
         tokio::sync::mpsc::unbounded_channel::<(u64, String, serde_json::Value)>();
@@ -954,14 +958,17 @@ async fn serve_connection(
     let disp_response_tx = response_tx.clone();
     let disp_shares = shares.clone();
     let disp_mutations = mutations.clone();
-    let disp_reads = reads.clone();
+    let disp_read_senders = read_senders.clone();
+    let disp_read_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let disp_read_counter_clone = std::sync::Arc::clone(&disp_read_counter);
     let dispatcher = tokio::spawn(async move {
         let mut resync_requested = false;
         while let Some((id, op, params)) = dispatch_rx.recv().await {
             let _ = dispatch_action(
                 &disp_shares,
                 &disp_mutations,
-                &disp_reads,
+                &disp_read_senders,
+                &disp_read_counter_clone,
                 &disp_response_tx,
                 id,
                 &op,
@@ -1010,7 +1017,7 @@ async fn serve_connection(
                 output::log_line("info", "serve: stdin closed, shutting down");
                 drop(dispatch_tx);
                 drop(mutations);
-                drop(reads);
+                drop(read_senders);
                 drop(main_response_tx);
                 let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
                 drain_and_flush(&mut workers, &mut response_rx).await?;
@@ -1019,11 +1026,11 @@ async fn serve_connection(
             }
             Tick::Line(line) => match parse_incoming(&line) {
                 Err(error) => {
-                    let _ = main_response_tx.send(response_err(None, error));
+                    let _ = main_response_tx.try_send(response_err(None, error));
                 }
                 Ok(ServeIn::Hello { protocol }) => {
                     let _ = protocol;
-                    let _ = main_response_tx.send(hello_out(
+                    let _ = main_response_tx.try_send(hello_out(
                         name,
                         Some(identity.clone()),
                         last_seq_of(seq),
@@ -1040,18 +1047,27 @@ async fn serve_connection(
                 Err(e) if e.is_broken_pipe() => {
                     drop(dispatch_tx);
                     drop(mutations);
-                    drop(reads);
+                    drop(read_senders);
                     drop(main_response_tx);
                     drain_and_flush(&mut workers, &mut response_rx).await?;
                     guard.close().await;
                     return Ok(ConnExit::Eof);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // TODO: ensure guard cleanup on non-broken-pipe emit errors
+                    drop(dispatch_tx);
+                    drop(mutations);
+                    drop(read_senders);
+                    drop(main_response_tx);
+                    drain_and_flush(&mut workers, &mut response_rx).await?;
+                    guard.close().await;
+                    return Err(e);
+                }
             },
             Tick::Resync => {
                 drop(dispatch_tx);
                 drop(mutations);
-                drop(reads);
+                drop(read_senders);
                 drop(main_response_tx);
                 drain_and_flush(&mut workers, &mut response_rx).await?;
                 guard.close().await;
@@ -1062,7 +1078,7 @@ async fn serve_connection(
                     drop(dispatch_tx);
                     dispatcher.abort();
                     drop(mutations);
-                    drop(reads);
+                    drop(read_senders);
                     drop(main_response_tx);
                     for w in &mut workers {
                         w.abort();
@@ -1074,7 +1090,7 @@ async fn serve_connection(
                 drop(dispatch_tx);
                 dispatcher.abort();
                 drop(mutations);
-                drop(reads);
+                drop(read_senders);
                 drop(main_response_tx);
                 for w in &mut workers {
                     w.abort();
@@ -1127,7 +1143,7 @@ async fn serve_connection(
                     if e.is_broken_pipe() {
                         drop(dispatch_tx);
                         drop(mutations);
-                        drop(reads);
+                        drop(read_senders);
                         drop(main_response_tx);
                         drain_and_flush(&mut workers, &mut response_rx).await?;
                         guard.close().await;
@@ -1512,7 +1528,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_queued_job_emits_stream_down_envelope_without_running_future() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
         let job = Job {
             id: 12,
             op: "msg get",
@@ -1538,7 +1554,7 @@ mod tests {
 
     #[tokio::test]
     async fn completed_job_disarms_guard_so_no_duplicate_envelope() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
         let job = Job {
             id: 15,
             op: "msg get",
@@ -1562,11 +1578,11 @@ mod tests {
     async fn aborted_job_worker_emits_single_failure_envelope_for_in_flight_job() {
         let (mutation_tx, mutation_rx) = tokio::sync::mpsc::channel::<Job>(4);
         let (response_tx, mut response_rx) =
-            tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+            tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
         let worker_tx = response_tx.clone();
         let guard_tx = response_tx.clone();
         drop(response_tx);
-        let worker = tokio::spawn(job_worker(job_queue(mutation_rx), worker_tx));
+        let worker = tokio::spawn(job_worker(mutation_rx, worker_tx));
         let job = Job {
             id: 21,
             op: "story send",
@@ -2339,7 +2355,7 @@ mod tests {
     }
 
     fn scripted_job(id: u64, delay_ms: u64, timeout: Option<Duration>) -> Job {
-        let (tx, _) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let (tx, _) = tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
         Job {
             id,
             op: "msg send",
@@ -2358,7 +2374,7 @@ mod tests {
     }
 
     async fn next_response(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        rx: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
     ) -> serde_json::Value {
         tokio::time::timeout(Duration::from_secs(10), rx.recv())
             .await
@@ -2369,29 +2385,25 @@ mod tests {
     #[tokio::test]
     async fn mutate_lane_preserves_submission_order_reads_run_concurrently() {
         let (mutation_tx, mutation_rx) = tokio::sync::mpsc::channel::<Job>(8);
-        let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Job>(8);
         let (response_tx, mut response_rx) =
-            tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-        let mut workers = vec![tokio::spawn(job_worker(
-            job_queue(mutation_rx),
-            response_tx.clone(),
-        ))];
-        let shared_reads = job_queue(read_rx);
-        for _ in 0..READ_POOL_SIZE {
-            workers.push(tokio::spawn(job_worker(
-                std::sync::Arc::clone(&shared_reads),
-                response_tx.clone(),
-            )));
-        }
+            tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
+        let (read_tx_a, read_rx_a) = tokio::sync::mpsc::channel::<Job>(8);
+        let (read_tx_b, read_rx_b) = tokio::sync::mpsc::channel::<Job>(8);
+        let workers = vec![
+            tokio::spawn(job_worker(mutation_rx, response_tx.clone())),
+            tokio::spawn(job_worker(read_rx_a, response_tx.clone())),
+            tokio::spawn(job_worker(read_rx_b, response_tx.clone())),
+        ];
         drop(response_tx);
 
         mutation_tx.send(scripted_job(1, 90, None)).await.unwrap();
         mutation_tx.send(scripted_job(2, 1, None)).await.unwrap();
         mutation_tx.send(scripted_job(3, 1, None)).await.unwrap();
-        read_tx.send(scripted_job(4, 100, None)).await.unwrap();
-        read_tx.send(scripted_job(5, 100, None)).await.unwrap();
+        read_tx_a.send(scripted_job(4, 100, None)).await.unwrap();
+        read_tx_b.send(scripted_job(5, 100, None)).await.unwrap();
         drop(mutation_tx);
-        drop(read_tx);
+        drop(read_tx_a);
+        drop(read_tx_b);
 
         let started = std::time::Instant::now();
         let mut arrivals = Vec::new();
@@ -2431,7 +2443,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_job_passes_core_outcomes_through_unbounded_reads() {
-        let (tx1, _) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let (tx1, _) = tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
         let ok_job = Job {
             id: 7,
             op: "msg download",
@@ -2449,7 +2461,7 @@ mod tests {
         assert_eq!(value["id"], 7);
         assert_eq!(value["data"]["bytes"], 11);
 
-        let (tx2, _) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+        let (tx2, _) = tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
         let err_job = Job {
             id: 8,
             op: "msg download",

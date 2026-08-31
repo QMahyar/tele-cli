@@ -35,7 +35,7 @@ impl TeleError {
         }
     }
 
-    pub fn message(&self) -> &str {
+    pub fn message(&self) -> String {
         match self {
             TeleError::Usage(m)
             | TeleError::Auth(m)
@@ -44,15 +44,8 @@ impl TeleError {
             | TeleError::Rpc(m, ..)
             | TeleError::TaskPanic(m)
             | TeleError::Timeout(m)
-            | TeleError::Other(m) => {
-                let scrubbed = scrub(m.clone());
-                if scrubbed == *m {
-                    m.as_str()
-                } else {
-                    Box::leak(scrubbed.into_boxed_str())
-                }
-            }
-            TeleError::BrokenPipe => "output stream closed",
+            | TeleError::Other(m) => scrub(m.clone()),
+            TeleError::BrokenPipe => "output stream closed".to_string(),
         }
     }
 
@@ -92,7 +85,7 @@ impl TeleError {
 
 impl std::fmt::Display for TeleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.message())
+        f.write_str(&self.message())
     }
 }
 
@@ -103,7 +96,8 @@ static PHONE_PLUS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\+\d{7,15}
 static FORMATTED_PHONE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\+?\d[\d\s\-\(\)]{5,30}\d").unwrap());
 static LONG_TOKEN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{40,}").unwrap());
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{32,}").unwrap());
+static HEX32_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{32,}\b").unwrap());
 static QR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").unwrap());
 static PASSWORD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(password\s*[:=]\s*)\S+").unwrap());
@@ -159,7 +153,7 @@ fn scrub_phones(s: String) -> String {
         .into_owned()
 }
 
-fn scrub(s: String) -> String {
+pub(crate) fn scrub(s: String) -> String {
     let mut out = scrub_phones(s);
     for key in ["TELE_API_HASH", "TELE_API_ID"] {
         if let Ok(v) = std::env::var(key) {
@@ -193,6 +187,7 @@ fn scrub(s: String) -> String {
         }
     }
     out = LONG_TOKEN_RE.replace_all(&out, "[REDACTED]").into_owned();
+    out = HEX32_RE.replace_all(&out, "[REDACTED]").into_owned();
     out = QR_RE.replace_all(&out, "[REDACTED]").into_owned();
     out = PASSWORD_RE.replace_all(&out, "${1}[REDACTED]").into_owned();
     out

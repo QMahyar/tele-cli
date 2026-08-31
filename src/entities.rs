@@ -148,6 +148,41 @@ pub async fn resolve_peer(
                     if let Some(e) = last_err {
                         return Err(crate::error::invocation_error(e));
                     }
+                } else if !is_channel_class(id) {
+                    let mut candidates: Vec<PeerRef> = Vec::new();
+                    candidates.push(pref);
+                    if let Some(pid) = PeerId::channel(raw) {
+                        let _ = pid;
+                        candidates.push(
+                            tl::types::InputPeerChannel {
+                                channel_id: raw,
+                                access_hash: 0,
+                            }
+                            .into(),
+                        );
+                    }
+                    let mut last_err: Option<grammers_client::InvocationError> = None;
+                    for cand in candidates {
+                        match client.resolve_peer(cand).await {
+                            Ok(peer) => return Ok(peer),
+                            Err(grammers_client::InvocationError::Dropped) => {
+                                last_err = Some(grammers_client::InvocationError::Dropped);
+                                continue;
+                            }
+                            Err(e)
+                                if e.is("PEER_ID_INVALID")
+                                    || e.is("CHANNEL_INVALID")
+                                    || e.is("CHAT_ID_INVALID") =>
+                            {
+                                last_err = Some(e);
+                                continue;
+                            }
+                            Err(e) => return Err(crate::error::invocation_error(e)),
+                        }
+                    }
+                    if let Some(e) = last_err {
+                        return Err(crate::error::invocation_error(e));
+                    }
                 }
                 return client
                     .resolve_peer(pref)
@@ -347,11 +382,18 @@ enum Target {
 
 fn classify_target(raw: &str) -> Target {
     let t = raw.trim();
-    if let Some(digits) = t
-        .strip_prefix('+')
-        .map(|p| p.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
-    {
-        return Target::Phone(digits);
+    if let Some(rest) = t.strip_prefix('+') {
+        let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return Target::Phone(digits);
+        }
+        if digits.len() <= 15
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ' ' || c == '-')
+        {
+            return Target::Phone(digits);
+        }
     }
     if let Ok(id) = t.parse::<i64>() {
         return Target::Numeric(id);

@@ -60,7 +60,8 @@ pub fn log_line(level: &str, message: &str) {
     if lv < min {
         return;
     }
-    let _ = writeln!(std::io::stderr(), "[{eff}] {message}");
+    let scrubbed = crate::error::scrub(message.to_string());
+    let _ = writeln!(std::io::stderr(), "[{eff}] {scrubbed}");
 }
 
 pub fn print_json(value: &serde_json::Value) -> crate::error::TeleResult<()> {
@@ -399,4 +400,3 @@ mod tests {
         assert!(out.contains('x') && out.contains('y'), "stdout: {out}");
     }
 }
-

@@ -44,7 +44,11 @@ pub(crate) fn stats_percent(v: &tl::enums::StatsPercentValue) -> serde_json::Val
 }
 
 pub(crate) fn looks_like_image(path: &str) -> bool {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     matches!(
         ext.as_str(),
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "heic"

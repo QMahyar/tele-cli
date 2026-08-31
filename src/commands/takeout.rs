@@ -356,9 +356,11 @@ async fn run_export(
     }
     let contacts_path = dir.join("contacts.json");
     let contacts_json = serde_json::to_string_pretty(&contacts)?;
-    tokio::task::spawn_blocking(move || crate::fs_util::write_file_private(&contacts_path, contacts_json.as_bytes()))
-        .await
-        .map_err(|e| TeleError::Other(e.to_string()))??;
+    tokio::task::spawn_blocking(move || {
+        crate::fs_util::write_file_private(&contacts_path, contacts_json.as_bytes())
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))??;
 
     let mut dialogs = Vec::new();
     let messages_path = dir.join("messages.jsonl");
@@ -579,9 +581,11 @@ async fn run_export(
         .map_err(|e| TeleError::Other(e.to_string()))??;
     let dialogs_path = dir.join("dialogs.json");
     let dialogs_json = serde_json::to_string_pretty(&dialogs)?;
-    tokio::task::spawn_blocking(move || crate::fs_util::write_file_private(&dialogs_path, dialogs_json.as_bytes()))
-        .await
-        .map_err(|e| TeleError::Other(e.to_string()))??;
+    tokio::task::spawn_blocking(move || {
+        crate::fs_util::write_file_private(&dialogs_path, dialogs_json.as_bytes())
+    })
+    .await
+    .map_err(|e| TeleError::Other(e.to_string()))??;
     Ok(serde_json::json!({
         "dir": dir.to_string_lossy(),
         "contacts": contacts.len(),

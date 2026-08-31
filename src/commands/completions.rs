@@ -14,19 +14,9 @@ pub enum Shell {
 }
 
 fn completion_bin_name() -> String {
-    std::env::args()
-        .next()
-        .and_then(|p| {
-            std::path::PathBuf::from(p)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_owned())
-        })
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| env!("CARGO_BIN_NAME").to_string())
+    bin_name_from_arg(std::env::args().next().as_deref())
 }
 
-#[allow(dead_code)]
 fn bin_name_from_arg(arg: Option<&str>) -> String {
     arg.and_then(|p| {
         std::path::Path::new(p)

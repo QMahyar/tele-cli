@@ -84,6 +84,9 @@ pub(crate) async fn download_core(
     })
     .await
     .map_err(|e| TeleError::Other(e.to_string()))?;
+    if msg.media().is_none() {
+        return Err(TeleError::Usage("message has no media".to_string()));
+    }
     let temp = download_temp_path(&path);
     tokio::task::spawn_blocking({
         let temp = temp.clone();
@@ -91,9 +94,6 @@ pub(crate) async fn download_core(
     })
     .await
     .map_err(|e| TeleError::Other(e.to_string()))??;
-    if msg.media().is_none() {
-        return Err(TeleError::Usage("message has no media".to_string()));
-    }
     let ok = match chunk_size_kb {
         Some(kb) => {
             let media = msg.media().expect("media checked above");

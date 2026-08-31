@@ -3,6 +3,13 @@
 sessions/
 *.session
 *.session-journal
+*.session.export
+*.session.lock
+*.session-wal
+*.session-shm
+pending/
+*.login.json
+*.phone.json
 .pi/
 dist/
 .opencode/

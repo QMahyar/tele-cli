@@ -305,10 +305,10 @@ pub fn load_config(path: Option<&std::path::Path>) -> TeleResult<AppConfig> {
 }
 
 pub fn config_display_name(cfg_path: &std::path::Path) -> String {
-    cfg_path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "config.toml".to_string())
+    if cfg_path.as_os_str().is_empty() {
+        return "config.toml".to_string();
+    }
+    cfg_path.display().to_string()
 }
 
 fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
@@ -1474,4 +1474,3 @@ mod tests {
         }
     }
 }
-

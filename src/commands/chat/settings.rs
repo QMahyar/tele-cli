@@ -465,13 +465,21 @@ pub(crate) fn discussion_pair(
     pub(crate) const NOT_A_DISCUSSION_PEER: &str =
         "discussion links need one broadcast channel and one supergroup";
     let x_broadcast = match &x {
-        grammers_client::peer::Peer::Channel(_) => Ok(true),
-        grammers_client::peer::Peer::Group(g) if g.is_megagroup() => Ok(false),
+        grammers_client::peer::Peer::Channel(c) => Ok(c.raw.broadcast),
+        grammers_client::peer::Peer::Group(g) => match &g.raw {
+            tl::enums::Chat::Channel(c) => Ok(c.broadcast),
+            tl::enums::Chat::ChannelForbidden(c) => Ok(c.broadcast),
+            _ => Err(TeleError::Usage(NOT_A_DISCUSSION_PEER.to_string())),
+        },
         _ => Err(TeleError::Usage(NOT_A_DISCUSSION_PEER.to_string())),
     }?;
     let y_broadcast = match &y {
-        grammers_client::peer::Peer::Channel(_) => Ok(true),
-        grammers_client::peer::Peer::Group(g) if g.is_megagroup() => Ok(false),
+        grammers_client::peer::Peer::Channel(c) => Ok(c.raw.broadcast),
+        grammers_client::peer::Peer::Group(g) => match &g.raw {
+            tl::enums::Chat::Channel(c) => Ok(c.broadcast),
+            tl::enums::Chat::ChannelForbidden(c) => Ok(c.broadcast),
+            _ => Err(TeleError::Usage(NOT_A_DISCUSSION_PEER.to_string())),
+        },
         _ => Err(TeleError::Usage(NOT_A_DISCUSSION_PEER.to_string())),
     }?;
     match (x_broadcast, y_broadcast) {

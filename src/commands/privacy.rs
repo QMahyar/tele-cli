@@ -1,6 +1,8 @@
 use clap::{Args, Subcommand};
 use grammers_client::tl;
 
+use std::collections::{HashMap, HashSet};
+
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
 use crate::entities;
@@ -149,16 +151,123 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+#[allow(dead_code)]
+struct PrivacyFetch {
+    rules: Vec<tl::enums::PrivacyRule>,
+    users: Vec<tl::enums::User>,
+    chats: Vec<tl::enums::Chat>,
+}
+
 async fn fetch_privacy_rules(
     client: &grammers_client::Client,
     key: &tl::enums::InputPrivacyKey,
-) -> TeleResult<Vec<tl::enums::PrivacyRule>> {
-    let rules: tl::enums::account::PrivacyRules = client
+) -> TeleResult<PrivacyFetch> {
+    let res: tl::enums::account::PrivacyRules = client
         .invoke(&tl::functions::account::GetPrivacy { key: key.clone() })
         .await
         .map_err(tele_invocation)?;
-    let tl::enums::account::PrivacyRules::Rules(rules) = rules;
-    Ok(rules.rules)
+    let tl::enums::account::PrivacyRules::Rules(r) = res;
+    let tl::types::account::PrivacyRules {
+        rules,
+        chats,
+        users,
+    } = r;
+    Ok(PrivacyFetch {
+        rules,
+        users,
+        chats,
+    })
+}
+
+fn build_user_map(users: &[tl::enums::User]) -> HashMap<i64, tl::enums::InputUser> {
+    let mut m = HashMap::new();
+    for u in users {
+        match u {
+            tl::enums::User::User(u) => {
+                m.insert(
+                    u.id,
+                    tl::enums::InputUser::User(tl::types::InputUser {
+                        user_id: u.id,
+                        access_hash: u.access_hash.unwrap_or(0),
+                    }),
+                );
+            }
+            tl::enums::User::Empty(e) => {
+                m.insert(
+                    e.id,
+                    tl::enums::InputUser::User(tl::types::InputUser {
+                        user_id: e.id,
+                        access_hash: 0,
+                    }),
+                );
+            }
+        }
+    }
+    m
+}
+
+async fn ensure_user_map_complete(
+    client: &grammers_client::Client,
+    session: &grammers_session::storages::SqliteSession,
+    map: &mut HashMap<i64, tl::enums::InputUser>,
+    ids: &[i64],
+) {
+    for &id in ids {
+        if map.contains_key(&id) {
+            continue;
+        }
+        if let Ok(peer) = entities::resolve_peer(client, session, &id.to_string()).await {
+            if let Ok(input) = entities::input_user(&peer).await {
+                map.insert(id, input);
+                continue;
+            }
+        }
+        if let Ok(users) = client
+            .invoke(&tl::functions::users::GetUsers {
+                id: vec![tl::enums::InputUser::User(tl::types::InputUser {
+                    user_id: id,
+                    access_hash: 0,
+                })],
+            })
+            .await
+        {
+            for u in users {
+                if let tl::enums::User::User(uu) = u {
+                    if uu.id == id {
+                        map.insert(
+                            id,
+                            tl::enums::InputUser::User(tl::types::InputUser {
+                                user_id: id,
+                                access_hash: uu.access_hash.unwrap_or(0),
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn dedupe_input_users(users: Vec<tl::enums::InputUser>) -> Vec<tl::enums::InputUser> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for u in users {
+        let uid = match &u {
+            tl::enums::InputUser::User(x) => x.user_id,
+            tl::enums::InputUser::Empty => continue,
+            _ => continue,
+        };
+        if seen.insert(uid) {
+            out.push(u);
+        }
+    }
+    out
+}
+
+fn dedupe_ids(mut ids: Vec<i64>) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    ids.retain(|id| seen.insert(*id));
+    ids
 }
 
 fn dry_run_get_data(key: Option<String>) -> serde_json::Value {
@@ -337,11 +446,24 @@ fn privacy_rule_summary(r: &tl::enums::PrivacyRule) -> serde_json::Value {
     }
 }
 
+#[allow(dead_code)]
 fn input_user_from_id(user_id: i64) -> tl::enums::InputUser {
     tl::enums::InputUser::User(tl::types::InputUser {
         user_id,
         access_hash: 0,
     })
+}
+
+fn input_user_from_map(
+    user_id: i64,
+    map: &HashMap<i64, tl::enums::InputUser>,
+) -> tl::enums::InputUser {
+    map.get(&user_id)
+        .cloned()
+        .unwrap_or(tl::enums::InputUser::User(tl::types::InputUser {
+            user_id,
+            access_hash: 0,
+        }))
 }
 
 struct PrivacyTargets {
@@ -351,9 +473,18 @@ struct PrivacyTargets {
     disallow_chats: Vec<i64>,
 }
 
+#[allow(dead_code)]
 fn merge_privacy_rules(
     base: &[tl::enums::PrivacyRule],
     targets: &PrivacyTargets,
+) -> Vec<tl::enums::InputPrivacyRule> {
+    merge_privacy_rules_with_map(base, targets, &HashMap::new())
+}
+
+fn merge_privacy_rules_with_map(
+    base: &[tl::enums::PrivacyRule],
+    targets: &PrivacyTargets,
+    user_map: &HashMap<i64, tl::enums::InputUser>,
 ) -> Vec<tl::enums::InputPrivacyRule> {
     let mut merged = Vec::with_capacity(base.len() + 4);
     let mut base_allow_user_ids: Vec<i64> = Vec::new();
@@ -377,20 +508,24 @@ fn merge_privacy_rules(
             _ => {}
         }
     }
-    let new_allow_users: Vec<tl::enums::InputUser> = targets
-        .allow_users
-        .iter()
+    let base_allow_user_ids = dedupe_ids(base_allow_user_ids);
+    let base_allow_chat_ids = dedupe_ids(base_allow_chat_ids);
+    let base_disallow_user_ids = dedupe_ids(base_disallow_user_ids);
+    let base_disallow_chat_ids = dedupe_ids(base_disallow_chat_ids);
+    let deduped_allow_targets = dedupe_input_users(targets.allow_users.clone());
+    let new_allow_users: Vec<tl::enums::InputUser> = deduped_allow_targets
+        .into_iter()
         .filter(|u| match u {
             tl::enums::InputUser::User(u) => !base_allow_user_ids.contains(&u.user_id),
             _ => true,
         })
-        .cloned()
         .collect();
     let mut merged_allow_users: Vec<tl::enums::InputUser> = base_allow_user_ids
         .iter()
-        .map(|id| input_user_from_id(*id))
+        .map(|id| input_user_from_map(*id, user_map))
         .collect();
     merged_allow_users.extend(new_allow_users);
+    merged_allow_users = dedupe_input_users(merged_allow_users);
     if !merged_allow_users.is_empty() {
         merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
             tl::types::InputPrivacyValueAllowUsers {
@@ -399,11 +534,12 @@ fn merge_privacy_rules(
         ));
     }
     let mut merged_allow_chats = base_allow_chat_ids;
-    for id in &targets.allow_chats {
-        if !merged_allow_chats.contains(id) {
-            merged_allow_chats.push(*id);
+    for id in dedupe_ids(targets.allow_chats.clone()) {
+        if !merged_allow_chats.contains(&id) {
+            merged_allow_chats.push(id);
         }
     }
+    merged_allow_chats = dedupe_ids(merged_allow_chats);
     if !merged_allow_chats.is_empty() {
         merged.push(
             tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
@@ -430,20 +566,20 @@ fn merge_privacy_rules(
             _ => {}
         }
     }
-    let new_disallow_users: Vec<tl::enums::InputUser> = targets
-        .disallow_users
-        .iter()
+    let deduped_disallow_targets = dedupe_input_users(targets.disallow_users.clone());
+    let new_disallow_users: Vec<tl::enums::InputUser> = deduped_disallow_targets
+        .into_iter()
         .filter(|u| match u {
             tl::enums::InputUser::User(u) => !base_disallow_user_ids.contains(&u.user_id),
             _ => true,
         })
-        .cloned()
         .collect();
     let mut merged_disallow_users: Vec<tl::enums::InputUser> = base_disallow_user_ids
         .iter()
-        .map(|id| input_user_from_id(*id))
+        .map(|id| input_user_from_map(*id, user_map))
         .collect();
     merged_disallow_users.extend(new_disallow_users);
+    merged_disallow_users = dedupe_input_users(merged_disallow_users);
     if !merged_disallow_users.is_empty() {
         merged.push(tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
             tl::types::InputPrivacyValueDisallowUsers {
@@ -463,11 +599,12 @@ fn merge_privacy_rules(
         }
     }
     let mut merged_disallow_chats = base_disallow_chat_ids;
-    for id in &targets.disallow_chats {
-        if !merged_disallow_chats.contains(id) {
-            merged_disallow_chats.push(*id);
+    for id in dedupe_ids(targets.disallow_chats.clone()) {
+        if !merged_disallow_chats.contains(&id) {
+            merged_disallow_chats.push(id);
         }
     }
+    merged_disallow_chats = dedupe_ids(merged_disallow_chats);
     if !merged_disallow_chats.is_empty() {
         merged.push(
             tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
@@ -617,8 +754,9 @@ pub(crate) async fn get_core(
             continue;
         };
         shares.rate_limiter.acquire().await;
-        let rules = fetch_privacy_rules(&shares.client, &tl_key).await?;
-        let summary = rules
+        let fetched = fetch_privacy_rules(&shares.client, &tl_key).await?;
+        let summary = fetched
+            .rules
             .iter()
             .map(privacy_rule_summary)
             .collect::<Vec<serde_json::Value>>();
@@ -648,14 +786,45 @@ pub(crate) async fn set_core(
         let peer = entities::resolve_peer(&shares.client, shares.session.as_ref(), target).await?;
         disallow_users.push(entities::input_user(&peer).await.map_err(tele_invocation)?);
     }
-    let base = fetch_privacy_rules(&shares.client, &tl_key).await?;
+    allow_users = dedupe_input_users(allow_users);
+    disallow_users = dedupe_input_users(disallow_users);
+    let fetched = fetch_privacy_rules(&shares.client, &tl_key).await?;
+    let mut user_map = build_user_map(&fetched.users);
+    let mut missing: Vec<i64> = Vec::new();
+    for r in &fetched.rules {
+        match r {
+            tl::enums::PrivacyRule::PrivacyValueAllowUsers(v) => {
+                for id in &v.users {
+                    if !user_map.contains_key(id) {
+                        missing.push(*id);
+                    }
+                }
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => {
+                for id in &v.users {
+                    if !user_map.contains_key(id) {
+                        missing.push(*id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    missing = dedupe_ids(missing);
+    ensure_user_map_complete(
+        &shares.client,
+        shares.session.as_ref(),
+        &mut user_map,
+        &missing,
+    )
+    .await;
     let targets = PrivacyTargets {
         allow_users,
-        allow_chats: params.allow_chat.unwrap_or_default(),
+        allow_chats: dedupe_ids(params.allow_chat.unwrap_or_default()),
         disallow_users,
-        disallow_chats: params.deny_chat.unwrap_or_default(),
+        disallow_chats: dedupe_ids(params.deny_chat.unwrap_or_default()),
     };
-    let rules = merge_privacy_rules(&base, &targets);
+    let rules = merge_privacy_rules_with_map(&fetched.rules, &targets, &user_map);
     let _: tl::enums::account::PrivacyRules = shares
         .client
         .invoke(&tl::functions::account::SetPrivacy { key: tl_key, rules })

@@ -130,7 +130,8 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
         }
     }
     if let Some(bio) = &args.bio {
-        if bio.trim().chars().count() > MAX_BIO_CHARS {
+        let trimmed = bio.trim();
+        if trimmed.chars().count() > MAX_BIO_CHARS {
             return Err(TeleError::Usage("bio exceeds 70 characters".to_string()));
         }
     }
@@ -143,7 +144,11 @@ fn validate_set(args: &SetArgs) -> TeleResult<()> {
 
 fn validate_profile_photo(path: &str) -> TeleResult<()> {
     validate_upload_path(path)?;
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp") {
         return Err(TeleError::Usage(format!(
             "profile photo must be jpg, png, or webp (got .{ext})"
@@ -677,7 +682,7 @@ pub(crate) async fn set_core(
 ) -> TeleResult<serde_json::Value> {
     shares.rate_limiter.acquire().await;
     let new_name = params.name.clone();
-    let new_bio = params.bio.clone();
+    let new_bio = params.bio.clone().map(|b| b.trim().to_string());
     let photo_path = params.photo.clone();
     let username_raw = params.username.clone();
     if new_name.is_some() || new_bio.is_some() {
@@ -685,12 +690,16 @@ pub(crate) async fn set_core(
             Some(n) => split_full_name(n),
             None => (None, None),
         };
+        let about = match &new_bio {
+            Some(b) if b.trim().is_empty() => Some(String::new()),
+            other => other.clone(),
+        };
         let _: tl::enums::User = shares
             .client
             .invoke(&tl::functions::account::UpdateProfile {
                 first_name: first,
                 last_name: last,
-                about: new_bio.clone(),
+                about,
             })
             .await
             .map_err(tele_invocation)?;

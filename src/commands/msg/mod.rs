@@ -290,8 +290,6 @@ pub(crate) async fn delete_core(
 pub(crate) fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(args.from.as_str(), "from")?;
     crate::chat_target::ChatTarget::parse_flag(args.to.as_str(), "to")?;
-    crate::chat_target::ChatTarget::parse_flag(args.from.as_str(), "from")?;
-    crate::chat_target::ChatTarget::parse_flag(args.to.as_str(), "to")?;
     if args.ids.is_empty() {
         return Err(TeleError::Usage("--ids required".to_string()));
     }
@@ -1210,9 +1208,6 @@ pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
     if !args.global {
         crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     }
-    if !args.chat.trim().is_empty() {
-        crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
-    }
     crate::commands::validate_limit(args.limit, 10_000, "limit").map(|_| ())
 }
 
@@ -1566,6 +1561,12 @@ pub(crate) async fn click_core(
     params: ClickParams,
 ) -> TeleResult<serde_json::Value> {
     shares.rate_limiter.acquire().await;
+    if params.button.is_none() && params.button_index.is_none() && params.button_contains.is_none()
+    {
+        return Err(TeleError::Usage(
+            "--button/--button-index/--button-contains required".to_string(),
+        ));
+    }
     let id = params.id;
     let chat_target = params.chat.clone();
     let selector = click_selector(&ClickArgs::from(&params));
@@ -4439,7 +4440,7 @@ mod tests {
     #[test]
     fn validate_search_rejects_zero_limit() {
         let args = SearchArgs {
-                chat: "me".to_string(),
+            chat: "me".to_string(),
             query: "q".to_string(),
             limit: 0,
             global: false,

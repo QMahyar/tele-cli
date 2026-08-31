@@ -2210,7 +2210,14 @@ fn contact_list_dry_run_json_contract() {
     write_session(&dir, "work");
     let (code, out, err) = run_in(
         &dir,
-        &["contact", "list", "--account", "work", "--dry-run", "--json"],
+        &[
+            "contact",
+            "list",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
+        ],
     );
     assert_eq!(code, 0, "stderr: {err}");
     let v = parse_json(&out);
@@ -2256,14 +2263,7 @@ fn dialog_list_dry_run_json_contract() {
     write_session(&dir, "work");
     let (code, out, err) = run_in(
         &dir,
-        &[
-            "dialog",
-            "list",
-            "--account",
-            "work",
-            "--dry-run",
-            "--json",
-        ],
+        &["dialog", "list", "--account", "work", "--dry-run", "--json"],
     );
     assert_eq!(code, 0, "stderr: {err}");
     let v = parse_json(&out);
@@ -2301,5 +2301,8 @@ fn topic_list_dry_run_json_contract() {
     let data = &v["results"][0]["data"];
     assert_eq!(data["dry_run"], serde_json::json!(true));
     assert_eq!(data["chat"], serde_json::json!("@test"));
-    assert_eq!(data["would"], serde_json::json!("list topics in chat @test"));
+    assert_eq!(
+        data["would"],
+        serde_json::json!("list topics in chat @test")
+    );
 }

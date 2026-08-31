@@ -106,10 +106,13 @@ pub(crate) async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) ->
                         "--role/--search filters require a channel or supergroup; basic groups list all members".to_string(),
                     ));
                 }
+                let chat_id = chat
+                    .id()
+                    .bare_id()
+                    .ok_or_else(|| TeleError::Usage("peer id missing".to_string()))?;
                 let full = guard
                     .client
-                    .invoke(&tl::functions::messages::GetFullChat {
-                        chat_id: chat.id().bare_id().unwrap_or_default()})
+                    .invoke(&tl::functions::messages::GetFullChat { chat_id })
                     .await
                     .map_err(tele_invocation)?;
                 let tl::enums::messages::ChatFull::Full(full) = full;

@@ -120,10 +120,25 @@ async fn collect_outcomes(
             let outcome = match handle.await {
                 Ok(Ok(outcome)) => outcome,
                 Ok(Err(e)) => failed_outcome(name.clone(), e),
-                Err(_) => failed_outcome(
+                Err(e) if e.is_cancelled() => failed_outcome(
                     name.clone(),
-                    TeleError::TaskPanic("account task panicked".to_string()),
+                    TeleError::Other("account task cancelled".to_string()),
                 ),
+                Err(e) => {
+                    let msg = match e.try_into_panic() {
+                        Ok(payload) => {
+                            if let Some(s) = payload.downcast_ref::<&str>() {
+                                (*s).to_string()
+                            } else if let Some(s) = payload.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "account task panicked".to_string()
+                            }
+                        }
+                        Err(_) => "account task panicked".to_string(),
+                    };
+                    failed_outcome(name.clone(), TeleError::TaskPanic(msg))
+                }
             };
             outcomes.push(outcome);
         }

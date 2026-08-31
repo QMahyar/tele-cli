@@ -18,7 +18,9 @@ impl log::Log for StderrLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let _ = writeln!(std::io::stderr(), "[{}] {}", record.level(), record.args());
+            let raw = format!("{}", record.args());
+            let scrubbed = crate::error::scrub(raw);
+            let _ = writeln!(std::io::stderr(), "[{}] {}", record.level(), scrubbed);
         }
     }
 

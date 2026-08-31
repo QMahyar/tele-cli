@@ -1250,6 +1250,14 @@ async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
     Ok(())
 }
 
+fn flood_wait_secs(err: &TeleError) -> Option<std::time::Duration> {
+    match err {
+        TeleError::Rpc(_, 420, _, Some(s)) => Some(std::time::Duration::from_secs(u64::from(*s))),
+        TeleError::Invocation(_, Some(s)) => Some(std::time::Duration::from_secs(u64::from(*s))),
+        _ => None,
+    }
+}
+
 pub(crate) async fn handle_stream_failure(
     account: &str,
     err: TeleError,
@@ -1274,14 +1282,18 @@ pub(crate) async fn handle_stream_failure(
             )),
         });
     }
-    let delay = next_delay(*failures);
+    let base_delay = next_delay(*failures);
+    let delay = match flood_wait_secs(&err) {
+        Some(wait) => base_delay.max(wait),
+        None => base_delay,
+    };
     let sleep_for = match deadline {
         Some(d) => delay.min(d.saturating_duration_since(std::time::Instant::now())),
         None => delay,
     };
     output::log_line(
         "error",
-        &reconnect_message(account, *failures, delay.as_secs() as u32, err.message()),
+        &reconnect_message(account, *failures, delay.as_secs() as u32, &err.message()),
     );
     tokio::time::sleep(sleep_for).await;
     Ok(())

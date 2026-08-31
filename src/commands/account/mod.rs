@@ -713,6 +713,7 @@ pub(crate) async fn login_flow(
             client::qr_login(
                 &guard.client,
                 &mut guard.updates,
+                &guard.rate_limiter,
                 credentials,
                 args.qr_timeout_secs,
                 |uri| {

@@ -418,21 +418,16 @@ struct ForumTopicsPage {
 }
 
 fn next_cursor(prev: ForumCursor, page: &[tl::enums::ForumTopic]) -> ForumCursor {
-    let Some(last) = page.last() else {
-        return prev;
-    };
-    match last {
-        tl::enums::ForumTopic::Topic(t) => ForumCursor {
-            date: t.date,
-            message_id: t.top_message,
-            topic_id: t.id,
-        },
-        tl::enums::ForumTopic::Deleted(t) => ForumCursor {
-            date: prev.date,
-            message_id: prev.message_id,
-            topic_id: t.id,
-        },
+    for topic in page.iter().rev() {
+        if let tl::enums::ForumTopic::Topic(t) = topic {
+            return ForumCursor {
+                date: t.date,
+                message_id: t.top_message,
+                topic_id: t.id,
+            };
+        }
     }
+    prev
 }
 
 async fn collect_forum_topics<F, Fut>(
@@ -446,7 +441,11 @@ where
     let mut topics = Vec::new();
     let mut cursor = ForumCursor::default();
     loop {
-        let remaining = limit.saturating_sub(topics.len() as u32);
+        let visible = topics
+            .iter()
+            .filter(|t| matches!(t, tl::enums::ForumTopic::Topic(_)))
+            .count() as u32;
+        let remaining = limit.saturating_sub(visible);
         if remaining == 0 {
             break;
         }
@@ -1627,11 +1626,11 @@ mod tests {
                 (ForumCursor::default(), 5),
                 (
                     ForumCursor {
-                        date: 0,
-                        message_id: 0,
-                        topic_id: 9
+                        date: 10,
+                        message_id: 100,
+                        topic_id: 10
                     },
-                    3
+                    4
                 ),
             ]
         );

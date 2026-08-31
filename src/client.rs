@@ -124,6 +124,7 @@ const QR_MAX_TRANSIENT_ERRORS: usize = 3;
 pub async fn qr_login(
     client: &Client,
     updates: &mut mpsc::UnboundedReceiver<UpdatesLike>,
+    rate_limiter: &RateLimiter,
     creds: &crate::config::Credentials,
     timeout_secs: u64,
     mut on_token: impl FnMut(&str),
@@ -144,66 +145,75 @@ pub async fn qr_login(
 
     let overall_deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let mut transient_errors = 0usize;
-    loop {
-        if std::time::Instant::now() >= overall_deadline {
-            anyhow::bail!("QR login timed out after {timeout_secs}s");
-        }
-        let response = client
-            .invoke(&tl::functions::auth::ExportLoginToken {
-                api_id: creds.api_id,
-                api_hash: creds.api_hash.clone(),
-                except_ids: Vec::new(),
-            })
-            .await?;
+    let result: anyhow::Result<()> = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            rate_limiter.acquire().await;
+            if std::time::Instant::now() >= overall_deadline {
+                anyhow::bail!("QR login timed out after {timeout_secs}s");
+            }
+            let response = client
+                .invoke(&tl::functions::auth::ExportLoginToken {
+                    api_id: creds.api_id,
+                    api_hash: creds.api_hash.clone(),
+                    except_ids: Vec::new(),
+                })
+                .await?;
 
-        match response {
-            enums::auth::LoginToken::Token(t) => {
-                let token = base64_url_encode(&t.token);
-                let uri = format!("tg://login?token={token}");
-                on_token(&uri);
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
-                loop {
-                    if std::time::Instant::now() >= overall_deadline {
-                        anyhow::bail!("QR login timed out after {timeout_secs}s");
-                    }
-                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                    if remaining.is_zero() {
-                        break;
-                    }
-                    match tokio::time::timeout(remaining, stream.next_raw()).await {
-                        Ok(Ok((enums::Update::LoginToken, _, _))) => break,
-                        Ok(Ok(_)) => continue,
-                        Ok(Err(e)) => {
-                            transient_errors += 1;
-                            if transient_errors > QR_MAX_TRANSIENT_ERRORS {
-                                return Err(e.into());
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                500u64 * transient_errors as u64,
-                            ))
-                            .await;
+            match response {
+                enums::auth::LoginToken::Token(t) => {
+                    let token = base64_url_encode(&t.token);
+                    let uri = format!("tg://login?token={token}");
+                    on_token(&uri);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+                    loop {
+                        if std::time::Instant::now() >= overall_deadline {
+                            anyhow::bail!("QR login timed out after {timeout_secs}s");
                         }
-                        Err(_) => break,
+                        let remaining =
+                            deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        match tokio::time::timeout(remaining, stream.next_raw()).await {
+                            Ok(Ok((enums::Update::LoginToken, _, _))) => break,
+                            Ok(Ok(_)) => continue,
+                            Ok(Err(e)) => {
+                                transient_errors += 1;
+                                if transient_errors > QR_MAX_TRANSIENT_ERRORS {
+                                    return Err(e.into());
+                                }
+                                tokio::time::sleep(Duration::from_millis(
+                                    500u64 * transient_errors as u64,
+                                ))
+                                .await;
+                            }
+                            Err(_) => break,
+                        }
                     }
                 }
-            }
-            enums::auth::LoginToken::MigrateTo(migrate_to) => {
-                let imported = client
-                    .invoke_in_dc(
-                        migrate_to.dc_id,
-                        &tl::functions::auth::ImportLoginToken {
-                            token: migrate_to.token,
-                        },
-                    )
-                    .await?;
-                match imported {
-                    enums::auth::LoginToken::Success(_) => return Ok(()),
-                    _ => continue,
+                enums::auth::LoginToken::MigrateTo(migrate_to) => {
+                    rate_limiter.acquire().await;
+                    let imported = client
+                        .invoke_in_dc(
+                            migrate_to.dc_id,
+                            &tl::functions::auth::ImportLoginToken {
+                                token: migrate_to.token,
+                            },
+                        )
+                        .await?;
+                    match imported {
+                        enums::auth::LoginToken::Success(_) => return Ok(()),
+                        _ => continue,
+                    }
                 }
+                enums::auth::LoginToken::Success(_) => return Ok(()),
             }
-            enums::auth::LoginToken::Success(_) => return Ok(()),
         }
     }
+    .await;
+    *updates = mpsc::unbounded_channel().1;
+    result
 }
 
 fn base64_url_encode(bytes: &[u8]) -> String {
