@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-31
+
+### Fixed
+- Removed the `unsafe` struct-layout hack in peer-cache eviction (`entities.rs`): `purge_peer` no longer reinterpret-casts `SqliteSession` as a fake layout-matched struct to run SQL. Stale peer cache entries are now evicted in-memory via a process-global eviction set consulted by the cache lookups.
+- Replaced the hand-rolled FIPS SHA-256 in `session.rs` with the `sha2` crate (`Sha256::digest`), removing ~70 lines of hand-written compression code while keeping the same checksum output.
+- Destructive commands now require an explicit account selection: `msg delete`, `chat kick`, `chat leave`, and `dialog delete` refuse to run against all sessions implicitly and error with `requires --account <name> or --tag <tag>` unless `--account`/`--tag` is given.
+- Collapsed the four duplicated usage-error JSON-envelope blocks in `main.rs` into one `emit_usage_error(machine, dry_run, command, message)` helper.
+- Replaced 14 duplicated `match emit_row(...)` broken-pipe-handling blocks in `listen.rs` with an `emit_row_or_stop` helper plus a pure `emit_stops_stream` decision function.
+
 ## [0.6.8] - 2026-08-28
 
 ### Fixed
