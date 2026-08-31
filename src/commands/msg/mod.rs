@@ -183,6 +183,7 @@ pub(crate) fn delete_serve_dry_run(args: &DeleteArgs) -> TeleResult<serde_json::
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_delete(&args)?;
+    crate::executor::require_explicit_selection("msg delete", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {

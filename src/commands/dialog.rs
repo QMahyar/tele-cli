@@ -835,6 +835,7 @@ fn delete_dry_run_data(target: &str, revoke: bool) -> serde_json::Value {
 
 async fn delete(args: DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    crate::executor::require_explicit_selection("dialog delete", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
