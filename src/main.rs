@@ -163,11 +163,7 @@ fn main() -> std::process::ExitCode {
             let _ = e.print();
             if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
                 let hint = argv_command_hint().unwrap_or_default();
-                let error_json = serde_json::json!({"type": "UsageError", "message": strip_ansi(&e.to_string())});
-                let envelope = output::Envelope::failed(false, &hint, error_json);
-                if let Ok(v) = serde_json::to_value(&envelope) {
-                    let _ = output::print_json(&v);
-                }
+                emit_usage_error(true, false, &hint, strip_ansi(&e.to_string()));
             }
             std::process::exit(code);
         }
@@ -188,15 +184,12 @@ fn main() -> std::process::ExitCode {
     if let Some(p) = flags.parallel {
         if !(1..=32).contains(&p) {
             let message = format!("--parallel {p} must be between 1 and 32");
-            output::log_line("error", &message);
-            if output::machine_mode(flags.json, flags.jsonl) {
-                let error_json = serde_json::json!({"type": "UsageError", "message": message});
-                let envelope = output::Envelope::failed(flags.dry_run, &flags.command, error_json);
-                if let Ok(v) = serde_json::to_value(&envelope) {
-                    let _ = output::print_json(&v);
-                }
-            }
-            std::process::exit(error::EXIT_USAGE);
+            std::process::exit(emit_usage_error(
+                output::machine_mode(flags.json, flags.jsonl),
+                flags.dry_run,
+                &flags.command,
+                message,
+            ));
         }
     }
     if let Some(ref cfg_path) = flags.config_path {
@@ -205,26 +198,22 @@ fn main() -> std::process::ExitCode {
                 "config file not found: {}",
                 config::config_display_name(cfg_path)
             );
-            output::log_line("error", &message);
-            if output::machine_mode(flags.json, flags.jsonl) {
-                let error_json = serde_json::json!({"type": "UsageError", "message": message});
-                let envelope = output::Envelope::failed(flags.dry_run, &flags.command, error_json);
-                if let Ok(v) = serde_json::to_value(&envelope) {
-                    let _ = output::print_json(&v);
-                }
-            }
-            std::process::exit(error::EXIT_USAGE);
+            std::process::exit(emit_usage_error(
+                output::machine_mode(flags.json, flags.jsonl),
+                flags.dry_run,
+                &flags.command,
+                message,
+            ));
         }
     }
     if flags.json && flags.jsonl {
         let message = "--json and --jsonl are mutually exclusive; pick one";
-        output::log_line("error", message);
-        let error_json = serde_json::json!({"type": "UsageError", "message": message});
-        let envelope = output::Envelope::failed(false, &flags.command, error_json);
-        if let Ok(v) = serde_json::to_value(&envelope) {
-            let _ = output::print_json(&v);
-        }
-        std::process::exit(error::EXIT_USAGE);
+        std::process::exit(emit_usage_error(
+            true,
+            false,
+            &flags.command,
+            message.to_string(),
+        ));
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -244,6 +233,18 @@ fn main() -> std::process::ExitCode {
         .join()
         .unwrap_or(error::EXIT_ALL_FAILED);
     std::process::ExitCode::from(code.clamp(0, 255) as u8)
+}
+
+fn emit_usage_error(machine: bool, dry_run: bool, command: &str, message: String) -> i32 {
+    output::log_line("error", &message);
+    if machine {
+        let error_json = serde_json::json!({"type": "UsageError", "message": message});
+        let envelope = output::Envelope::failed(dry_run, command, error_json);
+        if let Ok(v) = serde_json::to_value(&envelope) {
+            let _ = output::print_json(&v);
+        }
+    }
+    error::EXIT_USAGE
 }
 
 pub(crate) fn command_for_completions() -> clap::Command {
