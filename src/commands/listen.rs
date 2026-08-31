@@ -740,16 +740,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
                                 if let Some(done) = album_flush(&name, &mut album) {
-                                    match emit_row(done).await {
-                                        Ok(()) => {}
-                                        Err(e) if e.is_broken_pipe() => return Ok(()),
-                                        Err(e) => {
-                                            output::log_line(
-                                                "error",
-                                                &format!("{name}: emit failed: {}", e.message()),
-                                            );
-                                        }
-                                    }
+                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
+
                                 }
                                 break;
                             }
@@ -780,16 +772,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         let update = match tick {
                             Tick::AlbumDue => {
                                 if let Some(done) = album_flush(&name, &mut album) {
-                                    match emit_row(done).await {
-                                        Ok(()) => {}
-                                        Err(e) if e.is_broken_pipe() => return Ok(()),
-                                        Err(e) => {
-                                            output::log_line(
-                                                "error",
-                                                &format!("{name}: emit failed: {}", e.message()),
-                                            );
-                                        }
-                                    }
+                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
+
                                 }
                                 continue;
                             }
@@ -803,16 +787,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     return Err(crate::error::invocation_error(e));
                                 }
                                 if let Some(done) = album_flush(&name, &mut album) {
-                                    match emit_row(done).await {
-                                        Ok(()) => {}
-                                        Err(e) if e.is_broken_pipe() => return Ok(()),
-                                        Err(e) => {
-                                            output::log_line(
-                                                "error",
-                                                &format!("{name}: emit failed: {}", e.message()),
-                                            );
-                                        }
-                                    }
+                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
+
                                 }
                                 handle_stream_failure(
                                     &name,
@@ -834,16 +810,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         }
                         if gap_on {
                             if let Some(signal) = gaps.observe(update.raw()) {
-                                match emit_row(gap_row(&name, &signal, update.state())).await {
-                                    Ok(()) => {}
-                                    Err(e) if e.is_broken_pipe() => return Ok(()),
-                                    Err(e) => {
-                                        output::log_line(
-                                            "error",
-                                            &format!("{name}: gap emit failed: {}", e.message()),
-                                        );
-                                    }
-                                }
+                                                                if emit_row_or_stop(&name, gap_row(&name, &signal, update.state())).await? { return Ok(()); }
+
                             }
                         }
                         match &update {
@@ -905,20 +873,10 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             peer,
                                             None,
                                         );
-                                        match emit_row(service_row(
+                                                                                if emit_row_or_stop(&name, service_row(
                                             &name, chat_id, svc_row, &svc.action,
-                                        ))
-                                        .await
-                                        {
-                                            Ok(()) => {}
-                                            Err(e) if e.is_broken_pipe() => return Ok(()),
-                                            Err(e) => {
-                                                output::log_line(
-                                                    "error",
-                                                    &format!("{name}: emit failed: {}", e.message()),
-                                                );
-                                            }
-                                        }
+                                        )).await? { return Ok(()); }
+
                                         continue;
                                     }
                                 }
@@ -948,19 +906,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             gid,
                                             tokio::time::Instant::now(),
                                         ) {
-                                            match emit_row(done).await {
-                                                Ok(()) => {}
-                                                Err(e) if e.is_broken_pipe() => return Ok(()),
-                                                Err(e) => {
-                                                    output::log_line(
-                                                        "error",
-                                                        &format!(
-                                                            "{name}: emit failed: {}",
-                                                            e.message()
-                                                        ),
-                                                    );
-                                                }
-                                            }
+                                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
+
                                         }
                                     }
                                     (None, _) => {
@@ -968,38 +915,17 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             continue;
                                         }
                                         if let Some(done) = album_flush(&name, &mut album) {
-                                            match emit_row(done).await {
-                                                Ok(()) => {}
-                                                Err(e) if e.is_broken_pipe() => return Ok(()),
-                                                Err(e) => {
-                                                    output::log_line(
-                                                        "error",
-                                                        &format!(
-                                                            "{name}: emit failed: {}",
-                                                            e.message()
-                                                        ),
-                                                    );
-                                                }
-                                            }
+                                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
+
                                         }
-                                        match emit_row(event_row(
+                                                                                if emit_row_or_stop(&name, event_row(
                                             "NewMessage",
                                             &name,
                                             chat_id,
                                             None,
                                             Some(row),
-                                        ))
-                                        .await
-                                        {
-                                            Ok(()) => {}
-                                            Err(e) if e.is_broken_pipe() => return Ok(()),
-                                            Err(e) => {
-                                                output::log_line(
-                                                    "error",
-                                                    &format!("{name}: emit failed: {}", e.message()),
-                                                );
-                                            }
-                                        }
+                                        )).await? { return Ok(()); }
+
                                     }
                                 }
                             }
@@ -1058,20 +984,10 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             peer,
                                             None,
                                         );
-                                        match emit_row(service_row(
+                                                                                if emit_row_or_stop(&name, service_row(
                                             &name, chat_id, svc_row, &svc.action,
-                                        ))
-                                        .await
-                                        {
-                                            Ok(()) => {}
-                                            Err(e) if e.is_broken_pipe() => return Ok(()),
-                                            Err(e) => {
-                                                output::log_line(
-                                                    "error",
-                                                    &format!("{name}: emit failed: {}", e.message()),
-                                                );
-                                            }
-                                        }
+                                        )).await? { return Ok(()); }
+
                                         continue;
                                     }
                                 }
@@ -1090,24 +1006,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     }
                                 };
                                 crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
-                                match emit_row(event_row(
+                                                                if emit_row_or_stop(&name, event_row(
                                     "MessageEdited",
                                     &name,
                                     chat_id,
                                     None,
                                     Some(row),
-                                ))
-                                .await
-                                {
-                                    Ok(()) => {}
-                                    Err(e) if e.is_broken_pipe() => return Ok(()),
-                                    Err(e) => {
-                                        output::log_line(
-                                            "error",
-                                            &format!("{name}: emit failed: {}", e.message()),
-                                        );
-                                    }
-                                }
+                                )).await? { return Ok(()); }
+
                             }
                             Update::MessageDeleted(d) => {
                                 if !events.iter().any(|e| e == "MessageDeleted") {
@@ -1128,24 +1034,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 let Some(matched) = matched else {
                                     continue;
                                 };
-                                match emit_row(event_row(
+                                                                if emit_row_or_stop(&name, event_row(
                                     "MessageDeleted",
                                     &name,
                                     sole_chat_label(&filter.chats),
                                     Some(&matched),
                                     None,
-                                ))
-                                .await
-                                {
-                                    Ok(()) => {}
-                                    Err(e) if e.is_broken_pipe() => return Ok(()),
-                                    Err(e) => {
-                                        output::log_line(
-                                            "error",
-                                            &format!("{name}: emit failed: {}", e.message()),
-                                        );
-                                    }
-                                }
+                                )).await? { return Ok(()); }
+
                             }
                             _ => {
                                 if chat_action_on {
@@ -1155,19 +1051,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
                                         }
-                                        match emit_row(row).await {
-                                            Ok(()) => {}
-                                            Err(e) if e.is_broken_pipe() => return Ok(()),
-                                            Err(e) => {
-                                                output::log_line(
-                                                    "error",
-                                                    &format!(
-                                                        "{name}: emit failed: {}",
-                                                        e.message()
-                                                    ),
-                                                );
-                                            }
-                                        }
+                                                                                if emit_row_or_stop(&name, row).await? { return Ok(()); }
+
                                         continue;
                                     }
                                 }
@@ -1178,19 +1063,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
                                         }
-                                        match emit_row(row).await {
-                                            Ok(()) => {}
-                                            Err(e) if e.is_broken_pipe() => return Ok(()),
-                                            Err(e) => {
-                                                output::log_line(
-                                                    "error",
-                                                    &format!(
-                                                        "{name}: emit failed: {}",
-                                                        e.message()
-                                                    ),
-                                                );
-                                            }
-                                        }
+                                                                                if emit_row_or_stop(&name, row).await? { return Ok(()); }
+
                                         continue;
                                     }
                                 }
@@ -1200,16 +1074,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !filter.raw_allows(update_peer(update.raw())) {
                                     continue;
                                 }
-                                match emit_row(raw_row(&name, update.raw(), update.state())).await {
-                                    Ok(()) => {}
-                                    Err(e) if e.is_broken_pipe() => return Ok(()),
-                                    Err(e) => {
-                                        output::log_line(
-                                            "error",
-                                            &format!("{name}: emit failed: {}", e.message()),
-                                        );
-                                    }
-                                }
+                                                                if emit_row_or_stop(&name, raw_row(&name, update.raw(), update.state())).await? { return Ok(()); }
+
                             }
                         }
                     }
@@ -1248,6 +1114,21 @@ async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
     .await
     .map_err(|e| TeleError::TaskPanic(e.to_string()))??;
     Ok(())
+}
+
+async fn emit_row_or_stop(account: &str, value: serde_json::Value) -> TeleResult<bool> {
+    match emit_row(value).await {
+        Ok(()) => Ok(false),
+        Err(e) if emit_stops_stream(&e) => Ok(true),
+        Err(e) => {
+            output::log_line("error", &format!("{account}: emit failed: {}", e.message()));
+            Ok(false)
+        }
+    }
+}
+
+fn emit_stops_stream(err: &TeleError) -> bool {
+    err.is_broken_pipe()
 }
 
 fn flood_wait_secs(err: &TeleError) -> Option<std::time::Duration> {
@@ -4200,6 +4081,14 @@ mod tests {
         assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
         let err2 = TeleError::Other("serialization failed".to_string());
         assert!(!err2.is_broken_pipe());
+    }
+
+    #[test]
+    fn emit_stops_stream_only_on_broken_pipe() {
+        let bp: TeleError = std::io::Error::from(std::io::ErrorKind::BrokenPipe).into();
+        assert!(emit_stops_stream(&bp));
+        let other = TeleError::Other("emit failed".to_string());
+        assert!(!emit_stops_stream(&other));
     }
 
     #[test]
