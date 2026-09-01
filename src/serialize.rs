@@ -85,6 +85,24 @@ pub fn peer_kind(peer: &Peer) -> &'static str {
     }
 }
 
+pub(crate) fn upgrade_peer_identity(row: &mut serde_json::Value, resolved_peer: &Peer) {
+    let full = peer_key(resolved_peer);
+    let needs_peer = row.get("peer").is_none_or(|v| v.get("username").is_none());
+    if needs_peer {
+        row["peer"] = full.clone();
+    }
+    if row
+        .get("sender")
+        .is_none_or(|v| v.get("username").is_none())
+    {
+        let sender_id = row.get("sender").and_then(|s| s.get("id")).cloned();
+        let peer_id = row.get("peer").and_then(|p| p.get("id")).cloned();
+        if sender_id.is_some() && sender_id == peer_id {
+            row["sender"] = full;
+        }
+    }
+}
+
 pub fn message_to_json(
     msg: &grammers_client::message::Message,
 ) -> Result<serde_json::Value, TeleError> {

@@ -469,7 +469,9 @@ pub(crate) async fn send_core(
             .send_message(chat_ref, apply_common(base))
             .await
             .map_err(tele_invocation)?;
-        return crate::serialize::message_to_json(&sent);
+        let mut row = crate::serialize::message_to_json(&sent)?;
+        crate::serialize::upgrade_peer_identity(&mut row, &chat);
+        return Ok(row);
     }
     if let Some(link) = &url {
         let base = match kind.as_deref() {
@@ -490,7 +492,9 @@ pub(crate) async fn send_core(
             .send_message(chat_ref, apply_common(base))
             .await
             .map_err(tele_invocation)?;
-        return crate::serialize::message_to_json(&sent);
+        let mut row = crate::serialize::message_to_json(&sent)?;
+        crate::serialize::upgrade_peer_identity(&mut row, &chat);
+        return Ok(row);
     }
     if files.len() > 1 {
         let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
@@ -590,13 +594,14 @@ pub(crate) async fn send_core(
         .send_message(chat_ref, msg)
         .await
         .map_err(tele_invocation)?;
-    crate::serialize::message_to_json(&sent)
+    let mut row = crate::serialize::message_to_json(&sent)?;
+    crate::serialize::upgrade_peer_identity(&mut row, &chat);
+    Ok(row)
 }
 
 pub(crate) async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_send(&args)?;
     crate::executor::require_explicit_selection("msg send", flags)?;
-    validate_send(&args)?;
     for path in &args.files {
         super::validate::validate_upload_path_inner(path, flags.dry_run)?;
     }
