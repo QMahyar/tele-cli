@@ -1,11 +1,8 @@
-#![allow(unused_imports, dead_code)]
 use clap::Subcommand;
 use grammers_client::message::InputMessage;
 
-use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
-use crate::commands::helpers::looks_like_image;
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -16,11 +13,9 @@ pub mod params;
 pub mod send;
 pub mod validate;
 
-pub(crate) use download::{
-    commit_download, create_download_temp, download, download_core, download_name,
-    download_serve_dry_run, download_temp_path, refuse_existing_download_target,
-    sanitize_download_name, sweep_stale_download_temps, validate_chunk_size_kb, validate_download,
-};
+use download::{download, download_core, download_serve_dry_run, validate_download};
+use send::{send, send_core, send_serve_dry_run};
+
 pub use params::{
     ClickArgs, DeleteArgs, DownloadArgs, EditArgs, ForwardArgs, GetArgs, PinArgs, ReactArgs,
     ReadArgs, SearchArgs, SendArgs, TypingArgs, VoteArgs,
@@ -29,15 +24,8 @@ pub(crate) use params::{
     ClickParams, DeleteParams, DownloadParams, EditParams, ForwardParams, GetParams, PinParams,
     ReactParams, ReadParams, SearchParams, SendParams, TypingParams, VoteParams,
 };
-pub(crate) use send::{
-    message_random_id, parse_schedule, send, send_core, send_dry_run_payload, send_serve_dry_run,
-    validate_send,
-};
-pub(crate) use validate::{
-    check_upload_size, is_reserved_device_name, validate_download_dir, validate_filename,
-    validate_markdown, MAX_UPLOAD_BYTES,
-};
-pub use validate::{is_sensitive_basename, validate_upload_path};
+pub(crate) use send::validate_send;
+pub use validate::validate_upload_path;
 
 #[derive(Subcommand)]
 pub enum MsgCmd {
@@ -102,7 +90,6 @@ pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Valu
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_edit(&args)?;
     crate::executor::require_explicit_selection("msg edit", flags)?;
-    validate_edit(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -310,7 +297,6 @@ pub(crate) fn forward_serve_dry_run(args: &ForwardArgs) -> TeleResult<serde_json
 async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_forward(&args)?;
     crate::executor::require_explicit_selection("msg forward", flags)?;
-    validate_forward(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -440,7 +426,6 @@ pub(crate) fn pin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Value>
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_pin(&args)?;
     crate::executor::require_explicit_selection("msg pin", flags)?;
-    validate_pin(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -571,16 +556,6 @@ fn get_target_message_id(params: &GetParams) -> TeleResult<Option<i32>> {
 
 pub(crate) fn validate_read(args: &ReadArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat").map(|_| ())
-}
-
-fn upload_error(e: std::io::Error) -> TeleError {
-    let invocation = e
-        .get_ref()
-        .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
-    match invocation {
-        Some(inv) => crate::error::invocation_error_ref(inv),
-        None => TeleError::Other(e.to_string()),
-    }
 }
 
 pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value> {
@@ -954,7 +929,6 @@ pub(crate) fn react_serve_dry_run(args: &ReactArgs) -> TeleResult<serde_json::Va
 async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_react(&args)?;
     crate::executor::require_explicit_selection("msg react", flags)?;
-    validate_react(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -1236,7 +1210,6 @@ pub(crate) fn typing_serve_dry_run(args: &TypingArgs) -> TeleResult<serde_json::
 async fn typing(args: TypingArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_typing(&args)?;
     crate::executor::require_explicit_selection("msg typing", flags)?;
-    validate_typing(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -1289,18 +1262,6 @@ struct LocatedButton {
     callback_data: Option<Vec<u8>>,
     copy_text: Option<String>,
     button_type: Option<String>,
-}
-
-impl LocatedButton {
-    fn callback(position: usize, text: String, callback_data: Vec<u8>) -> Self {
-        Self {
-            position,
-            text,
-            callback_data: Some(callback_data),
-            copy_text: None,
-            button_type: Some("callback".to_string()),
-        }
-    }
 }
 
 fn button_text(button: &serde_json::Value) -> Option<&str> {
@@ -1795,6 +1756,18 @@ pub(crate) async fn search_core(
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
+    use crate::commands::helpers::upload_error;
+    use crate::commands::msg::download::{
+        commit_download, create_download_temp, download_temp_path, refuse_existing_download_target,
+        sanitize_download_name, sweep_stale_download_temps, validate_chunk_size_kb,
+        validate_download,
+    };
+    use crate::commands::msg::params::{ClickArgs, SendArgs};
+    use crate::commands::msg::send::{message_random_id, parse_schedule, send_dry_run_payload};
+    use crate::commands::msg::validate::{
+        check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
+        validate_filename, validate_markdown, MAX_UPLOAD_BYTES,
+    };
     use grammers_session::types::PeerKind;
 
     #[test]
@@ -3812,18 +3785,6 @@ mod tests {
         }
     }
 
-    fn click_args_contains(substr: &str) -> ClickArgs {
-        ClickArgs {
-            chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
-            id: 5,
-            button: None,
-            button_index: None,
-            button_contains: Some(substr.to_string()),
-            button_data: None,
-            password: false,
-        }
-    }
-
     #[test]
     fn parse_vote_options_accepts_single_and_multiple() {
         assert_eq!(parse_vote_options("2").unwrap(), vec![2]);
@@ -4111,6 +4072,7 @@ mod tests {
         assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
     }
 
+    #[test]
     fn locate_button_finds_by_index_across_rows() {
         let found = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(1)).unwrap();
         assert_eq!(found.position, 1);

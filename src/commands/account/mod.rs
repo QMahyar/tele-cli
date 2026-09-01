@@ -1,4 +1,3 @@
-#![allow(unused_imports)]
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds;
 use crate::config;
@@ -7,19 +6,13 @@ use crate::executor::{require_explicit_selection, run_fanout, select_sessions, G
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
 use clap::{Args, Subcommand};
-use hmac::Hmac;
-use num_bigint::BigUint;
-use sha2::{Digest, Sha256, Sha512};
 use std::io::{IsTerminal, Write};
-use std::sync::Arc;
 
 mod password;
 mod phone;
 mod staged_login;
 
-pub(crate) use password::{SrpParams, NO_SRP_CHALLENGE_MSG};
 pub use phone::PhoneArgs;
-pub(crate) use staged_login::{LoginStage, StagedSignIn};
 
 pub(crate) fn refuse_interactive_with_multiple_accounts(
     command: &str,
@@ -1665,17 +1658,6 @@ async fn execute_password_action(
     }
 }
 
-#[allow(dead_code)]
-async fn fetch_has_password(client: &grammers_client::Client) -> TeleResult<bool> {
-    use grammers_client::tl::{self, enums};
-    let response = client
-        .invoke(&tl::functions::account::GetPassword {})
-        .await
-        .map_err(tele_invocation)?;
-    let enums::account::Password::Password(password) = response;
-    Ok(password.has_password)
-}
-
 pub(crate) fn single_outcome(account: &str, data: serde_json::Value) -> AccountOutcome {
     AccountOutcome {
         account: account.to_string(),
@@ -2244,66 +2226,49 @@ pub(crate) struct SessionsWebParams {
 }
 
 #[derive(Clone, Debug)]
-struct AccountStatusArgs {
-    #[allow(dead_code)]
-    dry_run: bool,
-}
+struct AccountStatusArgs;
 
 #[derive(Clone, Debug)]
-struct TtlGetArgs {
-    #[allow(dead_code)]
-    dry_run: bool,
-}
+struct TtlGetArgs;
 
 #[derive(Clone, Debug)]
 struct TtlSetArgs {
     days: i64,
-    #[allow(dead_code)]
-    dry_run: bool,
 }
 
 #[derive(Clone, Debug)]
-struct SessionsListArgs {
-    #[allow(dead_code)]
-    dry_run: bool,
-}
+struct SessionsListArgs;
 
 #[derive(Clone, Debug)]
-struct SessionsWebArgs {
-    #[allow(dead_code)]
-    dry_run: bool,
-}
+struct SessionsWebArgs;
 
 impl From<&AccountStatusParams> for AccountStatusArgs {
-    fn from(p: &AccountStatusParams) -> Self {
-        Self { dry_run: p.dry_run }
+    fn from(_: &AccountStatusParams) -> Self {
+        Self
     }
 }
 
 impl From<&TtlGetParams> for TtlGetArgs {
-    fn from(p: &TtlGetParams) -> Self {
-        Self { dry_run: p.dry_run }
+    fn from(_: &TtlGetParams) -> Self {
+        Self
     }
 }
 
 impl From<&TtlSetParams> for TtlSetArgs {
     fn from(p: &TtlSetParams) -> Self {
-        Self {
-            days: p.days,
-            dry_run: p.dry_run,
-        }
+        Self { days: p.days }
     }
 }
 
 impl From<&SessionsListParams> for SessionsListArgs {
-    fn from(p: &SessionsListParams) -> Self {
-        Self { dry_run: p.dry_run }
+    fn from(_: &SessionsListParams) -> Self {
+        Self
     }
 }
 
 impl From<&SessionsWebParams> for SessionsWebArgs {
-    fn from(p: &SessionsWebParams) -> Self {
-        Self { dry_run: p.dry_run }
+    fn from(_: &SessionsWebParams) -> Self {
+        Self
     }
 }
 
@@ -2530,7 +2495,6 @@ pub(crate) fn account_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
 mod tests {
     use super::*;
     use crate::commands::account::password::*;
-    use crate::commands::account::password::{SrpParams, NO_SRP_CHALLENGE_MSG};
     use crate::commands::account::phone::*;
     use crate::commands::account::staged_login::*;
     use crate::commands::serve::{Lane, Plan};
@@ -4097,6 +4061,7 @@ mod tests {
 
     #[test]
     fn sh_is_salt_wrapped_sha256() {
+        use sha2::{Digest, Sha256};
         let data = b"data";
         let salt = b"salt";
         let out = sh(data, salt);

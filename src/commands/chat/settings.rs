@@ -1,18 +1,11 @@
-#![allow(unused_imports)]
 use grammers_client::tl;
-use grammers_session::types::PeerInfo;
-use grammers_session::Session;
-use std::collections::HashMap;
 
-use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
-use crate::commands::helpers::{peer_id, stats_abs, stats_percent, stats_period};
 use crate::entities;
 use crate::error::tele_invocation;
 use crate::error::{TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
-use crate::output;
 
 use super::*;
 pub(crate) fn parse_on_off(value: Option<&str>) -> TeleResult<Option<bool>> {
@@ -513,7 +506,6 @@ pub(crate) async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult
     }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let to_target = parse_link_target(args.to.as_deref())?;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();

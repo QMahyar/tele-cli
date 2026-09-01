@@ -570,7 +570,7 @@ fn dedupe_key(
     Some((chat_id.unwrap_or(0), msg_id, point.pts))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn pts_from_state(state: &State) -> i32 {
     match &state.message_box {
         Some(mb) => match mb {

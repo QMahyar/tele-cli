@@ -33,17 +33,10 @@ pub mod participants;
 
 pub mod settings;
 
-#[allow(unused_imports)]
-pub use admin_log::*;
-
-#[allow(unused_imports)]
-pub use invite::*;
-
-#[allow(unused_imports)]
-pub use participants::*;
-
-#[allow(unused_imports)]
-pub use settings::*;
+use admin_log::*;
+use invite::*;
+use participants::*;
+use settings::*;
 
 #[derive(Subcommand)]
 pub enum ChatCmd {

@@ -1,8 +1,8 @@
 use grammers_client::message::InputMessage;
 
-use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::helpers::upload_error;
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -381,16 +381,6 @@ pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> se
 pub(crate) fn send_serve_dry_run(args: &SendArgs) -> TeleResult<serde_json::Value> {
     let schedule = parse_schedule(args.schedule.as_deref())?.map(|s| s as u64);
     Ok(send_dry_run_payload(args, schedule))
-}
-
-fn upload_error(e: std::io::Error) -> TeleError {
-    let invocation = e
-        .get_ref()
-        .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
-    match invocation {
-        Some(inv) => crate::error::invocation_error_ref(inv),
-        None => TeleError::Other(e.to_string()),
-    }
 }
 
 pub(crate) async fn send_core(

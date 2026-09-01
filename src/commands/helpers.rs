@@ -1,3 +1,4 @@
+use crate::error::TeleError;
 use grammers_client::tl;
 
 pub(crate) fn peer_id(peer: &tl::enums::Peer) -> i64 {
@@ -8,14 +9,13 @@ pub(crate) fn peer_id(peer: &tl::enums::Peer) -> i64 {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn peer_to_id(peer: &tl::enums::Peer) -> grammers_session::types::PeerId {
-    match peer {
-        tl::enums::Peer::User(p) => grammers_session::types::PeerId::user_unchecked(p.user_id),
-        tl::enums::Peer::Chat(p) => grammers_session::types::PeerId::chat_unchecked(p.chat_id),
-        tl::enums::Peer::Channel(p) => {
-            grammers_session::types::PeerId::channel_unchecked(p.channel_id)
-        }
+pub(crate) fn upload_error(e: std::io::Error) -> TeleError {
+    let invocation = e
+        .get_ref()
+        .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
+    match invocation {
+        Some(inv) => crate::error::invocation_error_ref(inv),
+        None => TeleError::Other(e.to_string()),
     }
 }
 

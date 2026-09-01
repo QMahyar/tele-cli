@@ -1,4 +1,3 @@
-use crate::chat_target::ChatTarget;
 use crate::client::ClientGuard;
 use crate::commands::credentials::creds_api_id;
 use crate::entities;

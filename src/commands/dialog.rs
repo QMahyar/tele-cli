@@ -45,15 +45,6 @@ pub struct ArchiveArgs {
     unarchive: bool,
 }
 
-#[derive(Args)]
-pub struct ChatArgs {
-    #[arg(
-        long,
-        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
-    )]
-    chat: String,
-}
-
 #[derive(Args, Clone)]
 pub struct DraftArgs {
     #[arg(

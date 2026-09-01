@@ -38,7 +38,7 @@ impl RateLimiter {
         })
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn unlimited() -> Arc<Self> {
         Self::new(None)
     }
@@ -162,13 +162,13 @@ impl RateLimiter {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn available_tokens(&self) -> u64 {
         self.maybe_refill();
         self.tokens.load(Ordering::Acquire)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_limited(&self) -> bool {
         self.needs_wait.load(Ordering::Acquire)
     }

@@ -1983,8 +1983,8 @@ mod tests {
     }
 
     #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
     struct EditLikeProbe {
-        #[allow(dead_code)]
         chat: String,
     }
 

@@ -151,11 +151,9 @@ async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
-#[allow(dead_code)]
 struct PrivacyFetch {
     rules: Vec<tl::enums::PrivacyRule>,
     users: Vec<tl::enums::User>,
-    chats: Vec<tl::enums::Chat>,
 }
 
 async fn fetch_privacy_rules(
@@ -172,11 +170,8 @@ async fn fetch_privacy_rules(
         chats,
         users,
     } = r;
-    Ok(PrivacyFetch {
-        rules,
-        users,
-        chats,
-    })
+    let _ = chats;
+    Ok(PrivacyFetch { rules, users })
 }
 
 fn build_user_map(users: &[tl::enums::User]) -> HashMap<i64, tl::enums::InputUser> {

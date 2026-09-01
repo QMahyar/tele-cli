@@ -1,20 +1,13 @@
-use crate::client::{self, ClientGuard};
+use crate::client::ClientGuard;
 use crate::commands::credentials::creds;
 use crate::config;
 use crate::error::{tele_invocation, TeleError, TeleResult};
-use crate::executor::{require_explicit_selection, run_fanout, select_sessions, GlobalFlags};
-use crate::output::{self, log_line, AccountOutcome, Envelope};
-use crate::session;
-use clap::{Args, Subcommand};
-use hmac::Hmac;
-use num_bigint::BigUint;
-use sha2::{Digest, Sha256, Sha512};
-use std::io::{IsTerminal, Write};
-use std::sync::Arc;
+use crate::executor::{require_explicit_selection, run_fanout, GlobalFlags};
+use crate::output::log_line;
+use clap::Args;
 
 use super::*;
 
-#[allow(unused_imports)]
 #[derive(Args)]
 pub struct PhoneArgs {
     #[arg(
@@ -43,8 +36,6 @@ pub struct PhoneArgs {
 }
 
 pub(crate) use crate::commands::account::PendingPhone;
-#[allow(dead_code)]
-pub(crate) const PENDING_PHONE_VERSION: u32 = crate::commands::account::PENDING_DOCUMENT_VERSION;
 
 pub(crate) fn save_pending_phone(pending: &PendingPhone) -> TeleResult<()> {
     save_pending_phone_under(&config::app_data_dir(), pending)

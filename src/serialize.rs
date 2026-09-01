@@ -47,7 +47,6 @@ fn message_sender_id_fallback(msg: &grammers_client::message::Message) -> Option
     }
 }
 
-#[allow(dead_code)]
 pub fn ensure_outer_peer_sender(
     row: &mut serde_json::Value,
     outer_peer: Option<PeerId>,

@@ -368,7 +368,7 @@ async fn current_photo_input_photo(
             "profile has no photo to remove".to_string(),
         ));
     };
-    crate::commands::chat::chat_photo_input_photo(photo)
+    crate::commands::chat::settings::chat_photo_input_photo(photo)
         .ok_or_else(|| TeleError::Other("profile has no removable photo to remove".to_string()))
 }
 

@@ -227,7 +227,6 @@ pub struct ResolvedTarget {
     pub msg_id: Option<i32>,
 }
 
-#[allow(dead_code)]
 pub fn parse_target(target: &str) -> crate::error::TeleResult<ResolvedTarget> {
     let t = target.trim();
     if let Some(digits) = t

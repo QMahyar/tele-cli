@@ -1,20 +1,13 @@
-use crate::client::{self, ClientGuard};
-use crate::commands::credentials::creds;
-use crate::config;
+use crate::client::ClientGuard;
 use crate::error::{tele_invocation, TeleError, TeleResult};
-use crate::executor::{require_explicit_selection, run_fanout, select_sessions, GlobalFlags};
-use crate::output::{self, log_line, AccountOutcome, Envelope};
-use crate::session;
-use clap::{Args, Subcommand};
+use crate::output::{self, log_line};
 use hmac::Hmac;
 use num_bigint::BigUint;
 use sha2::{Digest, Sha256, Sha512};
-use std::io::{IsTerminal, Write};
-use std::sync::Arc;
+use std::io::Write;
 
 use super::*;
 
-#[allow(unused_imports)]
 pub(crate) const NO_SRP_CHALLENGE_MSG: &str =
     "GetPassword response is missing SRP challenge parameters; retry the command";
 
