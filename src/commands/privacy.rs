@@ -381,6 +381,7 @@ fn reject_allow_deny_overlap(args: &SetArgs) -> TeleResult<()> {
 
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_set(&args)?;
+    crate::executor::require_explicit_selection("privacy set", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {

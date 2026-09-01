@@ -102,6 +102,7 @@ pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleRe
                     let filter = events_filter.clone();
                     let admins = admins.clone();
                     async move {
+                        guard_ref.rate_limiter.acquire().await;
                         let raw: tl::enums::channels::AdminLogResults = guard_ref
                             .client
                             .invoke(&tl::functions::channels::GetAdminLog {
@@ -153,7 +154,10 @@ pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleRe
                         vec![
                             r["id"].to_string(),
                             r["date"].as_str().unwrap_or_default().to_string(),
-                            r["actor"]["name"].as_str().unwrap_or_default().to_string(),
+                            r["actor"]["username"]
+                                .as_str()
+                                .unwrap_or(r["actor"]["name"].as_str().unwrap_or_default())
+                                .to_string(),
                             admin_action_display(&r["action"]),
                         ]
                     })
@@ -192,9 +196,18 @@ pub(crate) fn actor_value(
     users: &HashMap<i64, tl::enums::User>,
     user_id: i64,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "id": user_id,
-        "name": user_display_name(client, users, user_id)})
+    match users.get(&user_id) {
+        Some(user) => {
+            let peer = grammers_client::peer::Peer::User(grammers_client::peer::User::from_raw(
+                client,
+                user.clone(),
+            ));
+            crate::serialize::peer_key(&peer)
+        }
+        None => serde_json::json!({
+            "id": user_id,
+            "name": user_display_name(client, users, user_id)}),
+    }
 }
 
 pub(crate) fn filter_events_by_range(
@@ -391,11 +404,16 @@ pub(crate) fn admin_action_summary(
         tl::enums::ChannelAdminLogEventAction::SendMessage(v) => {
             message_action_summary("send_message", &v.message)
         }
-        tl::enums::ChannelAdminLogEventAction::EditMessage(v) => serde_json::json!({
-            "kind": "edit_message",
-            "id": message_id(&v.new_message),
-            "text": message_text(&v.new_message),
-            "prev_text": message_text(&v.prev_message)}),
+        tl::enums::ChannelAdminLogEventAction::EditMessage(v) => {
+            let mut out = message_action_summary("edit_message", &v.new_message);
+            out["prev_text"] = serde_json::json!(message_text(&v.prev_message));
+            if let tl::enums::Message::Message(m) = &v.prev_message {
+                if let Some(markup) = &m.reply_markup {
+                    out["prev_reply_markup"] = crate::serialize::reply_markup_to_json(markup);
+                }
+            }
+            out
+        }
         tl::enums::ChannelAdminLogEventAction::DeleteMessage(v) => match &v.message {
             tl::enums::Message::Message(m) => {
                 serde_json::json!({"kind": "delete_message", "id": m.id})
@@ -662,7 +680,11 @@ pub(crate) fn message_action_summary(
 ) -> serde_json::Value {
     match message {
         tl::enums::Message::Message(m) => {
-            serde_json::json!({"kind": kind, "id": m.id, "text": m.message})
+            let mut out = serde_json::json!({"kind": kind, "id": m.id, "text": m.message});
+            if let Some(markup) = &m.reply_markup {
+                out["reply_markup"] = crate::serialize::reply_markup_to_json(markup);
+            }
+            out
         }
         _ => serde_json::json!({"kind": kind}),
     }

@@ -326,6 +326,26 @@ async fn list(flags: &GlobalFlags) -> TeleResult<i32> {
     Ok(crate::error::EXIT_OK)
 }
 async fn status(flags: &GlobalFlags) -> TeleResult<i32> {
+    if flags.dry_run {
+        let mut names = crate::executor::select_accounts(flags)?;
+        names.sort();
+        let outcomes = names
+            .iter()
+            .map(|name| crate::output::AccountOutcome {
+                account: name.clone(),
+                ok: true,
+                error: None,
+                data: Some(serde_json::json!({
+                    "dry_run": true,
+                    "would": "probe authorization status",
+                })),
+                exit_code: Some(crate::error::EXIT_OK),
+            })
+            .collect();
+        let envelope = crate::output::Envelope::new(outcomes, true, &flags.command);
+        output::log_line("info", "[dry-run] would probe authorization status");
+        return crate::executor::finish(flags, &envelope);
+    }
     let config_path = flags.config_path.clone();
     let credentials = creds()?;
     let cfg = config::load_config(flags.config_path.as_deref())?;

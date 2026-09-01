@@ -280,6 +280,7 @@ fn username_rpc_error(e: grammers_client::InvocationError) -> TeleError {
 
 async fn set(args: SetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_set(&args)?;
+    crate::executor::require_explicit_selection("profile set", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -325,6 +326,7 @@ async fn apply_username(
 }
 
 async fn photo(args: PhotoArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("profile photo", flags)?;
     validate_photo(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -348,10 +350,12 @@ async fn photo(args: PhotoArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn current_photo_input_photo(
     shares: &crate::client::ServeShares,
 ) -> TeleResult<tl::enums::InputPhoto> {
+    shares.rate_limiter.acquire().await;
     let me = shares.client.get_me().await.map_err(tele_invocation)?;
     let input = entities::input_user(&grammers_client::peer::Peer::User(me.clone()))
         .await
         .map_err(tele_invocation)?;
+    shares.rate_limiter.acquire().await;
     let full: tl::enums::users::UserFull = shares
         .client
         .invoke(&tl::functions::users::GetFullUser { id: input })
@@ -400,6 +404,7 @@ fn validate_emoji_status(args: &EmojiStatusArgs) -> TeleResult<Option<i64>> {
 }
 
 async fn emoji_status(args: EmojiStatusArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("profile emoji-status", flags)?;
     validate_emoji_status(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -634,6 +639,7 @@ pub(crate) async fn get_core(
                     "id": other.id().bare_id().unwrap_or_default(),
                     "name": crate::serialize::peer_name(other),
                     "kind": crate::serialize::peer_kind(other),
+                    "username": other.username().unwrap_or_default(),
                 })),
             }
         }
@@ -700,11 +706,16 @@ pub(crate) async fn set_core(
         shares.rate_limiter.acquire().await;
     }
     if let Some(p) = &photo_path {
-        let uploaded = shares
-            .client
-            .upload_file(p)
-            .await
-            .map_err(|e| TeleError::Other(e.to_string()))?;
+        let uploaded = shares.client.upload_file(p).await.map_err(|e| {
+            let invocation = e
+                .get_ref()
+                .and_then(|s| s.downcast_ref::<grammers_client::InvocationError>());
+            match invocation {
+                Some(inv) => crate::error::invocation_error_ref(inv),
+                None => TeleError::Other(e.to_string()),
+            }
+        })?;
+        shares.rate_limiter.acquire().await;
         let uploaded_photo: tl::enums::photos::Photo = shares
             .client
             .invoke(&tl::functions::photos::UploadProfilePhoto {
@@ -723,6 +734,7 @@ pub(crate) async fn set_core(
                 "profile photo upload returned an empty photo".to_string(),
             ));
         };
+        shares.rate_limiter.acquire().await;
         let _: tl::enums::photos::Photo = shares
             .client
             .invoke(&tl::functions::photos::UpdateProfilePhoto {

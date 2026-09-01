@@ -87,6 +87,9 @@ impl Default for ValidatedInvite {
 
 pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let plan = validate_invite(&args)?;
+    if !matches!(plan.mode, InviteMode::List | InviteMode::Check) {
+        crate::executor::require_explicit_selection("chat invite", flags)?;
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
@@ -223,6 +226,7 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                                 if remaining <= 0 {
                                     break;
                                 }
+                                guard.rate_limiter.acquire().await;
                                 let r: tl::enums::messages::ChatInviteImporters = guard
                                     .client
                                     .invoke(&tl::functions::messages::GetChatInviteImporters {
@@ -271,6 +275,7 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                                 if remaining <= 0 {
                                     break;
                                 }
+                                guard.rate_limiter.acquire().await;
                                 let r: tl::enums::messages::ExportedChatInvites = guard
                                     .client
                                     .invoke(&tl::functions::messages::GetExportedChatInvites {
@@ -702,12 +707,23 @@ pub(crate) fn chat_invite_importers_rows(
         .iter()
         .map(|importer| {
             let tl::enums::ChatInviteImporter::Importer(imp) = importer;
-            serde_json::json!({
-                "id": imp.user_id,
-                "name": user_display_name(client, &users, imp.user_id),
-                "date": rfc3339_or_empty(Some(imp.date)),
-                "requested": imp.requested,
-                "approved_by": imp.approved_by})
+            let mut row = match users.get(&imp.user_id) {
+                Some(user) => crate::serialize::peer_key(&grammers_client::peer::Peer::User(
+                    grammers_client::peer::User::from_raw(client, user.clone()),
+                )),
+                None => serde_json::json!({
+                    "id": imp.user_id,
+                    "name": user_display_name(client, &users, imp.user_id)}),
+            };
+            if let Some(obj) = row.as_object_mut() {
+                obj.insert(
+                    "date".into(),
+                    serde_json::json!(rfc3339_or_empty(Some(imp.date))),
+                );
+                obj.insert("requested".into(), serde_json::json!(imp.requested));
+                obj.insert("approved_by".into(), serde_json::json!(imp.approved_by));
+            }
+            row
         })
         .collect()
 }

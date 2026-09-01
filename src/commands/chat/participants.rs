@@ -149,12 +149,15 @@ pub(crate) async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) ->
                     .iter_participants(chat_ref)
                     .filter(participant_filter(role, search.as_deref()));
                 while count < limit {
+                    guard.rate_limiter.acquire().await;
                     match iter.next().await.map_err(tele_invocation)? {
                         Some(p) => {
-                            rows.push(serde_json::json!({
-                                "id": p.user.id().bare_id().unwrap_or_default(),
-                                "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
-                                "role": role_name(&p.role)}));
+                            let peer = grammers_client::peer::Peer::User(p.user);
+                            let mut row = crate::serialize::peer_key(&peer);
+                            if let Some(obj) = row.as_object_mut() {
+                                obj.insert("role".into(), serde_json::json!(role_name(&p.role)));
+                            }
+                            rows.push(row);
                             count += 1;
                         }
                         None => break}
@@ -165,11 +168,12 @@ pub(crate) async fn participants(args: ParticipantsArgs, flags: &GlobalFlags) ->
                     .iter()
                     .map(|r| vec![
                         r["id"].to_string(),
+                        r["username"].as_str().unwrap_or_default().to_string(),
                         r["name"].as_str().unwrap_or_default().to_string(),
                         r["role"].as_str().unwrap_or_default().to_string(),
                     ])
                     .collect();
-                output::print_account_table(&name, multi, &["id", "name", "role"], &table_rows)?;
+                output::print_account_table(&name, multi, &["id", "username", "name", "role"], &table_rows)?;
             }
             Ok(serde_json::json!({"participants": rows}))
         })
@@ -554,6 +558,7 @@ pub(crate) fn resolve_admin_rights(args: &AdminArgs) -> TeleResult<AdminRights> 
 
 pub(crate) async fn admin(args: AdminArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_admin(&args)?;
+    crate::executor::require_explicit_selection("chat admin", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let promote = args.promote;
@@ -660,12 +665,16 @@ pub(crate) fn participant_rows(
             tl::enums::ChatParticipant::Participant(_) => "member",
         };
         match users.get(&participant.user_id()) {
-            Some(user) => rows.push(serde_json::json!({
-                "id": user.id(),
-                "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(
+            Some(user) => {
+                let peer = grammers_client::peer::Peer::User(
                     grammers_client::peer::User::from_raw(client, user.clone()),
-                )),
-                "role": role})),
+                );
+                let mut row = crate::serialize::peer_key(&peer);
+                if let Some(obj) = row.as_object_mut() {
+                    obj.insert("role".into(), serde_json::json!(role));
+                }
+                rows.push(row);
+            }
             None => missing += 1,
         }
     }

@@ -351,6 +351,7 @@ async fn run_export(
                     user.last_name.clone().unwrap_or_default()
                 ).trim().to_string(),
                 "phone": user.phone.as_deref().unwrap_or_default(),
+                "username": user.username.as_deref().unwrap_or_default(),
             }));
         }
     }
@@ -380,6 +381,7 @@ async fn run_export(
     let mut page_no = 0usize;
     let mut dialog_index = 0usize;
     loop {
+        guard.rate_limiter.acquire().await;
         let res: tl::enums::messages::Dialogs = guard
             .client
             .invoke(&tl::functions::InvokeWithTakeout {
@@ -441,13 +443,15 @@ async fn run_export(
         );
         for (dlg, peer, _) in &entries {
             dialog_index += 1;
+            let chat = crate::serialize::peer_key(peer);
             let chat_name = crate::serialize::peer_name(peer);
             let unread = match dlg {
                 tl::enums::Dialog::Dialog(d) => d.unread_count,
                 tl::enums::Dialog::Folder(_) => 0,
             };
             dialogs.push(serde_json::json!({
-                "chat": chat_name,
+                "chat": chat,
+                "chat_name": chat_name,
                 "unread": unread,
             }));
             let chat_ref = crate::entities::peer_ref(peer)
@@ -479,6 +483,7 @@ async fn run_export(
                 if count >= limit {
                     break;
                 }
+                guard.rate_limiter.acquire().await;
                 let mres: tl::enums::messages::Messages = guard
                     .client
                     .invoke(&tl::functions::InvokeWithTakeout {
@@ -702,6 +707,14 @@ fn raw_message_to_json(
             "media".into(),
             serde_json::json!(crate::serialize::media_name(&media)),
         );
+    }
+    if let tl::enums::Message::Message(m) = raw {
+        if let Some(markup) = &m.reply_markup {
+            out.insert(
+                "reply_markup".into(),
+                crate::serialize::reply_markup_to_json(markup),
+            );
+        }
     }
     Ok(serde_json::Value::Object(out))
 }

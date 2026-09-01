@@ -96,6 +96,7 @@ pub async fn run(cmd: TopicCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("topic create", flags)?;
     ChatTarget::parse_flag(&args.chat, "chat")?;
     validate_emoji(args.emoji.as_deref())?;
     let config_path = flags.config_path.clone();
@@ -168,6 +169,7 @@ async fn simple_action(
     flags: &GlobalFlags,
     kind: ActionKind,
 ) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("topic", flags)?;
     ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_topic_id(&args.topic)?;
     let config_path = flags.config_path.clone();
@@ -272,6 +274,7 @@ async fn topic_action_core(
 }
 
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("topic edit", flags)?;
     ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_topic_id(&args.topic)?;
     validate_edit_changes(args.title.as_deref(), args.closed)?;
@@ -377,8 +380,10 @@ pub(crate) async fn topic_list_core(
     let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
     let topics = {
         let client_ref = &shares.client;
+        let limiter = &shares.rate_limiter;
         let peer_ref = &peer;
         collect_forum_topics(params.limit, move |cursor, page_limit| async move {
+            limiter.acquire().await;
             let results: tl::enums::messages::ForumTopics = client_ref
                 .invoke(&tl::functions::messages::GetForumTopics {
                     peer: (*peer_ref).clone(),

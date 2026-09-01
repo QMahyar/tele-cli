@@ -429,6 +429,7 @@ pub async fn run(cmd: ChatCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn join(args: ChatArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("chat join", flags)?;
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -669,6 +670,7 @@ async fn requests(args: RequestsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         if remaining <= 0 {
                             break;
                         }
+                        guard.rate_limiter.acquire().await;
                         let r: tl::enums::messages::ChatInviteImporters = guard
                             .client
                             .invoke(&tl::functions::messages::GetChatInviteImporters {
@@ -833,7 +835,10 @@ fn print_request_table(account: &str, multi: bool, rows: &[serde_json::Value]) -
         .map(|r| {
             vec![
                 r["id"].to_string(),
-                r["name"].as_str().unwrap_or_default().to_string(),
+                r["username"]
+                    .as_str()
+                    .unwrap_or(r["name"].as_str().unwrap_or_default())
+                    .to_string(),
                 r["date"].as_str().unwrap_or_default().to_string(),
                 r["link"].as_str().unwrap_or_default().to_string(),
             ]
@@ -952,6 +957,7 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             "--forum is only supported with --kind supergroup".to_string(),
         ));
     }
+    crate::executor::require_explicit_selection("chat create", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let forum = args.forum;
@@ -2426,12 +2432,14 @@ pub(crate) async fn chat_admin_log_core(
     let until_ts = until.map(|u| u.timestamp() as i32);
     let collected = {
         let client_ref = &shares.client;
+        let limiter = &shares.rate_limiter;
         let channel_ref = &channel;
         collect_admin_log(params.limit, until_ts, move |max_id, page_limit| {
             let q = search_q.clone();
             let filter = events_filter.clone();
             let admins = admins.clone();
             async move {
+                limiter.acquire().await;
                 let raw: tl::enums::channels::AdminLogResults = client_ref
                     .invoke(&tl::functions::channels::GetAdminLog {
                         channel: (*channel_ref).clone(),
@@ -2648,6 +2656,7 @@ pub(crate) async fn chat_invite_core(
                         if remaining <= 0 {
                             break;
                         }
+                        shares.rate_limiter.acquire().await;
                         let r: tl::enums::messages::ChatInviteImporters = shares
                             .client
                             .invoke(&tl::functions::messages::GetChatInviteImporters {
@@ -2692,6 +2701,7 @@ pub(crate) async fn chat_invite_core(
                         if remaining <= 0 {
                             break;
                         }
+                        shares.rate_limiter.acquire().await;
                         let r: tl::enums::messages::ExportedChatInvites = shares
                             .client
                             .invoke(&tl::functions::messages::GetExportedChatInvites {
@@ -2774,6 +2784,7 @@ pub(crate) async fn chat_requests_core(
                 if remaining <= 0 {
                     break;
                 }
+                shares.rate_limiter.acquire().await;
                 let r: tl::enums::messages::ChatInviteImporters = shares
                     .client
                     .invoke(&tl::functions::messages::GetChatInviteImporters {
@@ -2923,12 +2934,15 @@ pub(crate) async fn chat_participants_core(
             .iter_participants(chat_ref)
             .filter(participant_filter(role, search.as_deref()));
         while count < params.limit {
+            shares.rate_limiter.acquire().await;
             match iter.next().await.map_err(tele_invocation)? {
                 Some(p) => {
-                    rows.push(serde_json::json!({
-                        "id": p.user.id().bare_id().unwrap_or_default(),
-                        "name": crate::serialize::peer_name(&grammers_client::peer::Peer::User(p.user)),
-                        "role": role_name(&p.role)}));
+                    let peer = grammers_client::peer::Peer::User(p.user);
+                    let mut row = crate::serialize::peer_key(&peer);
+                    if let Some(obj) = row.as_object_mut() {
+                        obj.insert("role".into(), serde_json::json!(role_name(&p.role)));
+                    }
+                    rows.push(row);
                     count += 1;
                 }
                 None => break,

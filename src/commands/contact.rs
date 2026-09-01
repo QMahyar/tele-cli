@@ -107,6 +107,7 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 async fn add(args: AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_add(&args)?;
+    crate::executor::require_explicit_selection("contact add", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -128,6 +129,7 @@ async fn add(args: AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 async fn remove(args: RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_remove(&args)?;
+    crate::executor::require_explicit_selection("contact remove", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -149,6 +151,7 @@ async fn remove(args: RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 async fn block(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_block(&args)?;
+    crate::executor::require_explicit_selection("contact block", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -170,6 +173,7 @@ async fn block(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
 async fn unblock(args: BlockArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_unblock(&args)?;
+    crate::executor::require_explicit_selection("contact unblock", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {

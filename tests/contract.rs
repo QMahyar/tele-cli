@@ -174,7 +174,10 @@ fn empty_selection_is_usage_error() {
     let (code, _out, err) =
         run_isolated("noselect", &["msg", "send", "--chat", "me", "--text", "hi"]);
     assert_eq!(code, 1);
-    assert!(err.contains("no accounts selected"), "stderr: {err}");
+    assert!(
+        err.contains("requires --account <name> or --tag <tag>"),
+        "stderr: {err}"
+    );
 }
 
 #[test]
@@ -599,7 +602,7 @@ fn error_envelope_on_stdout_for_usage_error() {
         v["error"]["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("no accounts selected"),
+            .contains("requires --account <name> or --tag <tag>"),
         "stdout: {out}"
     );
 }

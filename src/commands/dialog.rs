@@ -563,6 +563,7 @@ fn collect_updates(updates: &tl::enums::Updates) -> Vec<&tl::enums::Update> {
 
 async fn archive(args: ArchiveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    crate::executor::require_explicit_selection("dialog archive", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -689,6 +690,8 @@ fn delete_result(target: &str, left: bool, cleared: bool) -> serde_json::Value {
 }
 
 async fn draft(args: DraftArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_draft(&args)?;
+    crate::executor::require_explicit_selection("dialog draft", flags)?;
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let action = draft_action(&args.text, args.clear)?;
     let cleared = matches!(action, DraftAction::Clear);
@@ -730,6 +733,7 @@ pub(crate) async fn dialog_draft_core(
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    crate::executor::require_explicit_selection("dialog pin", flags)?;
     let pinned = !args.unpin;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;

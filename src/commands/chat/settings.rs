@@ -85,6 +85,9 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
         || signatures.is_some()
         || pre_history.is_some()
         || join_request.is_some();
+    if has_toggles {
+        crate::executor::require_explicit_selection("chat settings", flags)?;
+    }
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let target = args.chat.clone();
@@ -309,6 +312,7 @@ pub(crate) async fn fetch_full_chat_info(
 
 pub(crate) async fn edit_chat(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_edit(&args)?;
+    crate::executor::require_explicit_selection("chat edit", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let title = args.title.clone();
@@ -503,6 +507,10 @@ pub(crate) fn discussion_pair(
 
 pub(crate) async fn link_chat(args: LinkArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_link(&args)?;
+    let to_target = parse_link_target(args.to.as_deref())?;
+    if to_target.is_some() {
+        crate::executor::require_explicit_selection("chat link", flags)?;
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let to_target = parse_link_target(args.to.as_deref())?;

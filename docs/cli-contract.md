@@ -282,7 +282,17 @@ This command removes the current profile photo. It reads the photo id from `user
 The default event type is `NewMessage` only. `--events` is an allowlist that gates all rows, including `Raw`. An unknown event name exits 1 before connect.
 
 Valid names: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw`, `Album`,
-`Gap`, `Service`, `ChatAction`, `UserUpdate`.
+`Gap`, `Service`, `ChatAction`, `UserUpdate`, `CallbackQuery`.
+
+### `CallbackQuery` rows
+
+With `--events CallbackQuery`, button presses by other users on this account's bot messages emit slim rows (parsed from grammers' raw `BotCallbackQuery`/`InlineBotCallbackQuery` wrapper; with `CallbackQuery` absent from the allowlist these updates fall through to `Raw`):
+
+```json
+{"event":"CallbackQuery","account":"work","user_id":123,"chat_id":123,"message_id":456,"data":"force_sub:refresh","data_b64":"Zm9yY2Vfc3ViOnJlZnJlc2g=","seq":9}
+```
+
+`chat_id` appears only for chat-scoped callbacks (`BotCallbackQuery`); inline callbacks carry `user_id` only. `data` is the decoded callback payload (lossy UTF-8); `data_b64` is the exact bytes. Answering a callback query is not exposed at this layer.
 
 ### `Album` rows
 

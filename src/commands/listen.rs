@@ -21,7 +21,7 @@ pub struct ListenArgs {
         long,
         value_delimiter = ',',
         default_value = "NewMessage",
-        help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap, Service, ChatAction, UserUpdate (ChatAction/UserUpdate are parsed out of grammers' raw-update wrapper)"
+        help = "event types: NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap, Service, ChatAction, UserUpdate, CallbackQuery (ChatAction/UserUpdate/CallbackQuery are parsed out of grammers' raw-update wrapper)"
     )]
     events: Vec<String>,
     #[arg(
@@ -68,6 +68,7 @@ const VALID_EVENTS: &[&str] = &[
     "Service",
     "ChatAction",
     "UserUpdate",
+    "CallbackQuery",
 ];
 const MAX_RECONNECT_BACKOFF: u32 = 30;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
@@ -736,6 +737,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     let service_on = events.iter().any(|e| e == "Service");
                     let chat_action_on = events.iter().any(|e| e == "ChatAction");
                     let user_update_on = events.iter().any(|e| e == "UserUpdate");
+                    let callback_query_on = events.iter().any(|e| e == "CallbackQuery");
                     loop {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
@@ -1059,6 +1061,18 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if user_update_on {
                                     if let Some((peer, sender, row)) =
                                         user_update_row(&name, update.raw())
+                                    {
+                                        if !filter.action_allows(peer, sender) {
+                                            continue;
+                                        }
+                                                                                if emit_row_or_stop(&name, row).await? { return Ok(()); }
+
+                                        continue;
+                                    }
+                                }
+                                if callback_query_on {
+                                    if let Some((peer, sender, row)) =
+                                        callback_query_row(&name, update.raw())
                                     {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
@@ -1473,6 +1487,67 @@ fn user_update_row(
                 map.insert("status".into(), user_status_json(&u.status));
             }
             Some((peer, peer, row))
+        }
+        _ => None,
+    }
+}
+
+fn callback_query_row(
+    account: &str,
+    raw: &tl::enums::Update,
+) -> Option<(Option<PeerId>, Option<PeerId>, serde_json::Value)> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    let build = |peer: Option<PeerId>,
+                 sender: Option<PeerId>,
+                 user_id: Option<i64>,
+                 chat_id: Option<i64>,
+                 msg_id: Option<i32>,
+                 data: &[u8]| {
+        let mut row = event_row("CallbackQuery", account, None, None, None);
+        if let serde_json::Value::Object(map) = &mut row {
+            if let Some(user_id) = user_id {
+                map.insert("user_id".into(), serde_json::json!(user_id));
+            }
+            if let Some(chat_id) = chat_id {
+                map.insert("chat_id".into(), serde_json::json!(chat_id));
+            }
+            if let Some(msg_id) = msg_id {
+                map.insert("message_id".into(), serde_json::json!(msg_id));
+            }
+            map.insert(
+                "data".into(),
+                serde_json::json!(String::from_utf8_lossy(data)),
+            );
+            map.insert("data_b64".into(), serde_json::json!(STANDARD.encode(data)));
+        }
+        (peer, sender, row)
+    };
+    match raw {
+        tl::enums::Update::BotCallbackQuery(q) => {
+            let peer = PeerId::from(&q.peer);
+            let chat_id = peer.bare_id();
+            let sender = PeerId::user(q.user_id);
+            Some(build(
+                Some(peer),
+                sender,
+                Some(q.user_id),
+                chat_id,
+                Some(q.msg_id),
+                q.data.as_deref().unwrap_or_default(),
+            ))
+        }
+        tl::enums::Update::InlineBotCallbackQuery(q) => {
+            let sender = PeerId::user(q.user_id);
+            Some(build(
+                sender,
+                sender,
+                Some(q.user_id),
+                None,
+                None,
+                q.data.as_deref().unwrap_or_default(),
+            ))
         }
         _ => None,
     }
@@ -3664,6 +3739,33 @@ mod tests {
 
     fn user_status_update(status: tl::enums::UserStatus) -> tl::enums::Update {
         tl::enums::Update::UserStatus(tl::types::UpdateUserStatus { user_id: 7, status })
+    }
+
+    fn callback_query_update() -> tl::enums::Update {
+        tl::enums::Update::BotCallbackQuery(tl::types::UpdateBotCallbackQuery {
+            query_id: 5,
+            user_id: 7,
+            peer: tl::types::PeerUser { user_id: 7 }.into(),
+            msg_id: 42,
+            chat_instance: 99,
+            data: Some(b"force_sub:refresh".to_vec()),
+            game_short_name: None,
+        })
+    }
+
+    #[test]
+    fn callback_query_row_reports_user_data_and_decoded_payload() {
+        let (peer, sender, row) =
+            callback_query_row("home", &callback_query_update()).expect("callback query parses");
+        let obj = row.as_object().unwrap();
+        assert_eq!(obj["event"], "CallbackQuery");
+        assert_eq!(obj["account"], "home");
+        assert_eq!(obj["user_id"], 7);
+        assert_eq!(obj["message_id"], 42);
+        assert_eq!(obj["data"], "force_sub:refresh");
+        assert!(obj["data_b64"].as_str().is_some(), "base64 data present");
+        assert_eq!(peer, Some(PeerId::user_unchecked(7)));
+        assert_eq!(sender, Some(PeerId::user_unchecked(7)));
     }
 
     #[test]

@@ -101,6 +101,8 @@ pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Valu
 
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_edit(&args)?;
+    crate::executor::require_explicit_selection("msg edit", flags)?;
+    validate_edit(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -307,6 +309,8 @@ pub(crate) fn forward_serve_dry_run(args: &ForwardArgs) -> TeleResult<serde_json
 
 async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_forward(&args)?;
+    crate::executor::require_explicit_selection("msg forward", flags)?;
+    validate_forward(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -434,6 +438,8 @@ pub(crate) fn pin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Value>
 }
 
 async fn pin(args: PinArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_pin(&args)?;
+    crate::executor::require_explicit_selection("msg pin", flags)?;
     validate_pin(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -856,6 +862,7 @@ pub(crate) fn read_serve_dry_run(args: &ReadArgs) -> TeleResult<serde_json::Valu
 }
 
 async fn read(args: ReadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("msg read", flags)?;
     validate_read(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -945,6 +952,8 @@ pub(crate) fn react_serve_dry_run(args: &ReactArgs) -> TeleResult<serde_json::Va
 }
 
 async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_react(&args)?;
+    crate::executor::require_explicit_selection("msg react", flags)?;
     validate_react(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -1226,6 +1235,8 @@ pub(crate) fn typing_serve_dry_run(args: &TypingArgs) -> TeleResult<serde_json::
 
 async fn typing(args: TypingArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_typing(&args)?;
+    crate::executor::require_explicit_selection("msg typing", flags)?;
+    validate_typing(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
@@ -1275,7 +1286,21 @@ enum ButtonSelector {
 struct LocatedButton {
     position: usize,
     text: String,
-    callback_data: Vec<u8>,
+    callback_data: Option<Vec<u8>>,
+    copy_text: Option<String>,
+    button_type: Option<String>,
+}
+
+impl LocatedButton {
+    fn callback(position: usize, text: String, callback_data: Vec<u8>) -> Self {
+        Self {
+            position,
+            text,
+            callback_data: Some(callback_data),
+            copy_text: None,
+            button_type: Some("callback".to_string()),
+        }
+    }
 }
 
 fn button_text(button: &serde_json::Value) -> Option<&str> {
@@ -1427,6 +1452,19 @@ fn locate_button(
         1 => {
             let (position, button) = matches[0];
             let text = button_text(button).unwrap_or_default().to_string();
+            let button_type = button
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            if let Some(copy) = button.get("copy_text").and_then(|v| v.as_str()) {
+                return Ok(LocatedButton {
+                    position,
+                    text,
+                    callback_data: None,
+                    copy_text: Some(copy.to_string()),
+                    button_type,
+                });
+            }
             let encoded = button
                 .get("callback_data")
                 .and_then(|v| v.as_str())
@@ -1445,7 +1483,9 @@ fn locate_button(
             Ok(LocatedButton {
                 position,
                 text,
-                callback_data,
+                callback_data: Some(callback_data),
+                copy_text: None,
+                button_type,
             })
         }
         _ => {
@@ -1618,7 +1658,23 @@ pub(crate) async fn click_core(
         .ok_or_else(|| TeleError::Usage(format!("message {id} has no reply markup")))?;
     let markup_json = crate::serialize::reply_markup_to_json(&markup);
     let located = locate_button(&markup_json, &selector)?;
-    if button_requires_password(&markup, &located.text, &located.callback_data) {
+    if let Some(copy_text) = located.copy_text {
+        return Ok(serde_json::json!({
+            "id": id,
+            "clicked": true,
+            "button": located.text,
+            "position": located.position,
+            "type": "copy_text",
+            "copy_text": copy_text,
+        }));
+    }
+    let callback_data = located.callback_data.ok_or_else(|| {
+        TeleError::Usage(format!(
+            "button {:?} carries no clickable action ({} buttons are handled by their own kind, not clicks)",
+            located.text, located.button_type.as_deref().unwrap_or("unknown")
+        ))
+    })?;
+    if button_requires_password(&markup, &located.text, &callback_data) {
         return Err(TeleError::Usage(format!(
             "button {:?} requires the account's 2FA password; password-protected clicks are not supported at this layer",
             located.text
@@ -1631,7 +1687,7 @@ pub(crate) async fn click_core(
             game: false,
             peer: input_peer,
             msg_id: id,
-            data: Some(located.callback_data.clone()),
+            data: Some(callback_data.clone()),
             password: None,
         })
         .await
@@ -4034,7 +4090,7 @@ mod tests {
             locate_button(&two_row_inline_markup(), &ButtonSelector::Text("No".into())).unwrap();
         assert_eq!(found.position, 3);
         assert_eq!(found.text, "No");
-        assert_eq!(found.callback_data, b"q:no".to_vec());
+        assert_eq!(found.callback_data, Some(b"q:no".to_vec()));
     }
 
     #[test]
@@ -4046,7 +4102,7 @@ mod tests {
         .unwrap();
         assert_eq!(found.position, 3);
         assert_eq!(found.text, "No");
-        assert_eq!(found.callback_data, b"q:no".to_vec());
+        assert_eq!(found.callback_data, Some(b"q:no".to_vec()));
         let err = locate_button(
             &two_row_inline_markup(),
             &ButtonSelector::Data("q:zzz".into()),
@@ -4059,7 +4115,7 @@ mod tests {
         let found = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(1)).unwrap();
         assert_eq!(found.position, 1);
         assert_eq!(found.text, "Yes");
-        assert_eq!(found.callback_data, b"q:yes".to_vec());
+        assert_eq!(found.callback_data, Some(b"q:yes".to_vec()));
         let last = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(4)).unwrap();
         assert_eq!(last.text, "Maybe");
         let url_hit =
@@ -4078,7 +4134,7 @@ mod tests {
             &ButtonSelector::Text("maybe".into()),
         )
         .unwrap();
-        assert_eq!(found.callback_data, b"q:maybe".to_vec());
+        assert_eq!(found.callback_data, Some(b"q:maybe".to_vec()));
     }
 
     #[test]
@@ -4103,7 +4159,7 @@ mod tests {
             tl_callback_button("OK", b"b"),
         ]]);
         let found = locate_button(&markup, &ButtonSelector::Text("ok".into())).unwrap();
-        assert_eq!(found.callback_data, b"a".to_vec());
+        assert_eq!(found.callback_data, Some(b"a".to_vec()));
     }
 
     #[test]
@@ -4724,7 +4780,7 @@ mod tests {
         let found = locate_button(&markup, &ButtonSelector::Contains("پنل".into())).unwrap();
         assert_eq!(found.position, 1);
         assert_eq!(found.text, "🚀 ساخت پنل");
-        assert_eq!(found.callback_data, b"data1".to_vec());
+        assert_eq!(found.callback_data, Some(b"data1".to_vec()));
         let found2 = locate_button(&markup, &ButtonSelector::Contains("link".into())).unwrap();
         assert_eq!(found2.position, 2);
         assert_eq!(found2.text, "🔗 Link");

@@ -289,6 +289,7 @@ struct RawTextSend<'a> {
 
 async fn send_noforwards_text(
     client: &grammers_client::Client,
+    chat: &grammers_client::peer::Peer,
     peer: grammers_client::tl::enums::InputPeer,
     spec: RawTextSend<'_>,
 ) -> TeleResult<serde_json::Value> {
@@ -345,7 +346,11 @@ async fn send_noforwards_text(
         })
         .await
         .map_err(tele_invocation)?;
-    Ok(sent_updates_row(&updates, &message))
+    let mut row = sent_updates_row(&updates, &message);
+    if let Some(obj) = row.as_object_mut() {
+        obj.insert("peer".into(), crate::serialize::peer_key(chat));
+    }
+    Ok(row)
 }
 
 pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::Value {
@@ -551,6 +556,7 @@ pub(crate) async fn send_core(
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
             return send_noforwards_text(
                 &shares.client,
+                &chat,
                 peer,
                 RawTextSend {
                     text,
@@ -588,6 +594,8 @@ pub(crate) async fn send_core(
 }
 
 pub(crate) async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_send(&args)?;
+    crate::executor::require_explicit_selection("msg send", flags)?;
     validate_send(&args)?;
     for path in &args.files {
         super::validate::validate_upload_path_inner(path, flags.dry_run)?;

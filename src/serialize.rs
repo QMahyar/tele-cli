@@ -163,6 +163,16 @@ pub fn peer_key(peer: &Peer) -> serde_json::Value {
             None => serde_json::Value::Null,
         },
     );
+    let all_usernames = peer.usernames();
+    if all_usernames.len() > 1 {
+        out.insert(
+            "usernames".into(),
+            serde_json::json!(all_usernames
+                .iter()
+                .map(|u| u.to_string())
+                .collect::<Vec<_>>()),
+        );
+    }
     let name = peer_name(peer);
     out.insert("name".into(), serde_json::json!(name.clone()));
     out.insert("display_name".into(), serde_json::json!(name));

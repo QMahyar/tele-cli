@@ -60,9 +60,13 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         method: name.clone(),
         args: params.clone(),
     })?;
-    if !flags.dry_run && generated::requires_explicit_account(&name) && flags.account.is_empty() {
+    if !flags.dry_run
+        && generated::requires_explicit_account(&name)
+        && flags.account.is_empty()
+        && flags.tag.is_empty()
+    {
         return Err(TeleError::Usage(format!(
-            "raw method {name} mutates account data — pass --account explicitly"
+            "raw method {name} mutates account data — pass --account or --tag explicitly"
         )));
     }
     let dry_run = flags.dry_run;

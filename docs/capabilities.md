@@ -101,6 +101,7 @@ Note on topic icons: `tele topic create --emoji` accepts only a single-codepoint
 | listen.delete | MessageDeleted | updates | `Update::DeleteMessages` | `--events MessageDeleted` (DM/basic-group deletions match under `--chat` via bounded observed-id map) | done |
 | listen.action | ChatAction | updates (Raw wrapper: UserTyping/ChatUserTyping/ChannelUserTyping — typed enum carries none at this layer) | parsed-from-Raw | `--events ChatAction` rows `{action:{kind,label}}` | done |
 | listen.user | UserUpdate | updates (updateUserStatus via Raw wrapper; other user updates stay on Raw path) | parsed-from-Raw | `--events UserUpdate` presence rows `{status:{kind,label,expires?/was_online?}}` | done |
+| listen.callback-query | CallbackQuery (bot button presses) | updates (BotCallbackQuery/InlineBotCallbackQuery via Raw wrapper) | parsed-from-Raw | `--events CallbackQuery` rows `{user_id, chat_id?, message_id, data, data_b64}`; absent from allowlist falls back to Raw; answering not exposed | done |
 | listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` (coalesce by grouped_id, ~500 ms quiescence flush) | done |
 | listen.gap | Gap (update-loss marker) | updates | pts tracking per message box | `--events Gap` (synthetic row when updates were dropped/difference ended early) | done |
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
