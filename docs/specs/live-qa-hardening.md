@@ -28,7 +28,7 @@ F6 is docs/notes only; no code change.
 
 ### T2 — Polling helper for edited bot messages
 **Acceptance:**
-- `tele msg get --chat @BOT --id N --watch --timeout-secs 60 --poll-interval 2 --json` polls the same message until `edit_date` changes or a new message appears after N, then prints one envelope and exits 0. On timeout exits 1 with `{"type":"Timeout"}` envelope in `--json` mode. Additive flags — existing `msg get` unchanged.
+- `tele msg get --chat @BOT --id N --watch --timeout-secs 60 --poll-interval 2 --json` polls the same message until `edit_date` changes or a new message appears after N, then prints one envelope and exits 0. On timeout exits 3 with `{"type":"Timeout"}` envelope in `--json` mode (runtime outcome, not usage). Additive flags — existing `msg get` unchanged.
 - Implementation reuses `get_core` loop (no new RPC type); sleeps `poll_interval` between fetches. Caps at `timeout_secs`.
 - Tests: offline contract tests for new flags (clap parse, timeout=0 rejected), dry-run shape.
 

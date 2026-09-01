@@ -441,10 +441,10 @@ pub(crate) async fn send_core(
             .into_iter()
             .flatten()
             .next()
-            .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
-        let media = source_msg
-            .media()
-            .ok_or_else(|| TeleError::Usage(format!("message {id} has no media to copy")))?;
+            .ok_or_else(|| TeleError::Invocation(format!("message {id} not found"), None))?;
+        let media = source_msg.media().ok_or_else(|| {
+            TeleError::Invocation(format!("message {id} has no media to copy"), None)
+        })?;
         let base = match format.as_str() {
             "markdown" => InputMessage::new()
                 .copy_media(&media)

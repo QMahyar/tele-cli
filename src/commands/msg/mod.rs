@@ -754,7 +754,10 @@ pub(crate) async fn get_watch_core(
         .map(|a| a.is_empty())
         .unwrap_or(true)
     {
-        return Err(TeleError::Usage(format!("message {target} not found")));
+        return Err(TeleError::Invocation(
+            format!("message {target} not found"),
+            None,
+        ));
     }
     loop {
         let elapsed = start.elapsed();
@@ -1095,13 +1098,21 @@ pub(crate) async fn vote_core(
         .into_iter()
         .flatten()
         .next()
-        .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+        .ok_or_else(|| TeleError::Invocation(format!("message {id} not found"), None))?;
     let poll = match msg.media() {
         Some(grammers_client::media::Media::Poll(poll)) => poll,
-        _ => return Err(TeleError::Usage(format!("message {id} has no poll"))),
+        _ => {
+            return Err(TeleError::Invocation(
+                format!("message {id} has no poll"),
+                None,
+            ))
+        }
     };
     if poll.closed() {
-        return Err(TeleError::Usage(format!("poll in message {id} is closed")));
+        return Err(TeleError::Invocation(
+            format!("poll in message {id} is closed"),
+            None,
+        ));
     }
     let answers = crate::serialize::poll_answers(&poll);
     let options = resolve_vote_options(&answers, &option_indexes)?;
@@ -1613,10 +1624,10 @@ pub(crate) async fn click_core(
         .into_iter()
         .flatten()
         .next()
-        .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+        .ok_or_else(|| TeleError::Invocation(format!("message {id} not found"), None))?;
     let markup = msg
         .reply_markup()
-        .ok_or_else(|| TeleError::Usage(format!("message {id} has no reply markup")))?;
+        .ok_or_else(|| TeleError::Invocation(format!("message {id} has no reply markup"), None))?;
     let markup_json = crate::serialize::reply_markup_to_json(&markup);
     let located = locate_button(&markup_json, &selector)?;
     if let Some(copy_text) = located.copy_text {

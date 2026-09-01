@@ -28,7 +28,7 @@ impl TeleError {
         match self {
             TeleError::Usage(_) => EXIT_USAGE,
             TeleError::Config(_) => EXIT_USAGE,
-            TeleError::Timeout(_) => EXIT_USAGE,
+            TeleError::Timeout(_) => EXIT_ALL_FAILED,
             TeleError::Auth(_) => EXIT_AUTH,
             TeleError::BrokenPipe => EXIT_OK,
             _ => EXIT_ALL_FAILED,
@@ -195,7 +195,10 @@ pub(crate) fn scrub(s: String) -> String {
 
 impl From<anyhow::Error> for TeleError {
     fn from(e: anyhow::Error) -> Self {
-        TeleError::Other(scrub(format!("{e:#}")))
+        match e.downcast::<TeleError>() {
+            Ok(typed) => typed,
+            Err(e) => TeleError::Other(scrub(format!("{e:#}"))),
+        }
     }
 }
 
@@ -211,7 +214,7 @@ impl From<std::io::Error> for TeleError {
 
 impl From<serde_json::Error> for TeleError {
     fn from(e: serde_json::Error) -> Self {
-        TeleError::Usage(scrub(e.to_string()))
+        TeleError::Other(scrub(e.to_string()))
     }
 }
 
@@ -393,6 +396,43 @@ mod tests {
     #[test]
     fn usage_errors_exit_one() {
         assert_eq!(TeleError::Usage("x".to_string()).exit_code(), EXIT_USAGE);
+    }
+
+    #[test]
+    fn timeout_exits_all_failed_not_usage() {
+        assert_eq!(
+            TeleError::Timeout("watch timed out".to_string()).exit_code(),
+            EXIT_ALL_FAILED
+        );
+    }
+
+    #[test]
+    fn anyhow_boundary_preserves_typed_tele_error() {
+        let wrapped: TeleError =
+            anyhow::Error::new(TeleError::Config("bad config.toml".to_string())).into();
+        assert!(matches!(wrapped, TeleError::Config(_)));
+        assert_eq!(wrapped.exit_code(), EXIT_USAGE);
+        assert_eq!(wrapped.as_json()["type"], "ConfigError");
+
+        let wrapped_auth: TeleError =
+            anyhow::Error::new(TeleError::Auth("expired".to_string())).into();
+        assert!(matches!(wrapped_auth, TeleError::Auth(_)));
+        assert_eq!(wrapped_auth.exit_code(), EXIT_AUTH);
+    }
+
+    #[test]
+    fn anyhow_boundary_wraps_foreign_errors_as_other() {
+        let wrapped: TeleError = anyhow::anyhow!("boom").into();
+        assert!(matches!(wrapped, TeleError::Other(_)));
+        assert_eq!(wrapped.exit_code(), EXIT_ALL_FAILED);
+    }
+
+    #[test]
+    fn serde_json_errors_are_internal_not_usage() {
+        let err: TeleError = serde_json::from_str::<serde_json::Value>("{bad")
+            .unwrap_err()
+            .into();
+        assert!(matches!(err, TeleError::Other(_)));
     }
 
     #[test]

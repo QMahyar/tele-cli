@@ -64,7 +64,7 @@ pub(crate) async fn download_core(
         .into_iter()
         .flatten()
         .next()
-        .ok_or_else(|| TeleError::Usage(format!("message {id} not found")))?;
+        .ok_or_else(|| TeleError::Invocation(format!("message {id} not found"), None))?;
     let name = download_name(&msg);
     super::validate::validate_download_dir(&out_dir)?;
     tokio::task::spawn_blocking({
@@ -84,7 +84,10 @@ pub(crate) async fn download_core(
     .await
     .map_err(|e| TeleError::Other(e.to_string()))?;
     if msg.media().is_none() {
-        return Err(TeleError::Usage("message has no media".to_string()));
+        return Err(TeleError::Invocation(
+            "message has no media".to_string(),
+            None,
+        ));
     }
     let temp = download_temp_path(&path);
     tokio::task::spawn_blocking({
@@ -131,7 +134,10 @@ pub(crate) async fn download_core(
     };
     if !ok {
         let _ = std::fs::remove_file(&temp);
-        return Err(TeleError::Usage("message has no media".to_string()));
+        return Err(TeleError::Invocation(
+            "message has no media".to_string(),
+            None,
+        ));
     }
     tokio::task::spawn_blocking({
         let temp = temp.clone();

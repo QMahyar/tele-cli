@@ -410,7 +410,19 @@ pub(crate) fn select_op_account(
         obj.remove("account");
     }
     match requested {
-        None => Ok(served.first().cloned().unwrap_or_default()),
+        None => {
+            if served.len() > 1 {
+                Err(err_json(
+                    "ServeError",
+                    format!(
+                        "account is required when multiple accounts are served; this connection serves: {}",
+                        served.join(", ")
+                    ),
+                ))
+            } else {
+                Ok(served.first().cloned().unwrap_or_default())
+            }
+        }
         Some(name) => {
             if served.iter().any(|s| s == &name) {
                 Ok(name)
@@ -424,6 +436,17 @@ pub(crate) fn select_op_account(
                 ))
             }
         }
+    }
+}
+
+pub(crate) fn resync_targets(
+    served: &[String],
+    params: &mut serde_json::Value,
+) -> Result<Vec<String>, serde_json::Value> {
+    if params.get("account").is_some() || served.len() <= 1 {
+        select_op_account(served, params).map(|a| vec![a])
+    } else {
+        Ok(served.to_vec())
     }
 }
 
@@ -799,7 +822,7 @@ async fn dispatch_action(
     }
     if op == "stream.resync" {
         let mut params = params;
-        let selected = match select_op_account(served, &mut params) {
+        let selected = match resync_targets(served, &mut params) {
             Ok(a) => a,
             Err(error) => {
                 let _ = responses.send(response_err(Some(id), error)).await;
@@ -810,8 +833,10 @@ async fn dispatch_action(
             let _ = responses.send(response_err(Some(id), error)).await;
             return Ok(());
         }
-        if let Some(tx) = pool.resync.get(&selected) {
-            let _ = tx.send(()).await;
+        for name in &selected {
+            if let Some(tx) = pool.resync.get(name) {
+                let _ = tx.send(()).await;
+            }
         }
         let _ = responses
             .send(response_ok(id, serde_json::json!({ "resync": "started" })))
@@ -1608,6 +1633,23 @@ mod tests {
     }
 
     #[test]
+    fn resync_account_param_survives_target_selection_then_validation() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({"account": "beta"});
+        let selected = resync_targets(&served, &mut params).unwrap();
+        assert_eq!(selected, vec!["beta".to_string()]);
+        assert!(
+            validate_no_params("stream.resync", &params).is_ok(),
+            "account must be stripped before validate_no_params"
+        );
+
+        let mut ambiguous = serde_json::json!({});
+        let targets = resync_targets(&served, &mut ambiguous).unwrap();
+        assert_eq!(targets.len(), 2);
+        assert!(validate_no_params("stream.resync", &ambiguous).is_ok());
+    }
+
+    #[test]
     fn ops_list_rejects_non_empty_params_with_serve_error() {
         assert!(validate_no_params("ops.list", &serde_json::json!({})).is_ok());
         let err = validate_no_params("ops.list", &serde_json::json!({"lane": "read"})).unwrap_err();
@@ -2116,7 +2158,7 @@ mod tests {
 
     #[test]
     fn select_op_account_defaults_to_first_when_absent() {
-        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let served = vec!["alpha".to_string()];
         let mut params = serde_json::json!({"chat": "@x"});
         let picked = select_op_account(&served, &mut params).unwrap();
         assert_eq!(picked, "alpha");
@@ -2124,6 +2166,48 @@ mod tests {
             params.get("account").is_none(),
             "params must stay untouched"
         );
+    }
+
+    #[test]
+    fn select_op_account_requires_account_when_ambiguous() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({"chat": "@x"});
+        let err = select_op_account(&served, &mut params).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("alpha") && msg.contains("beta"), "msg: {msg}");
+        assert!(
+            params.get("account").is_none(),
+            "params must stay untouched"
+        );
+    }
+
+    #[test]
+    fn stream_resync_selects_all_served_accounts_when_absent() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({});
+        let selected = resync_targets(&served, &mut params).unwrap();
+        assert_eq!(selected, vec!["alpha".to_string(), "beta".to_string()]);
+        assert!(params.get("account").is_none());
+    }
+
+    #[test]
+    fn stream_resync_single_account_target_strips_param() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({"account": "beta"});
+        let selected = resync_targets(&served, &mut params).unwrap();
+        assert_eq!(selected, vec!["beta".to_string()]);
+        assert!(params.get("account").is_none());
+    }
+
+    #[test]
+    fn stream_resync_rejects_unknown_account() {
+        let served = vec!["alpha".to_string(), "beta".to_string()];
+        let mut params = serde_json::json!({"account": "ghost"});
+        let err = resync_targets(&served, &mut params).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("ghost"), "msg: {msg}");
     }
 
     #[test]
