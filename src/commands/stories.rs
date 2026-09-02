@@ -518,13 +518,7 @@ fn story_row(item: &tl::enums::StoryItem) -> serde_json::Value {
     }
 }
 
-fn truncate_caption(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let cut: String = text.chars().take(max_chars).collect();
-    format!("{cut}…")
-}
+use crate::commands::helpers::truncate_text as truncate_caption;
 
 fn table_row(row: &serde_json::Value) -> Vec<String> {
     let state = if row["deleted"].as_bool().unwrap_or(false) {

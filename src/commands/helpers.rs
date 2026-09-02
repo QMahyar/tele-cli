@@ -1,6 +1,16 @@
 use crate::error::TeleError;
 use grammers_client::tl;
 
+pub(crate) fn truncate_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
 pub(crate) fn peer_id(peer: &tl::enums::Peer) -> i64 {
     match peer {
         tl::enums::Peer::User(p) => p.user_id,

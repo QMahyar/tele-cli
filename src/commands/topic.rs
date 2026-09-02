@@ -476,13 +476,11 @@ fn validate_emoji(emoji: Option<&str>) -> Result<Option<i64>, TeleError> {
         ));
     }
 
-    use unicode_segmentation::UnicodeSegmentation;
-    let graphemes: Vec<&str> = emoji.graphemes(true).collect();
+    let grapheme_count = emoji.chars().count();
 
-    if graphemes.len() != 1 {
+    if grapheme_count != 1 {
         return Err(TeleError::Usage(format!(
-            "--emoji \"{emoji}\" must be a single grapheme cluster; multi-codepoint emoji (e.g. family emoji, skin tones) are not supported; custom-emoji document IDs are not supported (got {} grapheme clusters)",
-            graphemes.len(),
+            "--emoji \"{emoji}\" must be a single codepoint; multi-codepoint emoji (e.g. family emoji, skin tones) are not supported; custom-emoji document IDs are not supported (got {grapheme_count} codepoints)",
         )));
     }
 

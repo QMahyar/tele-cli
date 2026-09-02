@@ -535,32 +535,7 @@ fn observed_deletion_ids(ids: &[i32], observed: &ObservedPeers, target: PeerId) 
 
 const LISTEN_DEDUPE_CAP: usize = 10_000;
 
-struct ListenDedupe {
-    seen: HashMap<(i64, i32, i32), ()>,
-    order: VecDeque<(i64, i32, i32)>,
-}
-
-impl ListenDedupe {
-    fn new() -> Self {
-        Self {
-            seen: HashMap::new(),
-            order: VecDeque::new(),
-        }
-    }
-    fn check(&mut self, key: (i64, i32, i32)) -> bool {
-        if self.seen.contains_key(&key) {
-            return true;
-        }
-        if self.seen.len() >= LISTEN_DEDUPE_CAP {
-            if let Some(old) = self.order.pop_front() {
-                self.seen.remove(&old);
-            }
-        }
-        self.seen.insert(key, ());
-        self.order.push_back(key);
-        false
-    }
-}
+type ListenDedupe = super::serve::CappedDedupe<(i64, i32, i32)>;
 
 fn dedupe_key(
     chat_id: Option<i64>,
@@ -572,16 +547,7 @@ fn dedupe_key(
 }
 
 #[cfg(test)]
-fn pts_from_state(state: &State) -> i32 {
-    match &state.message_box {
-        Some(mb) => match mb {
-            grammers_session::updates::MessageBox::Common { pts } => *pts,
-            grammers_session::updates::MessageBox::Secondary { qts } => *qts,
-            grammers_session::updates::MessageBox::Channel { pts, .. } => *pts,
-        },
-        None => 0,
-    }
-}
+use super::serve::pts_from_state;
 
 pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
@@ -651,7 +617,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 let mut filter = EventFilter::default();
                 let mut targets_resolved = false;
                 let mut failures: u32 = 0;
-                let mut dedupe = ListenDedupe::new();
+                let mut dedupe = ListenDedupe::new(LISTEN_DEDUPE_CAP);
                 loop {
                     if let Some(d) = deadline {
                         if std::time::Instant::now() >= d {
@@ -1348,7 +1314,11 @@ fn raw_row(account: &str, raw: &tl::enums::Update, state: &State) -> serde_json:
     if let serde_json::Value::Object(map) = &mut row {
         map.insert(
             "raw".into(),
-            serde_json::Value::from(base64_encode(&raw.to_bytes())),
+            serde_json::Value::from({
+                use base64::engine::general_purpose::STANDARD;
+                use base64::Engine;
+                STANDARD.encode(raw.to_bytes())
+            }),
         );
         map.insert("state".into(), state_to_json(state));
     }
@@ -1374,12 +1344,6 @@ fn state_to_json(state: &State) -> serde_json::Value {
         None => {}
     }
     serde_json::Value::Object(out)
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    STANDARD.encode(bytes)
 }
 
 fn streamed_message_row(m: &grammers_client::message::Message) -> TeleResult<serde_json::Value> {
@@ -4008,7 +3972,7 @@ mod tests {
 
     #[test]
     fn listen_dedupe_suppresses_duplicate_pts_windows() {
-        let mut d = ListenDedupe::new();
+        let mut d = ListenDedupe::new(LISTEN_DEDUPE_CAP);
         let raw10 = pts_update(user_tl_peer(), 5, 10, 1, None);
         let raw11 = pts_update(user_tl_peer(), 5, 11, 1, None);
         let k1 = dedupe_key(Some(123), 5, &raw10).unwrap();
@@ -4024,12 +3988,12 @@ mod tests {
 
     #[test]
     fn listen_dedupe_evicts_oldest_beyond_cap() {
-        let mut d = ListenDedupe::new();
+        let mut d = ListenDedupe::new(LISTEN_DEDUPE_CAP);
         for i in 0..(LISTEN_DEDUPE_CAP as i32) {
             let raw = pts_update(user_tl_peer(), i, i, 1, None);
             assert!(!d.check(dedupe_key(Some(1), i, &raw).unwrap()));
         }
-        assert_eq!(d.seen.len(), LISTEN_DEDUPE_CAP);
+        assert_eq!(d.len(), LISTEN_DEDUPE_CAP);
         let first_raw = pts_update(user_tl_peer(), 0, 0, 1, None);
         let first = dedupe_key(Some(1), 0, &first_raw).unwrap();
         assert!(d.check(first));
@@ -4052,7 +4016,7 @@ mod tests {
         assert_ne!(key_a.2, key_b.2);
         assert_eq!(key_a.2, 10);
         assert_eq!(key_b.2, 11);
-        let mut d = ListenDedupe::new();
+        let mut d = ListenDedupe::new(LISTEN_DEDUPE_CAP);
         assert!(!d.check(key_a));
         assert!(d.check(key_a));
         assert!(!d.check(key_b));
@@ -4085,7 +4049,7 @@ mod tests {
         let ka = dedupe_key(Some(1), 9, &edit_a).unwrap();
         let kb = dedupe_key(Some(1), 9, &edit_b).unwrap();
         assert_ne!(ka, kb);
-        let mut d = ListenDedupe::new();
+        let mut d = ListenDedupe::new(LISTEN_DEDUPE_CAP);
         assert!(!d.check(ka));
         assert!(!d.check(kb));
         assert!(d.check(ka));
@@ -4157,7 +4121,7 @@ mod tests {
             let state = sess.updates_state().await.unwrap();
             let mbox = grammers_session::updates::MessageBoxes::load(state);
             assert_eq!(mbox.session_state().pts, 88);
-            let mut dedupe = ListenDedupe::new();
+            let mut dedupe = ListenDedupe::new(LISTEN_DEDUPE_CAP);
             let raw = pts_update(user_tl_peer(), 1, mbox.session_state().pts, 1, None);
             let k = dedupe_key(Some(1), 1, &raw).unwrap();
             assert!(!dedupe.check(k));

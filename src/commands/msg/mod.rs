@@ -801,15 +801,7 @@ pub(crate) async fn get_watch_core(
     }
 }
 
-fn truncate_text(text: &str, max_chars: usize) -> String {
-    let mut chars = text.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{truncated}…")
-    } else {
-        truncated
-    }
-}
+use crate::commands::helpers::truncate_text;
 
 fn push_message_row(
     rows: &mut Vec<serde_json::Value>,

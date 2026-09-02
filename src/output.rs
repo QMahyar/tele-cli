@@ -79,7 +79,7 @@ pub fn print_json_to(
 }
 
 pub fn print_json_result(value: &serde_json::Value) -> crate::error::TeleResult<()> {
-    print_json_to(&mut std::io::stdout(), value)
+    print_json(value)
 }
 
 pub fn print_table(headers: &[&str], rows: &[Vec<String>]) -> crate::error::TeleResult<()> {

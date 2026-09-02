@@ -233,16 +233,11 @@ pub fn select_sessions(
         .collect())
 }
 
-pub fn print_envelope(flags: &GlobalFlags, envelope: &crate::output::Envelope) -> TeleResult<()> {
+pub fn finish(flags: &GlobalFlags, envelope: &crate::output::Envelope) -> TeleResult<i32> {
     if flags.json || flags.jsonl {
         let value = serde_json::to_value(envelope)?;
         crate::output::print_json(&value)?;
     }
-    Ok(())
-}
-
-pub fn finish(flags: &GlobalFlags, envelope: &crate::output::Envelope) -> TeleResult<i32> {
-    print_envelope(flags, envelope)?;
     Ok(envelope_exit_code(envelope))
 }
 

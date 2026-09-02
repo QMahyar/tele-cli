@@ -3,6 +3,7 @@ use grammers_client::tl;
 use grammers_client::update::Update;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
+use std::hash::Hash;
 use std::io::Write;
 use std::pin::Pin;
 
@@ -87,23 +88,25 @@ enum AccountTick {
 pub(crate) const OP_TIMEOUT_SIMPLE: Duration = Duration::from_secs(30);
 pub(crate) const OP_TIMEOUT_PAGINATED: Duration = Duration::from_secs(120);
 
-pub(crate) struct ServeDedupe {
-    seen: HashMap<(String, i64, i32, i32), ()>,
-    order: VecDeque<(String, i64, i32, i32)>,
+pub(crate) struct CappedDedupe<K: Eq + Hash + Clone> {
+    seen: HashMap<K, ()>,
+    order: VecDeque<K>,
+    cap: usize,
 }
 
-impl ServeDedupe {
-    pub(crate) fn new() -> Self {
+impl<K: Eq + Hash + Clone> CappedDedupe<K> {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             seen: HashMap::new(),
             order: VecDeque::new(),
+            cap,
         }
     }
-    pub(crate) fn check(&mut self, key: (String, i64, i32, i32)) -> bool {
+    pub(crate) fn check(&mut self, key: K) -> bool {
         if self.seen.contains_key(&key) {
             return true;
         }
-        if self.seen.len() >= SERVE_DEDUPE_CAP {
+        if self.seen.len() >= self.cap {
             if let Some(old) = self.order.pop_front() {
                 self.seen.remove(&old);
             }
@@ -112,7 +115,13 @@ impl ServeDedupe {
         self.order.push_back(key);
         false
     }
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.seen.len()
+    }
 }
+
+pub(crate) type ServeDedupe = CappedDedupe<(String, i64, i32, i32)>;
 
 pub(crate) fn dedupe_key(
     account: &str,
@@ -1252,7 +1261,7 @@ async fn account_task(
     let mut resync_rx = resync_rx;
     let mut failures: u32 = 0;
     let mut greeted = false;
-    let mut dedupe = ServeDedupe::new();
+    let mut dedupe = ServeDedupe::new(SERVE_DEDUPE_CAP);
     loop {
         let mut guard = loop {
             match crate::client::ClientGuard::connect(&name, creds.api_id, config_path.as_deref())
@@ -2138,7 +2147,7 @@ mod tests {
 
     #[test]
     fn serve_dedupe_suppresses_replay_and_bounces_flaky_reconnect() {
-        let mut d = ServeDedupe::new();
+        let mut d = ServeDedupe::new(SERVE_DEDUPE_CAP);
         assert!(!d.check(dedupe_key("work", Some(123), 5, 10)));
         assert!(d.check(dedupe_key("work", Some(123), 5, 10)));
         assert!(!d.check(dedupe_key("work", Some(123), 5, 11)));
@@ -2296,11 +2305,11 @@ mod tests {
 
     #[test]
     fn serve_dedupe_evicts_oldest_beyond_cap() {
-        let mut d = ServeDedupe::new();
+        let mut d = ServeDedupe::new(SERVE_DEDUPE_CAP);
         for i in 0..(SERVE_DEDUPE_CAP as i32) {
             assert!(!d.check(dedupe_key("work", Some(1), i, i)));
         }
-        assert_eq!(d.seen.len(), SERVE_DEDUPE_CAP);
+        assert_eq!(d.len(), SERVE_DEDUPE_CAP);
         assert!(d.check(dedupe_key("work", Some(1), 0, 0)));
         assert!(!d.check(dedupe_key(
             "work",
@@ -2308,7 +2317,7 @@ mod tests {
             SERVE_DEDUPE_CAP as i32,
             SERVE_DEDUPE_CAP as i32
         )));
-        assert_eq!(d.seen.len(), SERVE_DEDUPE_CAP);
+        assert_eq!(d.len(), SERVE_DEDUPE_CAP);
     }
 
     #[test]

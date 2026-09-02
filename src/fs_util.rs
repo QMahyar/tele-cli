@@ -25,7 +25,6 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut h = DefaultHasher::new();
-        std::process::id().hash(&mut h);
         std::time::SystemTime::now().hash(&mut h);
         h.finish() as u16
     };
