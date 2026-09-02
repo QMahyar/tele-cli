@@ -92,6 +92,7 @@ src/
     ├── takeout.rs       start, export, finish
     ├── listen.rs        JSONL streaming (NewMessage, MessageEdited, MessageDeleted, Raw, Album, Gap, Service, ChatAction, UserUpdate)
     ├── raw.rs           Typed TL registry (25 methods)
+    ├── skill.rs + skill.md  Agent skill: tele skill (print) / tele skill install
     ├── completions.rs   bash, zsh, fish, powershell
     ├── stickers.rs      list, search, show, install, remove
     ├── stories.rs       send, list, read, delete, pin, unpin

@@ -2361,3 +2361,61 @@ fn topic_list_dry_run_json_contract() {
         serde_json::json!("list topics in chat @test")
     );
 }
+
+#[test]
+fn skill_prints_skill_md_to_stdout() {
+    let (code, out, err) = run_isolated("skillprint", &["skill"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(out.starts_with("---\nname: tele"), "stdout: {out}");
+    assert!(out.contains("description: Drive real Telegram user accounts"));
+    assert!(out.contains("## Non-negotiable rules"));
+    assert!(out.contains("## Command map"));
+    assert!(out.contains("tele skill install [--dir PATH]"));
+    assert!(err.is_empty(), "stderr must stay empty: {err}");
+}
+
+#[test]
+fn skill_print_and_skill_print_print_are_identical() {
+    let (_, bare, _) = run_isolated("skillbare", &["skill"]);
+    let (_, sub, _) = run_isolated("skillsub", &["skill", "print"]);
+    assert_eq!(bare, sub, "bare skill must be an alias for skill print");
+}
+
+#[test]
+fn skill_install_writes_skill_md_to_dir() {
+    let dir = isolated_appdir("skillinstall");
+    let (code, _out, err) = run_in(&dir, &["skill", "install", "--dir", dir.to_str().unwrap()]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let target = dir.join("tele").join("SKILL.md");
+    let content = std::fs::read_to_string(&target).unwrap();
+    assert!(content.starts_with("---\nname: tele"));
+    assert!(err.contains("installed skill to"), "stderr: {err}");
+}
+
+#[test]
+fn skill_install_refuses_overwrite_without_force() {
+    let dir = isolated_appdir("skillforce");
+    let args: Vec<String> = vec![
+        "skill".into(),
+        "install".into(),
+        "--dir".into(),
+        dir.to_string_lossy().into_owned(),
+    ];
+    let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let (code1, _, _) = run_in(&dir, &argrefs);
+    assert_eq!(code1, 0);
+    let (code2, _, err2) = run_in(&dir, &argrefs);
+    assert_ne!(code2, 0, "second install without --force must fail");
+    assert!(err2.contains("refusing to overwrite"), "stderr: {err2}");
+    let (code3, _, _) = run_in(
+        &dir,
+        &[
+            "skill",
+            "install",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--force",
+        ],
+    );
+    assert_eq!(code3, 0, "--force must overwrite");
+}

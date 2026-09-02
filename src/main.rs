@@ -127,6 +127,8 @@ enum Command {
     Mcp(mcp::McpArgs),
     /// Raw TL invocation (typed registry)
     Raw(raw::RawArgs),
+    /// Print (or install) the agent skill for driving tele
+    Skill(skill::SkillCmd),
     /// Generate shell completions
     #[command(subcommand)]
     Completions(completions::Shell),
@@ -357,6 +359,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Serve(c) => serve::run(&c, flags).await,
         Command::Mcp(c) => mcp::run(&c, flags).await,
         Command::Raw(c) => raw::run(&c, flags).await,
+        Command::Skill(c) => skill::run(c, flags).await,
         Command::Completions(s) => completions::run(s, flags).await,
     };
     match result {

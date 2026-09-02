@@ -945,6 +945,18 @@ tele completions bash|zsh|fish|powershell
 
 Prints a shell completion script for the `tele` binary to stdout and exits 0. No account selection or network is involved.
 
+## `tele skill`
+
+```
+tele skill            # identical to: tele skill print
+tele skill print
+tele skill install [--dir PATH] [--force]
+```
+
+`tele skill` (and `tele skill print`) writes the embedded agent skill — an `SKILL.md` following the [Agent Skills](https://agentskills.io) spec (YAML frontmatter `name`/`description`/`license`/`compatibility`, markdown body) — to stdout and exits 0. The body carries the usage rules for driving tele: JSON-only parsing, exit codes, account/chat targeting, the 16 command groups, the output envelope, and recipes. No account selection or network is involved. Stdout carries the skill; stderr stays empty on success.
+
+`tele skill install` writes the same `SKILL.md` to `tele/SKILL.md` under each detected agent skill directory (any of `$HOME/.claude/skills`, `$HOME/.config/opencode/skills`, `$HOME/.cursor/skills` that exists). With `--dir PATH` it writes to `PATH/tele/SKILL.md` instead and skips detection. Existing files are refused without `--force`. Progress lines go to stderr; exit is 0 on success, non-zero when nothing was written and no `--dir` was given.
+
 ## Stability
 
 - New commands and new optional JSON keys are MINOR releases.

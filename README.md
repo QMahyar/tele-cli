@@ -1,11 +1,11 @@
+# Tele
+
 <p align="center">
   <img src="docs/demo/banner.svg" alt="Tele-Cli" width="600">
 </p>
 
-<h3 align="center">Telegram automation from your terminal</h3>
-
 <p align="center">
-  Multi-account. Parallel. Scriptable. No bot tokens.
+  Telegram automation from your terminal. Multi-account. Parallel. Scriptable. No bot tokens.
 </p>
 
 <p align="center">
@@ -17,42 +17,17 @@
 
 ---
 
-**Tele** drives real Telegram user accounts from the command line. Built on [grammers](https://docs.rs/grammers-client) (MTProto). No bot tokens.
-
-```bash
-npm install -g @qmahyar/telecli
-tele msg send --chat me --text "hello from tele"
-```
-
-## What you get
-
-- **16 command groups**: accounts, messages, chats, dialogs, forum topics, contacts, profile, privacy, stories, stickers, takeout, listen, serve, mcp, raw, completions. Run `tele --help` for every command and flag.
-- **Multi-account**: named sessions, tags, parallel fan-out (`--parallel 1-32`) with per-account rate limiting and FloodWait handling.
-- **Machine output**: every command supports `--json` and `--jsonl` with a stable envelope. `tele listen` streams events as JSONL.
-- **MCP server**: `tele mcp` exposes 67 tools for Claude, Cursor, and any MCP client.
-- **Duplex server**: `tele serve` runs a JSONL request/response protocol over stdin/stdout for embedding.
-- **Dry-run everywhere**: `--dry-run` validates and prints the exact intended action without any network call.
-- **Raw TL access**: `tele raw` invokes 25 typed Telegram API methods through an allowlist.
-- **Cross-platform**: Windows, macOS, and Linux binaries for 13 targets, including a static `linux-arm64-musl` build for Termux/Android.
-
 ## Install
 
-### npm (recommended)
+**npm** (all platforms; the matching binary installs automatically):
 
 ```bash
 npm install -g @qmahyar/telecli
-tele --version
 ```
 
-The npm package bundles all platform binaries and installs the one that matches your system.
+**Binary:** download from [Releases](https://github.com/QMahyar/tele-cli/releases) — 13 targets including a static `linux-arm64-musl` build for Termux/Android.
 
-### Binary download
-
-Download a binary from [Releases](https://github.com/QMahyar/tele-cli/releases).
-
-### Build from source
-
-Requires [Rust 1.89+](https://www.rust-lang.org/tools/install).
+**From source** (Rust 1.89+):
 
 ```bash
 git clone https://github.com/QMahyar/tele-cli.git
@@ -60,7 +35,7 @@ cd tele-cli
 cargo build --release
 ```
 
-### Shell completions
+**Shell completions:**
 
 ```bash
 tele completions bash >> ~/.bashrc
@@ -71,10 +46,9 @@ tele completions fish > ~/.config/fish/completions/tele.fish
 
 ## Quick start
 
-**1. Get API credentials.** Create an app at [my.telegram.org](https://my.telegram.org) and save your `api_id` and `api_hash` to the config directory:
+**1. Get API credentials.** Create an app at [my.telegram.org](https://my.telegram.org) and save your `api_id` and `api_hash` to the config directory (`~/.config/telecli` on Linux/macOS, `%APPDATA%\telecli` on Windows):
 
 ```bash
-# Linux/macOS (~%APPDATA%\telecli on Windows)
 mkdir -p ~/.config/telecli
 echo 'TELE_API_ID=1234567' > ~/.config/telecli/.env
 echo 'TELE_API_HASH=0123456789abcdef0123456789abcdef' >> ~/.config/telecli/.env
@@ -95,7 +69,22 @@ tele dialog list                                    # recent chats
 tele msg send --chat me --text "test" --dry-run     # preview, no network
 ```
 
-See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough.
+Full walkthrough in [docs/getting-started.md](docs/getting-started.md). Usage recipes in [docs/examples.md](docs/examples.md).
+
+---
+
+**Tele** drives real Telegram user accounts from the command line. Built on [grammers](https://docs.rs/grammers-client) (MTProto). No bot tokens.
+
+## What you get
+
+- **16 command groups**: accounts, messages, chats, dialogs, forum topics, contacts, profile, privacy, stories, stickers, takeout, listen, serve, mcp, raw, skill. Run `tele --help` for every command and flag.
+- **Multi-account**: named sessions, tags, parallel fan-out (`--parallel 1-32`) with per-account rate limiting and FloodWait handling.
+- **Machine output**: every command supports `--json` and `--jsonl` with a stable envelope. `tele listen` streams events as JSONL.
+- **MCP server**: `tele mcp` exposes 67 tools for Claude, Cursor, and any MCP client.
+- **Duplex server**: `tele serve` runs a JSONL request/response protocol over stdin/stdout for embedding.
+- **Agent skill**: `tele skill` prints a complete SKILL.md for driving tele from any coding agent.
+- **Dry-run everywhere**: `--dry-run` validates and prints the exact intended action without any network call.
+- **Raw TL access**: `tele raw` invokes 25 typed Telegram API methods through an allowlist.
 
 ## Multi-account
 
@@ -137,7 +126,23 @@ Most commands accept `--chat` or `--target` as `@username`, a `t.me/` link, a nu
 
 The full JSON shapes, MCP tool table, and protocol rules are the public contract in [docs/cli-contract.md](docs/cli-contract.md). Contract changes are additive; anything else is a bug.
 
-## MCP for agents
+## For agents
+
+Tele ships its own skill. An agent loads it into context in one command:
+
+```bash
+tele skill
+```
+
+To make it discoverable across sessions, install it into the detected agent skill directories (Claude Code, OpenCode, Cursor — or any dir with `--dir`):
+
+```bash
+tele skill install
+```
+
+The skill follows the [Agent Skills](https://agentskills.io) spec: it carries the non-negotiable usage rules (parse `--json` only, exit-code meanings, dry-run before destructive commands), the command map, the output envelope, and recipes. For deeper integration, `tele mcp` exposes the same operations as MCP tools. The project conventions for agents working *on* tele are in [AGENTS.md](AGENTS.md).
+
+## MCP
 
 ```json
 {
@@ -174,8 +179,6 @@ See [docs/security.md](docs/security.md) for the threat model.
 | [Observability](docs/observability.md) | Logging and output streams |
 | [Release](docs/release.md) | Build targets and publishing |
 | [Decisions](docs/decisions/) | Architecture decision records |
-
-For coding agents: [AGENTS.md](AGENTS.md) carries the project conventions. Load it before touching the code.
 
 ## License
 
