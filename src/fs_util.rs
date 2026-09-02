@@ -521,7 +521,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         std::env::set_var("TELE_APP_DIR", &base);
-        let app_dir = crate::config::app_data_dir();
+        let app_dir = resolve_for_guard(&crate::config::app_data_dir());
         let parent = base.parent().unwrap().to_path_buf();
         let traversal = parent
             .join("dummy")
