@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-02
+
+### Added
+- `tele skill` prints an embedded SKILL.md (Agent Skills spec: frontmatter, normative usage rules, 16-group command map, JSON envelope, recipes) to stdout — an agent loads it into context in one command.
+- `tele skill install [--dir PATH] [--force]` writes the skill to `tele/SKILL.md` under detected agent skill directories (`.claude/skills`, `.config/opencode/skills`, `.cursor/skills`) or a custom dir; overwrites are refused without `--force`; nothing detected and no `--dir` is a usage error.
+- README now leads with install and quick start; new "For agents" section covering `tele skill` and MCP.
+
+### Changed
+- README rewritten as a concise front door (482 → 180 lines): command tables replaced by `tele --help` pointers, every count verified (16 groups, 67 MCP tools, 25 raw methods, 13 build targets); stale session-report artifacts (`SHIPPED.md`, `implementation-summary.md`) removed.
+- `docs/getting-started.md`: removed the false `cargo install tele-cli` instruction (the crate is not on crates.io).
+
 ## [0.8.0] - 2026-09-02
 
 ### Fixed
