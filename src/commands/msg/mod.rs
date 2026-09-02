@@ -3024,6 +3024,9 @@ mod tests {
             "a.session-journal",
             ".ENV",
             ".env",
+            "x.env",
+            "credentials.bak",
+            "vault.kdbx.bak",
         ] {
             assert!(
                 matches!(
@@ -3033,8 +3036,8 @@ mod tests {
                 "{bad}"
             );
         }
-        let dir = upload_fixture("lookalike", &["session", "env", "x.env"]);
-        for good in ["session", "env", "x.env"] {
+        let dir = upload_fixture("lookalike", &["session", "env", "env.example"]);
+        for good in ["session", "env", "env.example"] {
             assert!(
                 validate_upload_path(&dir.join(good).to_string_lossy()).is_ok(),
                 "{good}"
@@ -4657,8 +4660,18 @@ mod tests {
         );
         assert!(!is_sensitive_basename("my_env"), "my_env must be allowed");
         assert!(
-            !is_sensitive_basename("credentials.bak"),
-            "credentials.bak must be allowed (exact only)"
+            is_sensitive_basename("credentials.bak"),
+            "credentials.bak is a credential file"
+        );
+        assert!(
+            is_sensitive_basename("vault.kdbx.bak"),
+            "kdbx backup is a credential file"
+        );
+        assert!(is_sensitive_basename("my.env"));
+        assert!(is_sensitive_basename("my.credentials.json"));
+        assert!(
+            !is_sensitive_basename("env.example"),
+            "example env files are not secrets"
         );
     }
 

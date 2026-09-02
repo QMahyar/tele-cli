@@ -77,26 +77,50 @@ fn pre_restrict_sidecars(name: &str) -> anyhow::Result<()> {
     for suffix in SESSION_SIDECAR_SUFFIXES {
         let path = sidecar_path(name, suffix);
         if !path.try_exists()? {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .mode(0o600)
-                    .open(&path)?;
-            }
-            #[cfg(not(unix))]
-            {
-                std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&path)?;
-            }
+            create_private_new(&path)?;
         }
         crate::fs_util::restrict_file_private(&path)?;
     }
     Ok(())
+}
+
+fn create_private_new(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+    }
+    #[cfg(windows)]
+    {
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)?;
+        crate::fs_util::restrict_file_private(path)?;
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sweep_tighten_session_files() {
+    let Ok(entries) = std::fs::read_dir(session_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            let _ = crate::fs_util::restrict_file_private(&entry.path());
+        }
+    }
 }
 
 fn restrict_session_files(name: &str) -> anyhow::Result<()> {
@@ -213,6 +237,9 @@ pub async fn open_session(name: &str) -> anyhow::Result<LockedSession> {
     crate::fs_util::create_dir_private(&dir)?;
     let lock = acquire_lock_file(name).await?;
     pre_restrict_sidecars(name)?;
+    if !path.try_exists()? {
+        create_private_new(&path)?;
+    }
     let session = SqliteSession::open(&path).await?;
     restrict_session_files(name)?;
     Ok(LockedSession {

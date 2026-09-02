@@ -232,7 +232,7 @@ pub fn credentials() -> anyhow::Result<Credentials> {
             );
         }
     } else {
-        let _ = crate::fs_util::restrict_file_private(&path);
+        let _ = crate::fs_util::create_file_private(&path);
     }
     let stamp = FileStamp::of(&path);
     let overlay = env_overlay_key();

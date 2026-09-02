@@ -152,6 +152,7 @@ fn strip_ansi(s: &str) -> String {
 
 fn main() -> std::process::ExitCode {
     logging::init();
+    crate::session::sweep_tighten_session_files();
     let matches = match Cli::command().try_get_matches() {
         Ok(matches) => matches,
         Err(e) => {

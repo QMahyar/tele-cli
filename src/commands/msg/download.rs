@@ -240,6 +240,13 @@ pub(crate) fn sweep_stale_download_temps(final_path: &std::path::Path) {
         if !name.starts_with(&prefix) {
             continue;
         }
+        let pid_portion = name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|p| p.parse::<u32>().ok());
+        if pid_portion == Some(std::process::id()) {
+            continue;
+        }
         let Ok(meta) = entry.metadata() else {
             continue;
         };

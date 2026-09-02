@@ -94,9 +94,23 @@ pub fn is_sensitive_basename(lower: &str) -> bool {
         "id_dsa",
     ];
     const EXACT: [&str; 3] = [".netrc", ".git-credentials", "credentials"];
-    SUFFIXES.iter().any(|s| lower.ends_with(s))
+    if SUFFIXES.iter().any(|s| lower.ends_with(s))
         || PREFIXES.iter().any(|s| lower.starts_with(s))
         || EXACT.contains(&lower)
+    {
+        return true;
+    }
+    let stem = lower
+        .strip_suffix(".bak")
+        .or_else(|| lower.strip_suffix(".backup"))
+        .unwrap_or(lower);
+    if stem != lower {
+        return is_sensitive_basename(stem);
+    }
+    lower.contains(".env")
+        || lower.contains("credentials")
+        || lower.contains("id_rsa")
+        || lower.contains("id_ed25519")
 }
 
 pub(crate) fn validate_download_dir(dir: &str) -> TeleResult<()> {
