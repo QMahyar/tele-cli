@@ -113,11 +113,8 @@ pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(unix)]
 pub fn create_file_private(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let opts = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true).mode(0o600);
     opts.open(path)
 }
 
