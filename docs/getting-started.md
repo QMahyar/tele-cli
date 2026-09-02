@@ -6,7 +6,7 @@ This guide walks you through installing tele, setting up your first account, and
 
 - A Telegram account (user account, not a bot)
 - API credentials from [my.telegram.org](https://my.telegram.org)
-- Node.js (for npm install) or Rust 1.89+ (for cargo install)
+- Node.js (for npm install) or Rust 1.89+ (to build from source)
 
 ## Step 1: Get API credentials
 
@@ -25,18 +25,13 @@ npm install -g @qmahyar/telecli
 tele --version
 ```
 
-### Option B: cargo
+### Option B: binary download
 
-```bash
-cargo install tele-cli
-tele --version
-```
+Download a binary from [Releases](https://github.com/QMahyar/tele-cli/releases) for your platform.
 
-### Option C: binary download
+### Option C: build from source
 
-Download from [Releases](https://github.com/QMahyar/tele-cli/releases) for your platform.
-
-### Option D: build from source
+Requires [Rust 1.89+](https://www.rust-lang.org/tools/install).
 
 ```bash
 git clone https://github.com/QMahyar/tele-cli.git

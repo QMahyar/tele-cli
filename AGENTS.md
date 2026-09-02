@@ -57,7 +57,7 @@ Wasteful: pasting all of `docs/capabilities.md` when you touch one `privacy.*` r
 ```bash
 cargo build                              # debug build
 cargo build --release                    # optimized build
-cargo test                               # 1421 tests, no network
+cargo test                               # ~1470 tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
