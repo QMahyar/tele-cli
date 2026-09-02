@@ -323,11 +323,34 @@ pub async fn run(args: &McpArgs, flags: &crate::executor::GlobalFlags) -> TeleRe
             "unknown account '{name}': not in config.toml or no session file"
         )));
     }
-    let creds = crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
-    let guard = ClientGuard::connect(name, creds.api_id, flags.config_path.as_deref()).await?;
-    let outcome = serve_session(&guard, args).await;
-    guard.close().await;
-    outcome
+    if flags.dry_run {
+        let groups = args.groups.as_deref().map(|g| g.join(",")).unwrap_or_else(|| "all".to_string());
+        crate::output::log_line("info", &format!(
+            "[dry-run] would start MCP server for account {name} (groups: {groups})"
+        ));
+        if flags.json || flags.jsonl {
+            let data = serde_json::json!({
+                "dry_run": true,
+                "account": name,
+                "groups": groups,
+                "would": format!("start MCP server for account {name} (groups: {groups})")
+            });
+            let envelope = crate::output::Envelope::new(
+                vec![crate::commands::account::single_outcome(name, data)],
+                true,
+                "mcp",
+            );
+            crate::executor::finish(flags, &envelope)
+        } else {
+            Ok(crate::error::EXIT_OK)
+        }
+    } else {
+        let creds = crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
+        let guard = ClientGuard::connect(name, creds.api_id, flags.config_path.as_deref()).await?;
+        let outcome = serve_session(&guard, args).await;
+        guard.close().await;
+        outcome
+    }
 }
 
 async fn serve_session(guard: &ClientGuard, args: &McpArgs) -> TeleResult<i32> {
