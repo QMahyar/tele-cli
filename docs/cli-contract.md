@@ -233,8 +233,8 @@ tele msg get --chat @BOT --id 123 --json | jq '.results[0].data.messages[0].repl
 
 Notes:
 
-- stdout is UTF-8 JSON; on pwsh set `chcp 65001` or `$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new()` if Persian mangles; prefer `target\debug\telecli.exe` over `cargo run --` for hot loops (0.5s compile tax).
-- For hot loops prefer `target\debug\telecli.exe` over `cargo run --` (0.5s compile tax) — hot loops avoid the ~0.5s `cargo run` check.
+- stdout is UTF-8 JSON; on pwsh set `chcp 65001` or `$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new()` if Persian mangles; prefer `target\debug\tele.exe` over `cargo run --` for hot loops (0.5s compile tax).
+- For hot loops prefer `target\debug\tele.exe` over `cargo run --` (0.5s compile tax) — hot loops avoid the ~0.5s `cargo run` check.
 
 ## `profile set --username`
 

@@ -22,7 +22,7 @@
 **npm** (all platforms; the matching binary installs automatically):
 
 ```bash
-npm install -g @qmahyar/telecli
+npm install -g @qmahyar/tele
 ```
 
 **Binary:** download from [Releases](https://github.com/QMahyar/tele-cli/releases) — 13 targets including a static `linux-arm64-musl` build for Termux/Android.
@@ -46,12 +46,12 @@ tele completions fish > ~/.config/fish/completions/tele.fish
 
 ## Quick start
 
-**1. Get API credentials.** Create an app at [my.telegram.org](https://my.telegram.org) and save your `api_id` and `api_hash` to the config directory (`~/.config/telecli` on Linux/macOS, `%APPDATA%\telecli` on Windows):
+**1. Get API credentials.** Create an app at [my.telegram.org](https://my.telegram.org) and save your `api_id` and `api_hash` to the config directory (`~/.config/tele` on Linux/macOS, `%APPDATA%\tele` on Windows):
 
 ```bash
-mkdir -p ~/.config/telecli
-echo 'TELE_API_ID=1234567' > ~/.config/telecli/.env
-echo 'TELE_API_HASH=0123456789abcdef0123456789abcdef' >> ~/.config/telecli/.env
+mkdir -p ~/.config/tele
+echo 'TELE_API_ID=1234567' > ~/.config/tele/.env
+echo 'TELE_API_HASH=0123456789abcdef0123456789abcdef' >> ~/.config/tele/.env
 ```
 
 **2. Add and log in an account.** `account login` prompts for the login code, or use `--method qr`:
@@ -96,7 +96,7 @@ tele msg send --tag bulk --chat @channel --text "broadcast" --parallel 8
 ```
 
 ```toml
-# ~/.config/telecli/config.toml
+# ~/.config/tele/config.toml
 [accounts.work]
 tags = ["bulk"]
 

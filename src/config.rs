@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use crate::error::{TeleError, TeleResult};
 
-pub const APP_DIR_NAME: &str = "telecli";
+pub const APP_DIR_NAME: &str = "tele";
+pub(crate) const LEGACY_APP_DIR_NAME: &str = "telecli";
 
 pub fn app_data_dir() -> PathBuf {
     app_data_dir_from_env(|k| std::env::var(k))
@@ -22,29 +23,78 @@ fn env_nonempty(
     get(key).ok().filter(|v| !v.trim().is_empty())
 }
 
+fn app_data_dir_named(
+    name: &str,
+    get: &mut impl FnMut(&str) -> Result<String, std::env::VarError>,
+) -> PathBuf {
+    if cfg!(windows) {
+        if let Some(appdata) = env_nonempty(get, "APPDATA") {
+            return PathBuf::from(appdata).join(name);
+        }
+        if let Some(local) = env_nonempty(get, "LOCALAPPDATA") {
+            return PathBuf::from(local).join(name);
+        }
+        if let Some(profile) = env_nonempty(get, "USERPROFILE") {
+            return PathBuf::from(profile).join(".config").join(name);
+        }
+    } else if let Some(xdg) = env_nonempty(get, "XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join(name);
+    }
+    match env_nonempty(get, "HOME") {
+        Some(home) => PathBuf::from(home).join(".config").join(name),
+        None => std::env::temp_dir().join(name),
+    }
+}
+
+pub fn migrate_app_data_dir() {
+    let mut get = |k: &str| std::env::var(k);
+    if env_nonempty(&mut get, "TELE_APP_DIR").is_some() {
+        return;
+    }
+    let new = app_data_dir_named(APP_DIR_NAME, &mut get);
+    if new.exists() {
+        return;
+    }
+    let old = app_data_dir_named(LEGACY_APP_DIR_NAME, &mut get);
+    if !old.exists() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(&old, &new) {
+        Ok(()) => crate::output::log_line(
+            "info",
+            &format!("migrated app data directory to {}", new.display()),
+        ),
+        Err(e) => crate::output::log_line(
+            "warn",
+            &format!(
+                "could not migrate app data directory: {e}; using legacy {}",
+                old.display()
+            ),
+        ),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn migrate_dir_pair_for_tests(old: &std::path::Path, new: &std::path::Path) -> bool {
+    if new.exists() || !old.exists() {
+        return false;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::rename(old, new).is_ok()
+}
+
 fn app_data_dir_from_env(
     mut get: impl FnMut(&str) -> Result<String, std::env::VarError>,
 ) -> PathBuf {
     if let Some(dir) = env_nonempty(&mut get, "TELE_APP_DIR") {
         return PathBuf::from(dir);
     }
-    if cfg!(windows) {
-        if let Some(appdata) = env_nonempty(&mut get, "APPDATA") {
-            return PathBuf::from(appdata).join(APP_DIR_NAME);
-        }
-        if let Some(local) = env_nonempty(&mut get, "LOCALAPPDATA") {
-            return PathBuf::from(local).join(APP_DIR_NAME);
-        }
-        if let Some(profile) = env_nonempty(&mut get, "USERPROFILE") {
-            return PathBuf::from(profile).join(".config").join(APP_DIR_NAME);
-        }
-    } else if let Some(xdg) = env_nonempty(&mut get, "XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join(APP_DIR_NAME);
-    }
-    match env_nonempty(&mut get, "HOME") {
-        Some(home) => PathBuf::from(home).join(".config").join(APP_DIR_NAME),
-        None => std::env::temp_dir().join(APP_DIR_NAME),
-    }
+    app_data_dir_named(APP_DIR_NAME, &mut get)
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -1472,5 +1522,58 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(path.parent().unwrap());
         }
+    }
+
+    #[test]
+    fn migrate_dir_renames_legacy_telecli_dir() {
+        let base = std::env::temp_dir().join(format!("telecli-migrate-a-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let old = base.join(LEGACY_APP_DIR_NAME);
+        let new = base.join(APP_DIR_NAME);
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join(".env"), "TELE_API_ID=1").unwrap();
+        assert!(migrate_dir_pair_for_tests(&old, &new));
+        assert!(!old.exists());
+        assert!(new.join(".env").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migrate_dir_never_clobbers_existing_new_dir() {
+        let base = std::env::temp_dir().join(format!("telecli-migrate-b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let old = base.join(LEGACY_APP_DIR_NAME);
+        let new = base.join(APP_DIR_NAME);
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join(".env"), "TELE_API_ID=2").unwrap();
+        assert!(!migrate_dir_pair_for_tests(&old, &new));
+        assert!(old.exists());
+        assert_eq!(
+            std::fs::read_to_string(new.join(".env")).unwrap(),
+            "TELE_API_ID=2"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn migrate_dir_is_noop_when_legacy_missing() {
+        let base = std::env::temp_dir().join(format!("telecli-migrate-c-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let old = base.join(LEGACY_APP_DIR_NAME);
+        let new = base.join(APP_DIR_NAME);
+        assert!(!migrate_dir_pair_for_tests(&old, &new));
+        assert!(!old.exists());
+        assert!(!new.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn app_dir_new_name_differs_from_legacy() {
+        assert_eq!(APP_DIR_NAME, "tele");
+        assert_ne!(APP_DIR_NAME, LEGACY_APP_DIR_NAME);
     }
 }

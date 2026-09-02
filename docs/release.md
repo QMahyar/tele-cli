@@ -29,20 +29,20 @@ The push triggers the `release` workflow.
 
 ## What the workflow builds
 
-**Build job.** A matrix of 13 targets named by full Rust target triple, matching the ripgrep convention: windows x64 + arm64 (msvc), macOS arm64 + x64, and linux x64/arm64/armv7/i686/riscv64/powerpc64le across gnu and musl. Every Linux target cross-compiles through `cross` (docker images carry the C toolchain for libsql's SQLite); the arm64-musl build is fully static and runs in Termux/Android. Each target produces `telecli-<version>-<target-triple>.tar.gz` (`.zip` on windows) plus a `.sha256`. Regenerate the count with `rg -c "target: " .github/workflows/release.yml`, which prints `13`.
+**Build job.** A matrix of 13 targets named by full Rust target triple, matching the ripgrep convention: windows x64 + arm64 (msvc), macOS arm64 + x64, and linux x64/arm64/armv7/i686/riscv64/powerpc64le across gnu and musl. Every Linux target cross-compiles through `cross` (docker images carry the C toolchain for libsql's SQLite); the arm64-musl build is fully static and runs in Termux/Android. Each target produces `tele-<version>-<target-triple>.tar.gz` (`.zip` on windows) plus a `.sha256`. Regenerate the count with `rg -c "target: " .github/workflows/release.yml`, which prints `13`.
 
 **Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries up to 28 assets: 14 archives plus their checksum files (the windows-arm64 build is best-effort with `continue-on-error`).
 
-**npm job.** Publishes 1 bundled package (`@qmahyar/telecli`) through OIDC trusted publishing (no token). The single package bundles all 13 target binaries (`telecli-<triple>`) plus launcher `bin/telecli.js` which picks the correct binary for the current platform; no separate platform packages. The `linux-arm64-musl` binary is static and runs in Termux/Android.
+**npm job.** Publishes 1 bundled package (`@qmahyar/telecli`) through OIDC trusted publishing (no token). The single package bundles all 13 target binaries (`tele-<triple>`) plus launcher `bin/tele.js` which picks the correct binary for the current platform; no separate platform packages. The `linux-arm64-musl` binary is static and runs in Termux/Android. The package installs both `tele` (primary) and `telecli` (deprecated alias).
 
 ## Verify the release
 
 1. Open the GitHub Release page and confirm 14 assets.
-2. Download a binary and smoke-test it. `telecli --help` and `telecli --dry-run` must respond.
+2. Download a binary and smoke-test it. `tele --help` and `tele --dry-run` must respond.
 3. Run `npm view @qmahyar/telecli version` and confirm it shows the tag version. Then install and check:
 
 ```bash
-npm install -g @qmahyar/telecli && telecli --version
+npm install -g @qmahyar/telecli && tele --version
 ```
 
 ## Handle an npm failure

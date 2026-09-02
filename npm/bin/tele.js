@@ -9,7 +9,7 @@ const exe = pickExe();
 const child = spawn(exe, process.argv.slice(2), { stdio: "inherit" });
 
 child.on("error", (err) => {
-  console.error(`[telecli] failed to start ${exe}: ${err.message}`);
+  console.error(`[tele] failed to start ${exe}: ${err.message}`);
   process.exit(1);
 });
 
@@ -21,7 +21,9 @@ function pickExe() {
   const platform = process.platform;
   const arch = process.arch;
   const ext = platform === "win32" ? ".exe" : "";
-  // Bundled binaries are named telecli-<target-triple>[.exe]
+  // Bundled binaries are named tele-<target-triple>[.exe]; the legacy
+  // telecli-<triple> name is accepted for one transition cycle.
+  const prefixes = ["tele-", "telecli-"];
   const candidates = [];
   if (platform === "win32" && arch === "x64") candidates.push("x86_64-pc-windows-msvc");
   if (platform === "win32" && arch === "arm64") candidates.push("aarch64-pc-windows-msvc");
@@ -43,12 +45,14 @@ function pickExe() {
   if (platform === "linux" && arch === "ppc64") candidates.push("powerpc64le-unknown-linux-gnu");
   if (platform === "linux" && arch === "riscv64") candidates.push("riscv64gc-unknown-linux-gnu");
 
-  for (const triple of candidates) {
-    const p = path.join(__dirname, `telecli-${triple}${ext}`);
-    if (fs.existsSync(p)) return p;
+  for (const prefix of prefixes) {
+    for (const triple of candidates) {
+      const p = path.join(__dirname, `${prefix}${triple}${ext}`);
+      if (fs.existsSync(p)) return p;
+    }
   }
   console.error(
-    `[telecli] no binary bundled for ${platform}-${arch}` +
+    `[tele] no binary bundled for ${platform}-${arch}` +
       (candidates.length ? ` (tried: ${candidates.join(", ")})` : "") +
       ". Download from https://github.com/QMahyar/tele-cli/releases"
   );

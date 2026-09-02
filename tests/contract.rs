@@ -4,7 +4,7 @@ use std::process::Command;
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 fn tele() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_telecli"))
+    Command::new(env!("CARGO_BIN_EXE_tele"))
 }
 
 fn isolated_appdir(tag: &str) -> PathBuf {

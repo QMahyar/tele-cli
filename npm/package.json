@@ -21,7 +21,8 @@
     "node": ">=18"
   },
   "bin": {
-    "telecli": "bin/telecli.js"
+    "tele": "bin/tele.js",
+    "telecli": "bin/tele.js"
   },
   "files": [
     "bin/"

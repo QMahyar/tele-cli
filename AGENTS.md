@@ -61,7 +61,7 @@ cargo test                               # ~1470 tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
-target\debug\telecli.exe --help          # hot loops: prefer binary over cargo run -- (0.5s compile tax)
+target\debug\tele.exe --help          # hot loops: prefer binary over cargo run -- (0.5s compile tax)
 $env:TELE_LOG="debug"; cargo run ...     # stderr logs (trace = grammers internals)
 ```
 
@@ -236,7 +236,7 @@ Anti-patterns that hurt this repo:
 
 ## Live Environment
 
-- Credentials live OUTSIDE the repo: `%APPDATA%\telecli\.env` (`TELE_API_ID`/`TELE_API_HASH`)
+- Credentials live OUTSIDE the repo: `%APPDATA%\tele\.env` (`TELE_API_ID`/`TELE_API_HASH`)
 - Config: `config.toml` (accounts 1, 2), Sessions: `sessions/{name}.session`
 - `tele account login` prompts interactively. For non-TTY: spawn with piped stdin, detect prompt, poll code file.
 
@@ -256,7 +256,7 @@ Anti-patterns that hurt this repo:
 - Security: `docs/security.md`
 - Observability: `docs/observability.md`
 - Release: `docs/release.md` (13 build targets; npm publishes 1 bundled package via OIDC trusted publishing)
-- npm packaging: `npm/` — single package bundles all 13 platform binaries; JS launcher (`bin/telecli.js`) selects correct binary for platform
+- npm packaging: `npm/` — single package bundles all 13 platform binaries; JS launcher (`bin/tele.js`) selects correct binary for platform; `tele` is the primary bin, `telecli` a deprecated alias
 - ADRs: `docs/decisions/` (001 = session kernel; 002 = capability matrix; 003 = CLI JSON contract; 004 = flood and parallel (superseded by 008); 005 = release gate; 006 = Rust/grammers pivot; 007 = product scope v1; 008 = per-account flood weights)
 
 ## Verification

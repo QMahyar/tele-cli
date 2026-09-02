@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- Renamed the command from `telecli` to **`tele`** end to end: cargo builds both `tele` and a `telecli` alias; the npm package installs `tele` as the primary bin with `telecli` kept as a deprecated alias for one transition cycle; release archives, bundled binaries, and the npm launcher now use `tele` names; help text, completions, README, and docs all say `tele`.
+- App data directory renamed from `~/.config/telecli` / `%APPDATA%\telecli` to `~/.config/tele` / `%APPDATA%\tele`. `tele` migrates an existing legacy `telecli` data directory automatically on first run (one-time rename; a `TELE_APP_DIR` override skips migration).
+
 ## [0.9.0] - 2026-09-02
 
 ### Added

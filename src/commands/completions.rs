@@ -82,14 +82,11 @@ mod tests {
 
     #[test]
     fn bin_name_from_arg_prefers_file_stem() {
-        assert_eq!(bin_name_from_arg(Some("telecli")), "telecli");
-        assert_eq!(bin_name_from_arg(Some("/usr/local/bin/telecli")), "telecli");
-        assert_eq!(
-            bin_name_from_arg(Some("/usr/local/bin/telecli.exe")),
-            "telecli"
-        );
+        assert_eq!(bin_name_from_arg(Some("tele")), "tele");
+        assert_eq!(bin_name_from_arg(Some("/usr/local/bin/tele")), "tele");
+        assert_eq!(bin_name_from_arg(Some("/usr/local/bin/tele.exe")), "tele");
         #[cfg(windows)]
-        assert_eq!(bin_name_from_arg(Some("C:\\tools\\telecli.exe")), "telecli");
+        assert_eq!(bin_name_from_arg(Some("C:\\tools\\tele.exe")), "tele");
     }
 
     #[test]
@@ -99,15 +96,15 @@ mod tests {
     }
 
     #[test]
-    fn completion_bin_name_defaults_to_telecli() {
-        assert_eq!(env!("CARGO_BIN_NAME"), "telecli");
+    fn completion_bin_name_defaults_to_cargo_bin() {
+        assert!(matches!(env!("CARGO_BIN_NAME"), "tele" | "telecli"));
         let name = completion_bin_name();
         assert!(!name.is_empty());
     }
 
     #[test]
     fn bash_completions_reference_real_bin() {
-        let bin = "telecli";
+        let bin = "tele";
         let out = gen(clap_complete::Shell::Bash, bin);
         assert!(out.contains(&format!("complete -F _{bin}")));
         assert!(out.contains(bin));
@@ -115,21 +112,21 @@ mod tests {
 
     #[test]
     fn zsh_completions_have_compdef_for_real_bin() {
-        let bin = "telecli";
+        let bin = "tele";
         let out = gen(clap_complete::Shell::Zsh, bin);
         assert!(out.contains(&format!("#compdef {bin}")));
     }
 
     #[test]
     fn fish_completions_have_complete_for_real_bin() {
-        let bin = "telecli";
+        let bin = "tele";
         let out = gen(clap_complete::Shell::Fish, bin);
         assert!(out.contains(&format!("complete -c {bin}")));
     }
 
     #[test]
     fn powershell_completions_register_for_real_bin() {
-        let bin = "telecli";
+        let bin = "tele";
         let out = gen(clap_complete::Shell::PowerShell, bin);
         assert!(out.contains("Register-ArgumentCompleter"));
         assert!(out.contains(bin));

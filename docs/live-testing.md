@@ -1,6 +1,6 @@
 # Run live tests
 
-Live tests drive real Telegram user accounts through telecli over MTProto. The default `cargo test` run stays fully offline. A live run is opt-in, manual, and bounded by the rules below.
+Live tests drive real Telegram user accounts through tele over MTProto. The default `cargo test` run stays fully offline. A live run is opt-in, manual, and bounded by the rules below.
 
 ## Know the limits
 
@@ -8,7 +8,7 @@ Telegram punishes automation patterns. See the [spam FAQ](https://telegram.org/f
 
 - **FloodWait.** Run sequentially. Keep `--parallel 1`. Space writes at least 5 seconds apart. grammers sleeps through one wait of up to 60 seconds ([AutoSleep](https://docs.rs/grammers-client/latest/grammers_client/client/struct.AutoSleep.html)) and returns longer waits to you. Honor any `FLOOD_WAIT` or `SLOWMODE_WAIT` value you receive.
 - **Spam restrictions.** Send only to Saved Messages (`me`). Cap self-sends at 5 per run. Bound each run at 5 minutes. Never message strangers, never post to public groups, never mass forward. Cold outreach earns PeerFlood restrictions and spam reports.
-- **Sessions.** Keep one session file per account, under `%APPDATA%\telecli\sessions\` on Windows and `~/.telecli/sessions/` on Linux and macOS. Never share a file between processes.
+- **Sessions.** Keep one session file per account, under `%APPDATA%\tele\sessions\` on Windows and `~/.tele/sessions/` on Linux and macOS. Never share a file between processes.
 - **CI.** Never run live tests from CI. Datacenter IPs raise Telegram's abuse score. CI cannot handle interactive login.
 - **Third parties.** Joins, cold sends, forwards, contact adds, and group creation need explicit operator approval and disposable accounts. Join at most 1 chat per 10 minutes.
 
@@ -43,13 +43,13 @@ If Telegram revoked the auth key but the file still exists, delete the file firs
 On Windows:
 
 ```
-del %APPDATA%\telecli\sessions\<name>.session
+del %APPDATA%\tele\sessions\<name>.session
 ```
 
 On Linux and macOS:
 
 ```
-rm ~/.telecli/sessions/<name>.session
+rm ~/.tele/sessions/<name>.session
 ```
 
 Then run `tele account login`. Login is interactive. Enter the phone number, the verification code, and the 2FA password if the account has one. The suite never stores or prompts for 2FA passwords. See [docs/security.md](security.md).
