@@ -61,7 +61,7 @@ Every one-shot command with `--json` emits one object:
 tele msg send --chat '@team' --text "hi" --json
 tele msg send --tag bulk --chat '@chan' --text "x" --parallel 8
 tele msg get --chat '@team' --json | jq '.results[0].data'
-tele msg delete --chat '@team' --id 123 --dry-run        # preview, then drop --dry-run
+tele msg delete --chat '@team' --ids 123 --dry-run        # preview, then drop --dry-run
 tele listen --events NewMessage --chat '@team' --jsonl   # stream; each line is one event
 tele chat participants --chat '@group' --json
 tele profile get --json

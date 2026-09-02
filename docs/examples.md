@@ -48,15 +48,15 @@ tele msg edit --chat @team --id 123 --text "updated text"
 ### Delete messages
 
 ```bash
-tele msg delete --chat @team --id 123
-tele msg delete --chat @team --id 123,456,789
-tele msg delete --chat me --id 123 --self-only
+tele msg delete --chat @team --ids 123
+tele msg delete --chat @team --ids 123,456,789
+tele msg delete --chat me --ids 123 --self-only
 ```
 
 ### Forward messages
 
 ```bash
-tele msg forward --chat @team --id 123 --to @other
+tele msg forward --from @team --ids 123 --to @other
 ```
 
 ### Search messages
@@ -70,15 +70,16 @@ tele msg search --chat @team --query "error" --limit 10
 ### React to a message
 
 ```bash
-tele msg react --chat @team --id 123 --emoji "👍"
-tele msg react --chat @team --id 123 --emoji "🔥"
+tele msg react --chat @team --id 123 --reaction "👍"
+tele msg react --chat @team --id 123 --reaction "🔥"
+tele msg react --chat @team --id 123 --reaction "👍" --remove
 ```
 
 ### Download media
 
 ```bash
-tele msg download --chat @team --id 123
-tele msg download --chat @team --id 123 --chunk-size-kb 256
+tele msg download --chat @team --id 123 --dir ./downloads
+tele msg download --chat @team --id 123 --dir ./downloads --chunk-size-kb 256
 ```
 
 ### Pin a message
@@ -275,7 +276,7 @@ tele contact unblock --user @alice
 
 ```bash
 tele profile get
-tele profile set --first-name "New Name"
+tele profile set --name "New Name"
 tele profile set --bio "Updated bio"
 tele profile set --username newname
 tele profile set --username remove
@@ -289,8 +290,8 @@ tele profile emoji-status --remove
 ```bash
 tele privacy get --key phone_number
 tele privacy get --key profile_photo
-tele privacy set --key phone_number --rule nobody
-tele privacy set --key forwards --rule contacts
+tele privacy set --key phone_number --allow all
+tele privacy set --key forwards --deny @spammer
 ```
 
 ## Stories

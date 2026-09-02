@@ -139,10 +139,10 @@ tele mcp --account work --groups msg,dialog
 
 ```bash
 # Preview what would happen
-tele msg delete --chat @group --id 123 --dry-run
+tele msg delete --chat @group --ids 123 --dry-run
 
 # Then execute
-tele msg delete --chat @group --id 123
+tele msg delete --chat @group --ids 123
 ```
 
 ### Filter listen events
