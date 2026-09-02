@@ -525,7 +525,10 @@ async fn libsql_read_only_conn(path: &Path) -> anyhow::Result<libsql::Connection
         .build()
         .await
         .with_context(|| "cannot open Telethon session file (path logged at debug level)")?;
-    crate::output::log_line("debug", &format!("telethon session open attempted: {}", path.display()));
+    crate::output::log_line(
+        "debug",
+        &format!("telethon session open attempted: {}", path.display()),
+    );
     Ok(db.connect()?)
 }
 

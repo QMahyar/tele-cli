@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-02
+
+### Fixed
+- `tele serve`: omitting `"account"` in params while serving multiple accounts now returns a `ServeError` naming the served accounts instead of silently targeting the alphabetically-first one (including mutating ops). Single-account serve keeps the implicit default. `stream.resync` with multiple accounts and no `"account"` now resyncs every account, matching the documented contract.
+- Error taxonomy survives the `ClientGuard::connect` boundary: a bad `config.toml` now exits 1 with JSON kind `ConfigError` (was exit 3 / generic `Error`); auth failures keep exit 4.
+- `TeleError::Timeout` (e.g. `msg get --watch`) now exits 3 (runtime outcome) instead of 1 (usage); runtime request-state failures — message not found, no poll/media/reply markup, poll closed — now exit 3 as `Invocation` errors instead of exit-1 usage errors across `msg get/vote/click/send copy-from/download`.
+- `tele listen` now honors `--parallel` (and `parallel_max`): concurrent account connections are capped by a semaphore held for each task's lifetime; previously every selected account connected concurrently.
+- Album event `ids` no longer truncate i64 message ids past `i32::MAX` (wrapping cast → `try_from`).
+- Runtime-thread panics are no longer swallowed silently: the panic message (scrubbed) is logged to stderr and the process exits 3; a clap derive-conversion failure now degrades to the standard usage-error path instead of panicking.
+- Session filesystem paths are no longer embedded in user-facing `account export-session` / Telethon-import errors (full path only at `--verbose` debug level).
+- `account import-session` no longer buffers the entire source file into memory; it validates the 16-byte SQLite header, then streams through a private-mode (0600/user-DACL) temp file.
+- Session files (including the main SQLite auth-key file) are created with private permissions from first open; every startup sweep-tightens permissions on all files under `sessions/`, covering restores from backup with wide permissions.
+- A missing `.env` is created 0600/user-DACL on first `credentials()` call, closing the default-permissions creation race.
+- Sensitive-file upload blocklist hardened: `credentials.bak`, `vault.kdbx.bak`, `my.env`, `my.credentials.json`, embedded `id_rsa` names are now rejected; lookalikes such as `env.example` and `my_env` remain allowed.
+- Stale `.part-*` download temps owned by the current process are no longer swept mid-download.
+- Executor outcome errors with unprintable messages log `<unprintable error>` instead of an empty reason.
+- `tele topic close/reopen/delete/pin` account-selection errors now name the actual subcommand (e.g. `topic close requires --account …`).
+- Unknown `--events` errors list valid events plainly instead of printing a Rust `Debug` slice.
+- Internal milestone codename `serve-A` removed from help text and errors; root help drops the internal client-library name.
+
+### Changed
+- Removed the `unicode-segmentation` dependency (emoji validation uses the existing 4-byte single-codepoint rule).
+- Net −41 lines: one generic `CappedDedupe<K>` replaces the byte-identical serve/listen dedupe structs; shared `truncate_text` helper replaces copies in msg/stories; deleted dead wrappers (`base64_encode`, `print_envelope`, `print_json_result` delegation); tmp-dir hash no longer folds in the pid already present in the name.
+- `--preview` on `msg send` is hidden from help (it was a no-op flag; preview is on by default, `--no-preview` disables).
+- `tele completions --help` now describes each shell variant.
+
 ## [0.7.0] - 2026-08-31
 
 ### Fixed

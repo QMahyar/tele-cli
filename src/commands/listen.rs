@@ -477,7 +477,11 @@ fn album_complete(account: &str, pending: &PendingAlbum) -> serde_json::Value {
     let ids: Vec<i32> = pending
         .rows
         .iter()
-        .filter_map(|r| r.get("id").and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok()))
+        .filter_map(|r| {
+            r.get("id")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok())
+        })
         .collect();
     let mut row = event_row("Album", account, Some(pending.chat_id), None, None);
     if let serde_json::Value::Object(map) = &mut row {

@@ -257,7 +257,10 @@ fn main() -> std::process::ExitCode {
             } else {
                 "runtime thread panicked (non-string payload)".to_string()
             };
-            output::log_line("error", &format!("runtime thread panicked: {}", error::scrub(msg)));
+            output::log_line(
+                "error",
+                &format!("runtime thread panicked: {}", error::scrub(msg)),
+            );
             error::EXIT_ALL_FAILED
         }
     };
