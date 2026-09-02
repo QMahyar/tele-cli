@@ -81,6 +81,14 @@ impl ActionKind {
             ActionKind::Pin => "pin",
         }
     }
+    fn selection_label(self) -> &'static str {
+        match self {
+            ActionKind::Close => "topic close",
+            ActionKind::Reopen => "topic reopen",
+            ActionKind::Delete => "topic delete",
+            ActionKind::Pin => "topic pin",
+        }
+    }
 }
 
 pub async fn run(cmd: TopicCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -169,7 +177,7 @@ async fn simple_action(
     flags: &GlobalFlags,
     kind: ActionKind,
 ) -> TeleResult<i32> {
-    crate::executor::require_explicit_selection("topic", flags)?;
+    crate::executor::require_explicit_selection(kind.selection_label(), flags)?;
     ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_topic_id(&args.topic)?;
     let config_path = flags.config_path.clone();

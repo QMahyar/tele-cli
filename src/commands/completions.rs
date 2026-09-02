@@ -7,9 +7,13 @@ use crate::GlobalFlags;
 
 #[derive(Subcommand)]
 pub enum Shell {
+    /// Generate completions for bash
     Bash,
+    /// Generate completions for zsh
     Zsh,
+    /// Generate completions for fish
     Fish,
+    /// Generate completions for PowerShell
     Powershell,
 }
 

@@ -70,7 +70,12 @@ pub struct SendArgs {
         value_name = "ID"
     )]
     pub(crate) copy_id: Option<i32>,
-    #[arg(long, default_value_t = true, help = "show link preview")]
+    #[arg(
+        long,
+        hide = true,
+        default_value_t = true,
+        help = "show link preview (on by default; use --no-preview to disable)"
+    )]
     pub(crate) preview: bool,
     #[arg(long, action = clap::ArgAction::SetTrue, help = "disable link preview")]
     pub(crate) no_preview: bool,

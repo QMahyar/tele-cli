@@ -278,7 +278,7 @@ pub struct ServeArgs {
         long,
         value_delimiter = ',',
         default_value = "NewMessage",
-        help = "events to stream (serve-A subset: NewMessage, MessageEdited)"
+        help = "events to stream (subset: NewMessage, MessageEdited)"
     )]
     events: Vec<String>,
     #[arg(
@@ -968,7 +968,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     for e in &args.events {
         if !SERVE_EVENTS.contains(&e.as_str()) {
             return Err(TeleError::Usage(format!(
-                "unknown --events entry {e}; serve-A supports {} (full allowlist stays on tele listen)",
+                "unknown --events entry {e}; serve supports {} (full allowlist stays on tele listen)",
                 SERVE_EVENTS.join(",")
             )));
         }

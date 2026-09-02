@@ -556,7 +556,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     events.retain(|e| VALID_EVENTS.contains(&e.as_str()));
     if events.len() != args.events.len() {
         return Err(TeleError::Usage(format!(
-            "unknown event name in --events (valid: {VALID_EVENTS:?})"
+            "unknown event name in --events (valid: {})",
+            VALID_EVENTS.join(", ")
         )));
     }
     if args.raw && !events.iter().any(|e| e == "Raw") {

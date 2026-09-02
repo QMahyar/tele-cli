@@ -21,7 +21,7 @@ use executor::GlobalFlags;
 #[command(
     name = "tele",
     version,
-    about = "Telegram user-account CLI (grammers)",
+    about = "Telegram user-account CLI",
     disable_help_subcommand = true
 )]
 struct Cli {
