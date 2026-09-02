@@ -77,9 +77,13 @@ impl Drop for AbortOnDrop<'_> {
 }
 
 fn outcome_error_line(o: &AccountOutcome) -> Option<String> {
-    o.error
-        .as_ref()
-        .map(|err| format!("{}: {}", o.account, err["message"].as_str().unwrap_or("")))
+    o.error.as_ref().map(|err| {
+        format!(
+            "{}: {}",
+            o.account,
+            err["message"].as_str().unwrap_or("<unprintable error>")
+        )
+    })
 }
 
 fn failed_outcome(account: String, e: TeleError) -> AccountOutcome {
@@ -749,7 +753,10 @@ mod tests {
             data: None,
             exit_code: Some(EXIT_ALL_FAILED),
         };
-        assert_eq!(outcome_error_line(&o), Some("a: ".to_string()));
+        assert_eq!(
+            outcome_error_line(&o),
+            Some("a: <unprintable error>".to_string())
+        );
     }
 
     async fn permit() -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {

@@ -182,12 +182,13 @@ async fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
     let lock = opts.open(lock_path(name))?;
     // On Linux, flock() release is asynchronous after File::drop. Retry a few
     // times with a short delay to handle the kernel delay.
-    for attempt in 0..3 {
+    let mut attempt = 0;
+    loop {
         match lock.try_lock() {
             Ok(()) => return Ok(lock),
             Err(std::fs::TryLockError::WouldBlock) if attempt < 2 => {
+                attempt += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                continue;
             }
             Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(anyhow::anyhow!(
@@ -197,7 +198,6 @@ async fn acquire_lock_file(name: &str) -> anyhow::Result<std::fs::File> {
             Err(e) => return Err(e.into()),
         }
     }
-    unreachable!()
 }
 
 pub struct LockedSession {
@@ -243,8 +243,7 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
     let source = session_path(name);
     if !source.try_exists()? {
         return Err(anyhow::anyhow!(
-            "no session file for account {name}: {}",
-            source.display()
+            "no session file for account {name}; run tele account list to inspect accounts"
         ));
     }
     let _live_lock = acquire_lock_file(name).await?;
@@ -343,20 +342,69 @@ fn cleanup_partial_import(name: &str) {
     }
 }
 
-async fn install_session_bytes(name: &str, bytes: &[u8]) -> anyhow::Result<ImportedSession> {
-    if !bytes.starts_with(SQLITE_MAGIC) {
+pub async fn import_session(
+    file: &Path,
+    as_name: Option<&str>,
+    force: bool,
+) -> anyhow::Result<ImportedSession> {
+    let name = resolve_import_name(as_name, file)?;
+    ensure_no_clobber(&name, force)?;
+    if !file.is_file() {
         return Err(anyhow::anyhow!(
-            "not a valid session file: missing SQLite header"
+            "session source is not a readable file: {}",
+            file.display()
         ));
+    }
+    let mut header = [0u8; 16];
+    {
+        use std::io::Read;
+        let mut handle = std::fs::File::open(file)?;
+        let mut filled = 0;
+        while filled < header.len() {
+            match handle.read(&mut header[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if filled < header.len() || header != *SQLITE_MAGIC {
+            return Err(anyhow::anyhow!(
+                "not a valid session file: missing SQLite header"
+            ));
+        }
     }
     crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&session_dir())?;
+    let _lock = acquire_lock_file(&name).await?;
+    let byte_len = std::fs::metadata(file)?.len();
+    install_copied_session(&name, file, byte_len).await
+}
+
+async fn install_copied_session(
+    name: &str,
+    source: &Path,
+    byte_len: u64,
+) -> anyhow::Result<ImportedSession> {
     let path = session_path(name);
     pre_restrict_sidecars(name)?;
     let tmp_path = tmp_session_path(name);
     let _ = std::fs::remove_file(&tmp_path);
-    crate::fs_util::write_file_private(&tmp_path, bytes)?;
-    crate::fs_util::restrict_file_private(&tmp_path)?;
+    {
+        use std::io::{Read, Write};
+        let mut src = std::fs::File::open(source)?;
+        let mut dst = crate::fs_util::create_file_private(&tmp_path)?;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            match src.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => dst.write_all(&buf[..n])?,
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        dst.sync_all()?;
+    }
     let probe_result = async {
         let probe = SqliteSession::open(&tmp_path).await?;
         drop(probe);
@@ -372,28 +420,8 @@ async fn install_session_bytes(name: &str, bytes: &[u8]) -> anyhow::Result<Impor
     Ok(ImportedSession {
         account: name.to_string(),
         path,
-        bytes: bytes.len() as u64,
+        bytes: byte_len,
     })
-}
-
-pub async fn import_session(
-    file: &Path,
-    as_name: Option<&str>,
-    force: bool,
-) -> anyhow::Result<ImportedSession> {
-    let name = resolve_import_name(as_name, file)?;
-    ensure_no_clobber(&name, force)?;
-    if !file.is_file() {
-        return Err(anyhow::anyhow!(
-            "session source is not a readable file: {}",
-            file.display()
-        ));
-    }
-    let bytes = std::fs::read(file)?;
-    crate::config::ensure_app_data_dir()?;
-    crate::fs_util::create_dir_private(&session_dir())?;
-    let _lock = acquire_lock_file(&name).await?;
-    install_session_bytes(&name, &bytes).await
 }
 
 #[derive(Clone)]
@@ -469,7 +497,8 @@ async fn libsql_read_only_conn(path: &Path) -> anyhow::Result<libsql::Connection
         .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .build()
         .await
-        .with_context(|| format!("cannot open Telethon session {}", path.display()))?;
+        .with_context(|| "cannot open Telethon session file (path logged at debug level)")?;
+    crate::output::log_line("debug", &format!("telethon session open attempted: {}", path.display()));
     Ok(db.connect()?)
 }
 

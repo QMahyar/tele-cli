@@ -91,16 +91,20 @@ impl std::fmt::Display for TeleError {
 
 impl std::error::Error for TeleError {}
 
-static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{7,15}\b").unwrap());
-static PHONE_PLUS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\+\d{7,15}\b").unwrap());
+static PHONE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b\d{7,15}\b").expect("static regex"));
+static PHONE_PLUS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\+\d{7,15}\b").expect("static regex"));
 static FORMATTED_PHONE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\+?\d[\d\s\-\(\)]{5,30}\d").unwrap());
+    LazyLock::new(|| Regex::new(r"\+?\d[\d\s\-\(\)]{5,30}\d").expect("static regex"));
 static LONG_TOKEN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{32,}").unwrap());
-static HEX32_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{32,}\b").unwrap());
-static QR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").unwrap());
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{32,}").expect("static regex"));
+static HEX32_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{32,}\b").expect("static regex"));
+static QR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").expect("static regex"));
 static PASSWORD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(password\s*[:=]\s*)\S+").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)(password\s*[:=]\s*)\S+").expect("static regex"));
 
 static CACHED_FILE_SECRETS: LazyLock<Vec<String>> = LazyLock::new(|| {
     let path = crate::config::app_data_dir().join(".env");
@@ -139,7 +143,10 @@ fn scrub_phones(s: String) -> String {
     let out = PHONE_PLUS_RE.replace_all(&out, "[REDACTED]").into_owned();
     FORMATTED_PHONE_RE
         .replace_all(&out, |caps: &regex::Captures| {
-            let m = caps.get(0).unwrap().as_str();
+            let m = caps
+                .get(0)
+                .expect("capture group 0 always matches")
+                .as_str();
             if m.contains("[REDACTED]") {
                 return "[REDACTED]".to_string();
             }

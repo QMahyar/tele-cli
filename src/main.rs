@@ -168,7 +168,22 @@ fn main() -> std::process::ExitCode {
             std::process::exit(code);
         }
     };
-    let cli = Cli::from_arg_matches(&matches).expect("clap matches parse");
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(e) => {
+            let code = if e.use_stderr() {
+                error::EXIT_USAGE
+            } else {
+                error::EXIT_OK
+            };
+            let _ = e.print();
+            if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
+                let hint = argv_command_hint().unwrap_or_default();
+                emit_usage_error(true, false, &hint, strip_ansi(&e.to_string()));
+            }
+            std::process::exit(code);
+        }
+    };
     let flags = GlobalFlags {
         account: cli.account,
         tag: cli.tag,
@@ -219,7 +234,7 @@ fn main() -> std::process::ExitCode {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let code = std::thread::Builder::new()
+    let code = match std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
             runtime.block_on(async {
@@ -231,7 +246,20 @@ fn main() -> std::process::ExitCode {
         })
         .expect("spawn main runtime thread")
         .join()
-        .unwrap_or(error::EXIT_ALL_FAILED);
+    {
+        Ok(code) => code,
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "runtime thread panicked (non-string payload)".to_string()
+            };
+            output::log_line("error", &format!("runtime thread panicked: {}", error::scrub(msg)));
+            error::EXIT_ALL_FAILED
+        }
+    };
     std::process::ExitCode::from(code.clamp(0, 255) as u8)
 }
 

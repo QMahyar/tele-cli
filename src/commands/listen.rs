@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
+use std::sync::Arc;
 
 use crate::client::{self, ClientGuard};
 use crate::error::{TeleError, TeleResult};
@@ -476,7 +477,7 @@ fn album_complete(account: &str, pending: &PendingAlbum) -> serde_json::Value {
     let ids: Vec<i32> = pending
         .rows
         .iter()
-        .filter_map(|r| r.get("id").and_then(|v| v.as_i64()).map(|v| v as i32))
+        .filter_map(|r| r.get("id").and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok()))
         .collect();
     let mut row = event_row("Album", account, Some(pending.chat_id), None, None);
     if let serde_json::Value::Object(map) = &mut row {
@@ -626,6 +627,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let chat_targets = args.chat.clone();
     let from_targets = args.from.clone();
     validate_listen_inputs(&chat_targets, &from_targets)?;
+    let cfg = crate::config::load_config(config_path.as_deref())?;
+    let parallel = crate::executor::effective_parallel(flags.parallel, cfg.parallel_max)? as usize;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel));
     let mut tasks = tokio::task::JoinSet::new();
     for name in names {
         let config_path = config_path.clone();
@@ -633,7 +637,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let from_targets = from_targets.clone();
         let events = events.clone();
         let filter_patterns = filter_patterns.clone();
+        let semaphore = Arc::clone(&semaphore);
         tasks.spawn(async move {
+            let _permit = semaphore.acquire_owned().await;
             let result: TeleResult<()> = async {
                 let creds =
                     crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;

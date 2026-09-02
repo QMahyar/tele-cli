@@ -116,8 +116,7 @@ pub async fn resolve_peer(
                     let candidates: Vec<PeerRef> = {
                         let mut v = Vec::new();
                         v.push(pref);
-                        if let Some(pid) = PeerId::channel(raw) {
-                            let _ = pid;
+                        if PeerId::channel(raw).is_some() {
                             v.push(
                                 tl::types::InputPeerChannel {
                                     channel_id: raw,
@@ -154,8 +153,7 @@ pub async fn resolve_peer(
                 } else if !is_channel_class(id) {
                     let mut candidates: Vec<PeerRef> = Vec::new();
                     candidates.push(pref);
-                    if let Some(pid) = PeerId::channel(raw) {
-                        let _ = pid;
+                    if PeerId::channel(raw).is_some() {
                         candidates.push(
                             tl::types::InputPeerChannel {
                                 channel_id: raw,

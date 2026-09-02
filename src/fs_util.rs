@@ -112,6 +112,45 @@ pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
+pub fn create_file_private(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let opts = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600);
+    opts.open(path)
+}
+
+#[cfg(windows)]
+pub fn create_file_private(path: &Path) -> std::io::Result<std::fs::File> {
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => {
+            set_user_only_dacl(path, false)?;
+            Ok(f)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(path)?;
+            set_user_only_dacl(path, false)?;
+            Ok(f)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn create_file_private(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::create(path)
+}
+
+#[cfg(unix)]
 pub fn restrict_file_private(path: &Path) -> std::io::Result<()> {
     restrict(path, 0o600)
 }
