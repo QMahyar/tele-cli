@@ -27,7 +27,7 @@ When peer resolution fails, the error tells you to refresh the peer cache. It do
 - The CLI writes all logs to stderr. stdout carries tables or machine output only.
 - The `log` crate is off by default. No `[LEVEL] message` lines appear until you enable it. Set `TELE_LOG` to `trace`, `debug`, `info`, `warn`, or `error` to enable logging and select the level.
 - With `TELE_LOG` unset, `-v` selects INFO and `-vv` selects DEBUG. `-q` selects ERROR and overrides both `TELE_LOG` and `-v`.
-- Freeform lines follow their own rule. `[info]`, `[warn]`, and `[error]` lines print by default, and with `-q` only `[error]` freeform lines print. This channel ignores `TELE_LOG` and the `-v` flags entirely.
+- Freeform lines follow their own rule. `[info]`, `[warn]`, and `[error]` lines print by default. The freeform floor tracks the effective log level: at `TELE_LOG=warn` only `[warn]` and `[error]` freeform lines print; at `TELE_LOG=debug` or `-vv` all levels pass. `-q` sets the floor to `[error]` only. `-v`/`-vv` and `TELE_LOG` raise or lower the floor the same way they affect `log`-crate lines.
 - Every freeform line has the shape `[level] message`. There are no structured events and no `run_id`. Correlate events by reading the whole stderr stream.
 - In human mode, `takeout export` writes progress to stderr. Lines look like `[info] dialogs page 1: +21 dialogs` and `[info] dialog 3/57 Alice msgs=120`. Machine output stays untouched.
 - No log line ever carries api_hash, session data, phone numbers, passwords, QR login tokens, or the full `--args` value of `tele raw`.

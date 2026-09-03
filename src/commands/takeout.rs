@@ -223,7 +223,7 @@ fn export_state(dir: &std::path::Path) -> String {
 
 fn export_error_message(dir: &std::path::Path, cause: &str) -> String {
     format!(
-        "takeout export failed; export dir {}: {}; server-side takeout session kept alive for resume: re-run `tele takeout export` to resume automatically from the saved per-dialog checkpoints (completed dialogs are skipped, messages.jsonl is appended, not truncated), or `tele takeout start` if the session expired, then `tele takeout finish`; cause: {cause}",
+        "takeout export failed; export dir {}: {}; server-side takeout session kept alive for resume: re-run `tele takeout export` to resume automatically from the saved per-dialog checkpoints (completed dialogs are skipped, messages.jsonl is appended, not truncated), or `tele takeout finish --abandon` to drop the stale session and clear the local takeout.json so `tele takeout start` works again; cause: {cause}",
         dir.to_string_lossy(),
         export_state(dir),
     )
@@ -759,7 +759,9 @@ async fn finish(args: FinishArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     delete_takeout_state(&dir);
                     Ok(serde_json::json!({"finished": server_success}))
                 }
-                Err(grammers_client::InvocationError::Rpc(e)) if e.name == "TAKEOUT_REQUIRED" => {
+                Err(grammers_client::InvocationError::Rpc(e))
+                    if e.name == "TAKEOUT_REQUIRED" || e.name == "TAKEOUT_INVALID" =>
+                {
                     delete_takeout_state(&dir);
                     Err(TeleError::Other(
                         "no active takeout session (run takeout start first)".to_string(),
@@ -1106,8 +1108,11 @@ mod tests {
         );
         assert!(msg.contains("messages.jsonl: partial"), "msg: {msg}");
         assert!(msg.contains("re-run `tele takeout export`"), "msg: {msg}");
+        assert!(
+            msg.contains("`tele takeout finish --abandon`"),
+            "msg: {msg}"
+        );
         assert!(msg.contains("`tele takeout start`"), "msg: {msg}");
-        assert!(msg.contains("`tele takeout finish`"), "msg: {msg}");
         assert!(msg.contains("FLOOD_WAIT"), "msg: {msg}");
         assert!(msg.contains("resume automatically"), "msg: {msg}");
         assert!(msg.contains("per-dialog checkpoints"), "msg: {msg}");

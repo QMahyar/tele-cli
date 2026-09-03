@@ -121,9 +121,9 @@ enum Command {
     Takeout(takeout::TakeoutCmd),
     /// Stream updates as JSONL
     Listen(listen::ListenArgs),
-    /// Duplex JSONL runtime: events out, actions in (owns one session)
+    /// Duplex JSONL runtime: events out, actions in (1–32 accounts)
     Serve(serve::ServeArgs),
-    /// MCP stdio server: tele ops as tools (owns one session)
+    /// MCP stdio server: tele ops as tools (owns one account)
     Mcp(mcp::McpArgs),
     /// Raw TL invocation (typed registry)
     Raw(raw::RawArgs),
@@ -132,24 +132,6 @@ enum Command {
     /// Generate shell completions
     #[command(subcommand)]
     Completions(completions::Shell),
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for n in chars.by_ref() {
-                if n.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 fn main() -> std::process::ExitCode {
@@ -167,7 +149,7 @@ fn main() -> std::process::ExitCode {
             let _ = e.print();
             if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
                 let hint = argv_command_hint().unwrap_or_default();
-                emit_usage_error(true, false, &hint, strip_ansi(&e.to_string()));
+                emit_usage_error(true, false, &hint, output::strip_ansi(&e.to_string()));
             }
             std::process::exit(code);
         }
@@ -183,7 +165,7 @@ fn main() -> std::process::ExitCode {
             let _ = e.print();
             if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
                 let hint = argv_command_hint().unwrap_or_default();
-                emit_usage_error(true, false, &hint, strip_ansi(&e.to_string()));
+                emit_usage_error(true, false, &hint, output::strip_ansi(&e.to_string()));
             }
             std::process::exit(code);
         }
@@ -234,6 +216,9 @@ fn main() -> std::process::ExitCode {
             message.to_string(),
         ));
     }
+    let machine_mode = output::machine_mode(flags.json, flags.jsonl);
+    let dry_run = flags.dry_run;
+    let command_name = flags.command.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -244,7 +229,16 @@ fn main() -> std::process::ExitCode {
             runtime.block_on(async {
                 tokio::select! {
                     code = run_command(cli.command, &flags) => code,
-                    _ = tokio::signal::ctrl_c() => error::EXIT_INTERRUPTED,
+                    _ = tokio::signal::ctrl_c() => {
+                        if output::machine_mode(flags.json, flags.jsonl) {
+                            let error_json = serde_json::json!({"type": "Interrupted", "message": "interrupted by SIGINT"});
+                            let envelope = output::Envelope::failed(flags.dry_run, &flags.command, error_json);
+                            if let Ok(v) = serde_json::to_value(&envelope) {
+                                let _ = output::print_json(&v);
+                            }
+                        }
+                        error::EXIT_INTERRUPTED
+                    }
                 }
             })
         })
@@ -262,8 +256,18 @@ fn main() -> std::process::ExitCode {
             };
             output::log_line(
                 "error",
-                &format!("runtime thread panicked: {}", error::scrub(msg)),
+                &format!("runtime thread panicked: {}", error::scrub(msg.clone())),
             );
+            if machine_mode {
+                let error_json = serde_json::json!({
+                    "type": "TaskPanicError",
+                    "message": error::scrub(format!("runtime thread panicked: {msg}")),
+                });
+                let envelope = output::Envelope::failed(dry_run, &command_name, error_json);
+                if let Ok(v) = serde_json::to_value(&envelope) {
+                    let _ = output::print_json(&v);
+                }
+            }
             error::EXIT_ALL_FAILED
         }
     };
@@ -382,7 +386,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_ansi;
+    use crate::output::strip_ansi;
 
     #[test]
     fn strip_ansi_leaves_plain_text_unchanged() {

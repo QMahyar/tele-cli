@@ -2,7 +2,7 @@ use crate::client::ClientGuard;
 use crate::commands::credentials::creds_api_id;
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
-use crate::executor::{run_fanout, GlobalFlags};
+use crate::executor::{require_explicit_selection, run_fanout, GlobalFlags};
 
 use super::params::{DownloadArgs, DownloadParams};
 
@@ -25,6 +25,7 @@ pub(crate) fn download_serve_dry_run(args: &DownloadArgs) -> TeleResult<serde_js
 
 pub(crate) async fn download(args: DownloadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_download(&args)?;
+    require_explicit_selection("msg download", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {

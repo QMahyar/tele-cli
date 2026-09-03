@@ -54,3 +54,11 @@ preserves them for the Rust era.
 - MCP now `done` (shipped as `tele mcp`); agent skill remains deferred (Phase 6) — see matrix `Explicitly later / never` section.
 - The out-of-scope list is a living contract; flip a row to `later` only via a
   matrix update in the same commit that ships the capability.
+
+## Update (2026-09-02)
+
+The agent skill shipped after all: `skill.print` and `skill.install` are `done`
+in the capability matrix (`tele skill` / `tele skill install`), reversing the
+"deferred (Phase 6)" note in the consequences above. The `Explicitly later /
+never` matrix section no longer exists; the skill rows live under "Other
+domains".

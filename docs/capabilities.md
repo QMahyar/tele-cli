@@ -107,25 +107,25 @@ Note on topic icons: `tele topic create --emoji` accepts only a single-codepoint
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
 | listen.filters | Sender / direction / regex / multi-chat filters | client-side | client-side | `tele listen` with `--from USER` / `--in` / `--out` / `--pattern RE` (case-sensitive) / repeatable `--chat`; AND across dimensions, OR within | done |
 | listen.service | Parsed service messages (joins/leaves/pin + 63 more kinds) | updates `messageService` | typed `Message::Service` | `--events Service` rows with `service_action:{kind,label}`; composes chat/from/direction filters | done |
-| listen.callback | CallbackQuery | bot | `Update::CallbackQuery` | — | never |
+| listen.callback | CallbackQuery (bot-account updates) | bot | `Update::CallbackQuery` | — (see `listen.callback-query` above, which covers presses on this account's bot messages) | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
 
 ## Other domains
 
-| id | Domain | Status | Why |
-|---|---|---|---|
-| stickers.manage | Sticker pack management | `messages.{getAllStickers,searchStickerSets,getStickerSet,installStickerSet,uninstallStickerSet}` | raw arms in dedicated module | `tele sticker` with `list` / `search --query` / `show --set S` / `install --set S [--archive]` / `remove --set S` (`--set` accepts short name or t.me/addstickers link; creator-side naming + archive-toggle via `tele raw`) | done |
-| business.* | Telegram Business | never | Monetization extras — cut by product decision 2026-08-23 |
-| stars.* | Stars, gifts, payments, boosts, giveaways | never | Monetization — cut by product decision 2026-08-23 |
-| calls.* | 1:1 and group calls | never | Realtime media |
-| secret.* | Secret chats / E2E | never | Separate protocol |
-| passport.* | Telegram Passport | never | Not this product |
-| ads.* | Sponsored messages | never | Official-client burden |
-| collectibles.* | Fragment collectibles | never | Not this product |
-| smsjobs.* | Official-client SMS jobs | never | Official only |
-| mcp | MCP stdio server: tele mcp exposes 67 ops as tools via rmcp 3.1 (stdio, legacy handshake, inputSchema via schemars, annotations, confirm gate, read-only/groups filters) | tele mcp --account NAME | done |
-| skill.print | Print the embedded Agent-Skills-spec SKILL.md (usage rules, command map, envelope, recipes) to stdout | tele skill | done |
-| skill.install | Install SKILL.md into detected agent skill dirs (.claude, .config/opencode, .cursor) or --dir PATH; --force overwrites | tele skill install [--dir PATH] [--force] | done |
+| id | Domain | CLI | Status | Why |
+|---|---|---|---|---|
+| stickers.manage | Sticker pack management | `tele sticker` `list` / `search --query` / `show --set S` / `install --set S [--archive]` / `remove --set S` (`--set` accepts short name or t.me/addstickers link); raw arms in dedicated module for `messages.{getAllStickers,searchStickerSets,getStickerSet,installStickerSet,uninstallStickerSet}`; creator-side naming + archive-toggle via `tele raw` | done | |
+| business.* | Telegram Business | — | never | Monetization extras — cut by product decision 2026-08-23 |
+| stars.* | Stars, gifts, payments, boosts, giveaways | — | never | Monetization — cut by product decision 2026-08-23 |
+| calls.* | 1:1 and group calls | — | never | Realtime media |
+| secret.* | Secret chats / E2E | — | never | Separate protocol |
+| passport.* | Telegram Passport | — | never | Not this product |
+| ads.* | Sponsored messages | — | never | Official-client burden |
+| collectibles.* | Fragment collectibles | — | never | Not this product |
+| smsjobs.* | Official-client SMS jobs | — | never | Official only |
+| mcp | MCP stdio server: tele mcp exposes 67 ops as tools via rmcp 3.1 (stdio, legacy handshake, inputSchema via schemars, annotations, confirm gate, read-only/groups filters) | `tele mcp --account NAME` | done | |
+| skill.print | Print the embedded Agent-Skills-spec SKILL.md (usage rules, command map, envelope, recipes) to stdout | `tele skill` | done | |
+| skill.install | Install SKILL.md into detected agent skill dirs (.claude, .config/opencode, .cursor) or --dir PATH; --force overwrites | `tele skill install [--dir PATH] [--force]` | done | |
 
 ## Kernel
 
@@ -156,5 +156,5 @@ The numbers this file claims resolve as follows in the current tree:
 - Raw registry names (`kernel.raw` row): 25. Recount in PowerShell:
   `$s = Get-Content src/commands/raw.rs -Raw; $i = $s.IndexOf('pub const REGISTERED'); $j = $s.IndexOf('];', $i); ([regex]::Matches($s.Substring($i, $j - $i), '"[^"]+"')).Count`
 - Routed serve and MCP ops (`mcp` row): 67. Recount:
-  `(Select-String -Path src\commands\*.rs -Pattern 'serve_route!\(').Count`
+  `rg -c 'serve_route!\(' src/` (or `(Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\(').Count`)
 - Every `done` row must expose a real CLI surface. The contract test enforces it: `cargo test --test contract -- done_rows_have_cli_surface`.

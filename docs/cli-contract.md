@@ -10,7 +10,7 @@ tele [GLOBAL] GROUP COMMAND [ARGS]
 Globals (root callback, inherited):
   --account NAME     repeatable; NAME or all
   --tag TAG          repeatable; union with --account
-  --parallel N       default 1; max 32 (values outside 1..=32 exit with usage error)
+  --parallel N       default config parallel_max (1 when unset); max 32 (values outside 1..=32 exit with usage error)
   --json             machine output on stdout
   --jsonl            machine output: JSON lines (one-shot commands emit a single envelope line; only `tele listen` emits one record per event)
   --quiet / -q
@@ -19,7 +19,7 @@ Globals (root callback, inherited):
   --config PATH
 ```
 
-An empty account selection is an error, except for `tele account list` and `tele account add`.
+An empty account selection (no `--account`, no `--tag`) is a usage error for mutating commands, `tele listen`, and takeout — they call `require_explicit_selection` and exit 1. Read-only commands (`msg get`, `msg search`, `profile get`, `account status`, and the list/read-back commands under dialog/contact/chat/sticker/story, `privacy get`, and `raw`) instead fan out across every session by default. `tele serve` with no selection serves every account, validated to 1..=32. Exceptions that never require a selection: `tele account list` and `tele account add`.
 
 ## Exit codes
 
@@ -197,6 +197,14 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 - `--url <url> --kind photo|document` uploads remote media by URL instead of a local file.
 - `--copy-from <chat> --copy-id <id>` re-sends an existing message's media without the forward header.
 - `--topic <id>` posts into a forum topic. It is mutually exclusive with `--reply`: both set the reply-to header, and replying to the topic root lands the message in that topic. Reads scoped to a topic are available through `tele raw messages.Search` (`top_msg_id`), because grammers 0.10 exposes no topic filters on its history or search iterators.
+- `--caption <text>` attaches a caption to uploaded file(s) and requires `--file`.
+- `--format plain|markdown` (default `plain`) controls text formatting for outgoing text.
+- `--silent` sends with notifications muted.
+- `--no-preview` disables the link preview (on by default).
+
+## `msg get --watch`
+
+`tele msg get --chat X --id N --watch [--timeout-secs S]` polls until the message changes and returns the newest row: an edit to the watched message, or a newer message landing in the chat while the poll runs. `--timeout-secs` (default 60, must be > 0) bounds the whole poll; on expiry the command exits 3 with a `Timeout`-class error. The same `watch`/`timeout_secs` params are available over serve/MCP (`GetParams.watch`, `timeout_secs`).
 
 ## `msg delete`
 
@@ -204,12 +212,13 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 
 ## `msg click`
 
-- `tele msg click --chat X --id N [--button TEXT | --button-index N | --button-contains SUBSTRING]` clicks an inline button on a bot message (`messages.getBotCallbackAnswer`). Only callback buttons can be clicked; reply-keyboard buttons error with a `tele msg send --chat <chat> --text "…" ` hint.
-- Selector precedence: `--button-index` > `--button-contains` > `--button`. The three flags are mutually exclusive (clap `conflicts_with`).
+- `tele msg click --chat X --id N [--button TEXT | --button-index N | --button-contains SUBSTRING | --button-data DATA]` clicks an inline button on a bot message (`messages.getBotCallbackAnswer`). Only callback buttons can be clicked; reply-keyboard buttons error with a `tele msg send --chat <chat> --text "…" ` hint.
+- Selector precedence: `--button-index` > `--button-data` > `--button-contains` > `--button`. The four flags are mutually exclusive (clap `conflicts_with`).
 - `--button-index N` is 1-based across all rows (row-major flatten). Example: a 2×2 inline keyboard has positions 1..4.
 - `--button TEXT` is an exact match (case-sensitive, then case-insensitive fallback). On miss, the error keeps `no button named …` and appends `Did you mean #i "text"? Available: [#1 "…", #2 "…"]` with real 1-based texts.
 - `--button-contains SUBSTRING` is a case-insensitive substring match against button `text`. It picks the first match; on ambiguous (≥2 hits) it exits 1 with `Did you mean #i "text" or #j "text"? Available: [#1 "…", #2 "…"]` (Persian+emoji resilient, substring is lowercased on both sides). On no match it suggests the available list like `--button`.
-- Dry-run (`--dry-run` or `"dry_run": true` via `msg click` serve/MCP `ClickParams.button_contains`) validates the selector and reports `would: "click button … on message N"` without network. `ClickParams` carries `button_contains` alongside `button` and `button_index` (`deny_unknown_fields`, `additionalProperties: false`).
+- `--button-data DATA` matches the decoded callback payload exactly (the bytes that travel to the bot, lossy-UTF-8 decoded). It picks the first button whose `callback_data` decodes to exactly `DATA`.
+- Dry-run (`--dry-run` or `"dry_run": true` via `msg click` serve/MCP `ClickParams`) validates the selector and reports `would: "click button … on message N"` without network. `ClickParams` carries `button_contains` and `button_data` alongside `button` and `button_index` (`deny_unknown_fields`, `additionalProperties: false`). `--password` is reserved for 2FA-protected buttons and is not supported at this layer.
 
 ### Bot QA recipe (Windows pwsh)
 
@@ -234,7 +243,6 @@ tele msg get --chat @BOT --id 123 --json | jq '.results[0].data.messages[0].repl
 Notes:
 
 - stdout is UTF-8 JSON; on pwsh set `chcp 65001` or `$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new()` if Persian mangles; prefer `target\debug\tele.exe` over `cargo run --` for hot loops (0.5s compile tax).
-- For hot loops prefer `target\debug\tele.exe` over `cargo run --` (0.5s compile tax) — hot loops avoid the ~0.5s `cargo run` check.
 
 ## `profile set --username`
 
@@ -339,7 +347,7 @@ Runtime semantics:
 tele serve --account NAME [--account NAME ...] [--events NewMessage,MessageEdited] [--catch-up]
 ```
 
-`tele serve` is a duplex control plane for embedding scripts. It runs as a child process that owns one account session and speaks newline-delimited JSON over stdio. Stdout carries server frames (handshake, responses, events); stdin carries driver frames (hello, requests); stderr carries the usual freeform log lines. The driving script is the supervisor: it spawns, feeds, parses, and terminates the process.
+`tele serve` is a duplex control plane for embedding scripts. It runs as a child process that owns one or more account sessions (1–32) and speaks newline-delimited JSON over stdio. Stdout carries server frames (handshake, responses, events); stdin carries driver frames (hello, requests); stderr carries the usual freeform log lines. The driving script is the supervisor: it spawns, feeds, parses, and terminates the process.
 
 Process model:
 
@@ -444,9 +452,9 @@ Inline ops handled by the serve loop itself (no route entry):
 
 `ping` and `stream.resync` respond immediately, and so does `ops.list`; none of the three occupies an op lane. Each `ops.list` entry has the schema
 `{"op","summary","group","read_only","destructive","retry_safe"}` where
-`group` is the leading word of a spaced op (`msg`, `dialog`, `topic`,
-`profile`, `privacy`, `contact`, `sticker`, `story`, `raw`) or `transport`
-for the three inline ops. The list covers all 67 routed ops plus the 3 inline ops, so it holds 70 entries. Recount with `(Select-String -Path src\commands\*.rs -Pattern 'serve_route!\(').Count`.
+`group` is the leading word of a spaced op (`account`, `chat`, `dialog`,
+`msg`, `privacy`, `profile`, `raw`, `sticker`, `story`, `topic`,
+`contact`) or `transport` for the three inline ops. The list covers all 67 routed ops plus the 3 inline ops, so it holds 70 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
 
 ### Two-lane execution and timeouts
 
@@ -486,7 +494,7 @@ Intake is bounded end to end: a 64-line stdin queue and 64-job op queues. A slow
 
 ### Op table (67 routes)
 
-Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints column lists only non-default flags: `read_only` performs no state change, `destructive` sits behind the confirm gate, and `retry_unsafe` means a blind retry can duplicate an effect. An absent hint means mutating, non-destructive, or retry-safe respectively. Recount the routes with `(Select-String -Path src\commands\*.rs -Pattern 'serve_route!\(').Count`.
+Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints column lists only non-default flags: `read_only` performs no state change, `destructive` sits behind the confirm gate, and `retry_unsafe` means a blind retry can duplicate an effect. An absent hint means mutating, non-destructive, or retry-safe respectively. Recount the routes with `rg -c 'serve_route!\(' src/`.
 
 `contact` group:
 
@@ -628,7 +636,7 @@ Process model:
 - Logs stay on stderr; stdout is transport only. Startup emits
   `mcp: serving N tools (full|read-only) over stdio for account NAME`.
 - `--read-only` omits every mutating tool from `tools/list`; only the 20 read-only tools of the table below are discoverable.
-- `--groups msg,dialog` keeps only tools whose op group matches (comma-delimited, case-insensitive). Combined with `--read-only`, the two filters AND together. Both flags are discovery filters: a hidden tool stays invokable by its exact name, so treat them as curation, not as a hard security gate.
+- `--groups msg,dialog` keeps only tools whose op group matches (comma-delimited, case-insensitive). Combined with `--read-only`, the two filters AND together. Both flags are discovery filters: a hidden tool is also rejected at `tools/call` with an `invalid_params` error, so treat them as a firm security gate, not just curation.
 - EOF on stdin shuts down cleanly: the Telegram client disconnects and the exit code is 0.
 
 ### Transport and lifecycle
@@ -683,7 +691,7 @@ Only one failure class is protocol-level; everything else arrives in-band so the
 
 | failure | wire shape |
 |---|---|
-| unknown tool name | JSON-RPC error `-32602` invalid_params: `unknown tool X; use tools/list to see the 67 available tele tools` |
+| unknown tool name | JSON-RPC error `-32602` invalid_params: `unknown tool X; use tools/list to see the N available tele tools` (where N is the visible count under the current `--read-only`/`--groups` gate) |
 | everything else | normal response whose text carries a tele envelope; `isError: true` marks failure, `isError` absent/false on success |
 
 Envelope `type` strings inside `isError:true` text reuse the serve taxonomy:
@@ -900,7 +908,7 @@ tele raw TL_NAME --args JSON
 ```
 
 `TL_NAME` is a registry name from `src/commands/raw.rs`. Rust TL types are static, so the registry is a typed match: each supported method has a handler arm and a documented `--args` shape. An unregistered name exits 1 with the message
-`raw method not in registry; add an arm in src/commands/raw.rs`.
+`raw method not in registry: <name>; add an arm in src/commands/raw.rs (registered: [...])` (the trailing list shows every valid name).
 `--args` is a JSON object of constructor kwargs. The result lands in `results[].data`. Mutating raw calls still require `--account` and honor `--dry-run` (dry-run does not invoke).
 
 Registry names (25):
@@ -953,7 +961,7 @@ tele skill print
 tele skill install [--dir PATH] [--force]
 ```
 
-`tele skill` (and `tele skill print`) writes the embedded agent skill — an `SKILL.md` following the [Agent Skills](https://agentskills.io) spec (YAML frontmatter `name`/`description`/`license`/`compatibility`, markdown body) — to stdout and exits 0. The body carries the usage rules for driving tele: JSON-only parsing, exit codes, account/chat targeting, the 16 command groups, the output envelope, and recipes. No account selection or network is involved. Stdout carries the skill; stderr stays empty on success.
+`tele skill` (and `tele skill print`) writes the embedded agent skill — an `SKILL.md` following the [Agent Skills](https://agentskills.io) spec (YAML frontmatter `name`/`description`/`license`/`compatibility`, markdown body) — to stdout and exits 0. The body carries the usage rules for driving tele: JSON-only parsing, exit codes, account/chat targeting, the 17 command groups (the 16 feature groups plus completions), the output envelope, and recipes. No account selection or network is involved. Stdout carries the skill; stderr stays empty on success.
 
 `tele skill install` writes the same `SKILL.md` to `tele/SKILL.md` under each detected agent skill directory (any of `$HOME/.claude/skills`, `$HOME/.config/opencode/skills`, `$HOME/.cursor/skills` that exists). With `--dir PATH` it writes to `PATH/tele/SKILL.md` instead and skips detection. Existing files are refused without `--force`. Progress lines go to stderr; exit is 0 on success, non-zero when nothing was written and no `--dir` was given.
 

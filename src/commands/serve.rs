@@ -23,6 +23,8 @@ pub const SERVE_PROTOCOL_MIN: u32 = 1;
 
 const SERVE_EVENTS: &[&str] = &["NewMessage", "MessageEdited"];
 
+const SERVE_MAX_RECONNECT_ATTEMPTS: u32 = u32::MAX;
+
 const SERVE_DEDUPE_CAP: usize = 10_000;
 
 const SERVE_INTAKE_CAPACITY: usize = 64;
@@ -60,6 +62,13 @@ impl ServePool {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(account.to_string(), shares);
+    }
+
+    fn unpublish(&self, account: &str) {
+        self.shares
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(account);
     }
 
     fn served(&self) -> Vec<String> {
@@ -681,23 +690,21 @@ fn find_route(op: &str) -> Option<OpRoute> {
     route_table().find(op)
 }
 
-async fn execute_job(job: Job) -> serde_json::Value {
+async fn execute_job(job: Job) -> (serde_json::Value, JobCompletionGuard) {
     let Job {
         id,
         op,
         timeout,
         future,
-        mut guard,
+        guard,
     } = job;
     let outcome = match timeout {
         Some(limit) => match tokio::time::timeout(limit, future).await {
             Ok(outcome) => outcome,
             Err(_) => {
-                guard.completed = true;
-                return response_err(
-                    Some(id),
-                    err_json("Timeout", format!("op {op} timed out after {limit:?}")),
-                );
+                let mut err = err_json("Timeout", format!("op {op} timed out after {limit:?}"));
+                err["may_have_executed"] = serde_json::Value::from(true);
+                return (response_err(Some(id), err), guard);
             }
         },
         None => future.await,
@@ -706,8 +713,7 @@ async fn execute_job(job: Job) -> serde_json::Value {
         Ok(data) => response_ok(id, data),
         Err(error) => response_err(Some(id), error),
     };
-    guard.completed = true;
-    value
+    (value, guard)
 }
 
 async fn job_worker(
@@ -715,9 +721,9 @@ async fn job_worker(
     responses: tokio::sync::mpsc::Sender<serde_json::Value>,
 ) {
     while let Some(job) = jobs.recv().await {
-        let value = execute_job(job).await;
-        if responses.send(value).await.is_err() {
-            break;
+        let (value, mut guard) = execute_job(job).await;
+        if responses.send(value).await.is_ok() {
+            guard.completed = true;
         }
     }
 }
@@ -1005,11 +1011,30 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(SERVE_INTAKE_CAPACITY);
     tokio::spawn(async move {
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tx.send(line).await.is_err() {
-                break;
+        use tokio::io::AsyncReadExt;
+        const MAX_FRAME_LEN: usize = 1024 * 1024;
+        let mut stdin = tokio::io::stdin();
+        let mut line: Vec<u8> = Vec::with_capacity(4096);
+        let mut chunk = vec![0u8; 4096];
+        loop {
+            match stdin.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    for &b in &chunk[..n] {
+                        if b == b'\n' {
+                            let frame = String::from_utf8_lossy(&line)
+                                .trim_end_matches('\r')
+                                .to_string();
+                            line.clear();
+                            if tx.send(frame).await.is_err() {
+                                return;
+                            }
+                        } else if line.len() < MAX_FRAME_LEN {
+                            line.push(b);
+                        }
+                    }
+                }
+                Err(_) => break,
             }
         }
     });
@@ -1057,7 +1082,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         workers.push(tokio::spawn(job_worker(rx, response_tx.clone())));
     }
     let (dispatch_tx, mut dispatch_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(u64, String, serde_json::Value)>();
+        tokio::sync::mpsc::channel::<(u64, String, serde_json::Value)>(SERVE_INTAKE_CAPACITY);
     let disp_response_tx = response_tx.clone();
     let disp_pool = std::sync::Arc::clone(&pool);
     let disp_mutations = mutations.clone();
@@ -1140,8 +1165,20 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     ));
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
-                    if dispatch_tx.send((id, op, params)).is_err() {
-                        output::log_line("warn", "serve: dispatch queue closed");
+                    match dispatch_tx.try_send((id, op, params)) {
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            let _ = main_response_tx.try_send(response_err(
+                                Some(id),
+                                err_json(
+                                    "ServeError",
+                                    "dispatcher queue full; driver is outpacing the op lanes",
+                                ),
+                            ));
+                        }
+                        Err(_) => {
+                            output::log_line("warn", "serve: dispatch queue closed");
+                        }
+                        Ok(()) => {}
                     }
                 }
             },
@@ -1263,14 +1300,21 @@ async fn account_task(
     let mut greeted = false;
     let mut dedupe = ServeDedupe::new(SERVE_DEDUPE_CAP);
     loop {
+        pool.unpublish(&name);
         let mut guard = loop {
             match crate::client::ClientGuard::connect(&name, creds.api_id, config_path.as_deref())
                 .await
             {
                 Ok(guard) => break guard,
                 Err(e) => {
-                    if let Err(fatal) =
-                        handle_stream_failure(&name, TeleError::from(e), &mut failures, None).await
+                    if let Err(fatal) = handle_stream_failure(
+                        &name,
+                        TeleError::from(e),
+                        &mut failures,
+                        None,
+                        SERVE_MAX_RECONNECT_ATTEMPTS,
+                    )
+                    .await
                     {
                         let _ = ticks.send(AccountTick::Fatal { err: fatal }).await;
                         return;
@@ -1307,7 +1351,15 @@ async fn account_task(
                 let _ = ticks.send(AccountTick::Fatal { err }).await;
                 return;
             }
-            if let Err(fatal) = handle_stream_failure(&name, err, &mut failures, None).await {
+            if let Err(fatal) = handle_stream_failure(
+                &name,
+                err,
+                &mut failures,
+                None,
+                SERVE_MAX_RECONNECT_ATTEMPTS,
+            )
+            .await
+            {
                 let _ = ticks.send(AccountTick::Fatal { err: fatal }).await;
                 return;
             }
@@ -1380,6 +1432,7 @@ async fn account_task(
                         crate::error::invocation_error(e),
                         &mut failures,
                         None,
+                        SERVE_MAX_RECONNECT_ATTEMPTS,
                     )
                     .await
                     {
@@ -1862,7 +1915,7 @@ mod tests {
             },
         };
         drop(tx);
-        let value = execute_job(job).await;
+        let (value, _guard) = execute_job(job).await;
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"]["done"], true);
         assert!(rx.try_recv().is_err(), "disarmed guard must stay silent");
@@ -2867,11 +2920,16 @@ mod tests {
     #[tokio::test]
     async fn execute_job_enforces_timeout_with_correlated_envelope() {
         let slow = scripted_job(42, 60_000, Some(Duration::from_millis(20)));
-        let value = execute_job(slow).await;
+        let (value, _guard) = execute_job(slow).await;
         assert_eq!(value["type"], "response");
         assert_eq!(value["id"], 42);
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["type"], "Timeout");
+        assert_eq!(
+            value["error"]["may_have_executed"],
+            serde_json::Value::from(true),
+            "timeout leaves the op's fate unknown; drivers must not blind-retry"
+        );
         let message = value["error"]["message"].as_str().unwrap();
         assert!(message.contains("msg send"), "{message}");
         assert!(message.contains("20ms"), "{message}");
@@ -2892,7 +2950,7 @@ mod tests {
                 completed: false,
             },
         };
-        let value = execute_job(ok_job).await;
+        let (value, _guard) = execute_job(ok_job).await;
         assert_eq!(value["ok"], true);
         assert_eq!(value["id"], 7);
         assert_eq!(value["data"]["bytes"], 11);
@@ -2910,7 +2968,7 @@ mod tests {
                 completed: false,
             },
         };
-        let value = execute_job(err_job).await;
+        let (value, _guard) = execute_job(err_job).await;
         assert_eq!(value["ok"], false);
         assert_eq!(value["id"], 8);
         assert_eq!(value["error"]["type"], "ServeError");

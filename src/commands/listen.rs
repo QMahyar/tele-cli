@@ -640,13 +640,14 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     TeleError::from(e),
                                     &mut failures,
                                     deadline,
+                                    MAX_RECONNECT_ATTEMPTS,
                                 )
                                 .await?;
                                 continue;
                             }
                         };
                     if let Err(e) = client::authorize(&guard.client).await {
-                        handle_stream_failure(&name, e, &mut failures, deadline).await?;
+                        handle_stream_failure(&name, e, &mut failures, deadline, MAX_RECONNECT_ATTEMPTS).await?;
                         continue;
                     }
                     if !targets_resolved {
@@ -674,7 +675,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             );
                             return Err(err);
                         }
-                        handle_stream_failure(&name, err, &mut failures, deadline).await?;
+                        handle_stream_failure(&name, err, &mut failures, deadline, MAX_RECONNECT_ATTEMPTS).await?;
                         continue;
                     }
                     let receiver = std::mem::replace(
@@ -699,6 +700,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 TeleError::Other(e.to_string()),
                                 &mut failures,
                                 deadline,
+                                MAX_RECONNECT_ATTEMPTS,
                             )
                             .await?;
                             continue;
@@ -774,6 +776,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     crate::error::invocation_error(e),
                                     &mut failures,
                                     deadline,
+                                    MAX_RECONNECT_ATTEMPTS,
                                 )
                                 .await?;
                                 break;
@@ -1135,12 +1138,13 @@ pub(crate) async fn handle_stream_failure(
     err: TeleError,
     failures: &mut u32,
     deadline: Option<std::time::Instant>,
+    max_attempts: u32,
 ) -> TeleResult<()> {
     if is_auth_error(&err) {
         return Err(err);
     }
     *failures = on_failure(*failures);
-    if give_up(*failures) {
+    if *failures > max_attempts {
         return Err(match err {
             TeleError::Rpc(msg, code, name, seconds) => TeleError::Rpc(
                 format!("{account}: updates stream failed {failures} consecutive times, giving up: {msg}"),
@@ -1244,6 +1248,7 @@ fn deleted_matches(bare_id: Option<i64>, resolved: PeerId) -> bool {
     }
 }
 
+#[cfg(test)]
 fn reconnect_allowed(consecutive_failures: u32) -> bool {
     consecutive_failures <= MAX_RECONNECT_ATTEMPTS
 }
@@ -1257,6 +1262,7 @@ fn on_reconnect_success(failures: u32) -> u32 {
     0
 }
 
+#[cfg(test)]
 fn give_up(failures: u32) -> bool {
     !reconnect_allowed(failures)
 }

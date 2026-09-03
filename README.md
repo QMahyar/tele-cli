@@ -22,7 +22,7 @@
 **npm** (all platforms; the matching binary installs automatically):
 
 ```bash
-npm install -g @qmahyar/tele
+npm install -g @qmahyar/telecli
 ```
 
 **Binary:** download from [Releases](https://github.com/QMahyar/tele-cli/releases) — 13 targets including a static `linux-arm64-musl` build for Termux/Android.
@@ -77,7 +77,7 @@ Full walkthrough in [docs/getting-started.md](docs/getting-started.md). Usage re
 
 ## What you get
 
-- **16 command groups**: accounts, messages, chats, dialogs, forum topics, contacts, profile, privacy, stories, stickers, takeout, listen, serve, mcp, raw, skill. Run `tele --help` for every command and flag.
+- **17 command groups**: accounts, messages, chats, dialogs, forum topics, contacts, profile, privacy, stories, stickers, takeout, listen, serve, mcp, raw, skill, completions. Run `tele --help` for every command and flag.
 - **Multi-account**: named sessions, tags, parallel fan-out (`--parallel 1-32`) with per-account rate limiting and FloodWait handling.
 - **Machine output**: every command supports `--json` and `--jsonl` with a stable envelope. `tele listen` streams events as JSONL.
 - **MCP server**: `tele mcp` exposes 67 tools for Claude, Cursor, and any MCP client.

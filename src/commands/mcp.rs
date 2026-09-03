@@ -252,10 +252,14 @@ use tools/list to see the {visible} available tele tools"
                 let outcome = match exec.timeout {
                     Some(limit) => match tokio::time::timeout(limit, future).await {
                         Ok(outcome) => outcome,
-                        Err(_) => Err(err_json(
-                            "Timeout",
-                            format!("op {} timed out after {limit:?}", meta.op),
-                        )),
+                        Err(_) => {
+                            let mut err = err_json(
+                                "Timeout",
+                                format!("op {} timed out after {limit:?}", meta.op),
+                            );
+                            err["may_have_executed"] = serde_json::Value::from(true);
+                            Err(err)
+                        }
                     },
                     None => future.await,
                 };
@@ -324,10 +328,15 @@ pub async fn run(args: &McpArgs, flags: &crate::executor::GlobalFlags) -> TeleRe
         )));
     }
     if flags.dry_run {
-        let groups = args.groups.as_deref().map(|g| g.join(",")).unwrap_or_else(|| "all".to_string());
-        crate::output::log_line("info", &format!(
-            "[dry-run] would start MCP server for account {name} (groups: {groups})"
-        ));
+        let groups = args
+            .groups
+            .as_deref()
+            .map(|g| g.join(","))
+            .unwrap_or_else(|| "all".to_string());
+        crate::output::log_line(
+            "info",
+            &format!("[dry-run] would start MCP server for account {name} (groups: {groups})"),
+        );
         if flags.json || flags.jsonl {
             let data = serde_json::json!({
                 "dry_run": true,

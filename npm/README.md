@@ -9,16 +9,17 @@ npm install -g @qmahyar/telecli
 telecli --version
 ```
 
-The single bundled package contains all 13 platform binaries; `bin/telecli.js` picks the correct one for your OS/arch automatically — no separate `optionalDependencies` platform packages. The `linux-arm64-musl` binary is static and runs in **Termux/Android**.
+The single bundled package contains all 13 platform binaries; `bin/tele.js` picks the correct one for your OS/arch automatically — no separate `optionalDependencies` platform packages. The `linux-arm64-musl` binary is static and runs in **Termux/Android**.
 
 ## Termux / Android (no npm needed)
 
 Download the static binary from [GitHub Releases](https://github.com/QMahyar/tele-cli/releases):
 
 ```sh
-curl -fLO "https://github.com/QMahyar/tele-cli/releases/latest/download/telecli-<version>-aarch64-unknown-linux-musl.tar.gz"
-tar -xzf telecli-<version>-aarch64-unknown-linux-musl.tar.gz
-cp telecli-<version>-aarch64-unknown-linux-musl/telecli $PREFIX/bin/telecli
+curl -fLO "https://github.com/QMahyar/tele-cli/releases/latest/download/tele-<version>-aarch64-unknown-linux-musl.tar.gz"
+tar -xzf tele-<version>-aarch64-unknown-linux-musl.tar.gz
+cp tele-<version>-aarch64-unknown-linux-musl/tele $PREFIX/bin/tele
+chmod +x $PREFIX/bin/tele
 tele --version
 ```
 

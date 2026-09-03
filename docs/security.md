@@ -16,7 +16,7 @@ Untrusted data enters through six boundaries.
 | Config TOML | Account names, proxy host, tags | Unexpected files, if a session path were user-controlled |
 | `.env` | `TELE_API_ID` and `TELE_API_HASH` | Credential leak if committed or logged |
 | Telegram data centers | RPC errors, entities, message text | Hostile message text inside listen output, which an agent may read as instructions |
-| Agent tooling (MCP, planned) | Tool arguments | `tele raw` running a call an agent chose |
+| Agent tooling (MCP) | Tool arguments | `tele raw` running a call an agent chose |
 | Filesystem | The session SQLite database | Theft means account takeover. Sharing it invites a second client |
 
 ## Threat model
@@ -28,7 +28,7 @@ This section follows STRIDE and explains why each rule exists.
 - **Repudiation.** Telegram keeps no audit trail for a fan-out. The stdout envelope reports `results[].account` with `ok` or `error` per account. A failing command also prints an `[error]` line to stderr. Message bodies never reach logs.
 - **Information disclosure.** Logs would leak access hashes, phone numbers, or login codes if they printed everything. Field allowlists decide what reaches logs and `--json` output. Secrets never pass either allowlist.
 - **Denial of service.** Parallel join and send bursts trip FloodWait or SpamBot limits. Fan-out defaults to sequential: `parallel_max` defaults to 1 and clamps to at most 32, and `--parallel` accepts 1 through 32. Waits surface as `error.seconds` instead of hidden retry storms.
-- **Elevation of privilege.** `tele raw` can call any TL method your account may call. It resolves accounts like every other command, and it supports `--dry-run`. Treat it as full power. Future MCP tooling must not grant more than this.
+- **Elevation of privilege.** `tele raw` can call any TL method your account may call. It resolves accounts like every other command, and it supports `--dry-run`. Treat it as full power. `tele mcp` and `tele serve` expose the same routed core: destructive ops sit behind a `confirm:true` gate, and MCP adds `--read-only`/`--groups` filters that are enforced at `tools/call`, but the executor itself grants no more than the CLI's own account power.
 
 ## Known exposures
 

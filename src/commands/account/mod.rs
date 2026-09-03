@@ -2135,9 +2135,10 @@ pub(crate) fn qr_token_lines(
 }
 
 pub(crate) fn render_qr(uri: &str, show_token: bool, quiet: bool) {
+    let stderr_is_terminal = std::io::stderr().is_terminal();
     if quiet {
-        if should_print_token(show_token, std::io::stderr().is_terminal()) {
-            let (warning, line) = qr_token_lines(uri, std::io::stderr().is_terminal());
+        if should_print_token(show_token, stderr_is_terminal) {
+            let (warning, line) = qr_token_lines(uri, stderr_is_terminal);
             if let Some(warning) = warning {
                 output::log_line("warn", warning);
             }
@@ -2147,6 +2148,20 @@ pub(crate) fn render_qr(uri: &str, show_token: bool, quiet: bool) {
                 "warn",
                 "QR rendering suppressed in quiet mode; re-run with --show-token to log the login URI",
             );
+        }
+        return;
+    }
+    if !stderr_is_terminal {
+        output::log_line(
+            "warn",
+            "QR suppressed: stderr is not a terminal and the QR encodes the login token; re-run with --show-token or on a TTY to render it",
+        );
+        if should_print_token(show_token, false) {
+            let (warning, line) = qr_token_lines(uri, false);
+            if let Some(warning) = warning {
+                output::log_line("warn", warning);
+            }
+            let _ = writeln!(std::io::stderr(), "{line}");
         }
         return;
     }
@@ -2164,8 +2179,8 @@ pub(crate) fn render_qr(uri: &str, show_token: bool, quiet: bool) {
             let _ = writeln!(std::io::stderr(), "{rendered}");
         }
         Err(_) => {
-            if should_print_token(show_token, std::io::stderr().is_terminal()) {
-                let (warning, line) = qr_token_lines(uri, std::io::stderr().is_terminal());
+            if should_print_token(show_token, stderr_is_terminal) {
+                let (warning, line) = qr_token_lines(uri, stderr_is_terminal);
                 if let Some(warning) = warning {
                     output::log_line("warn", warning);
                 }

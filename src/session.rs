@@ -10,6 +10,8 @@ use grammers_client::session::Session as _;
 pub const SESSION_FILE_WARNING: &str =
     "session files grant full access to their Telegram account; treat exports as secrets";
 
+const MAX_SESSION_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 pub fn session_dir() -> PathBuf {
     crate::config::app_data_dir().join("sessions")
 }
@@ -297,15 +299,23 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
             "destination equals the live session file for {name}"
         ));
     }
-    std::fs::copy(&source, &dest)?;
-    crate::fs_util::restrict_file_private(&dest)?;
-    let bytes = std::fs::read(&dest)?;
-    let size = bytes.len() as u64;
+    let mut f = crate::fs_util::create_file_private(&dest)
+        .map_err(|e| anyhow::anyhow!("failed to create export file {}: {e}", dest.display()))?;
+    let mut src = std::fs::File::open(&source)?;
+    let size = std::io::copy(&mut src, &mut f).map_err(|e| {
+        let _ = std::fs::remove_file(&dest);
+        anyhow::anyhow!("failed to copy session to {}: {e}", dest.display())
+    })?;
+    f.sync_all().ok();
+    let sha = {
+        let bytes = std::fs::read(&dest)?;
+        sha256_hex(&bytes)
+    };
     Ok(ExportedSession {
         account: name.to_string(),
-        path: dest,
+        path: dest.clone(),
         bytes: size,
-        sha256: sha256_hex(&bytes),
+        sha256: sha,
     })
 }
 
@@ -405,6 +415,12 @@ pub async fn import_session(
     crate::fs_util::create_dir_private(&session_dir())?;
     let _lock = acquire_lock_file(&name).await?;
     let byte_len = std::fs::metadata(file)?.len();
+    if byte_len > MAX_SESSION_FILE_BYTES {
+        return Err(anyhow::anyhow!(
+            "refusing to import {}: file is {byte_len} bytes, over the {MAX_SESSION_FILE_BYTES}-byte session cap",
+            file.display()
+        ));
+    }
     install_copied_session(&name, file, byte_len).await
 }
 
@@ -582,7 +598,19 @@ pub async fn parse_telethon_session(source: &Path) -> anyhow::Result<TelethonSes
             source.display()
         );
     }
-    let header = std::fs::read(source)?;
+    let mut header = [0u8; 16];
+    {
+        use std::io::Read as _;
+        let mut handle = std::fs::File::open(source)?;
+        let mut filled = 0;
+        while filled < header.len() {
+            let n = handle.read(&mut header[filled..])?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+    }
     if !header.starts_with(SQLITE_MAGIC) {
         anyhow::bail!(
             "not a Telethon session: {} lacks the SQLite file header",

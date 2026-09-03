@@ -15,7 +15,7 @@ compatibility: tele 0.8.0+
 4. Exit codes: `0` ok, `1` usage (fix the command, do not retry), `2` partial, `3` all failed, `4` auth (run `tele account login --name NAME`), `130` interrupted.
 5. One process per account. `session is in use` means another tele process holds the account's session lock; wait for it or stop it. Never share or copy session files between machines.
 6. Secrets (api_hash, phone numbers, 2FA passwords) never appear in output. Do not read or echo session file contents.
-7. Destructive commands (`msg delete`, `chat kick`, `chat leave`, `dialog delete`, `account delete`) refuse to run without an explicit `--account` or `--tag`.
+7. Destructive commands (`msg delete`, `chat kick`, `chat leave`, `dialog delete`, `account delete`, `topic delete`, `story delete`, `sticker remove`, `contact remove`) refuse to run without an explicit `--account` or `--tag`.
 
 ## Targeting
 
@@ -38,8 +38,8 @@ compatibility: tele 0.8.0+
 | `sticker` | list, search, show, install, remove |
 | `takeout` | start, export, finish (account data export) |
 | `listen` | stream live events as JSONL |
-| `serve` | duplex JSONL server over stdin/stdout (owns one session) |
-| `mcp` | MCP stdio server: tele ops as tools (owns one session) |
+| `serve` | duplex JSONL server over stdin/stdout (1–32 accounts) |
+| `mcp` | MCP stdio server: tele ops as tools (exactly one account) |
 | `raw` | typed allowlist of 25 Telegram TL methods |
 | `skill` | print or install this skill |
 

@@ -94,9 +94,9 @@ fn print_table_to(
 ) -> crate::error::TeleResult<()> {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(headers.iter().map(|h| Cell::new(*h)));
+    table.set_header(headers.iter().map(|h| Cell::new(strip_ansi(h))));
     for row in rows {
-        table.add_row(row.iter().map(Cell::new));
+        table.add_row(row.iter().map(|cell| Cell::new(strip_ansi(cell))));
     }
     writeln!(w, "{table}")?;
     w.flush()?;
@@ -105,6 +105,24 @@ fn print_table_to(
 
 pub fn print_line(line: &str) -> crate::error::TeleResult<()> {
     print_line_to(&mut std::io::stdout(), line)
+}
+
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for n in chars.by_ref() {
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 pub fn print_line_to(w: &mut impl std::io::Write, line: &str) -> crate::error::TeleResult<()> {
