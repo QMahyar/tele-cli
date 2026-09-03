@@ -299,6 +299,20 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
             "destination equals the live session file for {name}"
         ));
     }
+    let dest_guard = crate::fs_util::resolve_for_guard(&dest);
+    let sessions_guard = crate::fs_util::resolve_for_guard(&session_dir());
+    if crate::fs_util::path_under_guard(&dest_guard, &sessions_guard) {
+        let allowed = dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".session.export"));
+        if !allowed {
+            return Err(anyhow::anyhow!(
+                "refusing to export into {}: destinations inside the sessions directory must end in .session.export to avoid clobbering live sessions",
+                session_dir().display()
+            ));
+        }
+    }
     let mut f = crate::fs_util::create_file_private(&dest)
         .map_err(|e| anyhow::anyhow!("failed to create export file {}: {e}", dest.display()))?;
     let mut src = std::fs::File::open(&source)?;
@@ -307,6 +321,8 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
         anyhow::anyhow!("failed to copy session to {}: {e}", dest.display())
     })?;
     f.sync_all().ok();
+    crate::fs_util::restrict_file_private(&dest)
+        .map_err(|e| anyhow::anyhow!("failed to restrict export file {}: {e}", dest.display()))?;
     let sha = {
         let bytes = std::fs::read(&dest)?;
         sha256_hex(&bytes)
@@ -543,7 +559,12 @@ async fn libsql_read_only_conn(path: &Path) -> anyhow::Result<libsql::Connection
         .with_context(|| "cannot open Telethon session file (path logged at debug level)")?;
     crate::output::log_line(
         "debug",
-        &format!("telethon session open attempted: {}", path.display()),
+        &format!(
+            "telethon session open attempted: {}",
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+        ),
     );
     Ok(db.connect()?)
 }

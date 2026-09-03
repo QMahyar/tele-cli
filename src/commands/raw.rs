@@ -191,7 +191,7 @@ pub(crate) fn raw_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
         Lane::Mutate,
         Some(std::time::Duration::from_secs(120)),
         false,
-        false,
+        true,
         false,
         "invoke one raw TL method by name",
         RawParams,

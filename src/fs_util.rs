@@ -21,13 +21,10 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
             path.display()
         ))
     })?;
-    let rand: u16 = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        std::time::SystemTime::now().hash(&mut h);
-        h.finish() as u16
-    };
+    let rand: u16 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u16)
+        .unwrap_or(0);
     let tmp = parent.join(format!(
         ".{}_tmp-{}-{}",
         stem.to_string_lossy(),
@@ -38,12 +35,29 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
         let _ = std::fs::remove_dir_all(&tmp);
     }
     std::fs::create_dir_all(&tmp)?;
+    if std::fs::symlink_metadata(&tmp)?.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "refusing to follow symlink at {}",
+            tmp.display()
+        )));
+    }
     #[cfg(unix)]
     restrict(&tmp, 0o700)?;
     #[cfg(windows)]
     set_user_only_dacl(&tmp, true)?;
     match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            if std::fs::symlink_metadata(path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                return Err(std::io::Error::other(format!(
+                    "refusing to follow symlink at {}",
+                    path.display()
+                )));
+            }
+            Ok(())
+        }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&tmp);
             if e.kind() == std::io::ErrorKind::AlreadyExists {
@@ -92,6 +106,12 @@ pub fn write_file_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             f
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+                return Err(std::io::Error::other(format!(
+                    "refusing to follow symlink at {}",
+                    path.display()
+                )));
+            }
             let f = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
@@ -130,6 +150,12 @@ pub fn create_file_private(path: &Path) -> std::io::Result<std::fs::File> {
             Ok(f)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+                return Err(std::io::Error::other(format!(
+                    "refusing to follow symlink at {}",
+                    path.display()
+                )));
+            }
             let f = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)

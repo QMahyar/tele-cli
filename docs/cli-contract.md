@@ -555,7 +555,7 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 
 | op | summary | lane | timeout | hints |
 |---|---|---|---|---|
-| `raw` | invoke one raw TL method by name | mutate | 120s | retry_unsafe |
+| `raw` | invoke one raw TL method by name | mutate | 120s | destructive retry_unsafe |
 
 `sticker` group:
 
@@ -805,7 +805,7 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 
 | tool | summary | hints |
 |---|---|---|
-| `raw` | invoke one raw TL method by name | retry_unsafe |
+| `raw` | invoke one raw TL method by name | destructive retry_unsafe |
 
 `sticker` group (5):
 

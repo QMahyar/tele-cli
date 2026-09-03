@@ -76,9 +76,11 @@ pub(crate) fn validate_upload_path_inner(path: &str, dry_run: bool) -> TeleResul
 }
 
 pub fn is_sensitive_basename(lower: &str) -> bool {
-    const SUFFIXES: [&str; 7] = [
+    const SUFFIXES: [&str; 9] = [
         ".session",
         ".session-journal",
+        ".session-wal",
+        ".session-shm",
         ".pem",
         ".key",
         ".p12",

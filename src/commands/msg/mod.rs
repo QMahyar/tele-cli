@@ -3217,10 +3217,19 @@ mod tests {
         std::fs::write(&final_path, b"x").unwrap();
         let stale = base.join(".video.mp4.part-123-1-0");
         std::fs::write(&stale, b"stale").unwrap();
-        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(90_000);
         filetime_set_mtime(&stale, old_time);
         sweep_stale_download_temps(&final_path);
         assert!(!stale.exists(), "stale sibling should be swept");
+        let idle_under_window = base.join(".video.mp4.part-123-2-1");
+        std::fs::write(&idle_under_window, b"still going").unwrap();
+        let recent_time = std::time::SystemTime::now() - std::time::Duration::from_secs(7_200);
+        filetime_set_mtime(&idle_under_window, recent_time);
+        sweep_stale_download_temps(&final_path);
+        assert!(
+            idle_under_window.exists(),
+            "idle temp under the 24h window must remain"
+        );
         let fresh = base.join(".video.mp4.part-123-999-1");
         std::fs::write(&fresh, b"fresh").unwrap();
         sweep_stale_download_temps(&final_path);
