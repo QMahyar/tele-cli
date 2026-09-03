@@ -1,9 +1,8 @@
 use clap::Parser;
 use grammers_client::tl;
 use grammers_client::update::Update;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::future::Future;
-use std::hash::Hash;
 use std::io::Write;
 use std::pin::Pin;
 
@@ -98,39 +97,7 @@ enum AccountTick {
 pub(crate) const OP_TIMEOUT_SIMPLE: Duration = Duration::from_secs(30);
 pub(crate) const OP_TIMEOUT_PAGINATED: Duration = Duration::from_secs(120);
 
-pub(crate) struct CappedDedupe<K: Eq + Hash + Clone> {
-    seen: HashMap<K, ()>,
-    order: VecDeque<K>,
-    cap: usize,
-}
-
-impl<K: Eq + Hash + Clone> CappedDedupe<K> {
-    pub(crate) fn new(cap: usize) -> Self {
-        Self {
-            seen: HashMap::new(),
-            order: VecDeque::new(),
-            cap,
-        }
-    }
-    pub(crate) fn check(&mut self, key: K) -> bool {
-        if self.seen.contains_key(&key) {
-            return true;
-        }
-        if self.seen.len() >= self.cap {
-            if let Some(old) = self.order.pop_front() {
-                self.seen.remove(&old);
-            }
-        }
-        self.seen.insert(key.clone(), ());
-        self.order.push_back(key);
-        false
-    }
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.seen.len()
-    }
-}
-
+pub(crate) type CappedDedupe<K> = crate::capped_map::CappedMap<K, ()>;
 pub(crate) type ServeDedupe = CappedDedupe<(String, i64, i32, i32)>;
 
 pub(crate) fn dedupe_key(
@@ -2783,6 +2750,28 @@ mod tests {
                 "summary not lowercase sentence on {}: {}",
                 route.op,
                 route.summary
+            );
+        }
+    }
+
+    #[test]
+    fn all_67_routes_have_unique_op_names_and_non_empty_summaries() {
+        let routes = serve_op_routes();
+        assert_eq!(
+            routes.len(),
+            67,
+            "routed op count drifted; update docs/cli-contract.md and this lock"
+        );
+        let mut names: Vec<&str> = routes.iter().map(|r| r.op).collect();
+        names.sort_unstable();
+        let total = names.len();
+        names.dedup();
+        assert_eq!(names.len(), total, "duplicate op names in route table");
+        for route in &routes {
+            assert!(
+                !route.summary.trim().is_empty(),
+                "summary missing on {}",
+                route.op
             );
         }
     }
