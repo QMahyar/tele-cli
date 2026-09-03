@@ -93,6 +93,41 @@ pub struct SendArgs {
         help = "send as a background message (no notification sound even in unmuted chats)"
     )]
     pub(crate) background: bool,
+    #[arg(
+        long = "as",
+        value_name = "voice|video-note",
+        requires = "files",
+        help = "send the file as a voice note or round video note (requires --file)"
+    )]
+    pub(crate) as_media: Option<String>,
+    #[arg(
+        long,
+        value_name = "QUESTION",
+        requires = "option",
+        conflicts_with_all = &["files", "text", "url", "copy_from"],
+        help = "create a poll with this question (requires --option; mutually exclusive with --file/--text/--url/--copy-from)"
+    )]
+    pub(crate) poll: Option<String>,
+    #[arg(
+        long,
+        value_name = "TEXT",
+        help = "poll answer (repeatable, 2-10 options; requires --poll)"
+    )]
+    pub(crate) option: Vec<String>,
+    #[arg(
+        long,
+        value_name = "quiz",
+        requires = "poll",
+        help = "poll mode: quiz marks the poll as a quiz (requires --poll)"
+    )]
+    pub(crate) poll_mode: Option<String>,
+    #[arg(
+        long,
+        value_name = "N",
+        requires = "poll_mode",
+        help = "1-based index of the correct quiz option (requires --poll-mode quiz)"
+    )]
+    pub(crate) poll_quiz_option: Option<usize>,
 }
 
 #[derive(Args, Clone)]
@@ -105,8 +140,24 @@ pub struct EditArgs {
     pub(crate) chat: ChatTarget,
     #[arg(long, help = "message ID to edit")]
     pub(crate) id: i32,
-    #[arg(long, help = "new message text")]
-    pub(crate) text: String,
+    #[arg(long, help = "new message text (mutually exclusive with --file)")]
+    pub(crate) text: Option<String>,
+    #[arg(
+        long = "file",
+        value_name = "PATH",
+        help = "file path replacing the message media (mutually exclusive with --text)"
+    )]
+    pub(crate) file: Option<String>,
+    #[arg(long, help = "caption for replacement media (requires --file)")]
+    pub(crate) caption: Option<String>,
+    #[arg(
+        long,
+        default_value = "plain",
+        help = "text format: plain or markdown (applies to --text and --caption)"
+    )]
+    pub(crate) format: String,
+    #[arg(long, action = clap::ArgAction::SetTrue, help = "disable link preview")]
+    pub(crate) no_preview: bool,
 }
 
 #[derive(Args, Clone)]
@@ -269,6 +320,28 @@ pub struct SearchArgs {
         requires = "query"
     )]
     pub(crate) global: bool,
+    #[arg(
+        long,
+        value_name = "SENDER",
+        help = "only messages sent by this sender: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    pub(crate) from: Option<String>,
+    #[arg(
+        long,
+        value_name = "KIND",
+        help = "media filter: photo|video|gif|document|url|audio|voice"
+    )]
+    pub(crate) kind: Option<String>,
+    #[arg(
+        long,
+        help = "only messages on/after this date: RFC 3339, Unix timestamp, or YYYY-MM-DD"
+    )]
+    pub(crate) since: Option<String>,
+    #[arg(
+        long,
+        help = "only messages up to this date: RFC 3339, Unix timestamp, or YYYY-MM-DD"
+    )]
+    pub(crate) until: Option<String>,
 }
 
 #[derive(Args, Clone)]
@@ -279,14 +352,47 @@ pub struct DownloadArgs {
         help = "target chat: @username, t.me link, numeric ID, +phone, or me"
     )]
     pub(crate) chat: ChatTarget,
-    #[arg(long, help = "message ID to download media from")]
-    pub(crate) id: i32,
+    #[arg(
+        long,
+        help = "message ID to download media from (required unless --all)"
+    )]
+    pub(crate) id: Option<i32>,
     #[arg(long, help = "output directory for downloaded media")]
     pub(crate) dir: String,
     #[arg(long, help = "overwrite existing files")]
     pub(crate) force: bool,
     #[arg(long, help = "streaming chunk size in KB (4-512, multiple of 4)")]
     pub(crate) chunk_size_kb: Option<usize>,
+    #[arg(
+        long,
+        conflicts_with = "id",
+        help = "download media from the chat's entire history (mutually exclusive with --id)"
+    )]
+    pub(crate) all: bool,
+    #[arg(
+        long,
+        requires = "all",
+        help = "only media on/after this date (requires --all): RFC 3339, Unix timestamp, or YYYY-MM-DD"
+    )]
+    pub(crate) since: Option<String>,
+    #[arg(
+        long,
+        requires = "all",
+        help = "only media up to this date (requires --all): RFC 3339, Unix timestamp, or YYYY-MM-DD"
+    )]
+    pub(crate) until: Option<String>,
+    #[arg(
+        long,
+        requires = "id",
+        help = "download all album siblings sharing the message's grouped_id (requires --id)"
+    )]
+    pub(crate) album: bool,
+    #[arg(
+        long,
+        default_value = "1000",
+        help = "max history messages to scan per bulk run"
+    )]
+    pub(crate) limit: Option<usize>,
 }
 
 #[derive(Args, Clone)]
@@ -397,6 +503,16 @@ pub(crate) struct SendParams {
     #[serde(default)]
     pub(crate) background: bool,
     #[serde(default)]
+    pub(crate) as_media: Option<String>,
+    #[serde(default)]
+    pub(crate) poll: Option<String>,
+    #[serde(default)]
+    pub(crate) option: Vec<String>,
+    #[serde(default)]
+    pub(crate) poll_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) poll_quiz_option: Option<usize>,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -422,6 +538,11 @@ impl From<&SendArgs> for SendParams {
             silent: a.silent,
             noforwards: a.noforwards,
             background: a.background,
+            as_media: a.as_media.clone(),
+            poll: a.poll.clone(),
+            option: a.option.clone(),
+            poll_mode: a.poll_mode.clone(),
+            poll_quiz_option: a.poll_quiz_option,
             dry_run: false,
         }
     }
@@ -449,6 +570,11 @@ impl From<&SendParams> for SendArgs {
             silent: p.silent,
             noforwards: p.noforwards,
             background: p.background,
+            as_media: p.as_media.clone(),
+            poll: p.poll.clone(),
+            option: p.option.clone(),
+            poll_mode: p.poll_mode.clone(),
+            poll_quiz_option: p.poll_quiz_option,
         }
     }
 }
@@ -459,7 +585,16 @@ impl From<&SendParams> for SendArgs {
 pub(crate) struct EditParams {
     pub(crate) chat: String,
     pub(crate) id: i32,
-    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) text: Option<String>,
+    #[serde(default)]
+    pub(crate) file: Option<String>,
+    #[serde(default)]
+    pub(crate) caption: Option<String>,
+    #[serde(default = "default_format")]
+    pub(crate) format: String,
+    #[serde(default)]
+    pub(crate) no_preview: bool,
     #[serde(default)]
     pub(crate) dry_run: bool,
 }
@@ -470,6 +605,10 @@ impl From<&EditArgs> for EditParams {
             chat: a.chat.as_str().to_string(),
             id: a.id,
             text: a.text.clone(),
+            file: a.file.clone(),
+            caption: a.caption.clone(),
+            format: a.format.clone(),
+            no_preview: a.no_preview,
             dry_run: false,
         }
     }
@@ -481,6 +620,10 @@ impl From<&EditParams> for EditArgs {
             chat: ChatTarget::new_unchecked(p.chat.clone()),
             id: p.id,
             text: p.text.clone(),
+            file: p.file.clone(),
+            caption: p.caption.clone(),
+            format: p.format.clone(),
+            no_preview: p.no_preview,
         }
     }
 }
@@ -740,6 +883,14 @@ pub(crate) struct SearchParams {
     #[serde(default)]
     pub(crate) global: bool,
     #[serde(default)]
+    pub(crate) from: Option<String>,
+    #[serde(default)]
+    pub(crate) kind: Option<String>,
+    #[serde(default)]
+    pub(crate) since: Option<String>,
+    #[serde(default)]
+    pub(crate) until: Option<String>,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -750,6 +901,10 @@ impl From<&SearchArgs> for SearchParams {
             query: a.query.clone(),
             limit: a.limit,
             global: a.global,
+            from: a.from.clone(),
+            kind: a.kind.clone(),
+            since: a.since.clone(),
+            until: a.until.clone(),
             dry_run: false,
         }
     }
@@ -762,6 +917,10 @@ impl From<&SearchParams> for SearchArgs {
             query: p.query.clone(),
             limit: p.limit,
             global: p.global,
+            from: p.from.clone(),
+            kind: p.kind.clone(),
+            since: p.since.clone(),
+            until: p.until.clone(),
         }
     }
 }
@@ -772,14 +931,26 @@ impl From<&SearchParams> for SearchArgs {
 pub(crate) struct DownloadParams {
     #[serde(default)]
     pub(crate) chat: String,
-    pub(crate) id: i32,
+    pub(crate) id: Option<i32>,
     #[serde(default)]
     pub(crate) dir: String,
     #[serde(default)]
     pub(crate) force: bool,
     pub(crate) chunk_size_kb: Option<usize>,
     #[serde(default)]
+    pub(crate) all: bool,
+    pub(crate) since: Option<String>,
+    pub(crate) until: Option<String>,
+    #[serde(default)]
+    pub(crate) album: bool,
+    #[serde(default = "default_download_limit")]
+    pub(crate) limit: Option<usize>,
+    #[serde(default)]
     pub(crate) dry_run: bool,
+}
+
+fn default_download_limit() -> Option<usize> {
+    Some(1000)
 }
 
 impl From<&DownloadArgs> for DownloadParams {
@@ -790,6 +961,11 @@ impl From<&DownloadArgs> for DownloadParams {
             dir: a.dir.clone(),
             force: a.force,
             chunk_size_kb: a.chunk_size_kb,
+            all: a.all,
+            since: a.since.clone(),
+            until: a.until.clone(),
+            album: a.album,
+            limit: a.limit,
             dry_run: false,
         }
     }
@@ -803,6 +979,11 @@ impl From<&DownloadParams> for DownloadArgs {
             dir: p.dir.clone(),
             force: p.force,
             chunk_size_kb: p.chunk_size_kb,
+            all: p.all,
+            since: p.since.clone(),
+            until: p.until.clone(),
+            album: p.album,
+            limit: p.limit,
         }
     }
 }

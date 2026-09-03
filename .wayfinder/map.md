@@ -22,12 +22,14 @@ not decision tickets.
 
 ## Decisions so far
 
-(empty — effort starts here)
+- [Slice 1 — Security fixes](tickets/slice-1-security.md): merged to main as `merge: slice 1 — security fixes` (raw confirm gate, session/file perms, download sweep, sensitive suffixes).
+- [Slice 2 — Correctness bugs](tickets/slice-2-correctness.md): merged to main as `merge: slice 2 — correctness fixes` (limiter survives reconnects, lane backpressure, EOF drain, resync catch-up, album multi-buffer, account timeout, JsonlWriter) + cli-contract doc drift fixed.
+- [Slice 4 — Architecture cleanup](tickets/slice-4-architecture.md): merged to main as `merge: slice 4 — architecture cleanup` (god-file test extraction, CappedMap, pagination.rs, exit-code bridge, account/login.rs, join/leave dedupe, run_fanout + client tests).
+- Slice 3 pause point (2026-09-03): branch `slice/3-features` holds 5 features, all green (1546 tests: 1431+92+23). Features 1–4 verified by agents; feature 5 (search filters) landed pre-cancellation but was never agent-verified — needs a verification pass on resume.
 
 ## Not yet specified
 
-- Slice 3 (features) exact scope is large; ticketed per feature after slices 1-2
-  land so branch bases are stable.
+- Slice 3 completion: verify search filters end-to-end (live dry-run + serve/MCP params), update `docs/capabilities.md` + `docs/cli-contract.md` for all 5 features (agents were told to skip docs), then merge `slice/3-features` to main.
 
 ## Out of scope
 

@@ -1,11 +1,16 @@
 use super::*;
 use crate::commands::helpers::upload_error;
 use crate::commands::msg::download::{
-    commit_download, create_download_temp, download_temp_path, refuse_existing_download_target,
-    sanitize_download_name, sweep_stale_download_temps, validate_chunk_size_kb, validate_download,
+    bulk_media_name, checkpoint_path, commit_download, create_download_temp,
+    download_serve_dry_run, download_temp_path, load_checkpoint, parse_download_date,
+    refuse_existing_download_target, sanitize_download_name, save_checkpoint,
+    sweep_stale_download_temps, validate_chunk_size_kb, validate_download,
 };
 use crate::commands::msg::params::{ClickArgs, SendArgs};
-use crate::commands::msg::send::{message_random_id, parse_schedule, send_dry_run_payload};
+use crate::commands::msg::send::{
+    message_random_id, parse_as_media, parse_poll_mode, parse_schedule, send_dry_run_payload,
+    send_poll_message,
+};
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
     validate_filename, validate_markdown, MAX_UPLOAD_BYTES,
@@ -72,6 +77,11 @@ fn send_args(format: &str) -> SendArgs {
         silent: false,
         noforwards: false,
         background: false,
+        as_media: None,
+        poll: None,
+        option: vec![],
+        poll_mode: None,
+        poll_quiz_option: None,
     }
 }
 
@@ -260,7 +270,11 @@ fn edit_rejects_empty_text() {
     let args = EditArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
         id: 5,
-        text: "".to_string(),
+        text: Some("".to_string()),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
     };
     assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
 }
@@ -270,7 +284,11 @@ fn edit_rejects_whitespace_text() {
     let args = EditArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
         id: 5,
-        text: "   \t ".to_string(),
+        text: Some("   \t ".to_string()),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
     };
     assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
 }
@@ -280,7 +298,11 @@ fn edit_allows_normal_text() {
     let args = EditArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
         id: 5,
-        text: "hello".to_string(),
+        text: Some("hello".to_string()),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
     };
     assert!(validate_edit(&args).is_ok());
 }
@@ -808,7 +830,11 @@ fn non_get_commands_reject_deep_link_message_ids() {
     let edit = EditArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
         id: 1,
-        text: "x".to_string(),
+        text: Some("x".to_string()),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
     };
     assert!(matches!(validate_edit(&edit), Err(TeleError::Usage(_))));
 
@@ -854,10 +880,15 @@ fn non_get_commands_reject_deep_link_message_ids() {
 
     let download = DownloadArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked(link.to_string()),
-        id: 4,
+        id: Some(4),
         dir: std::env::temp_dir().to_string_lossy().to_string(),
         force: false,
         chunk_size_kb: None,
+        all: false,
+        since: None,
+        until: None,
+        album: false,
+        limit: None,
     };
     assert!(matches!(
         validate_download(&download),
@@ -903,6 +934,10 @@ fn non_get_commands_reject_deep_link_message_ids() {
         query: "q".to_string(),
         limit: 10,
         global: false,
+        from: None,
+        kind: None,
+        since: None,
+        until: None,
     };
     assert!(matches!(validate_search(&search), Err(TeleError::Usage(_))));
 
@@ -911,6 +946,10 @@ fn non_get_commands_reject_deep_link_message_ids() {
         query: "q".to_string(),
         limit: 10,
         global: true,
+        from: None,
+        kind: None,
+        since: None,
+        until: None,
     };
     assert!(validate_search(&search_global).is_ok());
 }
@@ -928,7 +967,11 @@ fn msg_validators_reject_empty_or_whitespace_chat() {
         let edit = EditArgs {
             chat: crate::chat_target::ChatTarget::new_unchecked(chat.to_string()),
             id: 1,
-            text: "x".to_string(),
+            text: Some("x".to_string()),
+            file: None,
+            caption: None,
+            format: "plain".to_string(),
+            no_preview: false,
         };
         assert!(
             matches!(validate_edit(&edit), Err(TeleError::Usage(_))),
@@ -1027,6 +1070,10 @@ async fn pin_read_search_download_reject_empty_chat_before_connect() {
             query: "x".to_string(),
             limit: 10,
             global: false,
+            from: None,
+            kind: None,
+            since: None,
+            until: None,
         },
         &dryrun_flags("msg search", true),
     )
@@ -1037,10 +1084,15 @@ async fn pin_read_search_download_reject_empty_chat_before_connect() {
     let err = download(
         DownloadArgs {
             chat: crate::chat_target::ChatTarget::new_unchecked("\t".to_string()),
-            id: 1,
+            id: Some(1),
             dir: out.to_string_lossy().into_owned(),
             force: false,
             chunk_size_kb: None,
+            all: false,
+            since: None,
+            until: None,
+            album: false,
+            limit: None,
         },
         &dryrun_flags("msg download", true),
     )
@@ -1767,6 +1819,10 @@ async fn search_dry_run_short_circuits_before_connect() {
             query: "hello".to_string(),
             limit: 10,
             global: false,
+            from: None,
+            kind: None,
+            since: None,
+            until: None,
         },
         &dryrun_flags("msg search", true),
     )
@@ -1788,6 +1844,10 @@ async fn search_global_dry_run_skips_chat_requirement() {
             query: "hello".to_string(),
             limit: 10,
             global: true,
+            from: None,
+            kind: None,
+            since: None,
+            until: None,
         },
         &dryrun_flags("msg search", true),
     )
@@ -1809,6 +1869,10 @@ async fn search_without_dry_run_requires_a_real_session() {
             query: "hello".to_string(),
             limit: 10,
             global: false,
+            from: None,
+            kind: None,
+            since: None,
+            until: None,
         },
         &dryrun_flags("msg search", false),
     )
@@ -1828,10 +1892,15 @@ async fn download_dry_run_short_circuits_before_connect() {
     let code = download(
         DownloadArgs {
             chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
-            id: 1,
+            id: Some(1),
             dir: out.to_string_lossy().to_string(),
             force: false,
             chunk_size_kb: None,
+            all: false,
+            since: None,
+            until: None,
+            album: false,
+            limit: None,
         },
         &dryrun_flags("msg download", true),
     )
@@ -1840,6 +1909,198 @@ async fn download_dry_run_short_circuits_before_connect() {
     std::env::remove_var("TELE_APP_DIR");
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(code, 0);
+}
+
+fn download_args(chat: &str, dir: &std::path::Path) -> DownloadArgs {
+    DownloadArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked(chat.to_string()),
+        id: Some(1),
+        dir: dir.to_string_lossy().into_owned(),
+        force: false,
+        chunk_size_kb: None,
+        all: false,
+        since: None,
+        until: None,
+        album: false,
+        limit: None,
+    }
+}
+
+#[test]
+fn validate_download_all_and_id_are_mutually_exclusive() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.all = true;
+    assert!(
+        matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("mutually exclusive"))
+    );
+    args.id = None;
+    assert!(validate_download(&args).is_ok());
+    args.id = Some(5);
+    args.all = false;
+    assert!(validate_download(&args).is_ok());
+}
+
+#[test]
+fn validate_download_requires_id_or_all() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.id = None;
+    assert!(
+        matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("--id required"))
+    );
+}
+
+#[test]
+fn validate_download_album_requires_id() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.id = None;
+    args.album = true;
+    assert!(
+        matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("--album requires --id"))
+    );
+    args.id = Some(1);
+    assert!(validate_download(&args).is_ok());
+}
+
+#[test]
+fn validate_download_since_requires_all() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.since = Some("2026-01-01".to_string());
+    assert!(
+        matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("--since/--until require --all"))
+    );
+    args.all = true;
+    args.id = None;
+    assert!(validate_download(&args).is_ok());
+}
+
+#[test]
+fn validate_download_rejects_unknown_date_format() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.all = true;
+    args.id = None;
+    args.since = Some("not-a-date".to_string());
+    assert!(matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("--since")));
+    args.since = Some("2026-01-01".to_string());
+    args.until = Some("yesterday".to_string());
+    assert!(matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("--until")));
+}
+
+#[test]
+fn validate_download_rejects_since_after_until() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.all = true;
+    args.id = None;
+    args.since = Some("2026-06-01".to_string());
+    args.until = Some("2026-01-01".to_string());
+    assert!(
+        matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("--since must not be after --until"))
+    );
+}
+
+#[test]
+fn validate_download_accepts_rfc3339_unix_and_date_inputs() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.all = true;
+    args.id = None;
+    args.since = Some("2026-01-01".to_string());
+    args.until = Some("2026-06-01T00:00:00Z".to_string());
+    assert!(validate_download(&args).is_ok());
+    args.since = Some("1767225600".to_string());
+    args.until = Some("1780272000".to_string());
+    assert!(validate_download(&args).is_ok());
+}
+
+#[test]
+fn validate_download_rejects_zero_or_oversized_limit() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.all = true;
+    args.id = None;
+    args.limit = Some(0);
+    assert!(matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("limit")));
+    args.limit = Some(2_000_000);
+    assert!(matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("limit")));
+    args.limit = Some(1000);
+    assert!(validate_download(&args).is_ok());
+}
+
+#[test]
+fn download_dry_run_reflects_bulk_and_album_flags() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.all = true;
+    args.id = None;
+    args.since = Some("2026-01-01".to_string());
+    args.until = Some("2026-06-01".to_string());
+    args.limit = Some(500);
+    let value = download_serve_dry_run(&args).unwrap();
+    assert_eq!(value["all"], serde_json::json!(true));
+    assert_eq!(value["id"], serde_json::Value::Null);
+    assert_eq!(value["since"], serde_json::json!("2026-01-01"));
+    assert_eq!(value["until"], serde_json::json!("2026-06-01"));
+    assert_eq!(value["limit"], serde_json::json!(500));
+    assert!(value["would"]
+        .as_str()
+        .unwrap()
+        .contains("all media messages"));
+    args.all = false;
+    args.id = Some(9);
+    args.album = true;
+    args.since = None;
+    args.until = None;
+    let value = download_serve_dry_run(&args).unwrap();
+    assert_eq!(value["album"], serde_json::json!(true));
+    assert_eq!(value["id"], serde_json::json!(9));
+    assert!(value["would"].as_str().unwrap().contains("album"));
+}
+
+#[test]
+fn bulk_media_name_suffixes_id_before_extension() {
+    assert_eq!(bulk_media_name("photo.jpg", 42), "photo-42.jpg");
+    assert_eq!(bulk_media_name("archive.tar.gz", 7), "archive.tar-7.gz");
+    assert_eq!(bulk_media_name("noext", 3), "noext-3");
+    assert_eq!(bulk_media_name(".hidden", 5), ".hidden-5");
+}
+
+#[tokio::test]
+async fn checkpoint_round_trip_and_missing_file() {
+    let dir = std::env::temp_dir().join(format!("telecli-dl-ckpt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = checkpoint_path(&dir, 12345);
+    assert!(load_checkpoint(&path).await.is_none());
+    save_checkpoint(&path, 12345, 4242).await;
+    assert_eq!(load_checkpoint(&path).await, Some(4242));
+    save_checkpoint(&path, 12345, 777).await;
+    assert_eq!(load_checkpoint(&path).await, Some(777));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn download_checkpoint_path_is_per_chat_and_hidden() {
+    let dir = std::env::temp_dir();
+    let a = checkpoint_path(&dir, 100);
+    let b = checkpoint_path(&dir, 200);
+    assert_ne!(a, b);
+    assert!(a.file_name().unwrap().to_string_lossy().starts_with('.'));
+    assert!(a.to_string_lossy().ends_with(".json"));
+}
+
+#[test]
+fn parse_download_date_accepts_supported_formats() {
+    let date_only = parse_download_date("--since", "2026-01-01").unwrap();
+    assert_eq!(date_only.to_rfc3339(), "2026-01-01T00:00:00+00:00");
+    let unix = parse_download_date("--since", "1767225600").unwrap();
+    assert_eq!(unix.to_rfc3339(), "2026-01-01T00:00:00+00:00");
+    let rfc3339 = parse_download_date("--until", "2026-06-01T12:30:00Z").unwrap();
+    assert_eq!(rfc3339.to_rfc3339(), "2026-06-01T12:30:00+00:00");
+    assert!(parse_download_date("--since", "nope").is_err());
 }
 
 #[test]
@@ -1924,6 +2185,11 @@ fn validate_send_url_requires_kind_and_conflicts_with_text() {
         silent: false,
         noforwards: false,
         background: false,
+        as_media: None,
+        poll: None,
+        option: vec![],
+        poll_mode: None,
+        poll_quiz_option: None,
     };
     assert!(matches!(validate_send(&url_only), Err(TeleError::Usage(_))));
     let with_kind = SendArgs {
@@ -1937,6 +2203,256 @@ fn clone_without_text_for_tests(args: &SendArgs) -> SendArgs {
     let mut c = args.clone();
     c.text = None;
     c
+}
+
+fn poll_args() -> SendArgs {
+    let mut args = clone_without_text_for_tests(&send_args("plain"));
+    args.poll = Some("Best color?".to_string());
+    args.option = vec!["Red".to_string(), "Blue".to_string()];
+    args
+}
+
+#[test]
+fn validate_send_accepts_as_media_with_single_file() {
+    let dir = upload_fixture("as-media-ok", &["voice.ogg"]);
+    for as_media in ["voice", "video-note"] {
+        let mut args = clone_without_text_for_tests(&send_args("plain"));
+        args.files = vec![dir.join("voice.ogg").to_string_lossy().into_owned()];
+        args.as_media = Some(as_media.to_string());
+        assert!(validate_send(&args).is_ok(), "{as_media}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn validate_send_rejects_bad_as_media_value() {
+    let mut args = clone_without_text_for_tests(&send_args("plain"));
+    args.files = vec!["x.mp4".to_string()];
+    args.as_media = Some("sticker".to_string());
+    let err = validate_send(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("voice"));
+}
+
+#[test]
+fn validate_send_rejects_as_media_without_single_file() {
+    let mut no_file = clone_without_text_for_tests(&send_args("plain"));
+    no_file.as_media = Some("voice".to_string());
+    assert!(matches!(validate_send(&no_file), Err(TeleError::Usage(_))));
+    let dir = upload_fixture("as-media-album", &["a.mp4", "b.mp4"]);
+    let mut album = no_file;
+    album.files = vec![
+        dir.join("a.mp4").to_string_lossy().into_owned(),
+        dir.join("b.mp4").to_string_lossy().into_owned(),
+    ];
+    assert!(matches!(validate_send(&album), Err(TeleError::Usage(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn validate_send_accepts_minimal_poll() {
+    let args = poll_args();
+    assert!(validate_send(&args).is_ok());
+    let mut quiz = poll_args();
+    quiz.poll_mode = Some("quiz".to_string());
+    quiz.poll_quiz_option = Some(2);
+    assert!(validate_send(&quiz).is_ok());
+    assert!(validate_send(&poll_args_with_n(10)).is_ok());
+}
+
+fn poll_args_with_n(n: usize) -> SendArgs {
+    let mut args = poll_args();
+    args.option = (0..n).map(|i| format!("opt{i}")).collect();
+    args
+}
+
+#[test]
+fn validate_send_rejects_poll_option_count_bounds() {
+    for n in [0usize, 1, 11] {
+        let mut args = poll_args();
+        args.option = if n == 0 {
+            vec![]
+        } else {
+            poll_args_with_n(n).option
+        };
+        assert!(
+            matches!(validate_send(&args), Err(TeleError::Usage(_))),
+            "option count {n}"
+        );
+    }
+}
+
+#[test]
+fn validate_send_rejects_poll_without_question_or_options() {
+    let mut no_question = poll_args();
+    no_question.poll = Some("   ".to_string());
+    assert!(matches!(
+        validate_send(&no_question),
+        Err(TeleError::Usage(_))
+    ));
+    let mut no_options = poll_args();
+    no_options.option = vec![];
+    assert!(matches!(
+        validate_send(&no_options),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_send_rejects_poll_mode_and_quiz_option_misuse() {
+    let mut bad_mode = poll_args();
+    bad_mode.poll_mode = Some("public".to_string());
+    assert!(matches!(validate_send(&bad_mode), Err(TeleError::Usage(_))));
+
+    let mut quiz_no_mode = poll_args();
+    quiz_no_mode.poll_quiz_option = Some(1);
+    assert!(matches!(
+        validate_send(&quiz_no_mode),
+        Err(TeleError::Usage(_))
+    ));
+
+    let mut out_of_range = poll_args();
+    out_of_range.poll_mode = Some("quiz".to_string());
+    out_of_range.poll_quiz_option = Some(3);
+    assert!(matches!(
+        validate_send(&out_of_range),
+        Err(TeleError::Usage(_))
+    ));
+
+    let mut zero = out_of_range;
+    zero.poll_quiz_option = Some(0);
+    assert!(matches!(validate_send(&zero), Err(TeleError::Usage(_))));
+}
+
+#[test]
+fn validate_send_rejects_poll_conflicts() {
+    let bare_poll = poll_args();
+    assert!(validate_send(&bare_poll).is_ok());
+    for args in [
+        {
+            let mut a = poll_args();
+            a.text = Some("hi".to_string());
+            a
+        },
+        {
+            let mut a = poll_args();
+            a.url = Some("https://example.com/x".to_string());
+            a
+        },
+        {
+            let mut a = poll_args();
+            a.caption = Some("cap".to_string());
+            a
+        },
+        {
+            let mut a = poll_args();
+            a.media_ttl = Some(30);
+            a
+        },
+        {
+            let mut a = poll_args();
+            a.schedule = Some("2099-01-01T00:00:00Z".to_string());
+            a
+        },
+        {
+            let mut a = poll_args();
+            a.noforwards = true;
+            a
+        },
+        {
+            let mut a = poll_args();
+            a.poll_mode = Some("quiz".to_string());
+            a.poll_quiz_option = Some(1);
+            a.reply = Some(5);
+            a
+        },
+    ] {
+        assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    }
+}
+
+#[test]
+fn send_dry_run_payload_reports_poll_and_as_media() {
+    let mut args = poll_args();
+    args.poll_mode = Some("quiz".to_string());
+    args.poll_quiz_option = Some(1);
+    let payload = send_dry_run_payload(&args, None);
+    assert_eq!(payload["poll"], "Best color?");
+    assert_eq!(payload["options"], serde_json::json!(["Red", "Blue"]));
+    assert_eq!(payload["poll_mode"], "quiz");
+    assert_eq!(payload["poll_quiz_option"], 1);
+    assert!(payload["would"]
+        .as_str()
+        .unwrap()
+        .starts_with("create poll"));
+    assert!(payload["text"].is_null());
+
+    let dir = upload_fixture("as-media-payload", &["v.ogg"]);
+    let mut file_args = clone_without_text_for_tests(&send_args("plain"));
+    file_args.files = vec![dir.join("v.ogg").to_string_lossy().into_owned()];
+    file_args.as_media = Some("voice".to_string());
+    let payload = send_dry_run_payload(&file_args, None);
+    assert_eq!(payload["as"], "voice");
+    assert!(payload["would"]
+        .as_str()
+        .unwrap()
+        .starts_with("send message"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn send_params_roundtrip_carries_poll_and_as_media() {
+    let mut args = poll_args();
+    args.poll_mode = Some("quiz".to_string());
+    args.poll_quiz_option = Some(2);
+    args.as_media = Some("video-note".to_string());
+    let params = SendParams::from(&args);
+    let back = SendArgs::from(&params);
+    assert_eq!(back.poll.as_deref(), Some("Best color?"));
+    assert_eq!(back.option, args.option);
+    assert_eq!(back.poll_mode.as_deref(), Some("quiz"));
+    assert_eq!(back.poll_quiz_option, Some(2));
+    assert_eq!(back.as_media.as_deref(), Some("video-note"));
+}
+
+#[test]
+fn send_poll_message_builds_quiz_media() {
+    let msg = send_poll_message(
+        "Best color?",
+        &["Red".to_string(), "Blue".to_string()],
+        Some("quiz"),
+        Some(2),
+    );
+    assert!(msg.is_ok());
+    assert!(send_poll_message("q", &["a".to_string()], Some("quiz"), None).is_err());
+    assert!(send_poll_message(
+        "q",
+        &["a".to_string(), "b".to_string()],
+        Some("public"),
+        None
+    )
+    .is_err());
+    assert!(send_poll_message(
+        "q",
+        &["a".to_string(), "b".to_string()],
+        Some("quiz"),
+        Some(3)
+    )
+    .is_err());
+}
+
+#[test]
+fn parse_as_media_and_poll_mode_helpers() {
+    assert_eq!(parse_as_media(None).unwrap(), None);
+    assert_eq!(parse_as_media(Some("voice")).unwrap(), Some("voice"));
+    assert_eq!(
+        parse_as_media(Some("VIDEO-NOTE")).unwrap(),
+        Some("video-note")
+    );
+    assert!(parse_as_media(Some("photo")).is_err());
+    assert_eq!(parse_poll_mode(None).unwrap(), None);
+    assert_eq!(parse_poll_mode(Some("quiz")).unwrap(), Some("quiz"));
+    assert!(parse_poll_mode(Some("multiple")).is_err());
 }
 
 #[test]
@@ -1994,14 +2510,180 @@ fn edit_dry_run_carries_argument_keys() {
     let args = EditArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked("@x".to_string()),
         id: 5,
-        text: "new text".to_string(),
+        text: Some("new text".to_string()),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
     };
-    let value = edit_dry_run_payload(&args.chat, &args.text, args.id);
+    let value = edit_dry_run_payload(&args);
     assert_eq!(value["dry_run"], serde_json::json!(true));
     assert_eq!(value["id"], serde_json::json!(5));
     assert_eq!(value["chat"], serde_json::json!("@x"));
     assert_eq!(value["text"], serde_json::json!("new text"));
+    assert_eq!(value["file"], serde_json::Value::Null);
+    assert_eq!(value["caption"], serde_json::Value::Null);
+    assert_eq!(value["format"], serde_json::json!("plain"));
+    assert_eq!(value["preview"], serde_json::json!(true));
     assert_eq!(value["would"], serde_json::json!("edit message 5"));
+}
+
+fn edit_args(text: Option<&str>) -> EditArgs {
+    EditArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        id: 5,
+        text: text.map(str::to_string),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
+    }
+}
+
+#[test]
+fn edit_requires_text_or_file() {
+    assert!(matches!(
+        validate_edit(&edit_args(None)),
+        Err(TeleError::Usage(_))
+    ));
+    assert!(validate_edit(&edit_args(Some("hi"))).is_ok());
+}
+
+#[test]
+fn edit_rejects_file_with_text() {
+    let mut args = edit_args(Some("hi"));
+    args.file = Some("photo.jpg".to_string());
+    let err = validate_edit(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("--file"), "{}", err.message());
+}
+
+#[test]
+fn edit_accepts_file_without_text() {
+    let mut args = edit_args(None);
+    args.file = Some("photo.jpg".to_string());
+    assert!(validate_edit(&args).is_ok());
+}
+
+#[test]
+fn edit_accepts_file_with_caption() {
+    let mut args = edit_args(None);
+    args.file = Some("photo.jpg".to_string());
+    args.caption = Some("new caption".to_string());
+    assert!(validate_edit(&args).is_ok());
+}
+
+#[test]
+fn edit_rejects_caption_without_file() {
+    let mut args = edit_args(Some("hi"));
+    args.caption = Some("cap".to_string());
+    let err = validate_edit(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("--caption"), "{}", err.message());
+}
+
+#[test]
+fn edit_rejects_empty_caption() {
+    let mut args = edit_args(None);
+    args.file = Some("photo.jpg".to_string());
+    args.caption = Some("   ".to_string());
+    assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+}
+
+#[test]
+fn edit_rejects_unknown_format() {
+    let mut args = edit_args(Some("hi"));
+    args.format = "html".to_string();
+    let err = validate_edit(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("--format"), "{}", err.message());
+    args.format = "markdown".to_string();
+    assert!(validate_edit(&args).is_ok());
+    args.format = "plain".to_string();
+    assert!(validate_edit(&args).is_ok());
+}
+
+#[test]
+fn edit_validates_markdown_text_and_caption() {
+    let mut args = edit_args(Some("[x](tg://user?id=abc)"));
+    args.format = "markdown".to_string();
+    assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+    args.text = Some("[x](tg://user?id=123)".to_string());
+    assert!(validate_edit(&args).is_ok());
+    args.text = None;
+    args.file = Some("photo.jpg".to_string());
+    args.caption = Some("[x](tg://user?id=abc)".to_string());
+    assert!(matches!(validate_edit(&args), Err(TeleError::Usage(_))));
+    args.caption = Some("plain caption".to_string());
+    assert!(validate_edit(&args).is_ok());
+}
+
+#[test]
+fn edit_dry_run_payload_reports_media_and_preview() {
+    let mut args = edit_args(None);
+    args.file = Some("photo.jpg".to_string());
+    args.caption = Some("new caption".to_string());
+    let value = edit_dry_run_payload(&args);
+    assert_eq!(value["file"], serde_json::json!("photo.jpg"));
+    assert_eq!(value["caption"], serde_json::json!("new caption"));
+    assert!(value["text"].is_null());
+    assert_eq!(value["preview"], serde_json::json!(true));
+    assert!(
+        value["would"].as_str().unwrap().contains("media"),
+        "{value}"
+    );
+    args.no_preview = true;
+    let value = edit_dry_run_payload(&args);
+    assert_eq!(value["preview"], serde_json::json!(false));
+}
+
+#[test]
+fn edit_dry_run_text_payload_disables_preview() {
+    let mut args = edit_args(Some("new text"));
+    args.format = "markdown".to_string();
+    args.no_preview = true;
+    let value = edit_dry_run_payload(&args);
+    assert_eq!(value["text"], serde_json::json!("new text"));
+    assert_eq!(value["format"], serde_json::json!("markdown"));
+    assert_eq!(value["preview"], serde_json::json!(false));
+    assert_eq!(value["would"], serde_json::json!("edit message 5"));
+}
+
+#[test]
+fn edit_params_roundtrip_preserves_new_fields() {
+    let mut args = edit_args(None);
+    args.file = Some("photo.jpg".to_string());
+    args.caption = Some("cap".to_string());
+    args.format = "markdown".to_string();
+    args.no_preview = true;
+    let params = EditParams::from(&args);
+    assert_eq!(params.file.as_deref(), Some("photo.jpg"));
+    assert_eq!(params.caption.as_deref(), Some("cap"));
+    assert_eq!(params.format, "markdown");
+    assert!(params.no_preview);
+    let back = EditArgs::from(&params);
+    assert_eq!(back.file, args.file);
+    assert_eq!(back.caption, args.caption);
+    assert_eq!(back.format, args.format);
+    assert_eq!(back.no_preview, args.no_preview);
+    assert!(validate_edit(&back).is_ok());
+}
+
+#[test]
+fn edit_params_deserialize_with_cli_defaults() {
+    let p: EditParams =
+        serde_json::from_value(serde_json::json!({"chat": "@game", "id": 7})).unwrap();
+    assert_eq!(p.chat, "@game");
+    assert_eq!(p.id, 7);
+    assert!(p.text.is_none());
+    assert!(p.file.is_none());
+    assert!(p.caption.is_none());
+    assert_eq!(p.format, "plain");
+    assert!(!p.no_preview);
+    assert!(!p.dry_run);
+    let args = EditArgs::from(&p);
+    assert_eq!(args.chat.as_str(), "@game");
+    assert_eq!(args.format, "plain");
 }
 
 fn vote_args(option: &str) -> VoteArgs {
@@ -2729,6 +3411,10 @@ fn validate_search_rejects_global_with_chat() {
         query: "q".to_string(),
         limit: 10,
         global: true,
+        from: None,
+        kind: None,
+        since: None,
+        until: None,
     };
     assert!(matches!(validate_search(&bad), Err(TeleError::Usage(msg)) if msg.contains("global")));
     let ok = SearchArgs {
@@ -2736,6 +3422,10 @@ fn validate_search_rejects_global_with_chat() {
         query: "q".to_string(),
         limit: 10,
         global: true,
+        from: None,
+        kind: None,
+        since: None,
+        until: None,
     };
     assert!(validate_search(&ok).is_ok());
 }
@@ -2765,8 +3455,201 @@ fn validate_search_rejects_zero_limit() {
         query: "q".to_string(),
         limit: 0,
         global: false,
+        from: None,
+        kind: None,
+        since: None,
+        until: None,
     };
     assert!(matches!(validate_search(&args), Err(TeleError::Usage(_))));
+}
+
+fn search_args_with_filters(
+    kind: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> SearchArgs {
+    SearchArgs {
+        chat: "me".to_string(),
+        query: "hello".to_string(),
+        limit: 10,
+        global: false,
+        from: None,
+        kind: kind.map(str::to_string),
+        since: since.map(str::to_string),
+        until: until.map(str::to_string),
+    }
+}
+
+#[test]
+fn parse_search_kind_accepts_all_valid_values() {
+    for kind in ["photo", "video", "gif", "document", "url", "audio", "voice"] {
+        assert!(
+            parse_search_kind(Some(kind)).unwrap().is_some(),
+            "{kind} must map to a MessagesFilter"
+        );
+    }
+    assert!(parse_search_kind(None).unwrap().is_none());
+}
+
+#[test]
+fn parse_search_kind_is_case_insensitive() {
+    assert!(parse_search_kind(Some("PHOTO")).unwrap().is_some());
+    assert!(parse_search_kind(Some("Video")).unwrap().is_some());
+    assert!(parse_search_kind(Some("VOICE")).unwrap().is_some());
+}
+
+#[test]
+fn parse_search_kind_rejects_unknown_values() {
+    for bad in ["", "sticker", "image", "music", "round", "photo-video"] {
+        let err = parse_search_kind(Some(bad)).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{bad:?}");
+        assert!(
+            err.message().contains("--kind"),
+            "{bad:?}: {}",
+            err.message()
+        );
+    }
+}
+
+#[test]
+fn validate_search_rejects_bad_kind() {
+    let mut args = search_args_with_filters(Some("sticker"), None, None);
+    let err = validate_search(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("--kind"), "{}", err.message());
+    args.kind = Some("photo".to_string());
+    assert!(validate_search(&args).is_ok());
+    args.kind = None;
+    assert!(validate_search(&args).is_ok());
+}
+
+#[test]
+fn validate_search_accepts_all_date_formats() {
+    let args = search_args_with_filters(None, Some("2026-01-01"), Some("2026-06-01T00:00:00Z"));
+    assert!(validate_search(&args).is_ok());
+    let args = search_args_with_filters(None, Some("1767225600"), Some("1780272000"));
+    assert!(validate_search(&args).is_ok());
+    let args =
+        search_args_with_filters(None, Some("2026-01-01T12:30:00+00:00"), Some("2026-06-01"));
+    assert!(validate_search(&args).is_ok());
+}
+
+#[test]
+fn validate_search_rejects_bad_dates() {
+    let args = search_args_with_filters(None, Some("yesterday"), None);
+    let err = validate_search(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("--since"), "{}", err.message());
+    let args = search_args_with_filters(None, None, Some("not-a-date"));
+    let err = validate_search(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("--until"), "{}", err.message());
+}
+
+#[test]
+fn validate_search_rejects_since_after_until() {
+    let args = search_args_with_filters(None, Some("2026-06-01"), Some("2026-01-01"));
+    let err = validate_search(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(
+        err.message().contains("--since must not be after --until"),
+        "{}",
+        err.message()
+    );
+    let equal = search_args_with_filters(None, Some("2026-01-01"), Some("2026-01-01"));
+    assert!(validate_search(&equal).is_ok());
+}
+
+#[test]
+fn validate_search_rejects_empty_from() {
+    let mut args = search_args_with_filters(None, None, None);
+    args.from = Some("   ".to_string());
+    assert!(matches!(validate_search(&args), Err(TeleError::Usage(_))));
+    args.from = Some("@durov".to_string());
+    assert!(validate_search(&args).is_ok());
+    args.from = Some("me".to_string());
+    assert!(validate_search(&args).is_ok());
+}
+
+#[test]
+fn validate_search_global_accepts_filters() {
+    let args = SearchArgs {
+        chat: String::new(),
+        query: "hello".to_string(),
+        limit: 10,
+        global: true,
+        from: Some("@durov".to_string()),
+        kind: Some("photo".to_string()),
+        since: Some("2026-01-01".to_string()),
+        until: Some("2026-06-01".to_string()),
+    };
+    assert!(validate_search(&args).is_ok());
+    let bad_kind = SearchArgs {
+        kind: Some("sticker".to_string()),
+        ..SearchArgs {
+            chat: String::new(),
+            query: "hello".to_string(),
+            limit: 10,
+            global: true,
+            from: None,
+            kind: None,
+            since: None,
+            until: None,
+        }
+    };
+    assert!(matches!(
+        validate_search(&bad_kind),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn search_params_roundtrip_preserves_filters() {
+    let args = SearchArgs {
+        chat: "me".to_string(),
+        query: "hello".to_string(),
+        limit: 25,
+        global: false,
+        from: Some("@durov".to_string()),
+        kind: Some("video".to_string()),
+        since: Some("2026-01-01".to_string()),
+        until: Some("2026-06-01".to_string()),
+    };
+    let params = SearchParams::from(&args);
+    assert_eq!(params.from.as_deref(), Some("@durov"));
+    assert_eq!(params.kind.as_deref(), Some("video"));
+    assert_eq!(params.since.as_deref(), Some("2026-01-01"));
+    assert_eq!(params.until.as_deref(), Some("2026-06-01"));
+    let back = SearchArgs::from(&params);
+    assert_eq!(back.from, args.from);
+    assert_eq!(back.kind, args.kind);
+    assert_eq!(back.since, args.since);
+    assert_eq!(back.until, args.until);
+    let p: SearchParams =
+        serde_json::from_value(serde_json::json!({"chat": "me", "query": "q"})).unwrap();
+    assert_eq!(p.from, None);
+    assert_eq!(p.kind, None);
+    assert_eq!(p.since, None);
+    assert_eq!(p.until, None);
+}
+
+#[test]
+fn search_dry_run_carries_filters() {
+    let args = SearchArgs {
+        chat: "me".to_string(),
+        query: "hello".to_string(),
+        limit: 10,
+        global: false,
+        from: Some("@durov".to_string()),
+        kind: Some("photo".to_string()),
+        since: Some("2026-01-01".to_string()),
+        until: Some("2026-06-01".to_string()),
+    };
+    let value = search_serve_dry_run(&args).unwrap();
+    assert_eq!(value["from"], serde_json::json!("@durov"));
+    assert_eq!(value["kind"], serde_json::json!("photo"));
+    assert_eq!(value["since"], serde_json::json!("2026-01-01"));
+    assert_eq!(value["until"], serde_json::json!("2026-06-01"));
 }
 
 #[test]
