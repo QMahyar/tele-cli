@@ -1,10 +1,13 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
 use crate::error::{TeleError, TeleResult};
 use crate::output::{log_line, AccountOutcome};
+
+const ACCOUNT_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Clone)]
 pub struct GlobalFlags {
@@ -117,32 +120,48 @@ async fn run_one(
 async fn collect_outcomes(
     handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
 ) -> Vec<AccountOutcome> {
+    collect_outcomes_with_budget(handles, Duration::from_secs(ACCOUNT_TIMEOUT_SECS)).await
+}
+
+async fn collect_outcomes_with_budget(
+    handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
+    budget: Duration,
+) -> Vec<AccountOutcome> {
     let mut outcomes: Vec<AccountOutcome> = Vec::new();
     {
         let _abort_guard = AbortOnDrop(handles);
         for (name, handle) in _abort_guard.0.iter_mut() {
-            let outcome = match handle.await {
-                Ok(Ok(outcome)) => outcome,
-                Ok(Err(e)) => failed_outcome(name.clone(), e),
-                Err(e) if e.is_cancelled() => failed_outcome(
-                    name.clone(),
-                    TeleError::Other("account task cancelled".to_string()),
-                ),
-                Err(e) => {
-                    let msg = match e.try_into_panic() {
-                        Ok(payload) => {
-                            if let Some(s) = payload.downcast_ref::<&str>() {
-                                (*s).to_string()
-                            } else if let Some(s) = payload.downcast_ref::<String>() {
-                                s.clone()
-                            } else {
-                                "account task panicked".to_string()
+            let outcome = match tokio::time::timeout(budget, handle).await {
+                Ok(joined) => match joined {
+                    Ok(Ok(outcome)) => outcome,
+                    Ok(Err(e)) => failed_outcome(name.clone(), e),
+                    Err(e) if e.is_cancelled() => failed_outcome(
+                        name.clone(),
+                        TeleError::Other("account task cancelled".to_string()),
+                    ),
+                    Err(e) => {
+                        let msg = match e.try_into_panic() {
+                            Ok(payload) => {
+                                if let Some(s) = payload.downcast_ref::<&str>() {
+                                    (*s).to_string()
+                                } else if let Some(s) = payload.downcast_ref::<String>() {
+                                    s.clone()
+                                } else {
+                                    "account task panicked".to_string()
+                                }
                             }
-                        }
-                        Err(_) => "account task panicked".to_string(),
-                    };
-                    failed_outcome(name.clone(), TeleError::TaskPanic(msg))
-                }
+                            Err(_) => "account task panicked".to_string(),
+                        };
+                        failed_outcome(name.clone(), TeleError::TaskPanic(msg))
+                    }
+                },
+                Err(_) => failed_outcome(
+                    name.clone(),
+                    TeleError::Timeout(format!(
+                        "account task exceeded {}s deadline",
+                        budget.as_secs()
+                    )),
+                ),
             };
             outcomes.push(outcome);
         }
@@ -884,6 +903,54 @@ mod tests {
         assert!(!outcomes[0].ok);
         assert_eq!(outcomes[1].account, "b");
         assert!(outcomes[1].ok);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hung_account_task_times_out_into_failed_outcome() {
+        let hang = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async {
+                let _ = std::future::pending::<()>().await;
+                unreachable!()
+            })
+            .await
+        });
+        let healthy = tokio::task::spawn(async {
+            run_one("b".to_string(), permit().await, async { ok_data() }).await
+        });
+        let outcomes = collect_outcomes_with_budget(
+            &mut vec![("a".to_string(), hang), ("b".to_string(), healthy)],
+            Duration::from_millis(50),
+        )
+        .await;
+        assert_eq!(outcomes.len(), 2, "healthy sibling still collected");
+        let hung = &outcomes[0];
+        assert_eq!(hung.account, "a");
+        assert!(!hung.ok);
+        let error = hung.error.as_ref().unwrap();
+        assert_eq!(error["type"], "Timeout");
+        assert!(
+            error["message"].as_str().unwrap().contains("deadline"),
+            "err: {error}"
+        );
+        assert_eq!(hung.exit_code, Some(EXIT_ALL_FAILED));
+        assert!(outcomes[1].ok);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_budget_greater_than_task_runs_to_completion() {
+        let handle = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                ok_data()
+            })
+            .await
+        });
+        let outcomes = collect_outcomes_with_budget(
+            &mut vec![("a".to_string(), handle)],
+            Duration::from_secs(300),
+        )
+        .await;
+        assert!(outcomes[0].ok, "task finishing inside budget is ok");
     }
 
     #[tokio::test]

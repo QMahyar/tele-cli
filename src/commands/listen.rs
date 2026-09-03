@@ -75,6 +75,7 @@ const MAX_RECONNECT_BACKOFF: u32 = 30;
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const ALBUM_FLUSH_MILLIS: u64 = 500;
 const MAX_ALBUM_LEN: usize = 20;
+const ALBUM_BUFFER_CAP: usize = 20;
 const OBSERVED_PEER_CAP: usize = 10_000;
 const GAP_TRACKER_CAP: usize = 10_000;
 
@@ -423,54 +424,88 @@ struct PendingAlbum {
     deadline: tokio::time::Instant,
 }
 
+type AlbumKey = (i64, i64);
+type AlbumBuffer = HashMap<AlbumKey, PendingAlbum>;
+
 fn album_ingest(
     account: &str,
-    buf: &mut Option<PendingAlbum>,
+    buf: &mut AlbumBuffer,
     row: serde_json::Value,
     chat_id: i64,
     grouped_id: i64,
     now: tokio::time::Instant,
-) -> Option<serde_json::Value> {
-    let flush = match buf {
-        None => None,
-        Some(pending) if pending.chat_id == chat_id && pending.grouped_id == grouped_id => {
-            if pending.rows.len() >= MAX_ALBUM_LEN {
-                Some(album_complete(account, pending))
-            } else {
-                None
-            }
+) -> Vec<serde_json::Value> {
+    let mut flushed = Vec::new();
+    let key = (chat_id, grouped_id);
+    if let Some(pending) = buf.get_mut(&key) {
+        if pending.rows.len() >= MAX_ALBUM_LEN {
+            flushed.push(album_complete(account, pending));
+            buf.remove(&key);
         }
-        Some(pending) => Some(album_complete(account, pending)),
-    };
-    let deadline = now + std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS);
-    match buf {
-        Some(pending) if pending.chat_id == chat_id && pending.grouped_id == grouped_id => {
-            if flush.is_some() {
-                *buf = Some(PendingAlbum {
-                    chat_id,
-                    grouped_id,
-                    rows: vec![row],
-                    deadline,
-                });
-            } else {
-                pending.rows.push(row);
-                pending.deadline = deadline;
+    } else if buf.len() >= ALBUM_BUFFER_CAP {
+        if let Some(oldest) = buf
+            .values()
+            .min_by_key(|p| (p.deadline, p.chat_id, p.grouped_id))
+            .map(|p| (p.chat_id, p.grouped_id))
+        {
+            if let Some(pending) = buf.remove(&oldest) {
+                flushed.push(album_complete(account, &pending));
             }
-        }
-        _ => {
-            *buf = Some(PendingAlbum {
-                chat_id,
-                grouped_id,
-                rows: vec![row],
-                deadline,
-            });
         }
     }
-    flush
+    let entry = buf.entry(key).or_insert_with(|| PendingAlbum {
+        chat_id,
+        grouped_id,
+        rows: Vec::new(),
+        deadline: now,
+    });
+    entry.rows.push(row);
+    entry.deadline = now + std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS);
+    flushed
 }
 
-fn album_flush(account: &str, buf: &mut Option<PendingAlbum>) -> Option<serde_json::Value> {
-    buf.take().map(|pending| album_complete(account, &pending))
+fn album_flush(account: &str, buf: &mut AlbumBuffer) -> Vec<serde_json::Value> {
+    let mut keys: Vec<AlbumKey> = buf.keys().copied().collect();
+    keys.sort_by_key(|k| (buf[k].deadline, *k));
+    keys.into_iter()
+        .filter_map(|k| buf.remove(&k).map(|p| album_complete(account, &p)))
+        .collect()
+}
+
+fn album_flush_chat(
+    account: &str,
+    buf: &mut AlbumBuffer,
+    chat_id: Option<i64>,
+) -> Vec<serde_json::Value> {
+    let mut keys: Vec<AlbumKey> = buf
+        .keys()
+        .copied()
+        .filter(|k| Some(k.0) == chat_id)
+        .collect();
+    keys.sort_by_key(|k| (buf[k].deadline, *k));
+    keys.into_iter()
+        .filter_map(|k| buf.remove(&k).map(|p| album_complete(account, &p)))
+        .collect()
+}
+
+fn album_sweep(
+    account: &str,
+    buf: &mut AlbumBuffer,
+    now: tokio::time::Instant,
+) -> Vec<serde_json::Value> {
+    let mut due: Vec<AlbumKey> = buf
+        .iter()
+        .filter(|(_, p)| p.deadline <= now)
+        .map(|(k, _)| *k)
+        .collect();
+    due.sort_by_key(|k| (buf[k].deadline, *k));
+    due.into_iter()
+        .filter_map(|k| buf.remove(&k).map(|p| album_complete(account, &p)))
+        .collect()
+}
+
+fn min_album_deadline(buf: &AlbumBuffer) -> Option<tokio::time::Instant> {
+    buf.values().map(|p| p.deadline).min()
 }
 
 fn album_complete(account: &str, pending: &PendingAlbum) -> serde_json::Value {
@@ -623,16 +658,27 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 let mut targets_resolved = false;
                 let mut failures: u32 = 0;
                 let mut dedupe = ListenDedupe::new(LISTEN_DEDUPE_CAP);
+                let rate_limiter = match ClientGuard::account_rate_limiter(
+                    &name,
+                    config_path.as_deref(),
+                ) {
+                    Ok(rl) => rl,
+                    Err(e) => return Err(TeleError::from(e)),
+                };
                 loop {
                     if let Some(d) = deadline {
                         if std::time::Instant::now() >= d {
                             break;
                         }
                     }
-                    let mut guard =
-                        match ClientGuard::connect(&name, creds.api_id, config_path.as_deref())
-                            .await
-                        {
+                    let mut guard = match ClientGuard::connect_with_limiter(
+                        &name,
+                        creds.api_id,
+                        config_path.as_deref(),
+                        std::sync::Arc::clone(&rate_limiter),
+                    )
+                    .await
+                    {
                             Ok(guard) => guard,
                             Err(e) => {
                                 handle_stream_failure(
@@ -709,7 +755,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     failures = on_reconnect_success(failures);
                     let mut gaps = GapTracker::default();
                     let mut observed = ObservedPeers::new();
-                    let mut album: Option<PendingAlbum> = None;
+                    let mut album = AlbumBuffer::new();
                     let gap_on = events.iter().any(|e| e == "Gap");
                     let album_on = events.iter().any(|e| e == "Album");
                     let new_message_on = events.iter().any(|e| e == "NewMessage");
@@ -720,9 +766,10 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     loop {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
-                                if let Some(done) = album_flush(&name, &mut album) {
-                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
-
+                                for done in album_flush(&name, &mut album) {
+                                    if emit_row_or_stop(&name, done).await? {
+                                        return Ok(());
+                                    }
                                 }
                                 break;
                             }
@@ -734,8 +781,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             AlbumDue,
                         }
                         let album_timer = async {
-                            match &album {
-                                Some(pending) => tokio::time::sleep_until(pending.deadline).await,
+                            match min_album_deadline(&album) {
+                                Some(due) => tokio::time::sleep_until(due).await,
                                 None => std::future::pending::<()>().await,
                             }
                         };
@@ -752,9 +799,12 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         };
                         let update = match tick {
                             Tick::AlbumDue => {
-                                if let Some(done) = album_flush(&name, &mut album) {
-                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
-
+                                for done in
+                                    album_sweep(&name, &mut album, tokio::time::Instant::now())
+                                {
+                                    if emit_row_or_stop(&name, done).await? {
+                                        return Ok(());
+                                    }
                                 }
                                 continue;
                             }
@@ -767,9 +817,10 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     );
                                     return Err(crate::error::invocation_error(e));
                                 }
-                                if let Some(done) = album_flush(&name, &mut album) {
-                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
-
+                                for done in album_flush(&name, &mut album) {
+                                    if emit_row_or_stop(&name, done).await? {
+                                        return Ok(());
+                                    }
                                 }
                                 handle_stream_failure(
                                     &name,
@@ -880,7 +931,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 let grouped = if album_on { album_member(&row) } else { None };
                                 match (grouped, chat_id) {
                                     (Some((member_chat, gid)), _) => {
-                                        if let Some(done) = album_ingest(
+                                        for done in album_ingest(
                                             &name,
                                             &mut album,
                                             row,
@@ -888,25 +939,29 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             gid,
                                             tokio::time::Instant::now(),
                                         ) {
-                                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
-
+                                            if emit_row_or_stop(&name, done).await? {
+                                                return Ok(());
+                                            }
                                         }
                                     }
                                     (None, _) => {
                                         if !new_message_on {
                                             continue;
                                         }
-                                        if let Some(done) = album_flush(&name, &mut album) {
-                                                                                        if emit_row_or_stop(&name, done).await? { return Ok(()); }
-
-                                        }
-                                                                                if emit_row_or_stop(&name, event_row(
-                                            "NewMessage",
-                                            &name,
-                                            chat_id,
-                                            None,
-                                            Some(row),
-                                        )).await? { return Ok(()); }
+                                for done in
+                                    album_flush_chat(&name, &mut album, chat_id)
+                                {
+                                    if emit_row_or_stop(&name, done).await? {
+                                        return Ok(());
+                                    }
+                                }
+                                if emit_row_or_stop(&name, event_row(
+                                    "NewMessage",
+                                    &name,
+                                    chat_id,
+                                    None,
+                                    Some(row),
+                                )).await? { return Ok(()); }
 
                                     }
                                 }
@@ -2746,43 +2801,138 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn album_ingest_buffers_members_and_extends_deadline_to_quiescence() {
-        let mut buf = None;
+        let mut buf = AlbumBuffer::new();
         let now = tokio::time::Instant::now();
-        assert!(album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now).is_none());
-        assert!(album_ingest("work", &mut buf, member_row(2, 456, 9001), 456, 9001, now).is_none());
+        assert!(
+            album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now).is_empty()
+        );
+        assert!(
+            album_ingest("work", &mut buf, member_row(2, 456, 9001), 456, 9001, now).is_empty()
+        );
         tokio::time::advance(std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS - 1)).await;
-        let pending = buf.as_ref().expect("album still pending before deadline");
+        let pending = buf
+            .get(&(456, 9001))
+            .expect("album still pending before deadline");
         assert_eq!(pending.rows.len(), 2);
         let deadline = pending.deadline;
         tokio::time::sleep_until(deadline).await;
-        let done = album_flush("work", &mut buf).expect("flush after quiescence");
+        let done = album_flush("work", &mut buf);
+        assert_eq!(done.len(), 1);
+        let done = done.into_iter().next().unwrap();
         assert_eq!(done["event"], "Album");
         assert_eq!(done["messages"].as_array().unwrap().len(), 2);
-        assert!(buf.is_none());
+        assert!(buf.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
-    async fn album_ingest_group_switch_flushes_previous_album() {
-        let mut buf = None;
+    async fn album_ingest_group_switch_keeps_previous_album_pending() {
+        let mut buf = AlbumBuffer::new();
         let now = tokio::time::Instant::now();
         album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now);
         album_ingest("work", &mut buf, member_row(2, 456, 9001), 456, 9001, now);
-        let done = album_ingest("home", &mut buf, member_row(9, 789, 42), 789, 42, now)
-            .expect("previous group flushed on key switch");
-        assert_eq!(done["chat_id"], 456);
-        assert_eq!(done["grouped_id"], serde_json::json!(9001));
-        assert_eq!(done["ids"], serde_json::json!([1, 2]));
-        let pending = buf.as_ref().unwrap();
+        assert!(album_ingest("home", &mut buf, member_row(9, 789, 42), 789, 42, now).is_empty());
+        assert_eq!(buf.len(), 2, "both albums stay pending on key switch");
+        let pending = buf.get(&(456, 9001)).unwrap();
+        assert_eq!((pending.chat_id, pending.grouped_id), (456, 9001));
+        assert_eq!(pending.rows.len(), 2);
+        let pending = buf.get(&(789, 42)).unwrap();
         assert_eq!((pending.chat_id, pending.grouped_id), (789, 42));
         assert_eq!(pending.rows.len(), 1);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn album_flush_timer_fires_after_quiescence_window() {
-        let mut buf = None;
+    async fn album_sweep_flushes_only_due_albums() {
+        let mut buf = AlbumBuffer::new();
         let now = tokio::time::Instant::now();
         album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now);
-        let deadline = buf.as_ref().unwrap().deadline;
+        album_ingest("home", &mut buf, member_row(9, 789, 42), 789, 42, now);
+        tokio::time::advance(std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS)).await;
+        let later = tokio::time::Instant::now();
+        album_ingest("home", &mut buf, member_row(10, 789, 43), 789, 43, later);
+        let swept = album_sweep("work", &mut buf, later);
+        assert_eq!(
+            swept.len(),
+            2,
+            "both expired albums flushed, fresh one kept"
+        );
+        let grouped: Vec<i64> = swept
+            .iter()
+            .map(|r| r["grouped_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            grouped,
+            vec![9001, 42],
+            "flush ordered by deadline, ties by (chat_id, grouped_id)"
+        );
+        assert_eq!(buf.len(), 1);
+        assert!(buf.contains_key(&(789, 43)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn album_sweep_respects_per_entry_deadlines() {
+        let mut buf = AlbumBuffer::new();
+        let now = tokio::time::Instant::now();
+        album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now);
+        tokio::time::advance(std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS - 1)).await;
+        let mid = tokio::time::Instant::now();
+        assert!(
+            album_sweep("work", &mut buf, mid).is_empty(),
+            "nothing due before the deadline"
+        );
+        tokio::time::sleep_until(buf.values().next().unwrap().deadline).await;
+        let swept = album_sweep("work", &mut buf, tokio::time::Instant::now());
+        assert_eq!(swept.len(), 1);
+        assert!(buf.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn album_buffer_cap_evicts_oldest_and_flushes_it() {
+        let mut buf = AlbumBuffer::new();
+        let now = tokio::time::Instant::now();
+        for i in 0..ALBUM_BUFFER_CAP {
+            let gid = (i + 1) as i64;
+            album_ingest(
+                "work",
+                &mut buf,
+                member_row(i as i32, 456, gid),
+                456,
+                gid,
+                now,
+            );
+        }
+        assert_eq!(buf.len(), ALBUM_BUFFER_CAP);
+        album_ingest("work", &mut buf, member_row(99, 789, 42), 789, 42, now);
+        assert_eq!(buf.len(), ALBUM_BUFFER_CAP, "cap maintained via eviction");
+        assert!(
+            !buf.contains_key(&(456, 1)),
+            "oldest album (earliest deadline) was evicted"
+        );
+        assert!(buf.contains_key(&(789, 42)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn album_flush_chat_flushes_only_matching_chat() {
+        let mut buf = AlbumBuffer::new();
+        let now = tokio::time::Instant::now();
+        album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now);
+        album_ingest("work", &mut buf, member_row(2, 789, 42), 789, 42, now);
+        let flushed = album_flush_chat("work", &mut buf, Some(456));
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(flushed[0]["chat_id"], 456);
+        assert_eq!(buf.len(), 1);
+        assert!(buf.contains_key(&(789, 42)));
+        assert!(album_flush_chat("work", &mut buf, Some(111)).is_empty());
+        let flushed = album_flush_chat("work", &mut buf, None);
+        assert!(flushed.is_empty(), "None targets no chat, flushes nothing");
+        assert_eq!(buf.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn album_flush_timer_fires_after_quiescence_window() {
+        let mut buf = AlbumBuffer::new();
+        let now = tokio::time::Instant::now();
+        album_ingest("work", &mut buf, member_row(1, 456, 9001), 456, 9001, now);
+        let deadline = buf.get(&(456, 9001)).unwrap().deadline;
         assert_eq!(
             deadline - now,
             std::time::Duration::from_millis(ALBUM_FLUSH_MILLIS)
@@ -2793,8 +2943,8 @@ mod tests {
 
     #[test]
     fn album_flush_empty_buffer_is_none() {
-        let mut buf = None;
-        assert!(album_flush("work", &mut buf).is_none());
+        let mut buf = AlbumBuffer::new();
+        assert!(album_flush("work", &mut buf).is_empty());
     }
 
     #[test]

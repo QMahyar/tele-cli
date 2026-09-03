@@ -31,6 +31,7 @@ An empty account selection (no `--account`, no `--tag`) is a usage error for mut
 | 3 | All selected accounts failed (Telegram / IO) |
 | 4 | Auth required (not logged in, 2FA needed and not supplied) |
 | 130 | Interrupted (SIGINT) |
+| 0 | Broken stdout pipe (head -cutoff convention) — maps to success |
 
 Telegram errors never produce exit code 1. They produce 3, or 4 when login is required. When every selected account fails, precedence is: auth (4) outranks Telegram/IO (3), which outranks usage (1). Exit 1 means all failures were usage failures.
 
@@ -64,7 +65,7 @@ When `ok` is false, `error` carries this shape:
 }
 ```
 
-`seconds` appears only on flood-wait errors (`FLOOD_WAIT` or `SLOWMODE_WAIT`, RPC 420) and carries the wait length in seconds.
+`seconds` appears on any RPC 420 error that carries a wait value (including `FLOOD_WAIT`, `SLOWMODE_WAIT`, `FLOOD_PREMIUM_WAIT_X`, etc.) and carries the wait length in seconds.
 
 RPC-backed `InvocationError` objects also carry the raw Telegram RPC identity as additive keys:
 
@@ -419,12 +420,14 @@ Error taxonomy on the serve wire:
 | `UsageError` | Command-level validation failed (identical rules and wording to the CLI flags) | — |
 | `AuthError` | Session invalid or logged out; fatal to the connection | — |
 | `InvocationError` | Telegram RPC or transport failure | `code`, `name` (RPC-backed); `seconds` (wait value for RPC 420: `FLOOD_WAIT`, `SLOWMODE_WAIT`, …) |
-| `Timeout` | Op exceeded its lane timeout; message names the op and the limit | — |
+| `Timeout` | Op exceeded its lane timeout; message names the op and the limit | `may_have_executed` (bool; true when the op may have partially executed before the timeout) |
 | `ConfirmRequired` | Destructive op submitted without `"confirm":true` | `would` (the dry-run preview payload) |
 | `NotImplemented` | Unknown op | message lists all supported ops |
 | `VersionMismatch` | hello protocol outside the negotiated range | — |
+| `StreamDown` | Job abandoned because the worker lost its connection (guard dropped); the stream was being rebuilt | — |
+| `QueueFull` | The mutate or read lane queue is full (capacity 64). The caller should retry after existing jobs drain | — |
 
-Rare kinds from the shared error model may also surface additively: `ConfigError`, `TaskPanicError`, `Error`.
+Rare kinds from the shared error model may also surface additively: `ConfigError`, `TaskPanicError`, `Error`. In one-shot `--json` mode, a SIGINT produces `Interrupted` with `message: "interrupted by SIGINT"`.
 
 ### Events
 
@@ -708,7 +711,7 @@ Envelope `type` strings inside `isError:true` text reuse the serve taxonomy:
 Self-correction loop: fix params per `ServeError.param`, add
 `"confirm":true` after `ConfirmRequired`, wait out `seconds` on an
 `InvocationError` with `name: FLOOD_WAIT`, or switch to `"dry_run":true`
-to preview anything first. There are no lane timeouts over MCP; requests run one at a time in arrival order.
+to preview anything first. MCP applies the same lane timeouts as the serve wire (30s simple, 120s paginated/raw, 600s story send, no limit on download). Requests run one at a time in arrival order.
 
 ### Not exposed over MCP
 
