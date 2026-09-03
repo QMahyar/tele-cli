@@ -257,7 +257,7 @@ pub(crate) fn sweep_stale_download_temps(final_path: &std::path::Path) {
         let Ok(age) = now.duration_since(mtime) else {
             continue;
         };
-        if age.as_secs() > 3600 {
+        if age.as_secs() > 86_400 {
             let _ = std::fs::remove_file(entry.path());
         }
     }

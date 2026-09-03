@@ -6,7 +6,9 @@ pub const APP_DIR_NAME: &str = "tele";
 pub(crate) const LEGACY_APP_DIR_NAME: &str = "telecli";
 
 pub fn app_data_dir() -> PathBuf {
-    app_data_dir_from_env(|k| std::env::var(k))
+    app_data_dir_from_env(|k| std::env::var(k)).unwrap_or_else(|e| {
+        panic!("cannot determine app data directory: {e}; set TELE_APP_DIR to choose a location")
+    })
 }
 
 pub fn ensure_app_data_dir() -> std::io::Result<()> {
@@ -26,23 +28,25 @@ fn env_nonempty(
 fn app_data_dir_named(
     name: &str,
     get: &mut impl FnMut(&str) -> Result<String, std::env::VarError>,
-) -> PathBuf {
+) -> Result<PathBuf, String> {
     if cfg!(windows) {
         if let Some(appdata) = env_nonempty(get, "APPDATA") {
-            return PathBuf::from(appdata).join(name);
+            return Ok(PathBuf::from(appdata).join(name));
         }
         if let Some(local) = env_nonempty(get, "LOCALAPPDATA") {
-            return PathBuf::from(local).join(name);
+            return Ok(PathBuf::from(local).join(name));
         }
         if let Some(profile) = env_nonempty(get, "USERPROFILE") {
-            return PathBuf::from(profile).join(".config").join(name);
+            return Ok(PathBuf::from(profile).join(".config").join(name));
         }
     } else if let Some(xdg) = env_nonempty(get, "XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join(name);
+        return Ok(PathBuf::from(xdg).join(name));
     }
     match env_nonempty(get, "HOME") {
-        Some(home) => PathBuf::from(home).join(".config").join(name),
-        None => std::env::temp_dir().join(name),
+        Some(home) => Ok(PathBuf::from(home).join(".config").join(name)),
+        None => Err(
+            "no HOME (or APPDATA/USERPROFILE) environment variable is set; refusing to place private session data in a temporary directory".to_string(),
+        ),
     }
 }
 
@@ -51,11 +55,15 @@ pub fn migrate_app_data_dir() {
     if env_nonempty(&mut get, "TELE_APP_DIR").is_some() {
         return;
     }
-    let new = app_data_dir_named(APP_DIR_NAME, &mut get);
+    let Ok(new) = app_data_dir_named(APP_DIR_NAME, &mut get) else {
+        return;
+    };
     if new.exists() {
         return;
     }
-    let old = app_data_dir_named(LEGACY_APP_DIR_NAME, &mut get);
+    let Ok(old) = app_data_dir_named(LEGACY_APP_DIR_NAME, &mut get) else {
+        return;
+    };
     if !old.exists() {
         return;
     }
@@ -90,9 +98,9 @@ pub(crate) fn migrate_dir_pair_for_tests(old: &std::path::Path, new: &std::path:
 
 fn app_data_dir_from_env(
     mut get: impl FnMut(&str) -> Result<String, std::env::VarError>,
-) -> PathBuf {
+) -> Result<PathBuf, String> {
     if let Some(dir) = env_nonempty(&mut get, "TELE_APP_DIR") {
-        return PathBuf::from(dir);
+        return Ok(PathBuf::from(dir));
     }
     app_data_dir_named(APP_DIR_NAME, &mut get)
 }
@@ -917,7 +925,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("/tmp/custom-appdir")
         );
     }
@@ -929,7 +937,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("/home/tester")
                 .join(".config")
                 .join(APP_DIR_NAME)
@@ -937,11 +945,9 @@ mod tests {
     }
 
     #[test]
-    fn app_data_dir_never_uses_cwd() {
+    fn app_data_dir_errors_without_home_or_temp_fallback() {
         let dir = app_data_dir_from_env(|_k| Err(std::env::VarError::NotPresent));
-        assert_eq!(dir, std::env::temp_dir().join(APP_DIR_NAME));
-        assert!(dir.is_absolute());
-        assert_ne!(dir, std::env::current_dir().unwrap().join(APP_DIR_NAME));
+        assert!(dir.is_err());
     }
 
     #[test]
@@ -952,7 +958,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("/home/tester")
                 .join(".config")
                 .join(APP_DIR_NAME)
@@ -967,7 +973,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("/home/tester")
                 .join(".config")
                 .join(APP_DIR_NAME)
@@ -980,10 +986,7 @@ mod tests {
             "HOME" => Ok(String::new()),
             _ => Err(std::env::VarError::NotPresent),
         };
-        assert_eq!(
-            app_data_dir_from_env(get),
-            std::env::temp_dir().join(APP_DIR_NAME)
-        );
+        assert!(app_data_dir_from_env(get).is_err());
     }
 
     #[test]
@@ -1014,7 +1017,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("/xdg/config").join(APP_DIR_NAME)
         );
     }
@@ -1028,7 +1031,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("C:\\Users\\t\\AppData\\Roaming").join(APP_DIR_NAME)
         );
     }
@@ -1042,7 +1045,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("C:\\Users\\t\\AppData\\Local").join(APP_DIR_NAME)
         );
         let get = |k: &str| match k {
@@ -1050,7 +1053,7 @@ mod tests {
             _ => Err(std::env::VarError::NotPresent),
         };
         assert_eq!(
-            app_data_dir_from_env(get),
+            app_data_dir_from_env(get).unwrap(),
             PathBuf::from("C:\\Users\\t")
                 .join(".config")
                 .join(APP_DIR_NAME)

@@ -2574,7 +2574,7 @@ mod tests {
             ("profile get", true, false, true),
             ("profile photo", false, false, true),
             ("profile set", false, false, true),
-            ("raw", false, false, false),
+            ("raw", false, true, false),
             ("sticker install", false, false, true),
             ("sticker list", true, false, true),
             ("sticker remove", false, true, true),
@@ -2632,6 +2632,7 @@ mod tests {
                 "contact remove",
                 "dialog delete",
                 "msg delete",
+                "raw",
                 "sticker remove",
                 "story delete",
                 "topic delete",
@@ -2712,7 +2713,7 @@ mod tests {
         spot("dialog list", true, false, true, "dialog");
         spot("msg delete", false, true, true, "msg");
         spot("msg send", false, false, false, "msg");
-        spot("raw", false, false, false, "raw");
+        spot("raw", false, true, false, "raw");
         spot("contact remove", false, true, true, "contact");
         spot("topic delete", false, true, true, "topic");
         spot("story delete", false, true, true, "story");

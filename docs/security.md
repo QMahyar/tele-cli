@@ -58,10 +58,10 @@ This model holds when the app directory stays at its default `%APPDATA%` locatio
 
 ## Always
 
-- `.gitignore` covers `.env`, `*.session`, `*.session-journal`, and app-dir copies
+- `.gitignore` covers `.env`, `*.session`, `*.session-journal`, `*.session-wal`, `*.session-shm`, and app-dir copies
 - Session paths follow `{app_dir}/sessions/{safe_name}.session`, where `safe_name` matches `[A-Za-z0-9._-]+`
 - `--config` and `--file` must name real files. The CLI expands no `~` shortcut and rejects directories
-- Uploads refuse anything under the app data dir, plus sensitive basenames: `.env` prefixes, `*.session`, `*.session-journal`, `config.toml` prefixes, private-key names (`id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `.netrc`, `.git-credentials`, and bare `credentials`
+- Uploads refuse anything under the app data dir, plus sensitive basenames: `.env` prefixes, `*.session`, `*.session-journal`, `*.session-wal`, `*.session-shm`, `config.toml` prefixes, private-key names (`id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `.netrc`, `.git-credentials`, and bare `credentials`
 - Upload basenames that Windows would alias are rejected up front: trailing dot or space, colon, and reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`)
 - 2FA passwords are never accepted on argv; read from stdin only, with echo disabled on Windows
 - `--limit` caps at 10000 rows and `--message-limit` at 1000000 messages; larger values fail with a usage error
