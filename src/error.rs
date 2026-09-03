@@ -202,11 +202,42 @@ pub(crate) fn scrub(s: String) -> String {
 
 impl From<anyhow::Error> for TeleError {
     fn from(e: anyhow::Error) -> Self {
-        match e.downcast::<TeleError>() {
-            Ok(typed) => typed,
-            Err(e) => TeleError::Other(scrub(format!("{e:#}"))),
+        bridge(e)
+    }
+}
+
+pub fn bridge(e: anyhow::Error) -> TeleError {
+    if let Some(io) = e.downcast_ref::<std::io::Error>() {
+        match io.kind() {
+            std::io::ErrorKind::BrokenPipe => return TeleError::BrokenPipe,
+            std::io::ErrorKind::PermissionDenied => {
+                return TeleError::Config(scrub(io.to_string()))
+            }
+            _ => {}
         }
     }
+    match e.downcast::<TeleError>() {
+        Ok(typed) => typed,
+        Err(e) => classify_message(&format!("{e:#}")),
+    }
+}
+
+fn classify_message(msg: &str) -> TeleError {
+    const USAGE_MARKERS: [&str; 3] = [
+        "TELE_API_ID must be set",
+        "TELE_API_HASH must be set",
+        "TELE_API_ID must be a positive integer",
+    ];
+    if USAGE_MARKERS.iter().any(|m| msg.contains(m)) {
+        return TeleError::Usage(scrub(msg.to_string()));
+    }
+    let is_config_parse = msg.starts_with("failed to parse ")
+        || msg.contains("failed to read config:")
+        || msg.starts_with("proxy for ");
+    if is_config_parse {
+        return TeleError::Config(scrub(msg.to_string()));
+    }
+    TeleError::Other(scrub(msg.to_string()))
 }
 
 impl From<std::io::Error> for TeleError {
@@ -440,6 +471,61 @@ mod tests {
             .unwrap_err()
             .into();
         assert!(matches!(err, TeleError::Other(_)));
+    }
+
+    #[test]
+    fn anyhow_bridge_maps_missing_env_to_usage() {
+        let err = bridge(anyhow::anyhow!(
+            "TELE_API_ID must be set (see .env.example)"
+        ));
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+
+        let err = bridge(anyhow::anyhow!(
+            "TELE_API_HASH must be set (see .env.example)"
+        ));
+        assert!(matches!(err, TeleError::Usage(_)));
+
+        let err = bridge(anyhow::anyhow!("TELE_API_ID must be a positive integer"));
+        assert!(matches!(err, TeleError::Usage(_)));
+    }
+
+    #[test]
+    fn anyhow_bridge_maps_config_parse_to_config() {
+        let err = bridge(anyhow::anyhow!("failed to parse config.toml: bad key"));
+        assert!(matches!(err, TeleError::Config(_)));
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+
+        let err = bridge(anyhow::anyhow!(
+            "failed to parse C:\\x\\custom.toml: invalid table"
+        ));
+        assert!(matches!(err, TeleError::Config(_)));
+
+        let err = bridge(anyhow::anyhow!(
+            "failed to read config: x.toml is a directory"
+        ));
+        assert!(matches!(err, TeleError::Config(_)));
+
+        let err = bridge(anyhow::anyhow!("proxy for work: host must not be empty"));
+        assert!(matches!(err, TeleError::Config(_)));
+    }
+
+    #[test]
+    fn anyhow_bridge_maps_permission_denied_to_config() {
+        let io = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let err = bridge(io.into());
+        assert!(matches!(err, TeleError::Config(_)));
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+    }
+
+    #[test]
+    fn anyhow_bridge_keeps_typed_tele_error_and_other_fallback() {
+        let err = bridge(anyhow::Error::new(TeleError::Auth("expired".to_string())));
+        assert!(matches!(err, TeleError::Auth(_)));
+
+        let err = bridge(anyhow::anyhow!("stream updates failed: disconnected"));
+        assert!(matches!(err, TeleError::Other(_)));
+        assert_eq!(err.exit_code(), EXIT_ALL_FAILED);
     }
 
     #[test]

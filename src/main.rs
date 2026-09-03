@@ -1,3 +1,4 @@
+mod capped_map;
 mod chat_target;
 mod client;
 mod commands;
@@ -8,6 +9,7 @@ mod executor;
 mod fs_util;
 mod logging;
 mod output;
+mod pagination;
 mod rate_limiter;
 mod serialize;
 mod session;

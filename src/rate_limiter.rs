@@ -1,14 +1,9 @@
+use crate::pagination::needs_page_token;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, Notify};
-
-pub const PAGE_ITEMS: usize = 100;
-
-pub fn needs_page_token(served: usize) -> bool {
-    served > 0 && served.is_multiple_of(PAGE_ITEMS)
-}
 
 pub struct RateLimiter {
     tokens: AtomicU64,
@@ -243,16 +238,6 @@ mod tests {
         }
         assert_eq!(rl_a.available_tokens(), 0);
         assert_eq!(rl_b.available_tokens(), 10);
-    }
-
-    #[test]
-    fn needs_page_token_fires_on_page_boundaries_only() {
-        assert!(!needs_page_token(0));
-        assert!(!needs_page_token(1));
-        assert!(!needs_page_token(99));
-        assert!(needs_page_token(100));
-        assert!(!needs_page_token(101));
-        assert!(needs_page_token(200));
     }
 
     #[tokio::test]

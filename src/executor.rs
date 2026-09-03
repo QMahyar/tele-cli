@@ -281,6 +281,7 @@ pub fn envelope_exit_code(envelope: &crate::output::Envelope) -> i32 {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::error::*;
@@ -985,5 +986,131 @@ mod tests {
             h.await.unwrap().unwrap();
         }
         assert_eq!(max_concurrent.load(Ordering::SeqCst), 1);
+    }
+
+    fn fanout_env(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-executor-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn run_fanout_dispatches_to_handler_and_builds_envelope() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = fanout_env("fanout");
+        std::env::set_var("TELE_APP_DIR", &dir);
+        std::fs::write(
+            dir.join("config.toml"),
+            "[accounts.alpha]\n[accounts.beta]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("sessions").join("alpha.session"), "").unwrap();
+        std::fs::write(dir.join("sessions").join("beta.session"), "").unwrap();
+
+        let called: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let called_for_handler = Arc::clone(&called);
+        let handler = move |name: String| {
+            let called = Arc::clone(&called_for_handler);
+            Box::pin(async move {
+                called
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(name.clone());
+                Ok::<_, TeleError>(serde_json::json!({"result": "ok", "account": name}))
+            })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = TeleResult<serde_json::Value>> + Send>,
+                >
+        };
+        let flags = GlobalFlags {
+            account: vec!["alpha".to_string(), "beta".to_string()],
+            tag: Vec::new(),
+            parallel: Some(2),
+            json: false,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: None,
+            command: "msg send".to_string(),
+        };
+        let envelope = run_fanout(&flags, handler).await.unwrap();
+
+        assert!(envelope.ok);
+        assert_eq!(envelope.command.as_deref(), Some("msg send"));
+        assert!(envelope.dry_run);
+        assert_eq!(envelope.accounts.len(), 2);
+        let names: Vec<&str> = envelope
+            .accounts
+            .iter()
+            .map(|a| a.account.as_str())
+            .collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        for account in &envelope.accounts {
+            assert!(account.ok);
+            assert_eq!(account.error, None);
+            assert_eq!(
+                account.data.as_ref().unwrap()["result"],
+                serde_json::json!("ok")
+            );
+        }
+        let mut handler_names = called
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        handler_names.sort();
+        assert_eq!(
+            handler_names,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "handler must receive each selected account name"
+        );
+
+        let wire = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(wire["ok"], serde_json::json!(true));
+        assert_eq!(wire["command"], serde_json::json!("msg send"));
+        assert_eq!(wire["dry_run"], serde_json::json!(true));
+        assert!(wire["results"].is_array(), "wire shape uses results array");
+        assert_eq!(wire["results"].as_array().unwrap().len(), 2);
+
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn run_fanout_without_any_account_yields_usage_error() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = fanout_env("fanout-empty");
+        std::env::set_var("TELE_APP_DIR", &dir);
+        std::fs::write(dir.join("config.toml"), "").unwrap();
+        let flags = GlobalFlags {
+            account: Vec::new(),
+            tag: Vec::new(),
+            parallel: None,
+            json: false,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: None,
+            command: "msg send".to_string(),
+        };
+        let err = run_fanout(&flags, |_| {
+            Box::pin(async { Ok(serde_json::json!({})) })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = TeleResult<serde_json::Value>> + Send>,
+                >
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

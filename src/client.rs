@@ -67,19 +67,9 @@ impl ClientGuard {
         let flood_threshold = acct
             .and_then(|a| a.flood_sleep_threshold)
             .unwrap_or(cfg.flood_sleep_threshold);
-        let proxy = crate::config::proxy_url_for(&cfg, name)?;
-        let identity = crate::config::account_identity(&cfg, name);
         let locked = crate::session::open_session(name).await?;
         let session = Arc::new(locked.session);
-        let defaults = grammers_client::sender::ConnectionParams::default();
-        let params = grammers_client::sender::ConnectionParams {
-            proxy_url: proxy,
-            device_model: identity.device_model.unwrap_or(defaults.device_model),
-            system_version: identity.system_version.unwrap_or(defaults.system_version),
-            app_version: identity.app_version.unwrap_or(defaults.app_version),
-            lang_code: identity.lang_code.unwrap_or(defaults.lang_code),
-            ..defaults
-        };
+        let params = connection_params_for(&cfg, name)?;
         let pool = SenderPool::with_configuration(Arc::clone(&session), api_id, params);
         let SenderPool {
             runner,
@@ -125,6 +115,22 @@ impl Drop for ClientGuard {
             runner.abort();
         }
     }
+}
+
+fn connection_params_for(
+    cfg: &crate::config::AppConfig,
+    name: &str,
+) -> anyhow::Result<grammers_client::sender::ConnectionParams> {
+    let defaults = grammers_client::sender::ConnectionParams::default();
+    let identity = crate::config::account_identity(cfg, name);
+    Ok(grammers_client::sender::ConnectionParams {
+        proxy_url: crate::config::proxy_url_for(cfg, name)?,
+        device_model: identity.device_model.unwrap_or(defaults.device_model),
+        system_version: identity.system_version.unwrap_or(defaults.system_version),
+        app_version: identity.app_version.unwrap_or(defaults.app_version),
+        lang_code: identity.lang_code.unwrap_or(defaults.lang_code),
+        ..defaults
+    })
 }
 
 pub async fn authorize(client: &Client) -> TeleResult<()> {
@@ -248,5 +254,84 @@ mod tests {
     fn base64_url_encode_is_padless_url_safe() {
         assert_eq!(base64_url_encode(b"\xfb\xff"), "-_8");
         assert_eq!(base64_url_encode(b"f"), "Zg");
+    }
+
+    #[test]
+    fn base64_url_encode_round_trips_token_bytes_without_reserved_chars() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        for len in [0usize, 1, 2, 3, 16, 32] {
+            let bytes: Vec<u8> = (0..len).map(|i| (i * 37 + 200) as u8).collect();
+            let encoded = base64_url_encode(&bytes);
+            assert!(
+                !encoded.contains(['+', '/', '=']),
+                "url-unsafe char in {encoded}"
+            );
+            assert_eq!(
+                URL_SAFE_NO_PAD.decode(&encoded).unwrap(),
+                bytes,
+                "round trip failed for len {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn connection_params_apply_account_identity_and_socks5_proxy() {
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.accounts.insert(
+            "work".to_string(),
+            crate::config::AccountConfig {
+                device_model: Some("Tele-CLI".to_string()),
+                system_version: Some("Windows 11".to_string()),
+                app_version: Some("9.9".to_string()),
+                lang_code: Some("en".to_string()),
+                proxy: Some(crate::config::ProxyConfig {
+                    r#type: "socks5".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 9050,
+                }),
+                ..Default::default()
+            },
+        );
+        let params = connection_params_for(&cfg, "work").unwrap();
+        assert_eq!(params.device_model, "Tele-CLI");
+        assert_eq!(params.system_version, "Windows 11");
+        assert_eq!(params.app_version, "9.9");
+        assert_eq!(params.lang_code, "en");
+        assert_eq!(params.proxy_url.as_deref(), Some("socks5://127.0.0.1:9050"));
+        assert!(!params.use_ipv6);
+    }
+
+    #[test]
+    fn connection_params_for_unconfigured_account_use_defaults() {
+        let cfg = crate::config::AppConfig::default();
+        let defaults = grammers_client::sender::ConnectionParams::default();
+        let params = connection_params_for(&cfg, "ghost").unwrap();
+        assert_eq!(params.device_model, defaults.device_model);
+        assert_eq!(params.system_version, defaults.system_version);
+        assert_eq!(params.app_version, defaults.app_version);
+        assert_eq!(params.lang_code, defaults.lang_code);
+        assert_eq!(params.proxy_url, None);
+    }
+
+    #[test]
+    fn connection_params_reject_unsupported_proxy_type() {
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.accounts.insert(
+            "work".to_string(),
+            crate::config::AccountConfig {
+                proxy: Some(crate::config::ProxyConfig {
+                    r#type: "http".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 8080,
+                }),
+                ..Default::default()
+            },
+        );
+        let err = match connection_params_for(&cfg, "work") {
+            Ok(_) => panic!("unsupported proxy type must be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("socks5"), "err: {err}");
     }
 }
