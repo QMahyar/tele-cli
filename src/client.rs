@@ -38,17 +38,35 @@ impl ClientGuard {
 }
 
 impl ClientGuard {
+    pub fn account_rate_limiter(
+        name: &str,
+        config_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<Arc<RateLimiter>> {
+        let cfg = crate::config::load_config(config_path)?;
+        let acct = cfg.accounts.get(name);
+        Ok(RateLimiter::new(acct.and_then(|a| a.rpc_per_minute)))
+    }
+
     pub async fn connect(
         name: &str,
         api_id: i32,
         config_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        let rate_limiter = Self::account_rate_limiter(name, config_path)?;
+        Self::connect_with_limiter(name, api_id, config_path, rate_limiter).await
+    }
+
+    pub async fn connect_with_limiter(
+        name: &str,
+        api_id: i32,
+        config_path: Option<&std::path::Path>,
+        rate_limiter: Arc<RateLimiter>,
     ) -> anyhow::Result<Self> {
         let cfg = crate::config::load_config(config_path)?;
         let acct = cfg.accounts.get(name);
         let flood_threshold = acct
             .and_then(|a| a.flood_sleep_threshold)
             .unwrap_or(cfg.flood_sleep_threshold);
-        let rate_limiter = RateLimiter::new(acct.and_then(|a| a.rpc_per_minute));
         let proxy = crate::config::proxy_url_for(&cfg, name)?;
         let identity = crate::config::account_identity(&cfg, name);
         let locked = crate::session::open_session(name).await?;

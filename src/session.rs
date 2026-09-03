@@ -313,23 +313,37 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
             ));
         }
     }
-    let mut f = crate::fs_util::create_file_private(&dest)
-        .map_err(|e| anyhow::anyhow!("failed to create export file {}: {e}", dest.display()))?;
-    let mut src = std::fs::File::open(&source)?;
-    let size = std::io::copy(&mut src, &mut f).map_err(|e| {
-        let _ = std::fs::remove_file(&dest);
-        anyhow::anyhow!("failed to copy session to {}: {e}", dest.display())
-    })?;
-    f.sync_all().ok();
-    crate::fs_util::restrict_file_private(&dest)
-        .map_err(|e| anyhow::anyhow!("failed to restrict export file {}: {e}", dest.display()))?;
-    let sha = {
-        let bytes = std::fs::read(&dest)?;
-        sha256_hex(&bytes)
-    };
+    let dest_for_task = dest.clone();
+    let (size, sha) = tokio::task::spawn_blocking(move || -> anyhow::Result<(u64, String)> {
+        let mut f = crate::fs_util::create_file_private(&dest_for_task).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to create export file {}: {e}",
+                dest_for_task.display()
+            )
+        })?;
+        let mut src = std::fs::File::open(&source)?;
+        let size = std::io::copy(&mut src, &mut f).map_err(|e| {
+            let _ = std::fs::remove_file(&dest_for_task);
+            anyhow::anyhow!("failed to copy session to {}: {e}", dest_for_task.display())
+        })?;
+        f.sync_all().ok();
+        crate::fs_util::restrict_file_private(&dest_for_task).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to restrict export file {}: {e}",
+                dest_for_task.display()
+            )
+        })?;
+        let sha = {
+            let bytes = std::fs::read(&dest_for_task)?;
+            sha256_hex(&bytes)
+        };
+        Ok((size, sha))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("session export task failed: {e}"))??;
     Ok(ExportedSession {
         account: name.to_string(),
-        path: dest.clone(),
+        path: dest,
         bytes: size,
         sha256: sha,
     })

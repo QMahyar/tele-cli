@@ -32,6 +32,7 @@ const MUTATE_QUEUE_CAPACITY: usize = 64;
 const READ_QUEUE_CAPACITY: usize = 64;
 const READ_POOL_SIZE: usize = 2;
 const RESPONSE_CAPACITY: usize = 64;
+const SERVE_OUTPUT_CAPACITY: usize = 256;
 const SERVE_MAX_ACCOUNTS: usize = 32;
 const ACCOUNT_TICK_CAPACITY: usize = 256;
 
@@ -259,6 +260,19 @@ pub(crate) fn undelivered_envelope(id: u64, op: &str) -> serde_json::Value {
         err_json(
             "StreamDown",
             format!("op {op} abandoned: stream down before response"),
+        ),
+    )
+}
+
+fn queue_full_envelope(id: u64, op: &str, lane: Lane) -> serde_json::Value {
+    response_err(
+        Some(id),
+        err_json(
+            "QueueFull",
+            format!(
+                "op {op} rejected: {} lane queue is full; slow down or retry with backoff",
+                lane_name(lane)
+            ),
         ),
     )
 }
@@ -581,16 +595,39 @@ fn identity_json(me: &grammers_client::peer::User) -> serde_json::Value {
     })
 }
 
-async fn emit(value: &serde_json::Value) -> TeleResult<()> {
-    let line = serde_json::to_string(value)?;
-    tokio::task::spawn_blocking(move || {
-        let mut out = std::io::stdout().lock();
-        writeln!(out, "{line}")?;
-        out.flush()
-    })
-    .await
-    .map_err(|e| TeleError::TaskPanic(e.to_string()))??;
-    Ok(())
+type JsonlAck = tokio::sync::oneshot::Sender<TeleResult<()>>;
+
+struct JsonlWriter {
+    tx: tokio::sync::mpsc::Sender<(String, JsonlAck)>,
+}
+
+impl JsonlWriter {
+    async fn emit(&self, value: &serde_json::Value) -> TeleResult<()> {
+        let line = serde_json::to_string(value)?;
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send((line, ack_tx))
+            .await
+            .map_err(|_| TeleError::BrokenPipe)?;
+        ack_rx.await.map_err(|_| TeleError::BrokenPipe)?
+    }
+}
+
+fn spawn_jsonl_writer() -> JsonlWriter {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, JsonlAck)>(SERVE_OUTPUT_CAPACITY);
+    let _handle = std::thread::Builder::new()
+        .name("serve-jsonl-writer".to_string())
+        .spawn(move || {
+            let mut out = std::io::stdout().lock();
+            while let Some((line, ack)) = rx.blocking_recv() {
+                let result = writeln!(out, "{line}")
+                    .and_then(|()| out.flush())
+                    .map_err(TeleError::from);
+                let _ = ack.send(result);
+            }
+        })
+        .expect("spawn serve jsonl writer thread");
+    JsonlWriter { tx }
 }
 
 #[macro_export]
@@ -817,6 +854,47 @@ pub(crate) fn apply_confirm_gate(
     Ok(())
 }
 
+enum LaneSend {
+    Queued,
+    QueueFull(Job),
+    Closed,
+}
+
+fn try_send_to_lane(
+    job: Job,
+    lane: Lane,
+    mutations: &tokio::sync::mpsc::Sender<Job>,
+    reads: &[tokio::sync::mpsc::Sender<Job>],
+    read_counter: &std::sync::atomic::AtomicUsize,
+) -> LaneSend {
+    match lane {
+        Lane::Mutate => match mutations.try_send(job) {
+            Ok(()) => LaneSend::Queued,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(job)) => LaneSend::QueueFull(job),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => LaneSend::Closed,
+        },
+        Lane::Read => {
+            if reads.is_empty() {
+                return LaneSend::Closed;
+            }
+            let idx = read_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                % reads.len().max(1);
+            match reads[idx].try_send(job) {
+                Ok(()) => LaneSend::Queued,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(job)) => LaneSend::QueueFull(job),
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => LaneSend::Closed,
+            }
+        }
+    }
+}
+
+fn lane_name(lane: Lane) -> &'static str {
+    match lane {
+        Lane::Mutate => "mutate",
+        Lane::Read => "read",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_action(
     pool: &ServePool,
@@ -913,20 +991,20 @@ async fn dispatch_action(
                     completed: false,
                 },
             };
-            let send_res = match route.lane {
-                Lane::Mutate => mutations.send(job).await,
-                Lane::Read => {
-                    let idx = read_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        % reads.len().max(1);
-                    if reads.is_empty() {
-                        Err(tokio::sync::mpsc::error::SendError(job))
-                    } else {
-                        reads[idx].send(job).await
-                    }
+            let send_result = try_send_to_lane(job, route.lane, mutations, reads, read_counter);
+            match send_result {
+                LaneSend::Queued => {}
+                LaneSend::QueueFull(mut job) => {
+                    let id = job.guard.id;
+                    let op = job.guard.op;
+                    let lane = route.lane;
+                    job.guard.completed = true;
+                    drop(job);
+                    let _ = responses.try_send(queue_full_envelope(id, op, lane));
                 }
-            };
-            if send_res.is_err() {
-                output::log_line("warn", "serve: op queue closed before dispatch");
+                LaneSend::Closed => {
+                    output::log_line("warn", "serve: op queue closed before dispatch");
+                }
             }
             Ok(())
         }
@@ -936,24 +1014,44 @@ const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn drain_and_flush(
     workers: &mut Vec<tokio::task::JoinHandle<()>>,
+    writer: &JsonlWriter,
     response_rx: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
 ) -> TeleResult<()> {
     let deadline = tokio::time::sleep(DRAIN_BUDGET);
     tokio::pin!(deadline);
-    for mut worker in workers.drain(..) {
+    let mut aborted = false;
+    loop {
         tokio::select! {
-            _ = &mut worker => {}
-            _ = &mut deadline => worker.abort(),
+            biased;
+            maybe = response_rx.recv() => match maybe {
+                Some(value) => match writer.emit(&value).await {
+                    Ok(()) => {}
+                    Err(e) if e.is_broken_pipe() => {
+                        for worker in workers.drain(..) {
+                            worker.abort();
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        for worker in workers.drain(..) {
+                            worker.abort();
+                        }
+                        return Err(e);
+                    }
+                },
+                None => {
+                    workers.clear();
+                    return Ok(());
+                }
+            },
+            _ = &mut deadline, if !aborted && !workers.is_empty() => {
+                for worker in workers.drain(..) {
+                    worker.abort();
+                }
+                aborted = true;
+            }
         }
     }
-    while let Some(value) = response_rx.recv().await {
-        match emit(&value).await {
-            Ok(()) => {}
-            Err(e) if e.is_broken_pipe() => return Ok(()),
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
 }
 
 fn event_kind_allowed(update: &Update, kinds: &[String]) -> Option<&'static str> {
@@ -1008,6 +1106,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 
     let config_path = flags.config_path.clone();
     let creds = crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
+    let writer = spawn_jsonl_writer();
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(SERVE_INTAKE_CAPACITY);
     tokio::spawn(async move {
@@ -1150,7 +1249,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 drop(read_senders);
                 drop(main_response_tx);
                 let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
-                drain_and_flush(&mut workers, &mut response_rx).await?;
+                drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
                 return Ok(EXIT_OK);
             }
             Tick::Line(line) => match parse_incoming(&line) {
@@ -1182,7 +1281,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     }
                 }
             },
-            Tick::Response(value) => match emit(&value).await {
+            Tick::Response(value) => match writer.emit(&value).await {
                 Ok(()) => {}
                 Err(e) if e.is_broken_pipe() => {
                     drop(dispatch_tx);
@@ -1190,7 +1289,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     drop(read_senders);
                     drop(main_response_tx);
                     let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
-                    drain_and_flush(&mut workers, &mut response_rx).await?;
+                    drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
                     return Ok(EXIT_OK);
                 }
                 Err(e) => {
@@ -1199,7 +1298,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     drop(read_senders);
                     drop(main_response_tx);
                     let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
-                    drain_and_flush(&mut workers, &mut response_rx).await?;
+                    drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
                     return Err(e);
                 }
             },
@@ -1222,11 +1321,12 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 if identities.len() < pool.served().len() {
                     continue;
                 }
-                match emit(&hello_out_accounts(
-                    &hello_entries(&identities),
-                    last_seq_of(&seq),
-                ))
-                .await
+                match writer
+                    .emit(&hello_out_accounts(
+                        &hello_entries(&identities),
+                        last_seq_of(&seq),
+                    ))
+                    .await
                 {
                     Ok(()) => greeted = true,
                     Err(e) if e.is_broken_pipe() => {
@@ -1235,7 +1335,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         drop(read_senders);
                         drop(main_response_tx);
                         let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
-                        drain_and_flush(&mut workers, &mut response_rx).await?;
+                        drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
                         return Ok(EXIT_OK);
                     }
                     Err(e) => return Err(e),
@@ -1248,7 +1348,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 output::log_line("info", &format!("serve: account {name} reconnected"));
                 let mut row = event_row("Reconnected", &name, None, None, None);
                 apply_seq(&mut row, &mut seq);
-                match emit(&row).await {
+                match writer.emit(&row).await {
                     Ok(()) => {}
                     Err(e) if e.is_broken_pipe() => {
                         drop(dispatch_tx);
@@ -1256,7 +1356,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         drop(read_senders);
                         drop(main_response_tx);
                         let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
-                        drain_and_flush(&mut workers, &mut response_rx).await?;
+                        drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
                         return Ok(EXIT_OK);
                     }
                     Err(e) => return Err(e),
@@ -1264,14 +1364,14 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             Tick::Account(AccountTick::Event { mut ev }) => {
                 apply_seq(&mut ev, &mut seq);
-                if let Err(e) = emit(&ev).await {
+                if let Err(e) = writer.emit(&ev).await {
                     if e.is_broken_pipe() {
                         drop(dispatch_tx);
                         drop(mutations);
                         drop(read_senders);
                         drop(main_response_tx);
                         let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
-                        drain_and_flush(&mut workers, &mut response_rx).await?;
+                        drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
                         return Ok(EXIT_OK);
                     }
                     output::log_line("warn", &format!("serve: emit failed: {}", e.message()));
@@ -1299,11 +1399,29 @@ async fn account_task(
     let mut failures: u32 = 0;
     let mut greeted = false;
     let mut dedupe = ServeDedupe::new(SERVE_DEDUPE_CAP);
+    let mut resync_requested = false;
+    let rate_limiter =
+        match crate::client::ClientGuard::account_rate_limiter(&name, config_path.as_deref()) {
+            Ok(rl) => rl,
+            Err(e) => {
+                let _ = ticks
+                    .send(AccountTick::Fatal {
+                        err: TeleError::from(e),
+                    })
+                    .await;
+                return;
+            }
+        };
     loop {
         pool.unpublish(&name);
         let mut guard = loop {
-            match crate::client::ClientGuard::connect(&name, creds.api_id, config_path.as_deref())
-                .await
+            match crate::client::ClientGuard::connect_with_limiter(
+                &name,
+                creds.api_id,
+                config_path.as_deref(),
+                std::sync::Arc::clone(&rate_limiter),
+            )
+            .await
             {
                 Ok(guard) => break guard,
                 Err(e) => {
@@ -1389,7 +1507,7 @@ async fn account_task(
                 return;
             }
         };
-        catch_up = initial_catch_up;
+        catch_up = std::mem::take(&mut resync_requested) || initial_catch_up;
         let shares = guard.shares();
         pool.publish(&name, shares);
         if greeted {
@@ -1425,7 +1543,10 @@ async fn account_task(
                 _ = resync_rx.recv() => Tick::Resync,
             };
             match tick {
-                Tick::Resync => break,
+                Tick::Resync => {
+                    resync_requested = true;
+                    break;
+                }
                 Tick::StreamError(e) => {
                     if let Err(fatal) = handle_stream_failure(
                         &name,
