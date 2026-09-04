@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `msg send --schedule`: relative durations (`90s`, `30m`, `24h`, `7d`, `2w`, and `+`-prefixed variants) are now accepted, matching `chat invite --expire`; negative durations are rejected.
 - `dialog folder-create`: new `--include-chat` / `--pin-chat` / `--exclude-chat` flags; rule-only folders with no peers are rejected offline with a clear error instead of the server's obscure `MESSAGE_TOO_LONG`.
 - RPC errors `PREMIUM_ACCOUNT_REQUIRED` and `MESSAGE_TOO_LONG` now carry a short plain-language hint appended to the message; `code` and `name` are unchanged.
+- `dialog folder-create`: titles over 12 characters are rejected offline naming the Telegram cap, instead of the server's misleading `MESSAGE_TOO_LONG`.
 
 ## [0.11.0] - 2026-09-04
 

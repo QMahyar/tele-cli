@@ -1808,8 +1808,17 @@ fn validate_folders(a: &FoldersArgs) -> TeleResult<()> {
 }
 
 fn validate_folder_create(a: &FolderCreateArgs) -> TeleResult<()> {
-    if a.title.trim().is_empty() {
+    let title = a.title.trim();
+    if title.is_empty() {
         return Err(TeleError::Usage("--title must not be empty".to_string()));
+    }
+    // Telegram caps folder titles at 12 characters and rejects longer values
+    // with the misleading MESSAGE_TOO_LONG.
+    let chars = title.chars().count();
+    if chars > 12 {
+        return Err(TeleError::Usage(format!(
+            "--title is {chars} characters; Telegram caps folder titles at 12"
+        )));
     }
     if a.include_chat.is_empty() && a.exclude_chat.is_empty() && a.pin_chat.is_empty() {
         // Rule-only folders need at least one rule flag; the server rejects
@@ -2837,5 +2846,32 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_create_title_over_12_chars_is_usage_error() {
+        let args = FolderCreateArgs {
+            title: "tele-live-0111".to_string(),
+            contacts: false,
+            non_contacts: false,
+            groups: true,
+            broadcasts: false,
+            bots: false,
+            exclude_muted: false,
+            exclude_read: false,
+            exclude_archived: false,
+            emoticon: None,
+            include_chat: vec!["me".to_string()],
+            exclude_chat: vec![],
+            pin_chat: vec![],
+        };
+        let err = validate_folder_create(&args).unwrap_err();
+        assert!(err.message().contains("12"), "err: {err}");
+
+        let ok = FolderCreateArgs {
+            title: "livetest".to_string(),
+            ..args
+        };
+        assert!(validate_folder_create(&ok).is_ok());
     }
 }
