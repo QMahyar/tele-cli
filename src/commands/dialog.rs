@@ -108,6 +108,24 @@ pub struct FolderCreateArgs {
     exclude_archived: bool,
     #[arg(long, help = "custom emoji for folder icon")]
     emoticon: Option<String>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "chat(s) to always include: @username, t.me link, numeric ID, or me; Telegram rejects rule-only folders with MESSAGE_TOO_LONG — pass at least one chat (e.g. --include-chat me)"
+    )]
+    include_chat: Vec<String>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "chat(s) to always exclude: @username, t.me link, numeric ID, or me"
+    )]
+    exclude_chat: Vec<String>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "chat(s) pinned at the top of the folder: same syntax as --include-chat"
+    )]
+    pin_chat: Vec<String>,
 }
 
 #[derive(Args, Clone)]
@@ -1068,6 +1086,32 @@ pub(crate) async fn dialog_folder_create_core(
     params: FolderCreateParams,
 ) -> TeleResult<serde_json::Value> {
     shares.rate_limiter.acquire().await;
+    let mut resolved_pins = Vec::new();
+    for target in params.pin_chat.iter().chain(params.include_chat.iter()) {
+        let chat = entities::resolve_peer(&shares.client, shares.session.as_ref(), target).await?;
+        resolved_pins.push(entities::input_peer(&chat).await.map_err(tele_invocation)?);
+    }
+    let mut resolved_excludes = Vec::new();
+    for target in &params.exclude_chat {
+        let chat = entities::resolve_peer(&shares.client, shares.session.as_ref(), target).await?;
+        resolved_excludes.push(entities::input_peer(&chat).await.map_err(tele_invocation)?);
+    }
+    let pin_count = params.pin_chat.len();
+    let pinned_peers: Vec<_> = resolved_pins.iter().take(pin_count).cloned().collect();
+    let include_peers: Vec<_> = resolved_pins.iter().skip(pin_count).cloned().collect();
+    if pinned_peers.is_empty()
+        && include_peers.is_empty()
+        && resolved_excludes.is_empty()
+        && !params.contacts
+        && !params.non_contacts
+        && !params.groups
+        && !params.broadcasts
+        && !params.bots
+    {
+        return Err(TeleError::Usage(
+            "folder-create needs at least one rule flag (--groups, --contacts, …) or at least one chat via --include-chat/--pin-chat/--exclude-chat; rule-only folders with no peers are rejected by the server".to_string(),
+        ));
+    }
     let filters: tl::enums::messages::DialogFilters = shares
         .client
         .invoke(&tl::functions::messages::GetDialogFilters {})
@@ -1098,9 +1142,9 @@ pub(crate) async fn dialog_folder_create_core(
         }),
         emoticon: params.emoticon.clone(),
         color: None,
-        pinned_peers: vec![],
-        include_peers: vec![],
-        exclude_peers: vec![],
+        pinned_peers,
+        include_peers,
+        exclude_peers: resolved_excludes,
     });
     let _: bool = shares
         .client
@@ -1262,6 +1306,12 @@ pub(crate) struct FolderCreateParams {
     pub(crate) exclude_archived: bool,
     pub(crate) emoticon: Option<String>,
     #[serde(default)]
+    pub(crate) include_chat: Vec<String>,
+    #[serde(default)]
+    pub(crate) exclude_chat: Vec<String>,
+    #[serde(default)]
+    pub(crate) pin_chat: Vec<String>,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -1278,6 +1328,9 @@ impl From<&FolderCreateArgs> for FolderCreateParams {
             exclude_read: a.exclude_read,
             exclude_archived: a.exclude_archived,
             emoticon: a.emoticon.clone(),
+            include_chat: a.include_chat.clone(),
+            exclude_chat: a.exclude_chat.clone(),
+            pin_chat: a.pin_chat.clone(),
             dry_run: false,
         }
     }
@@ -1296,6 +1349,9 @@ impl From<&FolderCreateParams> for FolderCreateArgs {
             exclude_read: p.exclude_read,
             exclude_archived: p.exclude_archived,
             emoticon: p.emoticon.clone(),
+            include_chat: p.include_chat.clone(),
+            exclude_chat: p.exclude_chat.clone(),
+            pin_chat: p.pin_chat.clone(),
         }
     }
 }
@@ -1754,6 +1810,15 @@ fn validate_folders(a: &FoldersArgs) -> TeleResult<()> {
 fn validate_folder_create(a: &FolderCreateArgs) -> TeleResult<()> {
     if a.title.trim().is_empty() {
         return Err(TeleError::Usage("--title must not be empty".to_string()));
+    }
+    if a.include_chat.is_empty() && a.exclude_chat.is_empty() && a.pin_chat.is_empty() {
+        // Rule-only folders need at least one rule flag; the server rejects
+        // an otherwise-empty filter with MESSAGE_TOO_LONG.
+        if !a.contacts && !a.non_contacts && !a.groups && !a.broadcasts && !a.bots {
+            return Err(TeleError::Usage(
+                "folder-create needs at least one rule flag (--groups, --contacts, …) or at least one chat via --include-chat/--pin-chat/--exclude-chat".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -2762,6 +2827,9 @@ mod tests {
                 exclude_read: false,
                 exclude_archived: false,
                 emoticon: None,
+                include_chat: vec![],
+                exclude_chat: vec![],
+                pin_chat: vec![],
             },
             &flags,
         )
