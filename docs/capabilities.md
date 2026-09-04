@@ -29,20 +29,20 @@ RPCs without a friendly wrapper stay reachable through `tele raw <registry-name>
 
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
-| msg.send | Send text | `messages.sendMessage` | `send_message` | `tele msg send` | done |
+| msg.send | Send text | `messages.sendMessage` | `send_message` | `tele msg send` (incl. `--as voice`/`video-note` for voice/round-video notes, `--poll Q --option A --option B [--poll-mode quiz --poll-quiz-option N]` for poll creation via `InputMediaPoll`) | done |
 | msg.schedule | Scheduled send | `schedule_date` | raw (no friendly param) | `tele msg send --schedule` | done |
 | msg.schedule-repeat | Repeating scheduled | absent from layer 227 (no recurring-schedule method; `messages.SendScheduledMessages` sends existing scheduled messages now) | raw | `tele raw` messages.SendScheduledMessages | later (upstream-blocked) |
-| msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` | done |
+| msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` (text/caption via `--text`/`--caption` with `--format plain`/`markdown`, media swap via `--file`, `--no-preview` sets `no_webpage`) | done |
 | msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` (partial reporting + `--self-only`) | done |
 | msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` (always silent via grammers; no `--silent` flag) | done |
 | msg.history | Get / iter history | `messages.getHistory` | `get_messages_by_id`, `iter_messages` | `tele msg get` | done |
 | msg.pin | Pin / unpin | `messages.updatePinnedMessage` | `pin_message`, `unpin_message` | `tele msg pin` (always silent via grammers; no `--silent` flag) | done |
 | msg.read | Mark read | `messages.readHistory` | `mark_as_read` | `tele msg read` | done |
 | msg.file | Send file | `messages.sendMedia` | `upload_file` + `send_message` | `tele msg send --file` | done |
-| msg.download | Download media | upload/download API | `download_media`, `iter_download` | `tele msg download` | done |
+| msg.download | Download media | upload/download API | `download_media`, `iter_download` | `tele msg download` (single `--id`, album siblings via `--id N --album`, whole-chat sweep via `--all [--since/--until] [--limit]` with per-chat checkpoint resume) | done |
 | msg.react | Reactions | `/api/reactions` | `send_reactions` | `tele msg react` | done |
-| msg.poll | Polls: render in message rows + vote | `/api/poll`, `messages.sendVote` (no close flag at layer 227 — closing polls impossible) | raw arm; `Media::Poll` answers | `tele msg vote --chat X --id N --option 1[,2]`; additive `poll` object on msg get/search rows | done |
-| msg.search | Search / filters | `/api/search` | `search_messages`, `search_all_messages` | `tele msg search` | done |
+| msg.poll | Polls: create, render in message rows + vote | `/api/poll`, `messages.sendVote` (no close flag at layer 227 — closing polls impossible) | `sendMedia` + `InputMediaPoll` for create; raw arm; `Media::Poll` answers | `tele msg send --poll Q --option A --option B`; `tele msg vote --chat X --id N --option 1[,2]`; additive `poll` object on msg get/search rows | done |
+| msg.search | Search / filters | `/api/search` | `search_messages`, `search_all_messages` | `tele msg search` (`--from SENDER`, `--kind photo/video/gif/document/url/audio/voice`, `--since/--until` dates; server-side where the API supports it, client-side otherwise) | done |
 | msg.draft | Drafts | `/api/drafts` | raw | `tele dialog drafts` | done |
 | msg.effect | Animated effects: list available | `/api/effects` | raw `messages.GetAvailableEffects` | `tele raw` messages.GetAvailableEffects (apply-side is input-flag only at this layer) | done |
 | msg.checklist | Checklists: append items, toggle completion | `/api/todo` | raw `messages.{AppendTodoList,ToggleTodoCompleted}` (creation rides inputMediaTodo in send media) | `tele raw` registry arms | done |
