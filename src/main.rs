@@ -1,3 +1,4 @@
+mod cache_db;
 mod capped_map;
 mod chat_target;
 mod client;
@@ -121,6 +122,9 @@ enum Command {
     /// Account export (takeout)
     #[command(subcommand)]
     Takeout(takeout::TakeoutCmd),
+    /// Local message cache: sync, search offline, stats, clear
+    #[command(subcommand)]
+    Cache(cache::CacheCmd),
     /// Stream updates as JSONL
     Listen(listen::ListenArgs),
     /// Duplex JSONL runtime: events out, actions in (1–32 accounts)
@@ -362,6 +366,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Profile(c) => profile::run(c, flags).await,
         Command::Privacy(c) => privacy::run(c, flags).await,
         Command::Takeout(c) => takeout::run(c, flags).await,
+        Command::Cache(c) => cache::run(c, flags).await,
         Command::Listen(c) => listen::run(&c, flags).await,
         Command::Serve(c) => serve::run(&c, flags).await,
         Command::Mcp(c) => mcp::run(&c, flags).await,

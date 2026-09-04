@@ -469,7 +469,7 @@ Inline ops handled by the serve loop itself (no route entry):
 `{"op","summary","group","read_only","destructive","retry_safe"}` where
 `group` is the leading word of a spaced op (`account`, `chat`, `dialog`,
 `msg`, `privacy`, `profile`, `raw`, `sticker`, `story`, `topic`,
-`contact`) or `transport` for the three inline ops. The list covers all 67 routed ops plus the 3 inline ops, so it holds 70 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
+`contact`) or `transport` for the three inline ops. The list covers all 78 routed ops plus the 3 inline ops, so it holds 81 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
 
 ### Two-lane execution and timeouts
 
@@ -507,7 +507,7 @@ Any routed op accepts `"dry_run":true` in its params. The request is validated a
 
 Intake is bounded end to end: a 64-line stdin queue and 64-job op queues. A slow consumer stalls the pipeline instead of growing memory without bound. Read stdout continuously.
 
-### Op table (67 routes)
+### Op table (78 routes)
 
 Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints column lists only non-default flags: `read_only` performs no state change, `destructive` sits behind the confirm gate, and `retry_unsafe` means a blind retry can duplicate an effect. An absent hint means mutating, non-destructive, or retry-safe respectively. Recount the routes with `rg -c 'serve_route!\(' src/`.
 
@@ -529,8 +529,21 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | `dialog delete` | remove a dialog from the chat list | mutate | 30s | destructive |
 | `dialog draft` | save or clear a chat draft | mutate | 30s | |
 | `dialog drafts` | list chats holding unsent drafts | read | 120s | read_only |
+| `dialog folder-create` | create a chat folder with type flags | mutate | 30s | |
+| `dialog folder-delete` | delete a chat folder by id | mutate | 30s | |
+| `dialog folder-reorder` | reorder chat folders by id list | mutate | 30s | |
+| `dialog folders` | list chat folders (dialog filters) | read | 120s | read_only |
 | `dialog list` | list recent dialogs | read | 120s | read_only |
 | `dialog pin` | pin or unpin a dialog in the chat list | mutate | 30s | |
+
+`cache` group:
+
+| op | summary | lane | timeout | hints |
+|---|---|---|---|---|
+| `cache sync` | sync recent messages from a chat into the local cache | mutate | 120s | |
+| `cache search` | search the local message cache offline | read | 30s | read_only |
+| `cache stats` | show local cache statistics | read | 30s | read_only |
+| `cache clear` | clear the local message cache | mutate | 30s | |
 
 `msg` group:
 
@@ -545,6 +558,9 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | `msg pin` | pin or unpin a message in a chat | mutate | 30s | |
 | `msg react` | add or remove a reaction on a message | mutate | 30s | |
 | `msg read` | mark a chat read up to a message | mutate | 30s | |
+| `msg scheduled` | list scheduled messages for a chat | read | 120s | read_only |
+| `msg scheduled-delete` | delete scheduled messages by id | mutate | 30s | |
+| `msg scheduled-send` | send scheduled messages now by id | mutate | 30s | |
 | `msg search` | search messages in a chat or globally | read | 120s | read_only |
 | `msg send` | send a text message to a chat | mutate | 30s | retry_unsafe |
 | `msg typing` | send a chat action such as typing | mutate | 30s | |
@@ -729,9 +745,9 @@ to preview anything first. MCP applies the same lane timeouts as the serve wire 
 
 `tele serve`'s three inline transport ops are serve-loop concepts, not MCP tools: `ping` (MCP has its own protocol-level ping), `ops.list` (replaced by `tools/list`), and `stream.resync` (no event streaming over MCP yet). They appear in neither the tool table nor `tools/list`.
 
-### Tool table (67)
+### Tool table (78)
 
-Same hints notation as the serve table: listed values mark non-defaults, and an absent hints cell means mutating, non-destructive, or retry-safe. All 67 tools are discoverable in full mode; the 20 rows carrying `read_only` survive `--read-only`.
+Same hints notation as the serve table: listed values mark non-defaults, and an absent hints cell means mutating, non-destructive, or retry-safe. All 78 tools are discoverable in full mode; the 24 rows carrying `read_only` survive `--read-only`.
 
 `account` group (5):
 
@@ -771,7 +787,16 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `contact_remove` | remove a contact | destructive |
 | `contact_unblock` | unblock a user | |
 
-`dialog` group (6):
+`cache` group (4):
+
+| tool | summary | hints |
+|---|---|---|
+| `cache_clear` | clear the local message cache | |
+| `cache_search` | search the local message cache offline | read_only |
+| `cache_stats` | show local cache statistics | read_only |
+| `cache_sync` | sync recent messages from a chat into the local cache | |
+
+`dialog` group (10):
 
 | tool | summary | hints |
 |---|---|---|
@@ -779,10 +804,14 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `dialog_delete` | remove a dialog from the chat list | destructive |
 | `dialog_draft` | save or clear a chat draft | |
 | `dialog_drafts` | list chats holding unsent drafts | read_only |
+| `dialog_folder-create` | create a chat folder with type flags | |
+| `dialog_folder-delete` | delete a chat folder by id | |
+| `dialog_folder-reorder` | reorder chat folders by id list | |
+| `dialog_folders` | list chat folders (dialog filters) | read_only |
 | `dialog_list` | list recent dialogs | read_only |
 | `dialog_pin` | pin or unpin a dialog in the chat list | |
 
-`msg` group (13):
+`msg` group (16):
 
 | tool | summary | hints |
 |---|---|---|
@@ -795,6 +824,9 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `msg_pin` | pin or unpin a message in a chat | |
 | `msg_react` | add or remove a reaction on a message | |
 | `msg_read` | mark a chat read up to a message | |
+| `msg_scheduled` | list scheduled messages for a chat | read_only |
+| `msg_scheduled-delete` | delete scheduled messages by id | |
+| `msg_scheduled-send` | send scheduled messages now by id | |
 | `msg_search` | search messages in a chat or globally | read_only |
 | `msg_send` | send a text message to a chat | retry_unsafe |
 | `msg_typing` | send a chat action such as typing | |

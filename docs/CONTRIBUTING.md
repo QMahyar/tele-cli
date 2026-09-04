@@ -44,7 +44,7 @@ docs/            specs, contract, security, architecture decisions
 git clone https://github.com/QMahyar/tele-cli.git
 cd tele-cli
 cargo build
-cargo test                    # 1387 tests, all offline
+cargo test                    # all offline, no network
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```

@@ -1,4 +1,5 @@
 pub mod account;
+pub mod cache;
 pub mod chat;
 pub mod completions;
 pub mod contact;

@@ -444,3 +444,134 @@ tele mcp --account work --read-only
 ```bash
 tele mcp --account work --groups msg,dialog
 ```
+
+### Cursor
+
+Add to Cursor's MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "tele": {
+      "command": "tele",
+      "args": ["mcp", "--account", "work", "--read-only"]
+    }
+  }
+}
+```
+
+## Duplex server (`tele serve`)
+
+For script embedding, `tele serve` runs a JSONL control plane over stdio.
+Requests correlate by integer `id`; events stream between responses.
+
+### Start the server
+
+```bash
+tele serve --account work
+```
+
+### Drive it with a script
+
+```python
+import json, subprocess
+
+proc = subprocess.Popen(
+    ["tele", "serve", "--account", "work"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+)
+
+# 1. Receive the server hello
+hello = json.loads(proc.stdout.readline())
+assert hello["type"] == "hello"
+
+# 2. Negotiate: echo the protocol back
+proc.stdin.write(json.dumps({"type": "hello", "protocol": 1}) + "\n")
+proc.stdin.flush()
+hello = json.loads(proc.stdout.readline())
+
+# 3. Send a request
+proc.stdin.write(json.dumps({
+    "id": 1, "op": "msg send",
+    "params": {"chat": "@team", "text": "hello"},
+}) + "\n")
+proc.stdin.flush()
+
+# 4. Read the correlated response
+while True:
+    frame = json.loads(proc.stdout.readline())
+    if frame.get("type") == "response" and frame.get("id") == 1:
+        print(frame["data" if frame["ok"] else "error"])
+        break
+    # event rows (e.g. NewMessage) may interleave here
+
+# 5. EOF shuts down cleanly
+proc.stdin.close()
+assert proc.wait() == 0
+```
+
+### Target an account explicitly (multi-account serve)
+
+```python
+# when serving --account a --account b, tag each op with "account"
+req = {
+    "id": 2, "op": "msg send",
+    "params": {"account": "a", "chat": "@team", "text": "from a"},
+}
+```
+
+### Destructive ops need `confirm:true`
+
+```python
+req = {
+    "id": 3, "op": "msg delete",
+    "params": {"chat": "@team", "ids": [123], "confirm": True},
+}
+```
+
+## Local message cache
+
+Sync messages locally for offline full-text search (FTS5). The cache
+lives per-account under `{app}/cache/{name}.cache.db`.
+
+```bash
+# Sync the last 500 messages from a chat
+tele cache sync --account work --chat @team --limit 500
+
+# Offline search (no network)
+tele cache search --account work --query "deploy"
+tele cache search --account work --query "" --limit 20   # list recent
+tele cache search --account work --query "release" --chat-id -1001234
+
+# Cache info and cleanup
+tele cache stats --account work
+tele cache clear --account work
+```
+
+## Chat folders
+
+```bash
+tele dialog folders --account work
+tele dialog folder-create --account work --title "Work" --groups --exclude-muted
+tele dialog folder-delete --account work --id 2
+tele dialog folder-reorder --account work --order 3,2
+```
+
+## Scheduled messages
+
+```bash
+tele msg scheduled --account work --chat @team
+tele msg scheduled-send --account work --chat @team --ids 1,2
+tele msg scheduled-delete --account work --chat @team --ids 3
+```
+
+## Agent skill
+
+Ship tele's own usage manual into any agent:
+
+```bash
+tele skill                 # print SKILL.md to stdout (paste into context)
+tele skill install         # install into detected agent dirs (Claude, OpenCode, Cursor)
+tele skill install --force # overwrite an existing install
+tele skill install --dir ~/my-skills
+```

@@ -1117,3 +1117,136 @@ fn default_timeout_secs() -> u64 {
 fn default_poll_interval() -> u64 {
     2
 }
+
+#[derive(Args, Clone)]
+pub struct ScheduledArgs {
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(ChatTarget),
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    pub(crate) chat: ChatTarget,
+    #[arg(long, default_value_t = 20, help = "max results to return (1-10000)")]
+    pub(crate) limit: u32,
+}
+
+#[derive(Args, Clone)]
+pub struct ScheduledDeleteArgs {
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(ChatTarget),
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    pub(crate) chat: ChatTarget,
+    #[arg(long, value_delimiter = ',', help = "scheduled message ids to delete")]
+    pub(crate) ids: Vec<i32>,
+}
+
+#[derive(Args, Clone)]
+pub struct ScheduledSendArgs {
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(ChatTarget),
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    pub(crate) chat: ChatTarget,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "scheduled message ids to send now"
+    )]
+    pub(crate) ids: Vec<i32>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct ScheduledParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default = "default_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ScheduledArgs> for ScheduledParams {
+    fn from(a: &ScheduledArgs) -> Self {
+        Self {
+            chat: a.chat.as_str().to_string(),
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ScheduledParams> for ScheduledArgs {
+    fn from(p: &ScheduledParams) -> Self {
+        Self {
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
+            limit: p.limit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct ScheduledDeleteParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) ids: Vec<i32>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ScheduledDeleteArgs> for ScheduledDeleteParams {
+    fn from(a: &ScheduledDeleteArgs) -> Self {
+        Self {
+            chat: a.chat.as_str().to_string(),
+            ids: a.ids.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ScheduledDeleteParams> for ScheduledDeleteArgs {
+    fn from(p: &ScheduledDeleteParams) -> Self {
+        Self {
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
+            ids: p.ids.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct ScheduledSendParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) ids: Vec<i32>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&ScheduledSendArgs> for ScheduledSendParams {
+    fn from(a: &ScheduledSendArgs) -> Self {
+        Self {
+            chat: a.chat.as_str().to_string(),
+            ids: a.ids.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ScheduledSendParams> for ScheduledSendArgs {
+    fn from(p: &ScheduledSendParams) -> Self {
+        Self {
+            chat: ChatTarget::new_unchecked(p.chat.clone()),
+            ids: p.ids.clone(),
+        }
+    }
+}

@@ -24,6 +24,14 @@ pub enum DialogCmd {
         about = "remove a dialog from the list: leaves channels and groups; private chats keep history on both sides unless --revoke also deletes it"
     )]
     Delete(DeleteArgs),
+    #[command(about = "list chat folders (dialog filters)")]
+    Folders(FoldersArgs),
+    #[command(about = "create a chat folder with type flags (--title, --contacts, --groups, ...)")]
+    FolderCreate(FolderCreateArgs),
+    #[command(about = "delete a chat folder by id")]
+    FolderDelete(FolderDeleteArgs),
+    #[command(about = "reorder chat folders by id list")]
+    FolderReorder(FolderReorderArgs),
 }
 
 #[derive(Args, Clone)]
@@ -73,6 +81,52 @@ pub struct PinArgs {
 }
 
 #[derive(Args, Clone)]
+pub struct FoldersArgs {
+    #[arg(long, default_value_t = 100, help = "max folders to list (1-10000)")]
+    limit: u32,
+}
+
+#[derive(Args, Clone)]
+pub struct FolderCreateArgs {
+    #[arg(long, help = "folder title")]
+    title: String,
+    #[arg(long, help = "include contacts")]
+    contacts: bool,
+    #[arg(long, help = "include non-contacts")]
+    non_contacts: bool,
+    #[arg(long, help = "include groups")]
+    groups: bool,
+    #[arg(long, help = "include broadcast channels")]
+    broadcasts: bool,
+    #[arg(long, help = "include bots")]
+    bots: bool,
+    #[arg(long, help = "exclude muted chats")]
+    exclude_muted: bool,
+    #[arg(long, help = "exclude read chats")]
+    exclude_read: bool,
+    #[arg(long, help = "exclude archived chats")]
+    exclude_archived: bool,
+    #[arg(long, help = "custom emoji for folder icon")]
+    emoticon: Option<String>,
+}
+
+#[derive(Args, Clone)]
+pub struct FolderDeleteArgs {
+    #[arg(long, help = "folder id to delete")]
+    id: i32,
+}
+
+#[derive(Args, Clone)]
+pub struct FolderReorderArgs {
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "comma-separated folder ids in desired order"
+    )]
+    order: Vec<i32>,
+}
+
+#[derive(Args, Clone)]
 pub struct DeleteArgs {
     #[arg(
         long,
@@ -99,6 +153,10 @@ pub async fn run(cmd: DialogCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         DialogCmd::Archive(a) => archive(a, flags).await,
         DialogCmd::Pin(a) => pin(a, flags).await,
         DialogCmd::Delete(a) => delete(a, flags).await,
+        DialogCmd::Folders(a) => folders(a, flags).await,
+        DialogCmd::FolderCreate(a) => folder_create(a, flags).await,
+        DialogCmd::FolderDelete(a) => folder_delete(a, flags).await,
+        DialogCmd::FolderReorder(a) => folder_reorder(a, flags).await,
     }
 }
 
@@ -873,8 +931,425 @@ pub(crate) async fn dialog_delete_core(
     }
 }
 
+fn folders_dry_run_data(limit: u32) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "limit": limit,
+        "would": format!("list up to {limit} chat folders")})
+}
+
+async fn folders(args: FoldersArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_limit(args.limit, 10_000, "limit")?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(folders_dry_run_data(args.limit));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            let result = dialog_folders_core(&guard.shares(), FoldersParams::from(&args)).await?;
+            if !output::machine_mode(json, jsonl) {
+                let empty = Vec::new();
+                let table_rows: Vec<Vec<String>> = result["folders"]
+                    .as_array()
+                    .unwrap_or(&empty)
+                    .iter()
+                    .map(|r| {
+                        vec![
+                            r["id"].to_string(),
+                            r["title"].as_str().unwrap_or_default().to_string(),
+                            r["chat_count"].to_string(),
+                        ]
+                    })
+                    .collect();
+                output::print_account_table(&name, multi, &["id", "title", "chats"], &table_rows)?;
+            }
+            Ok(result)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_folders_core(
+    shares: &crate::client::ServeShares,
+    params: FoldersParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let filters: tl::enums::messages::DialogFilters = shares
+        .client
+        .invoke(&tl::functions::messages::GetDialogFilters {})
+        .await
+        .map_err(tele_invocation)?;
+    let mut out = Vec::new();
+    let tl::enums::messages::DialogFilters::Filters(f) = filters;
+    for filter in f.filters.iter().take(params.limit as usize) {
+        out.push(dialog_filter_to_json(filter));
+    }
+    Ok(serde_json::json!({ "folders": out }))
+}
+
+fn dialog_filter_title(title: &tl::enums::TextWithEntities) -> String {
+    match title {
+        tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+    }
+}
+
+fn dialog_filter_to_json(filter: &tl::enums::DialogFilter) -> serde_json::Value {
+    match filter {
+        tl::enums::DialogFilter::Filter(f) => serde_json::json!({
+            "id": f.id,
+            "title": dialog_filter_title(&f.title),
+            "contacts": f.contacts,
+            "non_contacts": f.non_contacts,
+            "groups": f.groups,
+            "broadcasts": f.broadcasts,
+            "bots": f.bots,
+            "exclude_muted": f.exclude_muted,
+            "exclude_read": f.exclude_read,
+            "exclude_archived": f.exclude_archived,
+            "emoticon": f.emoticon,
+            "chat_count": f.include_peers.len() + f.pinned_peers.len(),
+        }),
+        tl::enums::DialogFilter::Default => serde_json::json!({
+            "id": 0,
+            "title": "All",
+            "default": true,
+        }),
+        tl::enums::DialogFilter::Chatlist(f) => serde_json::json!({
+            "id": f.id,
+            "title": dialog_filter_title(&f.title),
+            "chatlist": true,
+        }),
+    }
+}
+
+fn folder_create_dry_run_data(title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "title": title,
+        "would": format!("create chat folder {title:?}")})
+}
+
+async fn folder_create(args: FolderCreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if args.title.trim().is_empty() {
+        return Err(TeleError::Usage("--title must not be empty".to_string()));
+    }
+    crate::executor::require_explicit_selection("dialog folder-create", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(folder_create_dry_run_data(&args.title));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            dialog_folder_create_core(&guard.shares(), FolderCreateParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_folder_create_core(
+    shares: &crate::client::ServeShares,
+    params: FolderCreateParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let filters: tl::enums::messages::DialogFilters = shares
+        .client
+        .invoke(&tl::functions::messages::GetDialogFilters {})
+        .await
+        .map_err(tele_invocation)?;
+    let mut max_id = 1i32;
+    let tl::enums::messages::DialogFilters::Filters(f) = &filters;
+    for filter in &f.filters {
+        if let tl::enums::DialogFilter::Filter(df) = filter {
+            max_id = max_id.max(df.id + 1);
+        }
+    }
+    let new_id = max_id.max(2);
+    let filter = tl::enums::DialogFilter::Filter(tl::types::DialogFilter {
+        contacts: params.contacts,
+        non_contacts: params.non_contacts,
+        groups: params.groups,
+        broadcasts: params.broadcasts,
+        bots: params.bots,
+        exclude_muted: params.exclude_muted,
+        exclude_read: params.exclude_read,
+        exclude_archived: params.exclude_archived,
+        title_noanimate: false,
+        id: new_id,
+        title: tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+            text: params.title.clone(),
+            entities: vec![],
+        }),
+        emoticon: params.emoticon.clone(),
+        color: None,
+        pinned_peers: vec![],
+        include_peers: vec![],
+        exclude_peers: vec![],
+    });
+    let _: bool = shares
+        .client
+        .invoke(&tl::functions::messages::UpdateDialogFilter {
+            id: new_id,
+            filter: Some(filter),
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({ "id": new_id, "title": params.title, "created": true }))
+}
+
+fn folder_delete_dry_run_data(id: i32) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "id": id,
+        "would": format!("delete chat folder {id}")})
+}
+
+async fn folder_delete(args: FolderDeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::executor::require_explicit_selection("dialog folder-delete", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(folder_delete_dry_run_data(args.id));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            dialog_folder_delete_core(&guard.shares(), FolderDeleteParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_folder_delete_core(
+    shares: &crate::client::ServeShares,
+    params: FolderDeleteParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let _: bool = shares
+        .client
+        .invoke(&tl::functions::messages::UpdateDialogFilter {
+            id: params.id,
+            filter: None,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({ "id": params.id, "deleted": true }))
+}
+
+fn folder_reorder_dry_run_data(order: &[i32]) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "order": order,
+        "would": format!("reorder chat folders to {order:?}")})
+}
+
+async fn folder_reorder(args: FolderReorderArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if args.order.is_empty() {
+        return Err(TeleError::Usage(
+            "--order must list at least one folder id".to_string(),
+        ));
+    }
+    crate::executor::require_explicit_selection("dialog folder-reorder", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(folder_reorder_dry_run_data(&args.order));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            dialog_folder_reorder_core(&guard.shares(), FolderReorderParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn dialog_folder_reorder_core(
+    shares: &crate::client::ServeShares,
+    params: FolderReorderParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let _: bool = shares
+        .client
+        .invoke(&tl::functions::messages::UpdateDialogFiltersOrder {
+            order: params.order.clone(),
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({ "order": params.order, "reordered": true }))
+}
+
 fn default_dialog_limit() -> u32 {
     20
+}
+
+fn default_folder_limit() -> u32 {
+    100
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct FoldersParams {
+    #[serde(default = "default_folder_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&FoldersArgs> for FoldersParams {
+    fn from(a: &FoldersArgs) -> Self {
+        Self {
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&FoldersParams> for FoldersArgs {
+    fn from(p: &FoldersParams) -> Self {
+        Self { limit: p.limit }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct FolderCreateParams {
+    #[serde(default)]
+    pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) contacts: bool,
+    #[serde(default)]
+    pub(crate) non_contacts: bool,
+    #[serde(default)]
+    pub(crate) groups: bool,
+    #[serde(default)]
+    pub(crate) broadcasts: bool,
+    #[serde(default)]
+    pub(crate) bots: bool,
+    #[serde(default)]
+    pub(crate) exclude_muted: bool,
+    #[serde(default)]
+    pub(crate) exclude_read: bool,
+    #[serde(default)]
+    pub(crate) exclude_archived: bool,
+    pub(crate) emoticon: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&FolderCreateArgs> for FolderCreateParams {
+    fn from(a: &FolderCreateArgs) -> Self {
+        Self {
+            title: a.title.clone(),
+            contacts: a.contacts,
+            non_contacts: a.non_contacts,
+            groups: a.groups,
+            broadcasts: a.broadcasts,
+            bots: a.bots,
+            exclude_muted: a.exclude_muted,
+            exclude_read: a.exclude_read,
+            exclude_archived: a.exclude_archived,
+            emoticon: a.emoticon.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&FolderCreateParams> for FolderCreateArgs {
+    fn from(p: &FolderCreateParams) -> Self {
+        Self {
+            title: p.title.clone(),
+            contacts: p.contacts,
+            non_contacts: p.non_contacts,
+            groups: p.groups,
+            broadcasts: p.broadcasts,
+            bots: p.bots,
+            exclude_muted: p.exclude_muted,
+            exclude_read: p.exclude_read,
+            exclude_archived: p.exclude_archived,
+            emoticon: p.emoticon.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct FolderDeleteParams {
+    #[serde(default)]
+    pub(crate) id: i32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&FolderDeleteArgs> for FolderDeleteParams {
+    fn from(a: &FolderDeleteArgs) -> Self {
+        Self {
+            id: a.id,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&FolderDeleteParams> for FolderDeleteArgs {
+    fn from(p: &FolderDeleteParams) -> Self {
+        Self { id: p.id }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct FolderReorderParams {
+    #[serde(default)]
+    pub(crate) order: Vec<i32>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&FolderReorderArgs> for FolderReorderParams {
+    fn from(a: &FolderReorderArgs) -> Self {
+        Self {
+            order: a.order.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&FolderReorderParams> for FolderReorderArgs {
+    fn from(p: &FolderReorderParams) -> Self {
+        Self {
+            order: p.order.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
@@ -1185,6 +1660,66 @@ pub(crate) fn dialog_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             run_pin,
             crate::commands::serve::params_schema::<PinParams>
         ),
+        crate::serve_route!(
+            "dialog folders",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list chat folders (dialog filters)",
+            FoldersParams,
+            FoldersArgs,
+            validate_folders,
+            |a: &FoldersArgs| Ok::<_, TeleError>(folders_dry_run_data(a.limit)),
+            run_folders,
+            crate::commands::serve::params_schema::<FoldersParams>
+        ),
+        crate::serve_route!(
+            "dialog folder-create",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "create a chat folder with type flags",
+            FolderCreateParams,
+            FolderCreateArgs,
+            validate_folder_create,
+            |a: &FolderCreateArgs| Ok::<_, TeleError>(folder_create_dry_run_data(&a.title)),
+            run_folder_create,
+            crate::commands::serve::params_schema::<FolderCreateParams>
+        ),
+        crate::serve_route!(
+            "dialog folder-delete",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "delete a chat folder by id",
+            FolderDeleteParams,
+            FolderDeleteArgs,
+            validate_folder_delete,
+            |a: &FolderDeleteArgs| Ok::<_, TeleError>(folder_delete_dry_run_data(a.id)),
+            run_folder_delete,
+            crate::commands::serve::params_schema::<FolderDeleteParams>
+        ),
+        crate::serve_route!(
+            "dialog folder-reorder",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "reorder chat folders by id list",
+            FolderReorderParams,
+            FolderReorderArgs,
+            validate_folder_reorder,
+            |a: &FolderReorderArgs| Ok::<_, TeleError>(folder_reorder_dry_run_data(&a.order)),
+            run_folder_reorder,
+            crate::commands::serve::params_schema::<FolderReorderParams>
+        ),
     ]
 }
 
@@ -1194,6 +1729,47 @@ crate::serve_runner!(run_draft, dialog_draft_core, DraftParams);
 crate::serve_runner!(run_drafts, dialog_drafts_core, DraftsParams);
 crate::serve_runner!(run_list, dialog_list_core, ListParams);
 crate::serve_runner!(run_pin, dialog_pin_core, PinParams);
+crate::serve_runner!(run_folders, dialog_folders_core, FoldersParams);
+crate::serve_runner!(
+    run_folder_create,
+    dialog_folder_create_core,
+    FolderCreateParams
+);
+crate::serve_runner!(
+    run_folder_delete,
+    dialog_folder_delete_core,
+    FolderDeleteParams
+);
+crate::serve_runner!(
+    run_folder_reorder,
+    dialog_folder_reorder_core,
+    FolderReorderParams
+);
+
+fn validate_folders(a: &FoldersArgs) -> TeleResult<()> {
+    validate_limit(a.limit, 10_000, "limit")?;
+    Ok(())
+}
+
+fn validate_folder_create(a: &FolderCreateArgs) -> TeleResult<()> {
+    if a.title.trim().is_empty() {
+        return Err(TeleError::Usage("--title must not be empty".to_string()));
+    }
+    Ok(())
+}
+
+fn validate_folder_delete(_a: &FolderDeleteArgs) -> TeleResult<()> {
+    Ok(())
+}
+
+fn validate_folder_reorder(a: &FolderReorderArgs) -> TeleResult<()> {
+    if a.order.is_empty() {
+        return Err(TeleError::Usage(
+            "--order must list at least one folder id".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -1443,6 +2019,10 @@ mod tests {
             ("dialog delete", Lane::Mutate, Some(30)),
             ("dialog draft", Lane::Mutate, Some(30)),
             ("dialog drafts", Lane::Read, Some(120)),
+            ("dialog folder-create", Lane::Mutate, Some(30)),
+            ("dialog folder-delete", Lane::Mutate, Some(30)),
+            ("dialog folder-reorder", Lane::Mutate, Some(30)),
+            ("dialog folders", Lane::Read, Some(120)),
             ("dialog list", Lane::Read, Some(120)),
             ("dialog pin", Lane::Mutate, Some(30)),
         ];
@@ -2061,6 +2641,10 @@ mod tests {
             crate::commands::serve::params_schema::<ListParams>(),
             crate::commands::serve::params_schema::<DraftsParams>(),
             crate::commands::serve::params_schema::<DeleteParams>(),
+            crate::commands::serve::params_schema::<FoldersParams>(),
+            crate::commands::serve::params_schema::<FolderCreateParams>(),
+            crate::commands::serve::params_schema::<FolderDeleteParams>(),
+            crate::commands::serve::params_schema::<FolderReorderParams>(),
         ] {
             assert_eq!(schema["type"], "object");
             assert_eq!(schema["additionalProperties"], serde_json::json!(false));
@@ -2068,5 +2652,122 @@ mod tests {
         }
         let list = crate::commands::serve::params_schema::<ListParams>();
         assert!(list["properties"]["limit"].is_object());
+    }
+
+    #[test]
+    fn serve_dialog_folders_plan_matrix() {
+        let msg = usage_error_message(
+            plan_dialog_op("dialog folders", serde_json::json!({"limit": 10_001})).unwrap_err(),
+        );
+        assert!(msg.contains("--limit"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog folders",
+            serde_json::json!({"limit": 5, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, folders_dry_run_data(5)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"limit": 10});
+        let plan = plan_dialog_op("dialog folders", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_folder_create_plan_matrix() {
+        let msg = usage_error_message(
+            plan_dialog_op("dialog folder-create", serde_json::json!({"title": ""})).unwrap_err(),
+        );
+        assert!(msg.contains("--title"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog folder-create",
+            serde_json::json!({"title": "Work", "groups": true, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, folder_create_dry_run_data("Work")),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"title": "Work", "contacts": true});
+        let plan = plan_dialog_op("dialog folder-create", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_folder_delete_plan_matrix() {
+        let plan = plan_dialog_op(
+            "dialog folder-delete",
+            serde_json::json!({"id": 2, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, folder_delete_dry_run_data(2)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"id": 3});
+        let plan = plan_dialog_op("dialog folder-delete", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[test]
+    fn serve_dialog_folder_reorder_plan_matrix() {
+        let msg = usage_error_message(
+            plan_dialog_op("dialog folder-reorder", serde_json::json!({"order": []})).unwrap_err(),
+        );
+        assert!(msg.contains("--order"), "{msg}");
+
+        let plan = plan_dialog_op(
+            "dialog folder-reorder",
+            serde_json::json!({"order": [3, 2], "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data, folder_reorder_dry_run_data(&[3, 2])),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
+
+        let raw = serde_json::json!({"order": [2, 3]});
+        let plan = plan_dialog_op("dialog folder-reorder", raw.clone()).unwrap();
+        expect_execute(plan, &raw);
+    }
+
+    #[tokio::test]
+    async fn folders_dry_run_exits_ok_before_connect() {
+        let dir = temp_app("folders-dry");
+        let flags = dialog_flags("dialog folders", &dir.join("config.toml"));
+        let code = folders(FoldersArgs { limit: 50 }, &flags).await.unwrap();
+        assert_eq!(code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn folder_create_empty_title_is_usage_error() {
+        let dir = temp_app("folder-create-empty");
+        let flags = dialog_flags("dialog folder-create", &dir.join("config.toml"));
+        let err = folder_create(
+            FolderCreateArgs {
+                title: "  ".to_string(),
+                contacts: false,
+                non_contacts: false,
+                groups: false,
+                broadcasts: false,
+                bots: false,
+                exclude_muted: false,
+                exclude_read: false,
+                exclude_archived: false,
+                emoticon: None,
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

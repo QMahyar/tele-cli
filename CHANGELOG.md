@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- `tele dialog folders` / `folder-create` / `folder-delete` / `folder-reorder`: list, create, delete, and reorder chat folders (dialog filters) via `messages.{getDialogFilters,updateDialogFilter,updateDialogFiltersOrder}`.
+- `tele msg scheduled` / `scheduled-delete` / `scheduled-send`: list scheduled messages (`messages.getScheduledHistory`), delete them, or send them immediately.
+- `tele cache sync` / `search` / `stats` / `clear`: per-account local SQLite message cache (`{app}/cache/{name}.cache.db`) with FTS5 full-text search for offline queries.
+- Serve/MCP surface grows 67 → 78 routed ops (`cache` group + 4 dialog folder ops + 3 msg scheduled ops).
+
+### Fixed
+- `docs/getting-started.md`: npm install command now matches the published `@qmahyar/telecli` package name.
+- `docs/CONTRIBUTING.md`: removed the stale hardcoded test count.
+- `docs/examples.md`: added MCP/Cursor setup, `tele serve` embedding recipe, agent skill, local cache, folders, and scheduled-message recipes.
+- `README.md`: added the Changelog to the documentation table.
+
 ## [0.10.0] - 2026-09-02
 
 ### Changed
