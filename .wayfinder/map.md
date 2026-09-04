@@ -27,9 +27,13 @@ not decision tickets.
 - [Slice 4 — Architecture cleanup](tickets/slice-4-architecture.md): merged to main as `merge: slice 4 — architecture cleanup` (god-file test extraction, CappedMap, pagination.rs, exit-code bridge, account/login.rs, join/leave dedupe, run_fanout + client tests).
 - Slice 3 pause point (2026-09-03): branch `slice/3-features` holds 5 features, all green (1546 tests: 1431+92+23). Features 1–4 verified by agents; feature 5 (search filters) landed pre-cancellation but was never agent-verified — needs a verification pass on resume.
 
+## Decisions so far (cont.)
+
+- [Slice 3 — Tier A features](tickets/slice-3-features.md): merged to main as `merge: slice 3 — Tier A features` (bulk/album download + resume, voice/video-note send, poll creation, edit media + caption, search filters with server-side + client-side paths). Verified via binary --help + validation smoke tests; capabilities + contract docs updated; contract test fixed (no literal `|` in matrix cells).
+
 ## Not yet specified
 
-- Slice 3 completion: verify search filters end-to-end (live dry-run + serve/MCP params), update `docs/capabilities.md` + `docs/cli-contract.md` for all 5 features (agents were told to skip docs), then merge `slice/3-features` to main.
+(empty — all four slices landed. Main is green: 1546 tests, clippy clean, fmt clean.)
 
 ## Out of scope
 
