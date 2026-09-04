@@ -2,3 +2,5 @@
 # guard (tests/contract.rs) compares it against grammers-tl-types' api.tl,
 # which is LF. Force LF so autocrlf never rewrites the comparison target.
 tl/api.tl text eol=lf
+# Embedded assets: include_str! bytes are asserted by tests expecting LF.
+src/commands/skill.md text eol=lf
