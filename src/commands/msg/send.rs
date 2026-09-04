@@ -11,6 +11,57 @@ use crate::output;
 use super::params::{SendArgs, SendParams};
 use crate::commands::helpers::looks_like_image;
 
+const AS_MEDIA_CHOICES: [&str; 2] = ["voice", "video-note"];
+const POLL_MIN_OPTIONS: usize = 2;
+const POLL_MAX_OPTIONS: usize = 10;
+
+pub(crate) fn parse_as_media(value: Option<&str>) -> TeleResult<Option<&'static str>> {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(v) => {
+            let lowered = v.to_ascii_lowercase();
+            match lowered.as_str() {
+                "voice" | "video-note" => {
+                    Ok(AS_MEDIA_CHOICES.iter().find(|c| **c == lowered).copied())
+                }
+                other => Err(TeleError::Usage(format!(
+                    "unknown --as {other:?} (valid: voice, video-note)"
+                ))),
+            }
+        }
+    }
+}
+
+pub(crate) fn parse_poll_mode(value: Option<&str>) -> TeleResult<Option<&'static str>> {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(v) => {
+            if v.eq_ignore_ascii_case("quiz") {
+                Ok(Some("quiz"))
+            } else {
+                Err(TeleError::Usage(format!(
+                    "unknown --poll-mode {v:?} (valid: quiz)"
+                )))
+            }
+        }
+    }
+}
+
+pub(crate) fn parse_poll_options(options: &[String]) -> TeleResult<Vec<String>> {
+    if options.len() < POLL_MIN_OPTIONS || options.len() > POLL_MAX_OPTIONS {
+        return Err(TeleError::Usage(format!(
+            "--option requires 2-10 poll options (got {})",
+            options.len()
+        )));
+    }
+    if options.iter().any(|o| o.trim().is_empty()) {
+        return Err(TeleError::Usage(
+            "--option values must not be empty".to_string(),
+        ));
+    }
+    Ok(options.to_vec())
+}
+
 fn effective_preview(args: &SendArgs) -> bool {
     args.preview && !args.no_preview
 }
@@ -30,13 +81,18 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "unknown --format {other} (use plain or markdown)"
         ))),
     }?;
+    if args.poll.is_some() && (args.text.is_some() || !args.files.is_empty()) {
+        return Err(TeleError::Usage(
+            "--poll is mutually exclusive with --text/--file".to_string(),
+        ));
+    }
     match (
         &args.text,
         args.files.is_empty(),
         &args.url,
         &args.copy_from,
     ) {
-        (None, true, None, None) => {
+        (None, true, None, None) if args.poll.is_none() => {
             return Err(TeleError::Usage(
                 "msg send requires --text, --file, --url, or --copy-from".to_string(),
             ))
@@ -164,6 +220,76 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
         }
         if let Some(caption) = &args.caption {
             super::validate::validate_markdown(caption)?;
+        }
+    }
+    parse_as_media(args.as_media.as_deref())?;
+    if args.as_media.is_some() {
+        if args.files.len() != 1 {
+            return Err(TeleError::Usage(
+                "--as applies to a single --file upload".to_string(),
+            ));
+        }
+        if args.caption.is_some() {
+            return Err(TeleError::Usage(
+                "--caption is not supported with --as voice|video-note".to_string(),
+            ));
+        }
+        if args.thumbnail.is_some() {
+            return Err(TeleError::Usage(
+                "--thumbnail is not supported with --as voice|video-note".to_string(),
+            ));
+        }
+        if args.schedule.is_some() {
+            return Err(TeleError::Usage(
+                "--schedule is not supported with --as voice|video-note".to_string(),
+            ));
+        }
+    }
+    if args.poll.is_some() && (args.url.is_some() || args.copy_from.is_some()) {
+        return Err(TeleError::Usage(
+            "--poll is mutually exclusive with --url/--copy-from".to_string(),
+        ));
+    }
+    if args.poll.is_some() || !args.option.is_empty() || args.poll_mode.is_some() {
+        if args.poll.as_ref().is_some_and(|q| q.trim().is_empty()) {
+            return Err(TeleError::Usage(
+                "--poll question must not be empty".to_string(),
+            ));
+        }
+        parse_poll_options(&args.option)?;
+        parse_poll_mode(args.poll_mode.as_deref())?;
+        if args.poll.is_none() && args.poll_mode.is_some() {
+            return Err(TeleError::Usage("--poll-mode requires --poll".to_string()));
+        }
+        let quiz_option = args.poll_quiz_option;
+        if quiz_option.is_some() && args.poll_mode.as_deref() != Some("quiz") {
+            return Err(TeleError::Usage(
+                "--poll-quiz-option requires --poll-mode quiz".to_string(),
+            ));
+        }
+        if let Some(idx) = quiz_option {
+            if idx == 0 || idx > args.option.len() {
+                return Err(TeleError::Usage(format!(
+                    "--poll-quiz-option must be a 1-based index within the {len} option(s) (got {idx})",
+                    len = args.option.len()
+                )));
+            }
+        }
+        if args.media_ttl.is_some()
+            || args.thumbnail.is_some()
+            || args.caption.is_some()
+            || args.schedule.is_some()
+            || args.reply.is_some()
+            || args.topic.is_some()
+            || args.silent
+            || args.background
+            || args.noforwards
+            || !effective_preview(args)
+        {
+            return Err(TeleError::Usage(
+                "poll sends support only --chat, --poll, --option, --poll-mode, and --poll-quiz-option"
+                    .to_string(),
+            ));
         }
     }
     Ok(())
@@ -354,7 +480,11 @@ async fn send_noforwards_text(
 }
 
 pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::Value {
-    let would = format!("send message to chat {}", args.chat);
+    let would = if args.poll.is_some() {
+        format!("create poll in chat {}", args.chat)
+    } else {
+        format!("send message to chat {}", args.chat)
+    };
     serde_json::json!({
         "dry_run": true,
         "chat": args.chat,
@@ -375,12 +505,128 @@ pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> se
         "silent": args.silent,
         "noforwards": args.noforwards,
         "background": args.background,
+        "as": args.as_media,
+        "poll": args.poll,
+        "options": args.option,
+        "poll_mode": args.poll_mode,
+        "poll_quiz_option": args.poll_quiz_option,
         "would": would})
 }
 
 pub(crate) fn send_serve_dry_run(args: &SendArgs) -> TeleResult<serde_json::Value> {
     let schedule = parse_schedule(args.schedule.as_deref())?.map(|s| s as u64);
     Ok(send_dry_run_payload(args, schedule))
+}
+
+fn voice_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessage {
+    use std::time::Duration;
+    InputMessage::new()
+        .document(uploaded)
+        .attribute(grammers_client::media::Attribute::Voice {
+            duration: Duration::ZERO,
+            waveform: None,
+        })
+}
+
+fn video_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessage {
+    use std::time::Duration;
+    InputMessage::new()
+        .document(uploaded)
+        .attribute(grammers_client::media::Attribute::Video {
+            round_message: true,
+            supports_streaming: false,
+            duration: Duration::ZERO,
+            w: 0,
+            h: 0,
+        })
+}
+
+pub(crate) fn send_as_media_message(
+    uploaded: grammers_client::media::Uploaded,
+    as_media: &str,
+) -> TeleResult<InputMessage> {
+    match as_media {
+        "voice" => Ok(voice_note_message(uploaded)),
+        "video-note" => Ok(video_note_message(uploaded)),
+        other => Err(TeleError::Usage(format!(
+            "unknown --as {other:?} (valid: voice, video-note)"
+        ))),
+    }
+}
+
+pub(crate) fn send_poll_message(
+    question: &str,
+    options: &[String],
+    mode: Option<&str>,
+    quiz_option: Option<usize>,
+) -> TeleResult<InputMessage> {
+    use grammers_client::tl;
+    let validated = parse_poll_options(options)?;
+    let quiz = match parse_poll_mode(mode)? {
+        None => false,
+        Some("quiz") => true,
+        Some(_) => unreachable!("parse_poll_mode only yields quiz"),
+    };
+    let correct_answers = match quiz_option {
+        None => None,
+        Some(idx) => {
+            if idx == 0 || idx > validated.len() {
+                return Err(TeleError::Usage(format!(
+                    "--poll-quiz-option must be a 1-based index within the {} option(s) (got {idx})",
+                    validated.len()
+                )));
+            }
+            Some(vec![idx as i32 - 1])
+        }
+    };
+    let twe = |s: &str| -> tl::enums::TextWithEntities {
+        tl::types::TextWithEntities {
+            text: s.to_string(),
+            entities: Vec::new(),
+        }
+        .into()
+    };
+    let answers: Vec<tl::enums::PollAnswer> = validated
+        .iter()
+        .map(|text| {
+            tl::types::PollAnswer {
+                text: twe(text),
+                option: text.as_bytes().to_vec(),
+                media: None,
+                added_by: None,
+                date: None,
+            }
+            .into()
+        })
+        .collect();
+    let poll = tl::types::Poll {
+        id: 0,
+        closed: false,
+        public_voters: false,
+        multiple_choice: false,
+        quiz,
+        open_answers: false,
+        revoting_disabled: false,
+        shuffle_answers: false,
+        hide_results_until_close: false,
+        creator: false,
+        subscribers_only: false,
+        question: twe(question),
+        answers,
+        close_period: None,
+        close_date: None,
+        countries_iso2: None,
+        hash: 0,
+    };
+    let media = tl::types::InputMediaPoll {
+        poll: tl::enums::Poll::Poll(poll),
+        correct_answers,
+        attached_media: None,
+        solution: None,
+        solution_entities: None,
+        solution_media: None,
+    };
+    Ok(InputMessage::new().media(media))
 }
 
 pub(crate) async fn send_core(
@@ -411,9 +657,27 @@ pub(crate) async fn send_core(
     let kind = params.kind.clone();
     let copy_from = params.copy_from.clone();
     let copy_id = params.copy_id;
+    let as_media = parse_as_media(params.as_media.as_deref())?.map(str::to_string);
+    let poll = params.poll.clone();
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &chat_target).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    if let Some(question) = &poll {
+        let msg = send_poll_message(
+            question,
+            &params.option,
+            params.poll_mode.as_deref(),
+            params.poll_quiz_option,
+        )?;
+        let sent = shares
+            .client
+            .send_message(chat_ref, msg)
+            .await
+            .map_err(tele_invocation)?;
+        let mut row = crate::serialize::message_to_json(&sent)?;
+        crate::serialize::upgrade_peer_identity(&mut row, &chat);
+        return Ok(row);
+    }
     let apply_common = |msg: InputMessage| -> InputMessage {
         let mut msg = msg.reply_to(reply);
         if silent {
@@ -527,22 +791,26 @@ pub(crate) async fn send_core(
             .upload_file(path)
             .await
             .map_err(upload_error)?;
-        let mut base = match format.as_str() {
-            "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
-            _ => InputMessage::new().text(caption.unwrap_or_default()),
-        };
-        if let Some(thumb_path) = &thumbnail {
-            let thumb_uploaded = shares
-                .client
-                .upload_file(thumb_path)
-                .await
-                .map_err(upload_error)?;
-            base = base.thumbnail(thumb_uploaded);
-        }
-        if looks_like_image(path) {
-            base.photo(uploaded)
+        if let Some(as_media) = &as_media {
+            send_as_media_message(uploaded, as_media)?
         } else {
-            base.document(uploaded)
+            let mut base = match format.as_str() {
+                "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
+                _ => InputMessage::new().text(caption.unwrap_or_default()),
+            };
+            if let Some(thumb_path) = &thumbnail {
+                let thumb_uploaded = shares
+                    .client
+                    .upload_file(thumb_path)
+                    .await
+                    .map_err(upload_error)?;
+                base = base.thumbnail(thumb_uploaded);
+            }
+            if looks_like_image(path) {
+                base.photo(uploaded)
+            } else {
+                base.document(uploaded)
+            }
         }
     } else {
         let text = text.as_deref().unwrap_or_default();

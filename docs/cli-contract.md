@@ -172,10 +172,13 @@ Human mode (no `--json`) prints rich tables on stdout and uses the same exit cod
 - `msg pin --notify` pins with a member notification (the default stays silent) through the raw `messages.updatePinnedMessage` path.
 - `msg read --mentions` clears only the mention badge (`{"mentions_cleared": true}`) and is mutually exclusive with `--mark-unread`.
 - `msg download --chunk-size-kb <4-512, multiple of 4>` streams the media through chunked `iter_download` into the same temp+commit flow. Without the flag, the default one-shot download behaves as before.
+- `msg download --all` downloads every media message from the chat (mutually exclusive with `--id`), with `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` date bounds and `--limit N` (default 1000) capping the history scan. Progress checkpoints to a per-chat state file so a re-run resumes past downloaded ids. `msg download --id N --album` also downloads every sibling sharing the anchor message's `grouped_id`.
 
 ## `msg search`
 
 With `--global`, the search runs across all dialogs (`messages.searchGlobal`) instead of one chat. `--chat` becomes optional, dry-run `data.chat` is null, and `data.global` is true. Rows use the same message object shape.
+
+Filters: `--from SENDER` (same target syntax as `--chat`) keeps only that sender's messages; `--kind photo|video|gif|document|url|audio|voice` maps to the `MessagesFilter` variant; `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` bound the date range (`--since` after `--until` is a Usage error). Per-chat search applies all three server-side; `--global` applies `kind` server-side and `from`/dates client-side.
 
 ## `contact add`
 
@@ -202,6 +205,15 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 - `--format plain|markdown` (default `plain`) controls text formatting for outgoing text.
 - `--silent` sends with notifications muted.
 - `--no-preview` disables the link preview (on by default).
+- `--as voice|video-note` sends a single `--file` as a voice note (`documentAttributeAudio{voice:true}`) or round video note (`documentAttributeVideo{round_message:true}`); exactly one file, no caption/thumbnail/schedule.
+- `--poll "Question" --option A --option B` (repeatable, 2-10 options) creates a poll via `InputMediaPoll`, mutually exclusive with `--file/--text/--url/--copy-from`. `--poll-mode quiz` marks it a quiz; `--poll-quiz-option N` (1-based) sets the correct answer. Dry-run `would` is `"create poll …"`.
+
+## `msg edit`
+
+- `--file <path>` swaps the message media (mutually exclusive with `--text`); `--caption <text>` sets the caption on the replacement media (requires `--file`, must be non-empty).
+- `--format plain|markdown` (default `plain`) applies to `--text` and `--caption` alike; an unknown value is a Usage error.
+- `--no-preview` sets `no_webpage` on the edited message.
+- Dry-run rows echo `file`/`caption`/`format` and `preview` (the inverse of `--no-preview`); `would` is `"edit media of message N"` in file mode.
 
 ## `msg get --watch`
 

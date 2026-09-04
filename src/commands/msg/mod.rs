@@ -3,6 +3,7 @@ use grammers_client::message::InputMessage;
 
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds_api_id;
+use crate::commands::helpers::{looks_like_image, upload_error};
 use crate::entities;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{run_fanout, GlobalFlags};
@@ -64,31 +65,75 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 
 pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
-    if args.text.trim().is_empty() {
-        return Err(TeleError::Usage("--text must not be empty".to_string()));
+    match args.format.as_str() {
+        "plain" | "markdown" => Ok(()),
+        other => Err(TeleError::Usage(format!(
+            "unknown --format {other} (use plain or markdown)"
+        ))),
+    }?;
+    if args.file.is_some() && args.text.is_some() {
+        return Err(TeleError::Usage(
+            "--file and --text are mutually exclusive".to_string(),
+        ));
+    }
+    if args.file.is_none() {
+        match &args.text {
+            None => {
+                return Err(TeleError::Usage(
+                    "msg edit requires --text or --file".to_string(),
+                ))
+            }
+            Some(text) if text.trim().is_empty() => {
+                return Err(TeleError::Usage("--text must not be empty".to_string()));
+            }
+            _ => {}
+        }
+    }
+    if let Some(caption) = &args.caption {
+        if args.file.is_none() {
+            return Err(TeleError::Usage("--caption requires --file".to_string()));
+        }
+        if caption.trim().is_empty() {
+            return Err(TeleError::Usage("--caption must not be empty".to_string()));
+        }
+    }
+    if args.format == "markdown" {
+        if let Some(text) = &args.text {
+            validate::validate_markdown(text)?;
+        }
+        if let Some(caption) = &args.caption {
+            validate::validate_markdown(caption)?;
+        }
     }
     Ok(())
 }
 
-fn edit_dry_run_payload(chat: &str, text: &str, id: i32) -> serde_json::Value {
+pub(crate) fn edit_dry_run_payload(args: &EditArgs) -> serde_json::Value {
     serde_json::json!({
-        "dry_run": true,
-        "id": id,
-        "chat": chat,
-        "text": text,
-        "would": format!("edit message {id}")})
+    "dry_run": true,
+    "id": args.id,
+    "chat": args.chat.as_str(),
+    "text": args.text,
+    "file": args.file,
+    "caption": args.caption,
+    "format": args.format,
+    "preview": !args.no_preview,
+    "would": if args.file.is_some() {
+        format!("edit media of message {}", args.id)
+    } else {
+        format!("edit message {}", args.id)
+    }})
 }
 
 pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Value> {
-    Ok(edit_dry_run_payload(
-        args.chat.as_str(),
-        &args.text,
-        args.id,
-    ))
+    Ok(edit_dry_run_payload(args))
 }
 
 async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_edit(&args)?;
+    if let Some(path) = &args.file {
+        validate::validate_upload_path_inner(path, flags.dry_run)?;
+    }
     crate::executor::require_explicit_selection("msg edit", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -113,13 +158,58 @@ pub(crate) async fn edit_core(
     shares: &crate::client::ServeShares,
     params: EditParams,
 ) -> TeleResult<serde_json::Value> {
+    match params.format.as_str() {
+        "plain" | "markdown" => Ok(()),
+        other => Err(TeleError::Usage(format!(
+            "unknown --format {other} (use plain or markdown)"
+        ))),
+    }?;
+    if params.file.is_some() && params.text.is_some() {
+        return Err(TeleError::Usage(
+            "--file and --text are mutually exclusive".to_string(),
+        ));
+    }
+    if let Some(path) = &params.file {
+        validate::validate_upload_path(path)?;
+    }
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let preview = !params.no_preview;
+    let message = if let Some(path) = &params.file {
+        let uploaded = shares
+            .client
+            .upload_file(path)
+            .await
+            .map_err(upload_error)?;
+        let caption = params.caption.clone().unwrap_or_default();
+        let base = match params.format.as_str() {
+            "markdown" => InputMessage::new().markdown(caption),
+            _ => InputMessage::new().text(caption),
+        };
+        let media = if looks_like_image(path) {
+            base.photo(uploaded)
+        } else {
+            base.document(uploaded)
+        };
+        media.link_preview(preview)
+    } else {
+        let text = params.text.clone().unwrap_or_default();
+        if text.trim().is_empty() {
+            return Err(TeleError::Usage(
+                "msg edit requires --text or --file".to_string(),
+            ));
+        }
+        let base = match params.format.as_str() {
+            "markdown" => InputMessage::new().markdown(text),
+            _ => InputMessage::new().text(text),
+        };
+        base.link_preview(preview)
+    };
     shares
         .client
-        .edit_message(chat_ref, params.id, InputMessage::new().text(params.text))
+        .edit_message(chat_ref, params.id, message)
         .await
         .map_err(tele_invocation)?;
     Ok(serde_json::json!({"id": params.id, "edited": true}))
@@ -1195,7 +1285,89 @@ pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
     if !args.global {
         crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     }
+    if let Some(from) = args.from.as_deref() {
+        crate::chat_target::ChatTarget::parse_flag(from, "from")?;
+    }
+    parse_search_kind(args.kind.as_deref())?;
+    let since = parse_search_date("--since", args.since.as_deref())?;
+    let until = parse_search_date("--until", args.until.as_deref())?;
+    if let (Some(s), Some(u)) = (since, until) {
+        if s > u {
+            return Err(TeleError::Usage(
+                "--since must not be after --until".to_string(),
+            ));
+        }
+    }
     crate::commands::validate_limit(args.limit, 10_000, "limit").map(|_| ())
+}
+
+pub(crate) const SEARCH_KINDS: [&str; 7] =
+    ["photo", "video", "gif", "document", "url", "audio", "voice"];
+
+pub(crate) fn parse_search_kind(
+    kind: Option<&str>,
+) -> TeleResult<Option<grammers_client::tl::enums::MessagesFilter>> {
+    use grammers_client::tl::enums::MessagesFilter;
+    let Some(raw) = kind else {
+        return Ok(None);
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    let filter = match normalized.as_str() {
+        "photo" => MessagesFilter::InputMessagesFilterPhotos,
+        "video" => MessagesFilter::InputMessagesFilterVideo,
+        "gif" => MessagesFilter::InputMessagesFilterGif,
+        "document" => MessagesFilter::InputMessagesFilterDocument,
+        "url" => MessagesFilter::InputMessagesFilterUrl,
+        "audio" => MessagesFilter::InputMessagesFilterMusic,
+        "voice" => MessagesFilter::InputMessagesFilterVoice,
+        _ => {
+            return Err(TeleError::Usage(format!(
+                "unknown --kind {raw:?} (valid kinds: {})",
+                SEARCH_KINDS.join("|")
+            )))
+        }
+    };
+    Ok(Some(filter))
+}
+
+pub(crate) fn parse_search_date(
+    flag: &str,
+    value: Option<&str>,
+) -> TeleResult<Option<chrono::DateTime<chrono::Utc>>> {
+    value
+        .map(|v| download::parse_download_date(flag, v))
+        .transpose()
+}
+
+fn search_sender_matches(
+    msg: &grammers_client::message::Message,
+    from_id: grammers_session::types::PeerId,
+) -> bool {
+    match msg.sender_id() {
+        Some(id) => id == from_id,
+        None => msg.peer_id() == from_id,
+    }
+}
+
+fn search_row_kept(
+    msg: &grammers_client::message::Message,
+    from_id: Option<grammers_session::types::PeerId>,
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    if let Some(want) = from_id {
+        if !search_sender_matches(msg, want) {
+            return false;
+        }
+    }
+    let date = msg.date();
+    if since.is_some_and(|s| date < s) {
+        return false;
+    }
+    if until.is_some_and(|u| date > u) {
+        return false;
+    }
+    true
 }
 
 pub(crate) fn typing_serve_dry_run(args: &TypingArgs) -> TeleResult<serde_json::Value> {
@@ -1680,6 +1852,10 @@ pub(crate) fn search_serve_dry_run(args: &SearchArgs) -> TeleResult<serde_json::
     "global": args.global,
     "query": args.query,
     "limit": args.limit,
+    "from": args.from,
+    "kind": args.kind,
+    "since": args.since,
+    "until": args.until,
     "would": if args.global {
         format!("search all dialogs for \"{}\"", args.query)
     } else {
@@ -1722,34 +1898,88 @@ pub(crate) async fn search_core(
     shares: &crate::client::ServeShares,
     params: SearchParams,
 ) -> TeleResult<serde_json::Value> {
+    let filter = parse_search_kind(params.kind.as_deref())?;
+    let since = parse_search_date("--since", params.since.as_deref())?;
+    let until = parse_search_date("--until", params.until.as_deref())?;
+    if let (Some(s), Some(u)) = (since, until) {
+        if s > u {
+            return Err(TeleError::Usage(
+                "--since must not be after --until".to_string(),
+            ));
+        }
+    }
+    let from_id = match params.from.as_deref() {
+        Some(target) => Some(
+            entities::resolve_peer(&shares.client, shares.session.as_ref(), target)
+                .await?
+                .id(),
+        ),
+        None => None,
+    };
     shares.rate_limiter.acquire().await;
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut served = 0usize;
     let limit = params.limit as usize;
     if params.global {
-        let mut iter = shares
-            .client
-            .search_all_messages()
-            .query(&params.query)
-            .limit(limit);
-        while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-            served += 1;
-            shares.rate_limiter.acquire_for_items(served).await;
-            push_message_row(&mut rows, &msg)?;
+        let mut iter = shares.client.search_all_messages().query(&params.query);
+        if let Some(f) = filter {
+            iter = iter.filter(f);
+        }
+        if from_id.is_none() && since.is_none() && until.is_none() {
+            iter = iter.limit(limit);
+            while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                served += 1;
+                shares.rate_limiter.acquire_for_items(served).await;
+                push_message_row(&mut rows, &msg)?;
+            }
+        } else {
+            while rows.len() < limit {
+                match iter.next().await.map_err(tele_invocation)? {
+                    Some(msg) => {
+                        served += 1;
+                        shares.rate_limiter.acquire_for_items(served).await;
+                        if search_row_kept(&msg, from_id, since, until) {
+                            push_message_row(&mut rows, &msg)?;
+                        }
+                    }
+                    None => break,
+                }
+            }
         }
     } else {
         let chat =
             entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
         let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
-        let mut iter = shares
-            .client
-            .search_messages(chat_ref)
-            .query(&params.query)
-            .limit(limit);
-        while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
-            served += 1;
-            shares.rate_limiter.acquire_for_items(served).await;
-            push_message_row(&mut rows, &msg)?;
+        let mut iter = shares.client.search_messages(chat_ref).query(&params.query);
+        if let Some(f) = filter {
+            iter = iter.filter(f);
+        }
+        if let Some(s) = since {
+            iter = iter.min_date(&s.into());
+        }
+        if let Some(u) = until {
+            iter = iter.max_date(&u.into());
+        }
+        if let Some(want) = from_id {
+            while rows.len() < limit {
+                match iter.next().await.map_err(tele_invocation)? {
+                    Some(msg) => {
+                        served += 1;
+                        shares.rate_limiter.acquire_for_items(served).await;
+                        if search_sender_matches(&msg, want) {
+                            push_message_row(&mut rows, &msg)?;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        } else {
+            iter = iter.limit(limit);
+            while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                served += 1;
+                shares.rate_limiter.acquire_for_items(served).await;
+                push_message_row(&mut rows, &msg)?;
+            }
         }
     }
     Ok(serde_json::json!({"messages": rows}))
@@ -1815,7 +2045,7 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             false,
             false,
             true,
-            "edit the text of an outgoing message",
+            "edit the text or media of an outgoing message",
             EditParams,
             EditArgs,
             validate_edit,
