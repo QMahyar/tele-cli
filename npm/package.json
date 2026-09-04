@@ -1,6 +1,6 @@
 {
   "name": "@qmahyar/telecli",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "Telegram user-account CLI — messages, chats, groups, contacts, privacy, live streaming, MCP server. No bot tokens.",
   "license": "MIT",
   "keywords": [
