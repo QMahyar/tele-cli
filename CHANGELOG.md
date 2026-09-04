@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-09-04
+
+### Fixed
+- `dialog folder-create`: the 12-char title cap and peer-requirement validation now also apply on the CLI path (previously only serve/MCP enforced them).
+
+
 ## [0.11.2] - 2026-09-04
 
 ### Fixed

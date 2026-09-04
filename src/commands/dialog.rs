@@ -1058,9 +1058,7 @@ fn folder_create_dry_run_data(title: &str) -> serde_json::Value {
 }
 
 async fn folder_create(args: FolderCreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    if args.title.trim().is_empty() {
-        return Err(TeleError::Usage("--title must not be empty".to_string()));
-    }
+    validate_folder_create(&args)?;
     crate::executor::require_explicit_selection("dialog folder-create", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
