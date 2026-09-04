@@ -117,7 +117,9 @@ pub(crate) async fn cache_sync_core(
                 .unwrap_or_default(),
             date: msg.date().timestamp(),
             text: msg.text().to_string(),
-            media_kind: msg.media().map(|m| format!("{m:?}")),
+            media_kind: msg
+                .media()
+                .map(|m| crate::serialize::media_kind(&m).to_string()),
         });
     }
     let stored = crate::cache_db::store_messages(account, &cached).await?;

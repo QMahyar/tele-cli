@@ -133,17 +133,18 @@ pub async fn search_cache(
         }
         return Ok(out);
     }
+    let fts_query = fts_escape(query);
     let sql = if chat_id.is_some() {
         "SELECT m.id, m.chat_id, m.chat_name, m.sender_id, m.sender_name, m.date, m.text, m.media_kind FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?1 AND m.chat_id = ?2 ORDER BY m.date DESC LIMIT ?3"
     } else {
         "SELECT m.id, m.chat_id, m.chat_name, m.sender_id, m.sender_name, m.date, m.text, m.media_kind FROM messages_fts f JOIN messages m ON m.rowid = f.rowid WHERE messages_fts MATCH ?1 ORDER BY m.date DESC LIMIT ?2"
     };
     let mut rows = if let Some(cid) = chat_id {
-        conn.query(sql, libsql::params![query.to_string(), cid, limit as i64])
+        conn.query(sql, libsql::params![fts_query, cid, limit as i64])
             .await
             .map_err(|e| TeleError::Other(format!("cache fts query failed: {e}")))?
     } else {
-        conn.query(sql, libsql::params![query.to_string(), limit as i64])
+        conn.query(sql, libsql::params![fts_query, limit as i64])
             .await
             .map_err(|e| TeleError::Other(format!("cache fts query failed: {e}")))?
     };
@@ -155,6 +156,14 @@ pub async fn search_cache(
         out.push(row_to_message(&row)?);
     }
     Ok(out)
+}
+
+// Wrap the query in double quotes so FTS5 treats it as a phrase, not query
+// syntax. Doubling embedded quotes keeps user input from closing the phrase
+// early or injecting column filters (e.g. `LIVE-TEST` would otherwise parse
+// as `TEST` being a column name).
+fn fts_escape(query: &str) -> String {
+    format!("\"{}\"", query.replace('"', "\"\""))
 }
 
 fn row_to_message(row: &libsql::Row) -> TeleResult<CachedMessage> {
@@ -251,6 +260,19 @@ mod tests {
 
     fn test_account(tag: &str) -> String {
         format!("cache-test-{tag}-{}", std::process::id())
+    }
+
+    #[test]
+    fn fts_escape_wraps_in_quotes() {
+        assert_eq!(fts_escape("deploy"), "\"deploy\"");
+    }
+
+    #[test]
+    fn fts_escape_neutralizes_column_syntax_and_injection() {
+        // A hyphen would otherwise parse as `column:term` in FTS5.
+        assert_eq!(fts_escape("LIVE-TEST"), "\"LIVE-TEST\"");
+        // Embedded quotes are doubled so the phrase cannot be closed early.
+        assert_eq!(fts_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
     }
 
     fn with_test_appdir<F, T>(f: F) -> T

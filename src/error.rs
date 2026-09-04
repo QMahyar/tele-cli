@@ -297,6 +297,21 @@ pub fn invocation_wait_seconds(e: &grammers_client::InvocationError) -> Option<u
     }
 }
 
+// Server-enforced account limits that read as tool bugs when surfaced raw.
+// The hint is appended to the message; `code` and `name` stay untouched so
+// scripts matching on them keep working.
+fn premium_hint(rpc: &grammers_client::sender::RpcError) -> Option<&'static str> {
+    match (rpc.code, rpc.name.as_str()) {
+        (403, "PREMIUM_ACCOUNT_REQUIRED") => {
+            Some(" — this action requires a Telegram Premium subscription on this account")
+        }
+        (400, "MESSAGE_TOO_LONG") => {
+            Some(" — the request text exceeds the server limit; shorten the value")
+        }
+        _ => None,
+    }
+}
+
 pub fn invocation_error_ref(e: &grammers_client::InvocationError) -> TeleError {
     if invocation_is_unauthorized(e) {
         if let grammers_client::InvocationError::Rpc(rpc) = e {
@@ -308,12 +323,11 @@ pub fn invocation_error_ref(e: &grammers_client::InvocationError) -> TeleError {
         match e {
             grammers_client::InvocationError::Rpc(rpc) => {
                 let seconds = if rpc.code == 420 { rpc.value } else { None };
-                TeleError::Rpc(
-                    scrub(rpc.to_string()),
-                    rpc.code,
-                    scrub(rpc.name.clone()),
-                    seconds,
-                )
+                let message = match premium_hint(rpc) {
+                    Some(hint) => format!("{}{}", rpc, hint),
+                    None => rpc.to_string(),
+                };
+                TeleError::Rpc(scrub(message), rpc.code, scrub(rpc.name.clone()), seconds)
             }
             other => TeleError::Invocation(scrub(invocation_message(other)), None),
         }
