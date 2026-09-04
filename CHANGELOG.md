@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-04
+
 ### Added
 - `tele dialog folders` / `folder-create` / `folder-delete` / `folder-reorder`: list, create, delete, and reorder chat folders (dialog filters) via `messages.{getDialogFilters,updateDialogFilter,updateDialogFiltersOrder}`.
 - `tele msg scheduled` / `scheduled-delete` / `scheduled-send`: list scheduled messages (`messages.getScheduledHistory`), delete them, or send them immediately.
