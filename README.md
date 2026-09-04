@@ -77,10 +77,10 @@ Full walkthrough in [docs/getting-started.md](docs/getting-started.md). Usage re
 
 ## What you get
 
-- **17 command groups**: accounts, messages, chats, dialogs, forum topics, contacts, profile, privacy, stories, stickers, takeout, listen, serve, mcp, raw, skill, completions. Run `tele --help` for every command and flag.
+- **17 command groups**: accounts, messages, chats, dialogs, forum topics, contacts, profile, privacy, stories, stickers, takeout, cache, listen, serve, mcp, raw, skill. Run `tele --help` for every command and flag (completions is the 18th utility command).
 - **Multi-account**: named sessions, tags, parallel fan-out (`--parallel 1-32`) with per-account rate limiting and FloodWait handling.
 - **Machine output**: every command supports `--json` and `--jsonl` with a stable envelope. `tele listen` streams events as JSONL.
-- **MCP server**: `tele mcp` exposes 67 tools for Claude, Cursor, and any MCP client.
+- **MCP server**: `tele mcp` exposes 78 tools for Claude, Cursor, and any MCP client.
 - **Duplex server**: `tele serve` runs a JSONL request/response protocol over stdin/stdout for embedding.
 - **Agent skill**: `tele skill` prints a complete SKILL.md for driving tele from any coding agent.
 - **Dry-run everywhere**: `--dry-run` validates and prints the exact intended action without any network call.

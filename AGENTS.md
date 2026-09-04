@@ -57,7 +57,7 @@ Wasteful: pasting all of `docs/capabilities.md` when you touch one `privacy.*` r
 ```bash
 cargo build                              # debug build
 cargo build --release                    # optimized build
-cargo test                               # ~1470 tests, no network
+cargo test                               # ~1560 tests, no network
 cargo clippy --all-targets -- -D warnings # lint
 cargo fmt --all -- --check               # format check (cargo fmt --all to fix)
 cargo run -- --help                      # CLI help
@@ -80,11 +80,17 @@ src/
 ├── session.rs           FileSession (SQLite) per named account
 ├── logging.rs           stderr-only structured logging
 ├── fs_util.rs           Permission helpers (create_dir_private, restrict_file_private); sensitive-file detection lives in msg.rs validate_upload_path()
+├── rate_limiter.rs      Per-account token-bucket RPC rate limiter
+├── cache_db.rs          Per-account SQLite message cache (FTS5)
+├── capped_map.rs        Bounded LRU-ish dedupe map shared by serve/listen
+├── chat_target.rs       --chat target parser (ChatTarget)
+├── pagination.rs        Shared pagination cursor helpers
 └── commands/    ├── mod.rs           Subcommand enum dispatch
-    ├── account/     mod.rs, password.rs, phone.rs, staged_login.rs (add, login (code/QR), logout, remove, status, list, sessions, password, export-session, import-session, ttl, delete, phone)
-    ├── msg/         mod.rs, params.rs, send.rs, download.rs, validate.rs (send, get, edit, delete, forward, search, react, download, read, pin, vote, typing, click)
-    ├── chat/        mod.rs, admin_log.rs, invite.rs, participants.rs, settings.rs (join, create, leave, participants, kick, admin, admin-log, stats, invite, requests, settings, edit, link)
-    ├── dialog.rs        list, drafts, archive/unarchive, delete, pin, draft
+    ├── account/     mod.rs, login.rs, password.rs, phone.rs, staged_login.rs, tests.rs (add, login (code/QR/staged), logout, remove, status, list, sessions, password, export-session, import-session, ttl, delete, phone)
+    ├── cache.rs     cache sync/search/stats/clear (local FTS5 cache)
+    ├── chat/        mod.rs, admin_log.rs, invite.rs, participants.rs, settings.rs, tests.rs (join, create, leave, participants, kick, admin, admin-log, stats, invite, requests, settings, edit, link)
+    ├── dialog.rs        list, drafts, draft, archive/unarchive, delete, pin, folders, folder-create, folder-delete, folder-reorder
+    ├── msg/         mod.rs, params.rs, send.rs, download.rs, validate.rs, tests.rs (send incl. scheduled, get, edit, delete, forward, search, react, download, read, pin, vote, typing, click)
     ├── topic.rs         list, create, close, reopen, edit, delete, pin
     ├── contact.rs       list, add, remove, block, unblock
     ├── profile.rs       get, set (name, bio, photo, username, emoji-status)

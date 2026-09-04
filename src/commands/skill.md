@@ -27,9 +27,10 @@ compatibility: tele 0.8.0+
 | group | does |
 |---|---|
 | `account` | list, add, login (code/QR), logout, remove, status, sessions, password, export-session, import-session, ttl, delete, phone |
-| `msg` | send, get, edit, delete, forward, search, react, download, read, pin, vote, typing, click |
+| `msg` | send (incl. --schedule), scheduled, scheduled-delete, scheduled-send, get, edit, delete, forward, search, react, download, read, pin, vote, typing, click |
 | `chat` | join, create, leave, participants, kick, admin, admin-log, stats, invite, requests, settings, edit, link |
-| `dialog` | list, drafts, archive, unarchive, delete, pin, draft |
+| `dialog` | list, drafts, archive, unarchive, delete, pin, draft, folders, folder-create, folder-delete, folder-reorder |
+| `cache` | local per-account message cache: sync, search (FTS5 offline), stats, clear |
 | `topic` | forum topics: list, create, close, reopen, edit, delete, pin |
 | `contact` | list, add, remove, block, unblock |
 | `profile` | get, set (name, bio, username), photo, emoji-status |
@@ -67,6 +68,9 @@ tele chat participants --chat '@group' --json
 tele profile get --json
 tele mcp --account work --read-only                      # MCP server for tool-calling clients
 tele serve --account work                                # duplex JSONL: actions in, events out
+tele cache sync --account work --chat '@team' --json     # pull messages into local cache
+tele cache search --account work --query "deploy" --json # offline full-text search
+tele dialog folders --json                               # list chat folders
 ```
 
 ## Reference

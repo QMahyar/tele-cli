@@ -13,3 +13,8 @@ pending/
 .pi/
 dist/
 .opencode/
+
+# Local tool caches
+.ruff_cache/
+.superpowers/
+.claude/
