@@ -16,6 +16,7 @@ pub struct ClientGuard {
     pub rate_limiter: Arc<RateLimiter>,
     runner: Option<tokio::task::JoinHandle<()>>,
     _session_lock: crate::session::SessionLock,
+    pub(crate) account_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -24,6 +25,17 @@ pub struct ServeShares {
     pub session: Arc<SqliteSession>,
     pub rate_limiter: Arc<RateLimiter>,
     pub(crate) _session_lock: Option<crate::session::SessionLock>,
+    pub account: String,
+}
+
+impl ServeShares {
+    pub fn account_name(&self) -> Option<String> {
+        if self.account.is_empty() {
+            None
+        } else {
+            Some(self.account.clone())
+        }
+    }
 }
 
 impl ClientGuard {
@@ -33,6 +45,7 @@ impl ClientGuard {
             session: Arc::clone(&self.session),
             rate_limiter: Arc::clone(&self.rate_limiter),
             _session_lock: Some(self._session_lock.share()),
+            account: self.account_name.clone().unwrap_or_default(),
         }
     }
 }
@@ -92,6 +105,7 @@ impl ClientGuard {
             rate_limiter,
             runner: Some(runner_task),
             _session_lock: locked.lock,
+            account_name: Some(name.to_string()),
         })
     }
 

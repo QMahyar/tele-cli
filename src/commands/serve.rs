@@ -652,6 +652,7 @@ macro_rules! serve_route {
 pub(crate) fn serve_op_routes() -> Vec<OpRoute> {
     let mut routes = crate::commands::msg::msg_serve_routes();
     routes.extend(crate::commands::dialog::dialog_serve_routes());
+    routes.extend(crate::commands::cache::cache_serve_routes());
     routes.extend(crate::commands::topic::topic_serve_routes());
     routes.extend(crate::commands::profile::profile_serve_routes());
     routes.extend(crate::commands::privacy::privacy_serve_routes());
@@ -1823,6 +1824,10 @@ mod tests {
             "account status",
             "account ttl get",
             "account ttl set",
+            "cache clear",
+            "cache search",
+            "cache stats",
+            "cache sync",
             "chat admin",
             "chat admin-log",
             "chat create",
@@ -1845,6 +1850,10 @@ mod tests {
             "dialog delete",
             "dialog draft",
             "dialog drafts",
+            "dialog folder-create",
+            "dialog folder-delete",
+            "dialog folder-reorder",
+            "dialog folders",
             "dialog list",
             "dialog pin",
             "msg click",
@@ -1856,6 +1865,9 @@ mod tests {
             "msg pin",
             "msg react",
             "msg read",
+            "msg scheduled",
+            "msg scheduled-delete",
+            "msg scheduled-send",
             "msg search",
             "msg send",
             "msg typing",
@@ -1900,6 +1912,7 @@ mod tests {
                 || op.starts_with("story ")
                 || op.starts_with("chat ")
                 || op.starts_with("account ")
+                || op.starts_with("cache ")
                 || op == "raw"
         };
         assert!(serve_op_routes().iter().all(|r| {
@@ -2558,9 +2571,16 @@ mod tests {
             ("dialog delete", Lane::Mutate, Some(30)),
             ("dialog draft", Lane::Mutate, Some(30)),
             ("dialog drafts", Lane::Read, Some(120)),
+            ("dialog folder-create", Lane::Mutate, Some(30)),
+            ("dialog folder-delete", Lane::Mutate, Some(30)),
+            ("dialog folder-reorder", Lane::Mutate, Some(30)),
+            ("dialog folders", Lane::Read, Some(120)),
             ("dialog list", Lane::Read, Some(120)),
             ("dialog pin", Lane::Mutate, Some(30)),
             ("msg click", Lane::Mutate, Some(30)),
+            ("msg scheduled", Lane::Read, Some(120)),
+            ("msg scheduled-delete", Lane::Mutate, Some(30)),
+            ("msg scheduled-send", Lane::Mutate, Some(30)),
             ("msg delete", Lane::Mutate, Some(30)),
             ("msg download", Lane::Read, None),
             ("msg edit", Lane::Mutate, Some(30)),
@@ -2603,6 +2623,10 @@ mod tests {
             ("account status", Lane::Read, Some(120)),
             ("account ttl get", Lane::Read, Some(120)),
             ("account ttl set", Lane::Mutate, Some(30)),
+            ("cache clear", Lane::Mutate, Some(30)),
+            ("cache search", Lane::Read, Some(30)),
+            ("cache stats", Lane::Read, Some(30)),
+            ("cache sync", Lane::Mutate, Some(120)),
             ("chat admin", Lane::Mutate, Some(30)),
             ("chat admin-log", Lane::Read, Some(120)),
             ("chat create", Lane::Mutate, Some(30)),
@@ -2641,6 +2665,10 @@ mod tests {
             ("dialog delete", false, true, true),
             ("dialog draft", false, false, true),
             ("dialog drafts", true, false, true),
+            ("dialog folder-create", false, false, true),
+            ("dialog folder-delete", false, false, true),
+            ("dialog folder-reorder", false, false, true),
+            ("dialog folders", true, false, true),
             ("dialog list", true, false, true),
             ("dialog pin", false, false, true),
             ("msg click", false, false, false),
@@ -2652,6 +2680,9 @@ mod tests {
             ("msg pin", false, false, true),
             ("msg read", false, false, true),
             ("msg react", false, false, true),
+            ("msg scheduled", true, false, true),
+            ("msg scheduled-delete", false, false, true),
+            ("msg scheduled-send", false, false, true),
             ("msg search", true, false, true),
             ("msg send", false, false, false),
             ("msg typing", false, false, true),
@@ -2686,6 +2717,10 @@ mod tests {
             ("account status", true, false, true),
             ("account ttl get", true, false, true),
             ("account ttl set", false, false, true),
+            ("cache clear", false, false, true),
+            ("cache search", true, false, true),
+            ("cache stats", true, false, true),
+            ("cache sync", false, false, true),
             ("chat admin", false, false, true),
             ("chat admin-log", true, false, true),
             ("chat create", false, false, true),
@@ -2759,7 +2794,7 @@ mod tests {
         let routes = serve_op_routes();
         assert_eq!(
             routes.len(),
-            67,
+            78,
             "routed op count drifted; update docs/cli-contract.md and this lock"
         );
         let mut names: Vec<&str> = routes.iter().map(|r| r.op).collect();

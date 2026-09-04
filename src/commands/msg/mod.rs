@@ -19,11 +19,13 @@ use send::{send, send_core, send_serve_dry_run};
 
 pub use params::{
     ClickArgs, DeleteArgs, DownloadArgs, EditArgs, ForwardArgs, GetArgs, PinArgs, ReactArgs,
-    ReadArgs, SearchArgs, SendArgs, TypingArgs, VoteArgs,
+    ReadArgs, ScheduledArgs, ScheduledDeleteArgs, ScheduledSendArgs, SearchArgs, SendArgs,
+    TypingArgs, VoteArgs,
 };
 pub(crate) use params::{
     ClickParams, DeleteParams, DownloadParams, EditParams, ForwardParams, GetParams, PinParams,
-    ReactParams, ReadParams, SearchParams, SendParams, TypingParams, VoteParams,
+    ReactParams, ReadParams, ScheduledDeleteParams, ScheduledParams, ScheduledSendParams,
+    SearchParams, SendParams, TypingParams, VoteParams,
 };
 pub(crate) use send::validate_send;
 pub use validate::validate_upload_path;
@@ -43,6 +45,12 @@ pub enum MsgCmd {
     Vote(VoteArgs),
     Typing(TypingArgs),
     Click(ClickArgs),
+    #[command(about = "list scheduled messages for a chat")]
+    Scheduled(ScheduledArgs),
+    #[command(about = "delete scheduled messages by id")]
+    ScheduledDelete(ScheduledDeleteArgs),
+    #[command(about = "send scheduled messages now by id")]
+    ScheduledSend(ScheduledSendArgs),
 }
 
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -60,6 +68,9 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         MsgCmd::Vote(a) => vote(a, flags).await,
         MsgCmd::Typing(a) => typing(a, flags).await,
         MsgCmd::Click(a) => click(a, flags).await,
+        MsgCmd::Scheduled(a) => scheduled(a, flags).await,
+        MsgCmd::ScheduledDelete(a) => scheduled_delete(a, flags).await,
+        MsgCmd::ScheduledSend(a) => scheduled_send(a, flags).await,
     }
 }
 
@@ -1845,6 +1856,177 @@ pub(crate) async fn click_core(
     Ok(row)
 }
 
+fn scheduled_dry_run_data(chat: &str, limit: u32) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "limit": limit,
+        "would": format!("list up to {limit} scheduled messages in chat {chat}")})
+}
+
+async fn scheduled(args: ScheduledArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(scheduled_dry_run_data(args.chat.as_str(), args.limit));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            scheduled_core(&guard.shares(), ScheduledParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn scheduled_core(
+    shares: &crate::client::ServeShares,
+    params: ScheduledParams,
+) -> TeleResult<serde_json::Value> {
+    use grammers_client::tl;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let messages: tl::enums::messages::Messages = shares
+        .client
+        .invoke(&tl::functions::messages::GetScheduledHistory { peer, hash: 0 })
+        .await
+        .map_err(tele_invocation)?;
+    let mut out = Vec::new();
+    let (msgs, users, chats) = match messages {
+        tl::enums::messages::Messages::Messages(m) => (m.messages, m.users, m.chats),
+        tl::enums::messages::Messages::Slice(m) => (m.messages, m.users, m.chats),
+        tl::enums::messages::Messages::ChannelMessages(m) => (m.messages, m.users, m.chats),
+        tl::enums::messages::Messages::NotModified(_) => (vec![], vec![], vec![]),
+    };
+    for msg in msgs.iter().take(params.limit as usize) {
+        if let tl::enums::Message::Message(m) = msg {
+            out.push(serde_json::json!({
+                "id": m.id,
+                "date": m.date,
+                "message": m.message,
+            }));
+        }
+    }
+    let _ = (users, chats);
+    Ok(serde_json::json!({ "chat": params.chat, "scheduled": out }))
+}
+
+fn scheduled_delete_dry_run_data(chat: &str, ids: &[i32]) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "ids": ids,
+        "would": format!("delete {} scheduled message(s) in chat {chat}", ids.len())})
+}
+
+async fn scheduled_delete(args: ScheduledDeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if args.ids.is_empty() {
+        return Err(TeleError::Usage(
+            "--ids must list at least one message id".to_string(),
+        ));
+    }
+    crate::executor::require_explicit_selection("msg scheduled-delete", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(scheduled_delete_dry_run_data(args.chat.as_str(), &args.ids));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            scheduled_delete_core(&guard.shares(), ScheduledDeleteParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn scheduled_delete_core(
+    shares: &crate::client::ServeShares,
+    params: ScheduledDeleteParams,
+) -> TeleResult<serde_json::Value> {
+    use grammers_client::tl;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let _: tl::enums::Updates = shares
+        .client
+        .invoke(&tl::functions::messages::DeleteScheduledMessages {
+            peer,
+            id: params.ids.clone(),
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({ "chat": params.chat, "ids": params.ids, "deleted": true }))
+}
+
+fn scheduled_send_dry_run_data(chat: &str, ids: &[i32]) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "ids": ids,
+        "would": format!("send {} scheduled message(s) now in chat {chat}", ids.len())})
+}
+
+async fn scheduled_send(args: ScheduledSendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    if args.ids.is_empty() {
+        return Err(TeleError::Usage(
+            "--ids must list at least one message id".to_string(),
+        ));
+    }
+    crate::executor::require_explicit_selection("msg scheduled-send", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(scheduled_send_dry_run_data(args.chat.as_str(), &args.ids));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            scheduled_send_core(&guard.shares(), ScheduledSendParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn scheduled_send_core(
+    shares: &crate::client::ServeShares,
+    params: ScheduledSendParams,
+) -> TeleResult<serde_json::Value> {
+    use grammers_client::tl;
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+    let _: tl::enums::Updates = shares
+        .client
+        .invoke(&tl::functions::messages::SendScheduledMessages {
+            peer,
+            id: params.ids.clone(),
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({ "chat": params.chat, "ids": params.ids, "sent": true }))
+}
+
 pub(crate) fn search_serve_dry_run(args: &SearchArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
     "dry_run": true,
@@ -2188,6 +2370,51 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             run_vote,
             crate::commands::serve::params_schema::<VoteParams>
         ),
+        crate::serve_route!(
+            "msg scheduled",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list scheduled messages for a chat",
+            ScheduledParams,
+            ScheduledArgs,
+            validate_scheduled,
+            scheduled_serve_dry_run,
+            run_scheduled,
+            crate::commands::serve::params_schema::<ScheduledParams>
+        ),
+        crate::serve_route!(
+            "msg scheduled-delete",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "delete scheduled messages by id",
+            ScheduledDeleteParams,
+            ScheduledDeleteArgs,
+            validate_scheduled_delete,
+            scheduled_delete_serve_dry_run,
+            run_scheduled_delete,
+            crate::commands::serve::params_schema::<ScheduledDeleteParams>
+        ),
+        crate::serve_route!(
+            "msg scheduled-send",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "send scheduled messages now by id",
+            ScheduledSendParams,
+            ScheduledSendArgs,
+            validate_scheduled_send,
+            scheduled_send_serve_dry_run,
+            run_scheduled_send,
+            crate::commands::serve::params_schema::<ScheduledSendParams>
+        ),
     ]
 }
 
@@ -2204,3 +2431,49 @@ crate::serve_runner!(run_download, download_core, DownloadParams);
 crate::serve_runner!(run_vote, vote_core, VoteParams);
 crate::serve_runner!(run_typing, typing_core, TypingParams);
 crate::serve_runner!(run_click, click_core, ClickParams);
+crate::serve_runner!(run_scheduled, scheduled_core, ScheduledParams);
+crate::serve_runner!(
+    run_scheduled_delete,
+    scheduled_delete_core,
+    ScheduledDeleteParams
+);
+crate::serve_runner!(run_scheduled_send, scheduled_send_core, ScheduledSendParams);
+
+pub(crate) fn validate_scheduled(args: &ScheduledArgs) -> TeleResult<()> {
+    crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn scheduled_serve_dry_run(args: &ScheduledArgs) -> TeleResult<serde_json::Value> {
+    Ok(scheduled_dry_run_data(args.chat.as_str(), args.limit))
+}
+
+pub(crate) fn validate_scheduled_delete(args: &ScheduledDeleteArgs) -> TeleResult<()> {
+    if args.ids.is_empty() {
+        return Err(TeleError::Usage(
+            "--ids must list at least one message id".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn scheduled_delete_serve_dry_run(
+    args: &ScheduledDeleteArgs,
+) -> TeleResult<serde_json::Value> {
+    Ok(scheduled_delete_dry_run_data(args.chat.as_str(), &args.ids))
+}
+
+pub(crate) fn validate_scheduled_send(args: &ScheduledSendArgs) -> TeleResult<()> {
+    if args.ids.is_empty() {
+        return Err(TeleError::Usage(
+            "--ids must list at least one message id".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn scheduled_send_serve_dry_run(
+    args: &ScheduledSendArgs,
+) -> TeleResult<serde_json::Value> {
+    Ok(scheduled_send_dry_run_data(args.chat.as_str(), &args.ids))
+}

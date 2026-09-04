@@ -179,6 +179,7 @@ See [docs/security.md](docs/security.md) for the threat model.
 | [Observability](docs/observability.md) | Logging and output streams |
 | [Release](docs/release.md) | Build targets and publishing |
 | [Decisions](docs/decisions/) | Architecture decision records |
+| [Changelog](CHANGELOG.md) | What's new in each release |
 
 ## License
 

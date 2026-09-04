@@ -21,7 +21,7 @@ This guide walks you through installing tele, setting up your first account, and
 ### Option A: npm (recommended)
 
 ```bash
-npm install -g @qmahyar/tele
+npm install -g @qmahyar/telecli
 tele --version
 ```
 
