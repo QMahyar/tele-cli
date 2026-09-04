@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-09-04
+
+### Fixed
+- `dialog folder-create`: titles over 12 characters are rejected offline naming the Telegram cap, instead of the server's misleading `MESSAGE_TOO_LONG`.
+- Pinned the embedded `skill.md` asset to LF in `.gitattributes` so `include_str!` output matches the contract tests on Windows CRLF checkouts (pre-existing CI failure on main).
+
+### Note
+- npm 0.11.1 was published from an intermediate commit and lacks only the folder-title offline validation; 0.11.2 supersedes it.
+
 ## [0.11.1] - 2026-09-04
 
 ### Fixed
