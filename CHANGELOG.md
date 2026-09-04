@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-04
+
+### Fixed
+- `cache search`: hyphenated queries no longer crash with a raw SQLite error; user queries are escaped as FTS5 phrases (`LIVE-TEST` no longer parses as column syntax).
+- `cache sync`: `media_kind` now stores clean labels (`document`, `photo`, …) matching `msg get`, instead of the Rust Debug format.
+- `msg send --schedule`: relative durations (`90s`, `30m`, `24h`, `7d`, `2w`, and `+`-prefixed variants) are now accepted, matching `chat invite --expire`; negative durations are rejected.
+- `dialog folder-create`: new `--include-chat` / `--pin-chat` / `--exclude-chat` flags; rule-only folders with no peers are rejected offline with a clear error instead of the server's obscure `MESSAGE_TOO_LONG`.
+- RPC errors `PREMIUM_ACCOUNT_REQUIRED` and `MESSAGE_TOO_LONG` now carry a short plain-language hint appended to the message; `code` and `name` are unchanged.
+
 ## [0.11.0] - 2026-09-04
 
 ### Added
