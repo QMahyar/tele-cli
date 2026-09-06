@@ -87,6 +87,15 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             let dir = export_dir(&name);
             ensure_no_active_takeout(&dir)?;
+            let cleared = clear_stale_export_artifacts(&dir);
+            if cleared > 0 {
+                crate::output::log_line(
+                    "info",
+                    &format!(
+                        "cleared {cleared} stale export file(s) left by a previous abandoned takeout"
+                    ),
+                );
+            }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
@@ -194,6 +203,17 @@ fn ensure_no_active_takeout(dir: &std::path::Path) -> TeleResult<()> {
         ));
     }
     Ok(())
+}
+
+fn clear_stale_export_artifacts(dir: &std::path::Path) -> usize {
+    let mut removed = 0usize;
+    for name in ["messages.jsonl", "contacts.json", "dialogs.json"] {
+        let path = dir.join(name);
+        if path.exists() && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn delete_takeout_state(dir: &std::path::Path) {
@@ -1180,6 +1200,34 @@ mod tests {
         assert!(ensure_no_active_takeout(&dir).is_err());
         delete_takeout_state(&dir);
         assert!(ensure_no_active_takeout(&dir).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn start_clears_stale_export_artifacts_from_abandoned_session() {
+        let dir = temp_dir("stale-artifacts");
+        std::fs::write(dir.join("messages.jsonl"), "{}\n{}").unwrap();
+        std::fs::write(dir.join("contacts.json"), "[]").unwrap();
+        std::fs::write(dir.join("dialogs.json"), "[]").unwrap();
+        std::fs::write(dir.join("keepme.txt"), "untouched").unwrap();
+        let removed = clear_stale_export_artifacts(&dir);
+        assert_eq!(removed, 3);
+        assert!(!dir.join("messages.jsonl").exists());
+        assert!(!dir.join("contacts.json").exists());
+        assert!(!dir.join("dialogs.json").exists());
+        assert!(
+            dir.join("keepme.txt").exists(),
+            "unrelated files must survive"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn start_stale_artifact_clear_tolerates_missing_dir_and_files() {
+        let dir = temp_dir("stale-artifacts-empty");
+        assert_eq!(clear_stale_export_artifacts(&dir), 0);
+        let missing = dir.join("does-not-exist");
+        assert_eq!(clear_stale_export_artifacts(&missing), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
