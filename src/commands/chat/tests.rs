@@ -1782,14 +1782,16 @@ fn settings_validation_rejects_empty_chat_and_bad_values() {
 }
 
 #[test]
-fn settings_noforwards_toggle_is_rejected_as_unavailable() {
+fn settings_noforwards_toggle_validates_like_other_toggles() {
     let mut args = settings_args("@chat");
     args.noforwards = Some("on".to_string());
+    assert!(validate_settings(&args).is_ok());
+    args.noforwards = Some("off".to_string());
+    assert!(validate_settings(&args).is_ok());
+    args.noforwards = Some("sideways".to_string());
     let err = validate_settings(&args).unwrap_err();
     assert!(matches!(err, TeleError::Usage(_)));
-    assert!(err.to_string().contains("--noforwards"));
-    args.noforwards = Some("off".to_string());
-    assert!(matches!(validate_settings(&args), Err(TeleError::Usage(_))));
+    assert!(err.to_string().contains("on or off"));
     args.noforwards = None;
     assert!(validate_settings(&args).is_ok());
 }
@@ -2788,11 +2790,11 @@ mod chat_serve_tests {
         let msg = usage_error(
             plan_chat_op(
                 "chat settings",
-                serde_json::json!({"chat": "work", "noforwards": "on"}),
+                serde_json::json!({"chat": "work", "noforwards": "sideways"}),
             )
             .unwrap_err(),
         );
-        assert!(msg.contains("cannot be applied"), "{msg}");
+        assert!(msg.contains("on or off"), "{msg}");
 
         let msg = usage_error(
             plan_chat_op(

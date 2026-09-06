@@ -41,11 +41,6 @@ pub(crate) fn validate_settings(args: &SettingsArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     parse_slow_mode(args.slow_mode.as_deref())?;
     parse_on_off(args.noforwards.as_deref())?;
-    if let Some(value) = args.noforwards.as_deref() {
-        return Err(TeleError::Usage(format!(
-            "--noforwards {value} cannot be applied: the toggle method is not available in this API layer; current value is reported by read-back"
-        )));
-    }
     parse_on_off(args.signatures.as_deref())?;
     parse_on_off(args.pre_history.as_deref())?;
     parse_on_off(args.join_request.as_deref())?;
@@ -74,10 +69,12 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
     let signatures = parse_on_off(args.signatures.as_deref())?;
     let pre_history = parse_on_off(args.pre_history.as_deref())?;
     let join_request = parse_on_off(args.join_request.as_deref())?;
+    let noforwards = parse_on_off(args.noforwards.as_deref())?;
     let has_toggles = slow_mode.is_some()
         || signatures.is_some()
         || pre_history.is_some()
-        || join_request.is_some();
+        || join_request.is_some()
+        || noforwards.is_some();
     if has_toggles {
         crate::executor::require_explicit_selection("chat settings", flags)?;
     }
@@ -105,6 +102,9 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                 }
                 if let Some(v) = join_request {
                     data["join_request"] = serde_json::json!(v);
+                }
+                if let Some(v) = noforwards {
+                    data["noforwards"] = serde_json::json!(v);
                 }
                 return Ok(data);
             }            let guard =
@@ -168,6 +168,19 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                             channel: input_channel.clone(),
                             enabled,
                             guard_bot: None})
+                        .await
+                        .map_err(tele_invocation)?;
+                }
+                if let Some(enabled) = noforwards {
+                    applied.push("noforwards");
+                    guard.rate_limiter.acquire().await;
+                    let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                    guard
+                        .client
+                        .invoke(&tl::functions::messages::ToggleNoForwards {
+                            peer: input_peer,
+                            enabled,
+                            request_msg_id: None})
                         .await
                         .map_err(tele_invocation)?;
                 }
