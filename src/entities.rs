@@ -101,7 +101,20 @@ pub async fn resolve_peer(
                 }
             }
             let raw = if id < 0 { negative_id_raw(id) } else { id };
-            if let Some(pref) = cached_ref(session, id, raw).await {
+            let cached_hits = cached_refs_all(session, id, raw).await;
+            if id > 0 && cached_hits.len() > 1 {
+                crate::output::log_line(
+                    "warn",
+                    &format!(
+                        "numeric id {id} matches multiple cached peer kinds; resolved to the first ({}). Use a @username, a t.me link, or a bot-style id (-100…) to disambiguate.",
+                        cached_hits
+                            .first()
+                            .map(|p| format!("{:?} {}", p.id.kind(), p.id.bare_id_unchecked()))
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+            if let Some(pref) = cached_hits.into_iter().next() {
                 match client.resolve_peer(pref).await {
                     Ok(peer) => return Ok(peer),
                     Err(e) if is_stale_cache_error(&e) => {
@@ -462,12 +475,9 @@ fn in_peer_raw_range(raw: i64) -> bool {
     (1..=MAX_PEER_RAW).contains(&raw)
 }
 
-async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRef> {
+async fn cached_refs_all<S: Session>(session: &S, id: i64, raw: i64) -> Vec<PeerRef> {
     if is_evicted(id) || is_evicted(raw) {
-        return None;
-    }
-    if id < 0 && !in_peer_raw_range(raw) {
-        return None;
+        return Vec::new();
     }
     let ids: Vec<PeerId> = if id > 0 {
         [PeerId::user(raw), PeerId::chat(raw), PeerId::channel(raw)]
@@ -485,14 +495,25 @@ async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRe
             .flatten()
             .collect()
     };
+    let mut hits = Vec::new();
     for pid in ids {
         match session.peer_ref(pid).await {
-            Ok(Some(pref)) => return Some(pref),
+            Ok(Some(pref)) => hits.push(pref),
             Ok(None) => {}
             Err(_) => log::warn!("peer cache read failed for raw {raw}; treating as cache miss"),
         }
     }
-    None
+    hits
+}
+
+#[cfg(test)]
+async fn cached_ref<S: Session>(session: &S, id: i64, raw: i64) -> Option<PeerRef> {
+    cached_refs_all(session, id, raw).await.into_iter().next()
+}
+
+#[cfg(test)]
+async fn cached_ref_all_kinds<S: Session>(session: &S, id: i64, raw: i64) -> Vec<PeerRef> {
+    cached_refs_all(session, id, raw).await
 }
 
 fn checked_fallback_ref(id: i64) -> Option<PeerRef> {
@@ -950,6 +971,42 @@ mod tests {
             .expect("cached positive-id basic group must resolve");
         assert_eq!(pref.id.kind(), PeerKind::Chat);
         assert_eq!(pref.id.bare_id_unchecked(), 123);
+    }
+
+    #[tokio::test]
+    async fn cached_ref_ambiguous_positive_id_keeps_user_first_and_reports_both_kinds() {
+        let session = MemorySession::default();
+        session
+            .cache_peer(&PeerInfo::User {
+                id: 123,
+                auth: Some(PeerAuth::from_hash(777)),
+                bot: Some(false),
+                is_self: Some(false),
+            })
+            .await
+            .unwrap();
+        let chat = tl::enums::Chat::Chat(tl::types::Chat {
+            creator: true,
+            left: false,
+            deactivated: false,
+            call_active: false,
+            call_not_empty: false,
+            noforwards: false,
+            id: 123,
+            title: "g".to_string(),
+            photo: tl::enums::ChatPhoto::Empty,
+            participants_count: 1,
+            date: 0,
+            version: 1,
+            migrated_to: None,
+            admin_rights: None,
+            default_banned_rights: None,
+        });
+        cache_chat(&session, &chat).await.unwrap();
+        let hits = cached_ref_all_kinds(&session, 123, 123).await;
+        assert_eq!(hits.len(), 2, "both user and chat must be found");
+        assert_eq!(hits[0].id.kind(), PeerKind::User);
+        assert_eq!(hits[1].id.kind(), PeerKind::Chat);
     }
 
     #[tokio::test]
