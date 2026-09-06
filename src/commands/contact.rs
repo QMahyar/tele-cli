@@ -472,9 +472,10 @@ pub(crate) async fn add_core(
         )));
     };
     if !contact {
-        return Err(TeleError::Other(format!(
-            "contact not saved to your contact list (privacy settings of {user_target})"
-        )));
+        crate::output::log_line(
+            "warn",
+            "server echoed the user with contact:false (first-add min response); the contact request was accepted",
+        );
     }
     let sent = sent_display_name(&f, &l);
     if !sent.is_empty() && !server_name.is_empty() && server_name != sent {
