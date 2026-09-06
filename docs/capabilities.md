@@ -23,7 +23,7 @@ RPCs without a friendly wrapper stay reachable through `tele raw <registry-name>
 | auth.sessions-manage | List + terminate other sessions/devices; web sessions list/terminate/flags | `account.{GetAuthorizations,ResetAuthorization,GetWebAuthorizations,ResetWebAuthorization(s),ChangeAuthorizationSettings}` | raw | `tele account sessions [--terminate HASH]` / `sessions --web` / `--terminate-web HASH` / `--terminate-all-web` / `--change-flags HASH …`; own current-hash refusal | done |
 | auth.account-ttl | Inactive-account self-destruct timer get/set (1–365 days) | `account.{GetAccountTTL,SetAccountTTL}` | raw | `tele account ttl get` / `ttl set --days N` | done |
 | auth.delete-account | Account deletion with reason + password SRP + --yes guard | `account.DeleteAccount` | raw | `tele account delete --reason R --yes` (explicit --account required) | done |
-| auth.phone-change | Change account phone (staged: send code → confirm) | `account.{SendChangePhoneCode,ChangePhone}` | raw | `tele account phone --change-phone +XXX [--allow-flashcall]` then `phone --confirm-code NNN --phone-hash H` | done |
+| auth.phone-change | Change account phone (staged: send code → confirm) | `account.{SendChangePhoneCode,ChangePhone}` | raw | `tele account phone --change-phone +XXX [--allow-flashcall]` then `phone --confirm-code NNN --phone-hash H`; dry-run `would` strings redact the OTP code and phone_code_hash (length-only hint) | done |
 
 ## Messages
 
