@@ -334,12 +334,12 @@ pub struct SearchArgs {
     pub(crate) kind: Option<String>,
     #[arg(
         long,
-        help = "only messages on/after this date: RFC 3339, Unix timestamp, or YYYY-MM-DD"
+        help = "only messages on/after this date: RFC 3339, Unix timestamp, or YYYY-MM-DD (date-only values use local midnight)"
     )]
     pub(crate) since: Option<String>,
     #[arg(
         long,
-        help = "only messages up to this date: RFC 3339, Unix timestamp, or YYYY-MM-DD"
+        help = "only messages up to this date: RFC 3339, Unix timestamp, or YYYY-MM-DD (date-only values use local end-of-day)"
     )]
     pub(crate) until: Option<String>,
 }
@@ -372,13 +372,13 @@ pub struct DownloadArgs {
     #[arg(
         long,
         requires = "all",
-        help = "only media on/after this date (requires --all): RFC 3339, Unix timestamp, or YYYY-MM-DD"
+        help = "only media on/after this date (requires --all): RFC 3339, Unix timestamp, or YYYY-MM-DD (date-only values use local midnight)"
     )]
     pub(crate) since: Option<String>,
     #[arg(
         long,
         requires = "all",
-        help = "only media up to this date (requires --all): RFC 3339, Unix timestamp, or YYYY-MM-DD"
+        help = "only media up to this date (requires --all): RFC 3339, Unix timestamp, or YYYY-MM-DD (date-only values use local end-of-day)"
     )]
     pub(crate) until: Option<String>,
     #[arg(

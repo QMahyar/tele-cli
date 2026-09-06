@@ -4,7 +4,7 @@ use crate::commands::msg::download::{
     bulk_media_name, checkpoint_path, commit_download, create_download_temp,
     download_serve_dry_run, download_temp_path, load_checkpoint, parse_download_date,
     refuse_existing_download_target, sanitize_download_name, save_checkpoint,
-    sweep_stale_download_temps, validate_chunk_size_kb, validate_download,
+    sweep_stale_download_temps, validate_chunk_size_kb, validate_download, ResumePoint,
 };
 use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
@@ -2075,10 +2075,38 @@ async fn checkpoint_round_trip_and_missing_file() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = checkpoint_path(&dir, 12345);
     assert!(load_checkpoint(&path).await.is_none());
-    save_checkpoint(&path, 12345, 4242).await;
-    assert_eq!(load_checkpoint(&path).await, Some(4242));
-    save_checkpoint(&path, 12345, 777).await;
-    assert_eq!(load_checkpoint(&path).await, Some(777));
+    save_checkpoint(&path, 12345, 4242, 5000).await;
+    assert_eq!(
+        load_checkpoint(&path).await,
+        Some(ResumePoint {
+            last_message_id: 4242,
+            max_seen_id: 5000
+        })
+    );
+    save_checkpoint(&path, 12345, 777, 5000).await;
+    assert_eq!(
+        load_checkpoint(&path).await,
+        Some(ResumePoint {
+            last_message_id: 777,
+            max_seen_id: 5000
+        })
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn checkpoint_without_max_seen_falls_back_to_last_id() {
+    let dir = std::env::temp_dir().join(format!("telecli-dl-ckpt-legacy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = checkpoint_path(&dir, 424242);
+    std::fs::write(&path, r#"{"chat_id":424242,"last_message_id":900}"#).unwrap();
+    assert_eq!(
+        load_checkpoint(&path).await,
+        Some(ResumePoint {
+            last_message_id: 900,
+            max_seen_id: 900
+        })
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2094,12 +2122,35 @@ fn download_checkpoint_path_is_per_chat_and_hidden() {
 
 #[test]
 fn parse_download_date_accepts_supported_formats() {
+    use chrono::TimeZone;
     let date_only = parse_download_date("--since", "2026-01-01").unwrap();
-    assert_eq!(date_only.to_rfc3339(), "2026-01-01T00:00:00+00:00");
+    let expected_midnight = chrono::Local
+        .from_local_datetime(
+            &chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        )
+        .earliest()
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(date_only, expected_midnight);
     let unix = parse_download_date("--since", "1767225600").unwrap();
     assert_eq!(unix.to_rfc3339(), "2026-01-01T00:00:00+00:00");
     let rfc3339 = parse_download_date("--until", "2026-06-01T12:30:00Z").unwrap();
     assert_eq!(rfc3339.to_rfc3339(), "2026-06-01T12:30:00+00:00");
+    let until_eod = parse_download_date("--until", "2026-01-01").unwrap();
+    let expected_eod = chrono::Local
+        .from_local_datetime(
+            &chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+                .unwrap()
+                .and_hms_opt(23, 59, 59)
+                .unwrap(),
+        )
+        .earliest()
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(until_eod, expected_eod);
     assert!(parse_download_date("--since", "nope").is_err());
 }
 

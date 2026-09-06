@@ -13,15 +13,26 @@ pub(crate) fn parse_download_date(
     if let Ok(dt) = crate::commands::parse_unixtime(value) {
         return Ok(dt);
     }
-    chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+    let d = chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
         .ok()
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| dt.and_utc())
         .ok_or_else(|| {
             TeleError::Usage(format!(
                 "invalid {flag} {value:?}: use RFC 3339, a Unix timestamp, or YYYY-MM-DD"
             ))
-        })
+        })?;
+    let end_of_day = flag.trim_start_matches('-').eq_ignore_ascii_case("until");
+    let naive = if end_of_day {
+        d.and_hms_opt(23, 59, 59)
+    } else {
+        d.and_hms_opt(0, 0, 0)
+    }
+    .ok_or_else(|| TeleError::Usage(format!("invalid {flag} {value:?}")))?;
+    use chrono::TimeZone;
+    Ok(chrono::Local
+        .from_local_datetime(&naive)
+        .earliest()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|| naive.and_utc()))
 }
 
 pub(crate) fn validate_download(args: &DownloadArgs) -> TeleResult<()> {
@@ -316,17 +327,38 @@ pub(crate) fn checkpoint_path(out_dir: &std::path::Path, chat_id: i64) -> std::p
     out_dir.join(format!(".telecli-download-{chat_id}.json"))
 }
 
-pub(crate) async fn load_checkpoint(path: &std::path::Path) -> Option<i32> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResumePoint {
+    pub last_message_id: i32,
+    pub max_seen_id: i32,
+}
+
+pub(crate) async fn load_checkpoint(path: &std::path::Path) -> Option<ResumePoint> {
     let raw = tokio::fs::read_to_string(path).await.ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let id = value.get("last_message_id")?.as_i64()?;
-    i32::try_from(id).ok()
+    let id = i32::try_from(id).ok()?;
+    let max_seen = value
+        .get("max_seen_id")
+        .and_then(|v| v.as_i64())
+        .and_then(|v| i32::try_from(v).ok())
+        .unwrap_or(id);
+    Some(ResumePoint {
+        last_message_id: id,
+        max_seen_id: max_seen.max(id),
+    })
 }
 
-pub(crate) async fn save_checkpoint(path: &std::path::Path, chat_id: i64, last_message_id: i32) {
+pub(crate) async fn save_checkpoint(
+    path: &std::path::Path,
+    chat_id: i64,
+    last_message_id: i32,
+    max_seen_id: i32,
+) {
     let payload = serde_json::json!({
         "chat_id": chat_id,
         "last_message_id": last_message_id,
+        "max_seen_id": max_seen_id.max(last_message_id),
     });
     let _ = tokio::fs::write(path, payload.to_string()).await;
 }
@@ -353,18 +385,26 @@ pub(crate) async fn download_bulk_core(
     };
     let scan_limit = params.limit.unwrap_or(1000);
     let state_path = checkpoint_path(&out_dir, chat_id);
-    let resume_from = load_checkpoint(&state_path).await;
-    let mut iter = shares.client.iter_messages(chat_ref).limit(scan_limit);
+    let resume = load_checkpoint(&state_path).await;
+    let resumed_from = resume.map(|r| r.last_message_id);
+    let mut iter = shares.client.iter_messages(chat_ref);
     let mut files: Vec<serde_json::Value> = Vec::new();
     let mut skipped_existing = 0usize;
     let mut scanned = 0usize;
+    let mut processed = 0usize;
     let mut served = 0usize;
+    let mut truncated = false;
+    let mut max_seen = None::<i32>;
+    let mut floor = resume.map(|r| r.last_message_id);
     while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
         scanned += 1;
-        served += 1;
-        shares.rate_limiter.acquire_for_items(served).await;
-        if resume_from.is_some_and(|last| msg.id() >= last) {
-            continue;
+        if max_seen.is_none_or(|m| msg.id() > m) {
+            max_seen = Some(msg.id());
+        }
+        if let Some(point) = resume {
+            if msg.id() >= point.last_message_id && msg.id() <= point.max_seen_id {
+                continue;
+            }
         }
         let date = msg.date();
         if until.is_some_and(|u| date.timestamp() > u.timestamp()) {
@@ -373,9 +413,27 @@ pub(crate) async fn download_bulk_core(
         if since.is_some_and(|s| date.timestamp() < s.timestamp()) {
             break;
         }
+        if processed >= scan_limit {
+            truncated = true;
+            break;
+        }
+        processed += 1;
+        served += 1;
+        shares.rate_limiter.acquire_for_items(served).await;
         match bulk_download_one(shares, &msg, &out_dir, params.chunk_size_kb, params.force).await? {
             Some(entry) => {
-                save_checkpoint(&state_path, chat_id, msg.id()).await;
+                let id = msg.id();
+                floor = Some(match floor {
+                    Some(f) => f.min(id),
+                    None => id,
+                });
+                save_checkpoint(
+                    &state_path,
+                    chat_id,
+                    floor.unwrap_or(id),
+                    max_seen.unwrap_or(id),
+                )
+                .await;
                 files.push(serde_json::json!({
                     "id": entry.id,
                     "path": entry.path.to_string_lossy(),
@@ -395,7 +453,8 @@ pub(crate) async fn download_bulk_core(
         "scanned": scanned,
         "downloaded": files.len(),
         "skipped_existing": skipped_existing,
-        "resumed_from": resume_from,
+        "resumed_from": resumed_from,
+        "truncated": truncated,
         "checkpoint": state_path.to_string_lossy(),
         "files": files,
     }))
