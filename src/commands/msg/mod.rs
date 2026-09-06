@@ -313,22 +313,22 @@ pub(crate) async fn delete_core(
             requested += 1;
             batch.push(msg.id());
             if batch.len() >= 100 {
-                shares
+                let deleted = shares
                     .client
                     .delete_messages(chat_ref, &batch)
                     .await
                     .map_err(tele_invocation)?;
-                count += batch.len();
+                count += deleted;
                 batch.clear();
             }
         }
         if !batch.is_empty() {
-            shares
+            let deleted = shares
                 .client
                 .delete_messages(chat_ref, &batch)
                 .await
                 .map_err(tele_invocation)?;
-            count += batch.len();
+            count += deleted;
         }
         let (mut report, partial) = delete_report(requested, count);
         report["unconfirmed"] = serde_json::json!(true);
@@ -348,7 +348,7 @@ pub(crate) async fn delete_core(
             ));
         }
         for chunk in batches(&ids) {
-            shares
+            let affected = shares
                 .client
                 .invoke(&grammers_client::tl::functions::messages::DeleteMessages {
                     revoke: false,
@@ -356,16 +356,20 @@ pub(crate) async fn delete_core(
                 })
                 .await
                 .map_err(tele_invocation)?;
-            count += chunk.len();
+            count += match affected {
+                grammers_client::tl::enums::messages::AffectedMessages::Messages(m) => {
+                    m.pts_count.max(0) as usize
+                }
+            };
         }
     } else {
         for chunk in batches(&ids) {
-            shares
+            let deleted = shares
                 .client
                 .delete_messages(chat_ref, chunk)
                 .await
                 .map_err(tele_invocation)?;
-            count += chunk.len();
+            count += deleted;
         }
     }
     let (report, partial) = delete_report(ids.len(), count);
