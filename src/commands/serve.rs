@@ -155,13 +155,43 @@ pub(crate) struct JobCompletionGuard {
     pub(crate) completed: bool,
 }
 
+impl JobCompletionGuard {
+    const DROP_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+    fn emit_undelivered(&mut self) {
+        if self.completed {
+            return;
+        }
+        let envelope = undelivered_envelope(self.id, self.op);
+        if self.responses.try_send(envelope.clone()).is_ok() {
+            return;
+        }
+        // The response channel is saturated (a full drain is exactly that
+        // state). A bare try_send would silently drop the id-correlated
+        // envelope, so retry on the current runtime while drain_and_flush
+        // keeps freeing slots; give up after a bounded budget so the channel
+        // can still close and the drain can finish.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let responses = self.responses.clone();
+            handle.spawn(async move {
+                let deadline = std::time::Instant::now() + Self::DROP_RETRY_BUDGET;
+                while std::time::Instant::now() < deadline {
+                    match responses.try_send(envelope.clone()) {
+                        Ok(()) => return,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+                    }
+                }
+            });
+        }
+    }
+}
+
 impl Drop for JobCompletionGuard {
     fn drop(&mut self) {
-        if !self.completed {
-            let _ = self
-                .responses
-                .try_send(undelivered_envelope(self.id, self.op));
-        }
+        self.emit_undelivered();
     }
 }
 
@@ -1332,18 +1362,30 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             Tick::Account(AccountTick::Event { mut ev }) => {
                 apply_seq(&mut ev, &mut seq);
-                if let Err(e) = writer.emit(&ev).await {
-                    if e.is_broken_pipe() {
-                        drop(dispatch_tx);
-                        drop(mutations);
-                        drop(read_senders);
-                        drop(main_response_tx);
-                        let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
-                        drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
-                        return Ok(EXIT_OK);
+                let mut emitted = false;
+                for _ in 0..2 {
+                    match writer.emit(&ev).await {
+                        Ok(()) => {
+                            emitted = true;
+                            break;
+                        }
+                        Err(e) if e.is_broken_pipe() => {
+                            drop(dispatch_tx);
+                            drop(mutations);
+                            drop(read_senders);
+                            drop(main_response_tx);
+                            let _ = tokio::time::timeout(DRAIN_BUDGET, dispatcher).await;
+                            drain_and_flush(&mut workers, &writer, &mut response_rx).await?;
+                            return Ok(EXIT_OK);
+                        }
+                        Err(_) => continue,
                     }
-                    output::log_line("warn", &format!("serve: emit failed: {}", e.message()));
-                    continue;
+                }
+                if !emitted {
+                    output::log_line(
+                        "warn",
+                        &format!("serve: event row seq {} lost to stdout errors", ev["seq"]),
+                    );
                 }
             }
         }
@@ -1528,6 +1570,7 @@ async fn account_task(
                         let _ = ticks.send(AccountTick::Fatal { err: fatal }).await;
                         return;
                     }
+                    resync_requested = true;
                     break;
                 }
                 Tick::Update(update) => {
@@ -2058,6 +2101,48 @@ mod tests {
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["type"], "StreamDown");
         assert!(response_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn guard_drop_retries_when_response_channel_is_saturated() {
+        let (response_tx, mut response_rx) =
+            tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
+        for i in 0..RESPONSE_CAPACITY {
+            response_tx
+                .send(serde_json::json!({"filler": i}))
+                .await
+                .unwrap();
+        }
+        let guard = JobCompletionGuard {
+            id: 77,
+            op: "msg send",
+            responses: response_tx.clone(),
+            completed: false,
+        };
+        assert!(response_tx
+            .try_send(serde_json::json!({"probe": 1}))
+            .is_err());
+        drop(response_tx);
+        drop(guard);
+        let mut saw_undelivered = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            while let Ok(value) = response_rx.try_recv() {
+                if value.get("filler").is_none() {
+                    assert_eq!(value["id"], 77);
+                    assert_eq!(value["error"]["type"], "StreamDown");
+                    saw_undelivered = true;
+                }
+            }
+            if saw_undelivered {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            saw_undelivered,
+            "saturated-channel guard drop must still emit"
+        );
     }
 
     #[test]
