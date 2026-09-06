@@ -93,6 +93,14 @@ pub(crate) enum PhoneAction {
 }
 
 impl PhoneAction {
+    fn redact_secret(value: &str) -> String {
+        let v = value.trim();
+        if v.is_empty() {
+            return "(empty)".to_string();
+        }
+        format!("***{}", v.chars().count())
+    }
+
     pub(crate) fn describe(&self, name: &str) -> String {
         match self {
             PhoneAction::Send { phone, .. } => format!(
@@ -101,7 +109,9 @@ impl PhoneAction {
                 redact_phone(phone)
             ),
             PhoneAction::Confirm { code, hash } => format!(
-                "confirm the phone change for account {name} with code {code} using phone_code_hash {hash}"
+                "confirm the phone change for account {name} with code {} using phone_code_hash {}",
+                Self::redact_secret(code),
+                Self::redact_secret(hash)
             ),
         }
     }

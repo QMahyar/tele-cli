@@ -2313,7 +2313,9 @@ fn phone_dry_run_send_redacts_target_number() {
     );
     let would = confirm["would"].as_str().unwrap();
     assert!(would.contains("confirm"), "{would}");
-    assert!(would.contains("hash-a"), "{would}");
+    assert!(!would.contains("54321"), "{would}");
+    assert!(would.contains("***"), "{would}");
+    assert!(!would.contains("hash-a"), "{would}");
 }
 
 #[test]
