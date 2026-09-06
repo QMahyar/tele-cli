@@ -172,17 +172,17 @@ Human mode (no `--json`) prints rich tables on stdout and uses the same exit cod
 - `msg pin --notify` pins with a member notification (the default stays silent) through the raw `messages.updatePinnedMessage` path.
 - `msg read --mentions` clears only the mention badge (`{"mentions_cleared": true}`) and is mutually exclusive with `--mark-unread`.
 - `msg download --chunk-size-kb <4-512, multiple of 4>` streams the media through chunked `iter_download` into the same temp+commit flow. Without the flag, the default one-shot download behaves as before.
-- `msg download --all` downloads every media message from the chat (mutually exclusive with `--id`), with `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` date bounds and `--limit N` (default 1000) capping the history scan. Progress checkpoints to a per-chat state file so a re-run resumes past downloaded ids. `msg download --id N --album` also downloads every sibling sharing the anchor message's `grouped_id`.
+- `msg download --all` downloads every media message from the chat (mutually exclusive with `--id`), with `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` date bounds (date-only `--since` uses local midnight, date-only `--until` uses local end-of-day) and `--limit N` (default 1000) capping the messages processed per run — only messages that pass the resume/date filters count against the limit, and the row carries additive `"truncated": true` when the limit ran out before the range was covered. Progress checkpoints to a per-chat state file so a re-run skips only ids the previous run actually handled (checkpoint records `last_message_id` and `max_seen_id`); messages that arrive after a sweep started are downloaded on the next resume instead of being skipped. `msg download --id N --album` also downloads every sibling sharing the anchor message's `grouped_id`.
 
 ## `msg search`
 
 With `--global`, the search runs across all dialogs (`messages.searchGlobal`) instead of one chat. `--chat` becomes optional, dry-run `data.chat` is null, and `data.global` is true. Rows use the same message object shape.
 
-Filters: `--from SENDER` (same target syntax as `--chat`) keeps only that sender's messages; `--kind photo|video|gif|document|url|audio|voice` maps to the `MessagesFilter` variant; `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` bound the date range (`--since` after `--until` is a Usage error). Per-chat search applies all three server-side; `--global` applies `kind` server-side and `from`/dates client-side.
+Filters: `--from SENDER` (same target syntax as `--chat`) keeps only that sender's messages; `--kind photo|video|gif|document|url|audio|voice` maps to the `MessagesFilter` variant; `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` bound the date range (date-only `--since` uses local midnight, date-only `--until` uses local end-of-day; `--since` after `--until` is a Usage error). Per-chat search applies all three server-side; `--global` applies `kind` server-side and `from`/dates client-side.
 
 ## `contact add`
 
-`results[].data` carries additive `contact` (bool) and `mutual` (bool), reflecting the post-add state parsed from the RPC response. When the peer's privacy settings prevent saving the contact, the account row fails with a clear error instead of reporting a false `"added": true`. The command logs a warning when the add updates the display name of an existing contact.
+`results[].data` carries additive `contact` (bool) and `mutual` (bool), reflecting the post-add state parsed from the RPC response. A response that echoes the user counts as success — first-time adds return the user with `contact: false` (a min-user response), which the command reports with a warning instead of a false failure; the account row only fails when the RPC response carries no user at all. The command logs a warning when the add updates the display name of an existing contact.
 
 ## `contact remove`
 
