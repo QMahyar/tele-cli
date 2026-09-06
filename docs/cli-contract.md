@@ -367,7 +367,7 @@ Process model:
 - One or more accounts: selection resolves to at least one and at most 32 sessions, otherwise the process exits 1 before anything connects. Each account session is locked exclusively (OS-level per-account lock); other tele processes cannot open the same sessions while serve runs.
 - Exclusive ownership: the standard OS-level per-account session lock applies. While `tele serve` holds the sessions, no other tele process can open them, and the reverse holds too ("session <name> is in use by another process").
 - Frames are single-line JSON objects terminated by `\n`; writers must flush per line.
-- EOF on stdin shuts down cleanly: queued jobs drain, pending responses are flushed to stdout, the client disconnects, and the exit code is 0.
+- EOF on stdin shuts down cleanly: queued jobs drain, pending responses are flushed to stdout, the client disconnects, and the exit code is 0. Drain is bounded to 10 seconds: ids still queued or in flight when the budget expires answer with a `StreamDown` error envelope, and under sustained stdout backpressure one may be dropped server-side (its correlation id then never appears).
 - `--events` allowlist: `NewMessage` and `MessageEdited` (default `NewMessage`). Any other name exits 1 before connect.
 - The default mode is live-only (updates from now on; no replay, no history). `--catch-up` first replays what was missed since the persisted update state.
 - Stream failures reconnect automatically with exponential backoff (1 s to 30 s, up to 5 consecutive attempts); auth failures fail fast (exit 4).
@@ -453,7 +453,7 @@ Between requests, the server polls the update stream and emits event rows on std
 - `chat_id` appears when the update identifies its chat.
 - `seq` is stamped on every emitted frame and counts monotonically from 1 for the lifetime of the `tele serve` process. It continues uninterrupted across internal reconnects and resyncs, and restarts at 1 only when the process restarts.
 - Each successful internal stream rebuild emits a `Reconnected` row: `{"event":"Reconnected","account":"work","seq":N}`.
-- Gap detection: track the last seen `seq`. A skipped number means stdout rows were lost (likewise, a hello whose `last_seq` exceeds what you have read). Send `stream.resync` to force a rebuild with catch-up replay. Replays are deduplicated server-side through a bounded (chat, message-id, pts) key with a capacity of 10,000 (oldest evicted first), so replayed updates stay invisible unless they fall outside that window.
+- Gap detection: track the last seen `seq`. A skipped number means stdout rows were lost — either the writer could not emit a row (transient stdout errors; the server retries once and then logs to stderr) or rows were lost downstream (likewise, a hello whose `last_seq` exceeds what you have read). Send `stream.resync` to force a rebuild with catch-up replay. Replays are deduplicated server-side through a bounded (chat, message-id, pts) key with a capacity of 10,000 (oldest evicted first), so replayed updates stay invisible unless they fall outside that window.
 
 ### Transport ops
 
