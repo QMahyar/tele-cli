@@ -204,7 +204,6 @@ pub(crate) async fn staged_begin(
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .map(|exists| !exists)
         .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
@@ -341,7 +340,6 @@ pub(crate) async fn staged_code(args: &LoginArgs, flags: &GlobalFlags) -> TeleRe
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .map(|exists| !exists)
         .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
@@ -477,7 +475,6 @@ pub(crate) async fn staged_resend(args: &LoginArgs, flags: &GlobalFlags) -> Tele
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .map(|exists| !exists)
         .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
@@ -557,7 +554,6 @@ pub(crate) async fn staged_cancel_code(args: &LoginArgs, flags: &GlobalFlags) ->
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .map(|exists| !exists)
         .unwrap_or(true);
     let guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())

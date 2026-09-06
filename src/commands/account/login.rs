@@ -128,7 +128,6 @@ pub(crate) async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i
     ensure_account_config_entry(&args.name, flags.config_path.as_deref())?;
     let session_existed_before = session::session_path(&args.name)
         .try_exists()
-        .map(|exists| !exists)
         .unwrap_or(true);
     let mut guard =
         match ClientGuard::connect(&args.name, credentials.api_id, flags.config_path.as_deref())
