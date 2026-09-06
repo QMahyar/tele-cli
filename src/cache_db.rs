@@ -56,6 +56,9 @@ async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
     conn.execute_batch(SCHEMA)
         .await
         .map_err(|e| TeleError::Other(format!("cannot init cache schema: {e}")))?;
+    conn.execute_batch("PRAGMA recursive_triggers = ON;")
+        .await
+        .map_err(|e| TeleError::Other(format!("cannot set pragma: {e}")))?;
     crate::fs_util::restrict_file_private(&path)
         .map_err(|e| TeleError::Other(format!("cannot restrict cache db: {e}")))?;
     Ok(conn)
@@ -353,6 +356,103 @@ mod tests {
         assert_eq!(cleared["deleted"], 2);
         let empty = search_cache(&account, "", None, 10).await.unwrap();
         assert!(empty.is_empty());
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn replace_keeps_fts_index_in_sync() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-cache-fts-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let account = test_account("fts");
+        let v1 = vec![CachedMessage {
+            id: 1,
+            chat_id: 100,
+            chat_name: "team".to_string(),
+            sender_id: Some(5),
+            sender_name: "alice".to_string(),
+            date: 1700000000,
+            text: "originaltext".to_string(),
+            media_kind: None,
+        }];
+        store_messages(&account, &v1).await.unwrap();
+        let v2 = vec![CachedMessage {
+            id: 1,
+            chat_id: 100,
+            chat_name: "team".to_string(),
+            sender_id: Some(5),
+            sender_name: "alice".to_string(),
+            date: 1700000001,
+            text: "editedtext".to_string(),
+            media_kind: None,
+        }];
+        store_messages(&account, &v2).await.unwrap();
+        let stale = search_cache(&account, "originaltext", None, 10)
+            .await
+            .unwrap();
+        assert!(stale.is_empty());
+        let fresh = search_cache(&account, "editedtext", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(fresh.len(), 1);
+        let conn = open_db(&account).await.unwrap();
+        // Probe: is recursive_triggers actually on, and how many index docs exist
+        // for the replaced-away term? A stale doc means REPLACE bypassed the
+        // external-content FTS delete trigger.
+        let mut rows = conn.query("PRAGMA recursive_triggers", ()).await.unwrap();
+        let rt = rows
+            .next()
+            .await
+            .unwrap()
+            .map(|r| match r.get::<libsql::Value>(0) {
+                Ok(libsql::Value::Integer(v)) => v,
+                _ => -1,
+            });
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS probe_vocab; CREATE VIRTUAL TABLE probe_vocab USING fts5vocab(messages_fts, 'row');",
+        )
+        .await
+        .unwrap();
+        let mut rows = conn
+            .query(
+                "SELECT count(*) FROM probe_vocab WHERE term = 'originaltext'",
+                (),
+            )
+            .await
+            .unwrap();
+        let stale_docs = rows
+            .next()
+            .await
+            .unwrap()
+            .map(|r| match r.get::<libsql::Value>(0) {
+                Ok(libsql::Value::Integer(v)) => v,
+                _ => -1,
+            });
+        conn.execute(
+            "INSERT INTO messages_fts(messages_fts) VALUES('integrity-check')",
+            (),
+        )
+        .await
+        .expect("fts5 integrity-check failed: stale index docs after replace");
+        assert_eq!(
+            rt,
+            Some(1),
+            "PRAGMA recursive_triggers must be ON for this connection"
+        );
+        assert_eq!(
+            stale_docs,
+            Some(0),
+            "fts index must not keep docs for replaced-away text"
+        );
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
