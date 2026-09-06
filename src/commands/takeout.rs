@@ -386,6 +386,11 @@ async fn run_export(
     let mut dialogs = Vec::new();
     let messages_path = dir.join("messages.jsonl");
     let mut messages_file = tokio::task::spawn_blocking(move || {
+        if !messages_path.exists() {
+            crate::fs_util::create_file_private(&messages_path)?;
+        } else {
+            crate::fs_util::restrict_file_private(&messages_path)?;
+        }
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
