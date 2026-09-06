@@ -331,8 +331,8 @@ impl GapTracker {
                     .insert(point.box_key, (point.pts, point.pts_count.max(0)));
                 None
             }
-            Some(&mut (last_pts, last_count)) => {
-                let expected = last_pts.saturating_add(last_count);
+            Some(&mut (last_pts, _last_count)) => {
+                let expected = last_pts.saturating_add(point.pts_count.max(0));
                 let signal = (point.pts > expected).then_some(GapSignal {
                     box_key: point.box_key,
                     expected_pts: expected,
@@ -636,7 +636,6 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let filter_patterns = filter_patterns.clone();
         let semaphore = Arc::clone(&semaphore);
         tasks.spawn(async move {
-            let _permit = semaphore.acquire_owned().await;
             let result: TeleResult<()> = async {
                 let creds =
                     crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
@@ -662,15 +661,30 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             break;
                         }
                     }
-                    let mut guard = match ClientGuard::connect_with_limiter(
-                        &name,
-                        creds.api_id,
-                        config_path.as_deref(),
-                        std::sync::Arc::clone(&rate_limiter),
-                    )
-                    .await
-                    {
-                            Ok(guard) => guard,
+                    let mut guard = {
+                        let _permit = Arc::clone(&semaphore).acquire_owned().await;
+                        match ClientGuard::connect_with_limiter(
+                            &name,
+                            creds.api_id,
+                            config_path.as_deref(),
+                            std::sync::Arc::clone(&rate_limiter),
+                        )
+                        .await
+                        {
+                            Ok(guard) => {
+                                if let Err(e) = client::authorize(&guard.client).await {
+                                    handle_stream_failure(
+                                        &name,
+                                        e,
+                                        &mut failures,
+                                        deadline,
+                                        MAX_RECONNECT_ATTEMPTS,
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                                guard
+                            }
                             Err(e) => {
                                 handle_stream_failure(
                                     &name,
@@ -682,11 +696,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 .await?;
                                 continue;
                             }
-                        };
-                    if let Err(e) = client::authorize(&guard.client).await {
-                        handle_stream_failure(&name, e, &mut failures, deadline, MAX_RECONNECT_ATTEMPTS).await?;
-                        continue;
-                    }
+                        }
+                    };
                     if !targets_resolved {
                         filter = resolve_filter(
                             &guard.client,

@@ -327,7 +327,7 @@ With `--events Album`, consecutive `NewMessage` updates that share a non-null `g
 
 ### `Gap` rows
 
-With `--events Gap`, `listen` tracks update sequence numbers (`pts`) per message stream: one common box, plus one box per channel. When an update reports a `pts` higher than the previously observed `pts` plus its `pts_count`, updates were dropped (the `update_queue_limit` was exceeded) or a difference fetch ended prematurely (the channel was banned, or the server had issues). A synthetic `Gap` row then precedes the next events:
+With `--events Gap`, `listen` tracks update sequence numbers (`pts`) per message stream: one common box, plus one box per channel. When an update reports a `pts` higher than the previously observed `pts` plus the update's own `pts_count` (the same continuity rule grammers applies to the message box), updates were dropped (the `update_queue_limit` was exceeded) or a difference fetch ended prematurely (the channel was banned, or the server had issues). A synthetic `Gap` row then precedes the next events:
 
 ```json
 {"event":"Gap","account":"work","reason":"pts_jump","expected_pts":11,"observed_pts":15,"state":{"date":123,"seq":456,"pts":15}}

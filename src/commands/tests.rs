@@ -819,8 +819,20 @@ fn gap_tracker_first_sighting_records_baseline() {
     let mut t = GapTracker::default();
     let u = pts_update(user_tl_peer(), 1, 10, 2, None);
     assert!(t.observe(&u).is_none());
-    let u = pts_update(user_tl_peer(), 2, 12, 1, None);
+    // (11, count=1) is the true successor of pts 10: contiguous, no gap.
+    let u = pts_update(user_tl_peer(), 2, 11, 1, None);
     assert!(t.observe(&u).is_none(), "contiguous advance is not a gap");
+    // (12, count=1) after 10 would skip 11 — that IS a gap under the
+    // grammers message-box rule (last_pts + incoming count).
+    let mut t2 = GapTracker::default();
+    assert!(t2
+        .observe(&pts_update(user_tl_peer(), 1, 10, 2, None))
+        .is_none());
+    let signal = t2
+        .observe(&pts_update(user_tl_peer(), 2, 12, 1, None))
+        .expect("skipping pts 11 must signal");
+    assert_eq!(signal.expected_pts, 11);
+    assert_eq!(signal.observed_pts, 12);
 }
 
 #[test]
@@ -838,14 +850,30 @@ fn gap_tracker_reports_jump_with_expected_and_observed() {
 }
 
 #[test]
-fn gap_tracker_accepts_count_sized_advance_without_gap() {
+fn gap_tracker_accepts_batched_count_sized_advance_without_gap() {
     let mut t = GapTracker::default();
     assert!(t
-        .observe(&pts_update(user_tl_peer(), 1, 10, 3, None))
+        .observe(&pts_update(user_tl_peer(), 1, 10, 1, None))
         .is_none());
+    // A batched update (pts=13, count=3) covers 11-13 in one frame — no hole.
     assert!(t
-        .observe(&pts_update(user_tl_peer(), 2, 13, 1, None))
+        .observe(&pts_update(user_tl_peer(), 2, 13, 3, None))
         .is_none());
+}
+
+#[test]
+fn gap_tracker_reports_hole_smaller_than_previous_count() {
+    let mut t = GapTracker::default();
+    assert!(t
+        .observe(&pts_update(user_tl_peer(), 1, 100, 10, None))
+        .is_none());
+    // (102, count=1) covers only 102; message 101 went missing. The old rule
+    // (previous count) computed expected=110 and silently swallowed this hole.
+    let signal = t
+        .observe(&pts_update(user_tl_peer(), 2, 102, 1, None))
+        .expect("one-message hole must signal");
+    assert_eq!(signal.expected_pts, 101);
+    assert_eq!(signal.observed_pts, 102);
 }
 
 #[test]
@@ -863,7 +891,7 @@ fn gap_tracker_ignores_stale_and_duplicate_pts() {
     let signal = t
         .observe(&pts_update(user_tl_peer(), 3, 99, 1, None))
         .expect("tracker still advances after stale input");
-    assert_eq!(signal.expected_pts, 12, "stale pts did not move baseline");
+    assert_eq!(signal.expected_pts, 11, "stale pts did not move baseline");
 }
 
 #[test]
