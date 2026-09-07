@@ -33,7 +33,7 @@ The push triggers the `release` workflow.
 
 **Release job.** Extracts the matching section from `CHANGELOG.md` as the release body and creates the GitHub Release through `softprops/action-gh-release@v2`. The finished release carries up to 26 assets: 13 archives plus their checksum files (the windows-arm64 build is best-effort with `continue-on-error`, so it may carry 24 when that one is skipped).
 
-**npm job.** Publishes 1 bundled package (`@qmahyar/telecli`) through OIDC trusted publishing (no token). The single package bundles all 13 target binaries (`tele-<triple>`) plus launcher `bin/tele.js` which picks the correct binary for the current platform; no separate platform packages. The `linux-arm64-musl` binary is static and runs in Termux/Android. The package installs both `tele` (primary) and `telecli` (deprecated alias).
+**npm job.** Publishes 1 bundled package (`@qmahyar/telecli`) through OIDC trusted publishing (no token). The single package bundles all 13 target binaries (`tele-<triple>`) plus launcher `bin/tele.js` which picks the correct binary for the current platform; no separate platform packages. The `linux-arm64-musl` binary is static and runs in Termux/Android. The package installs both `tele` (primary) and `telecli` (deprecated alias). The job runs in the `npm` GitHub environment — configure that environment once under **Settings → Environments** (required reviewers optional; it exists so the id-token-bearing publish step has a named protection boundary).
 
 ## Verify the release
 
