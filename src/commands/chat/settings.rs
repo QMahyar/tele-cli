@@ -138,11 +138,13 @@ pub(crate) async fn settings(args: SettingsArgs, flags: &GlobalFlags) -> TeleRes
                 if let Some(enabled) = signatures {
                     applied.push("signatures");
                     guard.rate_limiter.acquire().await;
+                    let profiles =
+                        current_signature_profiles(&guard.client, &input_channel).await?;
                     guard
                         .client
                         .invoke(&tl::functions::channels::ToggleSignatures {
                             signatures_enabled: enabled,
-                            profiles_enabled: false,
+                            profiles_enabled: profiles,
                             channel: input_channel.clone()})
                         .await
                         .map_err(tele_invocation)?;
