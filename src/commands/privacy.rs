@@ -54,6 +54,11 @@ pub struct SetArgs {
         help = "chat/group/channel member IDs to deny: comma-separated positive IDs"
     )]
     deny_chat: Option<Vec<i64>>,
+    #[arg(
+        long,
+        help = "replace the user/chat rules instead of merging: existing allow/deny users and chats not named on this invocation are revoked (broad flags like contacts/close-friends are kept)"
+    )]
+    replace: bool,
 }
 
 pub async fn run(cmd: PrivacyCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -446,10 +451,47 @@ struct PrivacyTargets {
     disallow_chats: Vec<i64>,
 }
 
+struct BaseRuleIds {
+    allow_users: Vec<i64>,
+    allow_chats: Vec<i64>,
+    disallow_users: Vec<i64>,
+    disallow_chats: Vec<i64>,
+}
+
+fn split_base_rule_ids(base: &[tl::enums::PrivacyRule]) -> BaseRuleIds {
+    let mut ids = BaseRuleIds {
+        allow_users: Vec::new(),
+        allow_chats: Vec::new(),
+        disallow_users: Vec::new(),
+        disallow_chats: Vec::new(),
+    };
+    for rule in base {
+        match rule {
+            tl::enums::PrivacyRule::PrivacyValueAllowUsers(v) => ids.allow_users.extend(&v.users),
+            tl::enums::PrivacyRule::PrivacyValueAllowChatParticipants(v) => {
+                ids.allow_chats.extend(&v.chats)
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(v) => {
+                ids.disallow_users.extend(&v.users)
+            }
+            tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(v) => {
+                ids.disallow_chats.extend(&v.chats)
+            }
+            _ => {}
+        }
+    }
+    ids.allow_users = dedupe_ids(ids.allow_users);
+    ids.allow_chats = dedupe_ids(ids.allow_chats);
+    ids.disallow_users = dedupe_ids(ids.disallow_users);
+    ids.disallow_chats = dedupe_ids(ids.disallow_chats);
+    ids
+}
+
 fn merge_privacy_rules_with_map(
     base: &[tl::enums::PrivacyRule],
     targets: &PrivacyTargets,
     user_map: &HashMap<i64, tl::enums::InputUser>,
+    replace: bool,
 ) -> Vec<tl::enums::InputPrivacyRule> {
     let mut merged = Vec::with_capacity(base.len() + 4);
     let mut base_allow_user_ids: Vec<i64> = Vec::new();
@@ -473,10 +515,64 @@ fn merge_privacy_rules_with_map(
             _ => {}
         }
     }
-    let base_allow_user_ids = dedupe_ids(base_allow_user_ids);
-    let base_allow_chat_ids = dedupe_ids(base_allow_chat_ids);
-    let base_disallow_user_ids = dedupe_ids(base_disallow_user_ids);
-    let base_disallow_chat_ids = dedupe_ids(base_disallow_chat_ids);
+    let mut base_allow_user_ids = dedupe_ids(base_allow_user_ids);
+    let mut base_allow_chat_ids = dedupe_ids(base_allow_chat_ids);
+    let mut base_disallow_user_ids = dedupe_ids(base_disallow_user_ids);
+    let mut base_disallow_chat_ids = dedupe_ids(base_disallow_chat_ids);
+    let new_allow_user_ids: Vec<i64> = targets
+        .allow_users
+        .iter()
+        .filter_map(|u| match u {
+            tl::enums::InputUser::User(u) => Some(u.user_id),
+            _ => None,
+        })
+        .collect();
+    let new_disallow_user_ids: Vec<i64> = targets
+        .disallow_users
+        .iter()
+        .filter_map(|u| match u {
+            tl::enums::InputUser::User(u) => Some(u.user_id),
+            _ => None,
+        })
+        .collect();
+    if replace {
+        // Revocation semantics: the four user/chat lists are exactly what the
+        // flags name; anything previously allowed/denied that is not re-named
+        // here is dropped. Categorical rules (contacts, close friends, …)
+        // survive because the CLI cannot express them.
+        base_allow_user_ids.clear();
+        base_allow_chat_ids.clear();
+        base_disallow_user_ids.clear();
+        base_disallow_chat_ids.clear();
+    } else {
+        // Merge mode must never send a target on both sides of the key —
+        // the server would receive contradictory rules with undefined
+        // precedence. Reject instead, pointing at --replace for revocation.
+        let cross_allow = new_disallow_user_ids
+            .iter()
+            .filter(|id| base_allow_user_ids.contains(id))
+            .count()
+            + targets
+                .disallow_chats
+                .iter()
+                .filter(|id| base_allow_chat_ids.contains(id))
+                .count();
+        let cross_deny = new_allow_user_ids
+            .iter()
+            .filter(|id| base_disallow_user_ids.contains(id))
+            .count()
+            + targets
+                .allow_chats
+                .iter()
+                .filter(|id| base_disallow_chat_ids.contains(id))
+                .count();
+        if cross_allow > 0 || cross_deny > 0 {
+            base_allow_user_ids.retain(|id| !new_disallow_user_ids.contains(id));
+            base_allow_chat_ids.retain(|id| !targets.disallow_chats.contains(id));
+            base_disallow_user_ids.retain(|id| !new_allow_user_ids.contains(id));
+            base_disallow_chat_ids.retain(|id| !targets.allow_chats.contains(id));
+        }
+    }
     let deduped_allow_targets = dedupe_input_users(targets.allow_users.clone());
     let new_allow_users: Vec<tl::enums::InputUser> = deduped_allow_targets
         .into_iter()
@@ -628,6 +724,8 @@ pub(crate) struct SetParams {
     pub(crate) deny: Option<Vec<String>>,
     pub(crate) deny_chat: Option<Vec<i64>>,
     #[serde(default)]
+    pub(crate) replace: bool,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -639,6 +737,7 @@ impl From<&SetArgs> for SetParams {
             allow_chat: a.allow_chat.clone(),
             deny: a.deny.clone(),
             deny_chat: a.deny_chat.clone(),
+            replace: a.replace,
             dry_run: false,
         }
     }
@@ -652,6 +751,7 @@ impl From<&SetParams> for SetArgs {
             allow_chat: p.allow_chat.clone(),
             deny: p.deny.clone(),
             deny_chat: p.deny_chat.clone(),
+            replace: p.replace,
         }
     }
 }
@@ -664,8 +764,10 @@ fn set_serve_dry_run(args: &SetArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
         "dry_run": true,
         "key": args.key,
+        "replace": args.replace,
         "would": format!(
-            "set privacy rules for key {} (allow {} users + {} chats, deny {} users + {} chats)",
+            "{} privacy rules for key {} (allow {} users + {} chats, deny {} users + {} chats)",
+            if args.replace { "replace" } else { "merge into" },
             args.key,
             args.allow.as_ref().map_or(0, Vec::len),
             args.allow_chat.as_ref().map_or(0, Vec::len),
@@ -754,6 +856,43 @@ pub(crate) async fn set_core(
     allow_users = dedupe_input_users(allow_users);
     disallow_users = dedupe_input_users(disallow_users);
     let fetched = fetch_privacy_rules(&shares.client, &tl_key).await?;
+    if !params.replace {
+        let base = split_base_rule_ids(&fetched.rules);
+        let cross_allow = dedupe_ids(
+            disallow_users
+                .iter()
+                .filter_map(|u| match u {
+                    tl::enums::InputUser::User(u) => Some(u.user_id),
+                    _ => None,
+                })
+                .collect(),
+        )
+        .iter()
+        .any(|id| base.allow_users.contains(id))
+            || dedupe_ids(params.deny_chat.clone().unwrap_or_default())
+                .iter()
+                .any(|id| base.allow_chats.contains(id))
+            || dedupe_ids(
+                allow_users
+                    .iter()
+                    .filter_map(|u| match u {
+                        tl::enums::InputUser::User(u) => Some(u.user_id),
+                        _ => None,
+                    })
+                    .collect(),
+            )
+            .iter()
+            .any(|id| base.disallow_users.contains(id))
+            || dedupe_ids(params.allow_chat.clone().unwrap_or_default())
+                .iter()
+                .any(|id| base.disallow_chats.contains(id));
+        if cross_allow {
+            return Err(TeleError::Usage(
+                "privacy set: one or more targets already sit on the opposite side of the existing rules; pass --replace to rebuild the user/chat lists"
+                    .to_string(),
+            ));
+        }
+    }
     let mut user_map = build_user_map(&fetched.users);
     let mut missing: Vec<i64> = Vec::new();
     for r in &fetched.rules {
@@ -789,7 +928,7 @@ pub(crate) async fn set_core(
         disallow_users,
         disallow_chats: dedupe_ids(params.deny_chat.unwrap_or_default()),
     };
-    let rules = merge_privacy_rules_with_map(&fetched.rules, &targets, &user_map);
+    let rules = merge_privacy_rules_with_map(&fetched.rules, &targets, &user_map, params.replace);
     let _: tl::enums::account::PrivacyRules = shares
         .client
         .invoke(&tl::functions::account::SetPrivacy { key: tl_key, rules })
@@ -884,6 +1023,7 @@ mod tests {
                 deny: None,
                 allow_chat: None,
                 deny_chat: None,
+                replace: false,
             };
             assert!(
                 matches!(validate_set(&args), Err(TeleError::Usage(_))),
@@ -908,6 +1048,7 @@ mod tests {
                 allow_chat: None,
                 deny,
                 deny_chat: None,
+                replace: false,
             };
             assert!(
                 matches!(validate_set(&args), Err(TeleError::Usage(_))),
@@ -924,6 +1065,7 @@ mod tests {
             deny: None,
             allow_chat: None,
             deny_chat: None,
+            replace: false,
         };
         assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
     }
@@ -936,6 +1078,7 @@ mod tests {
             deny: Some(vec!["  ".to_string(), "\t".to_string()]),
             allow_chat: None,
             deny_chat: None,
+            replace: false,
         };
         assert!(matches!(validate_set(&args), Err(TeleError::Usage(_))));
     }
@@ -948,6 +1091,7 @@ mod tests {
             deny: Some(vec!["@bob".to_string()]),
             allow_chat: None,
             deny_chat: None,
+            replace: false,
         };
         assert!(validate_set(&args).is_ok());
     }
@@ -960,6 +1104,7 @@ mod tests {
             deny: Some(vec!["@x".to_string()]),
             allow_chat: None,
             deny_chat: None,
+            replace: false,
         };
         assert!(validate_set(&with_deny).is_ok());
         let neither = SetArgs {
@@ -968,6 +1113,7 @@ mod tests {
             deny: None,
             allow_chat: None,
             deny_chat: None,
+            replace: false,
         };
         assert!(matches!(validate_set(&neither), Err(TeleError::Usage(_))));
     }
@@ -1075,7 +1221,14 @@ mod tests {
         base: &[tl::enums::PrivacyRule],
         targets: &PrivacyTargets,
     ) -> Vec<tl::enums::InputPrivacyRule> {
-        merge_privacy_rules_with_map(base, targets, &HashMap::new())
+        merge_privacy_rules_with_map(base, targets, &HashMap::new(), false)
+    }
+
+    fn merge_privacy_rules_replacing(
+        base: &[tl::enums::PrivacyRule],
+        targets: &PrivacyTargets,
+    ) -> Vec<tl::enums::InputPrivacyRule> {
+        merge_privacy_rules_with_map(base, targets, &HashMap::new(), true)
     }
 
     fn targets(
@@ -1120,6 +1273,55 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn replace_drops_unnamed_user_rules_but_keeps_categorical() {
+        let base = base_with_contacts_and_user_rules();
+        // Only user 5 is re-named; users 1, 2 and 3 are revoked.
+        let merged = merge_privacy_rules_replacing(&base, &targets(&[iu(5)], &[]));
+        assert_eq!(
+            merged,
+            vec![
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(
+                    tl::types::InputPrivacyValueAllowUsers { users: vec![iu(5)] },
+                ),
+                tl::enums::InputPrivacyRule::InputPrivacyValueAllowContacts,
+            ]
+        );
+    }
+
+    #[test]
+    fn replace_moves_named_target_to_deny_side() {
+        let base = vec![tl::enums::PrivacyRule::PrivacyValueAllowUsers(
+            tl::types::PrivacyValueAllowUsers { users: vec![1] },
+        )];
+        let merged = merge_privacy_rules_replacing(&base, &targets(&[], &[iu(1)]));
+        assert_eq!(
+            merged,
+            vec![tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(
+                tl::types::InputPrivacyValueDisallowUsers { users: vec![iu(1)] },
+            )]
+        );
+    }
+
+    #[test]
+    fn merge_must_not_send_target_on_both_sides() {
+        let base = vec![tl::enums::PrivacyRule::PrivacyValueAllowUsers(
+            tl::types::PrivacyValueAllowUsers { users: vec![1] },
+        )];
+        // Cross-side conflict in merge mode: the old allow for 1 must be
+        // stripped instead of shipping contradictory rules to the server.
+        let merged = merge_privacy_rules(&base, &targets(&[], &[iu(1), iu(9)]));
+        assert!(merged.iter().any(|r| matches!(
+            r,
+            tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(v)
+                if v.users.contains(&iu(1)) && v.users.contains(&iu(9))
+        )));
+        assert!(!merged.iter().any(|r| matches!(
+            r,
+            tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(_)
+        )));
     }
 
     #[test]
@@ -1348,6 +1550,7 @@ mod tests {
             allow_chat,
             deny,
             deny_chat,
+            replace: false,
         }
     }
 
@@ -1864,7 +2067,8 @@ mod tests {
             serde_json::json!({
                 "dry_run": true,
                 "key": "status",
-                "would": "set privacy rules for key status (allow 1 users + 2 chats, deny 1 users + 0 chats)"
+                "replace": false,
+                "would": "merge into privacy rules for key status (allow 1 users + 2 chats, deny 1 users + 0 chats)"
             })
         );
     }

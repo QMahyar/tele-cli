@@ -277,6 +277,7 @@ This command removes the current profile photo. It reads the photo id from `user
   forwards chat_invite added_by_phone voice_messages about phone_p2p
   birthday star_gifts_auto_save no_paid_messages saved_music` (mapped in both directions for get/set). An unknown key exits with a Usage error listing all valid keys.
 - `--allow-chat <id,id>` and `--deny-chat <id,id>` add chat-participant rules (`InputPrivacyValueAllowChatParticipants` / `InputPrivacyValueDisallowChatParticipants`). Ids must be positive. Existing base chat rules are replaced only when matching chat flags are given, and preserved otherwise (the same semantics as user rules).
+- By default `privacy set` merges into the fetched server rules. Naming a target that already sits on the opposite side of the existing rules (e.g. `--deny` a user who is in the current allow list) fails with a Usage error instead of shipping contradictory rules. `--replace` rebuilds the four user/chat lists from the flags alone — targets not re-named are revoked; broad categorical rules (contacts, close friends, premium, bots) are kept because no CLI flags express them. `--replace` also flips the dry-run `would` verb to "replace" and adds additive `"replace": true`.
 - The same target on both sides fails with a Usage error before connect. Matching is normalized: case-insensitive, with leading `@` or `t.me` prefixes stripped, and numeric ids compared numerically across `--allow/--allow-chat` versus `--deny/--deny-chat`.
 
 ## Topic lifecycle commands
