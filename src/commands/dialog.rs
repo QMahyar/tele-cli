@@ -315,7 +315,7 @@ async fn dialog_list_folder_core(
             })
             .await
             .map_err(tele_invocation)?;
-        let (dialogs, mut messages, users, chats, is_last) = match raw {
+        let (dialogs, messages, users, chats, is_last) = match raw {
             tl::enums::messages::Dialogs::Dialogs(d) => {
                 (d.dialogs, d.messages, d.users, d.chats, true)
             }
@@ -356,87 +356,99 @@ async fn dialog_list_folder_core(
             peer_hashes.insert(id, hash);
             peers_map.insert(id, p);
         }
+        // Index the bundled top messages by peer so each dialog's own message
+        // is addressable regardless of payload ordering.
+        let mut bundled: std::collections::HashMap<PeerId, tl::enums::Message> =
+            std::collections::HashMap::new();
+        for msg in messages {
+            let pid: Option<PeerId> = match &msg {
+                tl::enums::Message::Empty(e) => e.peer_id.as_ref().map(PeerId::from),
+                tl::enums::Message::Message(m) => Some(PeerId::from(&m.peer_id)),
+                tl::enums::Message::Service(m) => Some(PeerId::from(&m.peer_id)),
+            };
+            if let Some(pid) = pid {
+                bundled.insert(pid, msg);
+            }
+        }
         let mut last_peer_id: Option<PeerId> = None;
         let mut last_msg_date: Option<i32> = None;
         let mut last_msg_id: Option<i32> = None;
+        // Track the top message of the LAST dialog processed in this page;
+        // messages.GetDialogs requires offset_date/offset_id/offset_peer to
+        // describe the same dialog, or the next page re-serves this one.
+        let mut set_anchor = |msg_date: i32, msg_id: i32| {
+            last_msg_date = Some(msg_date);
+            last_msg_id = Some(msg_id);
+        };
         for dlg in &dialogs {
+            let dlg_peer_id: Option<PeerId> = match dlg {
+                tl::enums::Dialog::Dialog(d) => match &d.peer {
+                    tl::enums::Peer::User(u) => Some(PeerId::user_unchecked(u.user_id)),
+                    tl::enums::Peer::Chat(c) => Some(PeerId::chat_unchecked(c.chat_id)),
+                    tl::enums::Peer::Channel(c) => Some(PeerId::channel_unchecked(c.channel_id)),
+                },
+                tl::enums::Dialog::Folder(f) => match &f.peer {
+                    tl::enums::Peer::User(u) => Some(PeerId::user_unchecked(u.user_id)),
+                    tl::enums::Peer::Chat(c) => Some(PeerId::chat_unchecked(c.chat_id)),
+                    tl::enums::Peer::Channel(c) => Some(PeerId::channel_unchecked(c.channel_id)),
+                },
+            };
+            let Some(dlg_peer_id) = dlg_peer_id else {
+                continue;
+            };
             if !is_dialog_row(dlg) {
+                // Folder rows consume a slot in the server's ordering too —
+                // keep the offset peer moving past them.
+                last_peer_id = Some(dlg_peer_id);
                 continue;
             }
             let d = match dlg {
                 tl::enums::Dialog::Dialog(d) => d,
                 tl::enums::Dialog::Folder(_) => continue,
             };
-            let peer_id: PeerId = match &d.peer {
-                tl::enums::Peer::User(u) => PeerId::user_unchecked(u.user_id),
-                tl::enums::Peer::Chat(c) => PeerId::chat_unchecked(c.chat_id),
-                tl::enums::Peer::Channel(c) => PeerId::channel_unchecked(c.channel_id),
-            };
+            let peer_id = dlg_peer_id;
             let Some(peer) = peers_map.get(&peer_id) else {
+                // Row skipped (peer absent from users/chats), but the dialog
+                // still consumes its slot in the server's ordering — anchor on
+                // its bundled top message (or top_message id) so pagination
+                // cannot stall or re-serve this window.
+                let anchor = match bundled.remove(&peer_id) {
+                    Some(tl::enums::Message::Message(m)) => (m.date, m.id),
+                    Some(tl::enums::Message::Service(m)) => (m.date, m.id),
+                    _ => (0, d.top_message),
+                };
+                last_peer_id = Some(peer_id);
+                set_anchor(anchor.0, anchor.1);
                 continue;
             };
-            last_peer_id = Some(peer_id);
             let draft = match &d.draft {
                 Some(tl::enums::DraftMessage::Message(dm)) => dm.message.clone(),
                 _ => String::new(),
             };
-            let mut found_idx: Option<usize> = None;
-            for (idx, msg) in messages.iter().enumerate() {
-                let pid = match msg {
-                    tl::enums::Message::Empty(e) => e.peer_id.clone(),
-                    tl::enums::Message::Message(m) => Some(m.peer_id.clone()),
-                    tl::enums::Message::Service(m) => Some(m.peer_id.clone()),
-                };
-                if let Some(pid) = pid {
-                    if PeerId::from(&pid) == peer_id {
-                        found_idx = Some(idx);
-                        break;
-                    }
+            let (last_text, last_date) = match bundled.remove(&peer_id) {
+                Some(tl::enums::Message::Message(m)) => {
+                    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
+                        .map(|d| d.to_rfc3339());
+                    let anchor = (m.date, m.id);
+                    last_peer_id = Some(peer_id);
+                    set_anchor(anchor.0, anchor.1);
+                    (m.message.clone(), dt)
                 }
-            }
-            let (last_text, last_date) = if let Some(idx) = found_idx {
-                let raw_msg = messages.swap_remove(idx);
-                let (txt, date) = match &raw_msg {
-                    tl::enums::Message::Empty(_) => (String::new(), None),
-                    tl::enums::Message::Message(m) => {
-                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
-                            .map(|d| d.to_rfc3339());
-                        if last_msg_date.is_none() {
-                            last_msg_date = Some(m.date);
-                            last_msg_id = Some(m.id);
-                        }
-                        (m.message.clone(), dt)
-                    }
-                    tl::enums::Message::Service(m) => {
-                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
-                            .map(|d| d.to_rfc3339());
-                        if last_msg_date.is_none() {
-                            last_msg_date = Some(m.date);
-                            last_msg_id = Some(m.id);
-                        }
-                        (String::new(), dt)
-                    }
-                };
-                if last_msg_date.is_none() {
-                    match &raw_msg {
-                        tl::enums::Message::Message(m) => {
-                            last_msg_date = Some(m.date);
-                            last_msg_id = Some(m.id);
-                        }
-                        tl::enums::Message::Service(m) => {
-                            last_msg_date = Some(m.date);
-                            last_msg_id = Some(m.id);
-                        }
-                        _ => {}
-                    }
+                Some(tl::enums::Message::Service(m)) => {
+                    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
+                        .map(|d| d.to_rfc3339());
+                    let anchor = (m.date, m.id);
+                    last_peer_id = Some(peer_id);
+                    set_anchor(anchor.0, anchor.1);
+                    (String::new(), dt)
                 }
-                (txt, date)
-            } else {
-                if last_msg_date.is_none() {
-                    last_msg_date = Some(0);
-                    last_msg_id = Some(0);
+                _ => {
+                    // No bundled message for this dialog: anchor on its own
+                    // (top_message) id — still a valid offset key.
+                    last_peer_id = Some(peer_id);
+                    set_anchor(0, d.top_message);
+                    (String::new(), None)
                 }
-                (String::new(), None)
             };
             rows.push(dialog_row(
                 d,
