@@ -14,6 +14,12 @@ pub struct SendArgs {
     pub(crate) text: Option<String>,
     #[arg(
         long,
+        value_name = "UTF16_UNITS",
+        help = "split --text into sequential messages of at most this many UTF-16 units (Telegram's cap is 4096); reply/schedule apply to the first chunk only"
+    )]
+    pub(crate) split: Option<usize>,
+    #[arg(
+        long,
         help = "send time: Unix timestamp or RFC3339 datetime (must be in the future)"
     )]
     pub(crate) schedule: Option<String>,
@@ -484,6 +490,8 @@ pub struct ClickArgs {
 pub(crate) struct SendParams {
     pub(crate) chat: String,
     pub(crate) text: Option<String>,
+    #[serde(default)]
+    pub(crate) split: Option<usize>,
     pub(crate) schedule: Option<String>,
     #[serde(default)]
     pub(crate) files: Vec<String>,
@@ -527,6 +535,7 @@ impl From<&SendArgs> for SendParams {
         Self {
             chat: a.chat.as_str().to_string(),
             text: a.text.clone(),
+            split: a.split,
             schedule: a.schedule.clone(),
             files: a.files.clone(),
             caption: a.caption.clone(),
@@ -559,6 +568,7 @@ impl From<&SendParams> for SendArgs {
         Self {
             chat: ChatTarget::new_unchecked(p.chat.clone()),
             text: p.text.clone(),
+            split: p.split,
             schedule: p.schedule.clone(),
             files: p.files.clone(),
             caption: p.caption.clone(),

@@ -9,7 +9,7 @@ use crate::commands::msg::download::{
 use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
     message_random_id, parse_as_media, parse_poll_mode, parse_schedule, send_dry_run_payload,
-    send_poll_message,
+    send_poll_message, split_text_utf16,
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
@@ -60,6 +60,7 @@ fn send_args(format: &str) -> SendArgs {
     SendArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
         text: Some("hi".to_string()),
+        split: None,
         schedule: None,
         files: vec![],
         media_ttl: None,
@@ -2216,6 +2217,7 @@ fn send_dry_run_carries_argument_keys() {
     assert_eq!(value["dry_run"], serde_json::json!(true));
     assert_eq!(value["chat"], serde_json::json!("@x"));
     assert_eq!(value["text"], serde_json::json!("hi"));
+    assert_eq!(value["split"], serde_json::Value::Null);
     assert_eq!(value["files"], serde_json::json!([]));
     assert_eq!(value["caption"], serde_json::Value::Null);
     assert_eq!(value["format"], serde_json::json!("plain"));
@@ -2224,6 +2226,54 @@ fn send_dry_run_carries_argument_keys() {
     assert_eq!(value["preview"], serde_json::json!(true));
     assert_eq!(value["silent"], serde_json::json!(false));
     assert_eq!(value["would"], serde_json::json!("send message to chat @x"));
+}
+
+#[test]
+fn split_text_utf16_respects_cap_and_prefers_paragraph_breaks() {
+    assert!(split_text_utf16("", 4096).is_empty());
+    assert_eq!(split_text_utf16("hello", 4096), vec!["hello"]);
+    // 5 astral-plane chars = 10 UTF-16 units; cap 7 forces a 2-chunk split.
+    let emoji = "\u{1F600}";
+    let text = emoji.repeat(5);
+    let chunks = split_text_utf16(&text, 7);
+    assert!(chunks.len() >= 2);
+    assert!(chunks
+        .iter()
+        .all(|c| c.chars().map(char::len_utf16).sum::<usize>() <= 7));
+    assert_eq!(chunks.concat(), text, "splitting must not lose text");
+
+    // Paragraph break in the last quarter wins over a hard cut.
+    let para = format!("{}\n{}", "a".repeat(30), "b".repeat(30));
+    let chunks = split_text_utf16(&para, 40);
+    assert_eq!(chunks.len(), 2);
+    assert!(chunks[0].ends_with('\n'), "paragraph-preferred cut");
+    assert_eq!(chunks.concat(), para);
+
+    // No newline anywhere: hard cut at the cap, still lossless.
+    let flat = "x".repeat(10_000);
+    let chunks = split_text_utf16(&flat, 4096);
+    assert!(chunks.len() >= 2);
+    assert!(chunks
+        .iter()
+        .all(|c| c.chars().map(char::len_utf16).sum::<usize>() <= 4096));
+    assert_eq!(chunks.concat(), flat);
+}
+
+#[test]
+fn validate_send_rejects_split_misuse() {
+    let mut args = send_args("plain");
+    args.split = Some(0);
+    assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    args.split = Some(4097);
+    assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    args.split = Some(4096);
+    assert!(validate_send(&args).is_ok());
+    args.text = None;
+    args.split = Some(4096);
+    assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
+    args.text = Some("hi".to_string());
+    args.poll = Some("q".to_string());
+    assert!(matches!(validate_send(&args), Err(TeleError::Usage(_))));
 }
 
 #[test]
@@ -2263,6 +2313,7 @@ fn validate_send_url_requires_kind_and_conflicts_with_text() {
     let url_only = SendArgs {
         chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
         text: Some("hi".to_string()),
+        split: None,
         schedule: None,
         files: vec![],
         media_ttl: None,

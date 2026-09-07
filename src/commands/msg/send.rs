@@ -68,6 +68,25 @@ fn effective_preview(args: &SendArgs) -> bool {
 
 pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    if let Some(units) = args.split {
+        if args.text.is_none() {
+            return Err(TeleError::Usage("--split requires --text".to_string()));
+        }
+        if !args.files.is_empty()
+            || args.url.is_some()
+            || args.copy_from.is_some()
+            || args.poll.is_some()
+        {
+            return Err(TeleError::Usage(
+                "--split applies to --text sends only".to_string(),
+            ));
+        }
+        if units == 0 || units > 4096 {
+            return Err(TeleError::Usage(
+                "--split must be between 1 and 4096 UTF-16 units".to_string(),
+            ));
+        }
+    }
     if let Some(topic) = args.topic {
         if topic <= 0 {
             return Err(TeleError::Usage(
@@ -489,6 +508,7 @@ pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> se
         "dry_run": true,
         "chat": args.chat,
         "text": args.text,
+        "split": args.split,
         "files": args.files,
         "url": args.url,
         "kind": args.kind,
@@ -629,6 +649,54 @@ pub(crate) fn send_poll_message(
     Ok(InputMessage::new().media(media))
 }
 
+/// Splits text into chunks of at most `cap` UTF-16 code units (Telegram's
+/// message-text budget), preferring a paragraph break in the last quarter of
+/// each chunk and falling back to a hard character cut.
+pub(crate) fn split_text_utf16(text: &str, cap: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    loop {
+        let total_utf16: usize = rest.chars().map(char::len_utf16).sum();
+        if total_utf16 <= cap {
+            if !rest.is_empty() {
+                out.push(rest.to_string());
+            }
+            break;
+        }
+        let mut used = 0usize;
+        let mut cut = 0usize;
+        let mut last_nl: Option<usize> = None;
+        for (i, c) in rest.char_indices() {
+            if used + c.len_utf16() > cap {
+                break;
+            }
+            used += c.len_utf16();
+            let after = i + c.len_utf8();
+            if c == '\n' {
+                last_nl = Some(after);
+            }
+            cut = after;
+        }
+        if cut == 0 {
+            cut = rest
+                .chars()
+                .next()
+                .map(char::len_utf8)
+                .unwrap_or(rest.len());
+        }
+        let split_at = match last_nl {
+            Some(nl) if nl * 4 >= cut => nl,
+            _ => cut,
+        };
+        out.push(rest[..split_at].to_string());
+        rest = &rest[split_at..];
+    }
+    if out.is_empty() && !text.is_empty() {
+        out.push(text.to_string());
+    }
+    out
+}
+
 pub(crate) async fn send_core(
     shares: &crate::client::ServeShares,
     params: SendParams,
@@ -651,6 +719,7 @@ pub(crate) async fn send_core(
     let silent = params.silent;
     let noforwards = params.noforwards;
     let background = params.background;
+    let split = params.split;
     let media_ttl = params.media_ttl;
     let thumbnail = params.thumbnail.clone();
     let url = params.url.clone();
@@ -813,7 +882,49 @@ pub(crate) async fn send_core(
             }
         }
     } else {
-        let text = text.as_deref().unwrap_or_default();
+        let text_owned = text.clone().unwrap_or_default();
+        if split.is_some() {
+            let cap = split.unwrap_or(4096);
+            let chunks = split_text_utf16(&text_owned, cap);
+            let mut rows: Vec<serde_json::Value> = Vec::new();
+            for (i, chunk) in chunks.iter().enumerate() {
+                if i > 0 {
+                    shares.rate_limiter.acquire().await;
+                }
+                let base = match format.as_str() {
+                    "markdown" => InputMessage::new().markdown(chunk),
+                    _ => InputMessage::new().text(chunk),
+                };
+                let base = base.link_preview(preview);
+                let base = if i == 0 { base.reply_to(reply) } else { base };
+                let msg = apply_common(base);
+                let msg = if let Some(s) = schedule {
+                    if s == 0 {
+                        msg.schedule_once_online()
+                    } else {
+                        let ts =
+                            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
+                        msg.schedule_date(Some(ts))
+                    }
+                } else {
+                    msg
+                };
+                let sent = shares
+                    .client
+                    .send_message(chat_ref, msg)
+                    .await
+                    .map_err(tele_invocation)?;
+                let mut row = crate::serialize::message_to_json(&sent)?;
+                crate::serialize::upgrade_peer_identity(&mut row, &chat);
+                rows.push(row);
+            }
+            return Ok(if rows.len() == 1 {
+                rows.into_iter().next().unwrap()
+            } else {
+                serde_json::json!({ "messages": rows, "split": rows.len() })
+            });
+        }
+        let text = text_owned;
         if noforwards {
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
             return send_noforwards_text(
@@ -821,7 +932,7 @@ pub(crate) async fn send_core(
                 &chat,
                 peer,
                 RawTextSend {
-                    text,
+                    text: &text,
                     format: format.as_str(),
                     preview,
                     silent,

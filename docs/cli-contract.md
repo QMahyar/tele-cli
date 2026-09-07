@@ -202,7 +202,8 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 - `--copy-from <chat> --copy-id <id>` re-sends an existing message's media without the forward header.
 - `--topic <id>` posts into a forum topic. It is mutually exclusive with `--reply`: both set the reply-to header, and replying to the topic root lands the message in that topic. Reads scoped to a topic are available through `tele raw messages.Search` (`top_msg_id`), because grammers 0.10 exposes no topic filters on its history or search iterators.
 - `--caption <text>` attaches a caption to uploaded file(s) and requires `--file`.
-- `--format plain|markdown` (default `plain`) controls text formatting for outgoing text.
+- `--format plain|markdown` (default `plain`) controls text formatting for outgoing text. Plain text sends are capped by Telegram at 4096 UTF-16 units (and captions at 1024); oversized text fails with the server's MESSAGE_TOO_LONG.
+- `--split <UTF16_UNITS>` (1..=4096) breaks `--text` into sequential messages of at most that size instead of failing — chunking is UTF-16-aware and prefers a paragraph break in the last quarter of each chunk; reply/schedule/link-preview apply to every chunk, but `--reply`/`--topic` land on the first chunk only. Multi-chunk sends return `{"messages": [...], "split": N}` (single-chunk sends keep the plain message row); each chunk after the first consumes a rate-limiter slot. Mutually exclusive with `--file/--url/--copy-from/--poll`.
 - `--silent` sends with notifications muted.
 - `--no-preview` disables the link preview (on by default).
 - `--as voice|video-note` sends a single `--file` as a voice note (`documentAttributeAudio{voice:true}`) or round video note (`documentAttributeVideo{round_message:true}`); exactly one file, no caption/thumbnail/schedule.

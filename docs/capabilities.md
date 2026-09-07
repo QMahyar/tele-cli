@@ -29,7 +29,7 @@ RPCs without a friendly wrapper stay reachable through `tele raw <registry-name>
 
 | id | Capability | Telegram | grammers | CLI | Status |
 |---|---|---|---|---|---|
-| msg.send | Send text | `messages.sendMessage` | `send_message` | `tele msg send` (incl. `--as voice`/`video-note` for voice/round-video notes, `--poll Q --option A --option B [--poll-mode quiz --poll-quiz-option N]` for poll creation via `InputMediaPoll`) | done |
+| msg.send | Send text | `messages.sendMessage` | `send_message` | `tele msg send` (incl. `--as voice`/`video-note` for voice/round-video notes, `--poll Q --option A --option B [--poll-mode quiz --poll-quiz-option N]` for poll creation via `InputMediaPoll`; `--split N` chunks oversized text into sequential ≤4096-UTF-16-unit messages) | done |
 | msg.schedule | Scheduled send | `schedule_date` | raw (no friendly param) | `tele msg send --schedule` | done |
 | msg.schedule-repeat | Repeating scheduled messages | `messages.{SendMessage,editMessage}` carry `schedule_repeat_period` at the vendored layer 227 | raw | `tele raw` messages.SendMessage / messages.editMessage with `schedule_repeat_period`; no friendly `tele msg send --repeat` flag yet | later |
 | msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` (text/caption via `--text`/`--caption` with `--format plain`/`markdown`, media swap via `--file`, `--no-preview` sets `no_webpage`) | done |
