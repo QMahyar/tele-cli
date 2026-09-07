@@ -973,10 +973,14 @@ async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 pub(crate) fn created_chat(r: &tl::enums::Updates) -> Option<&tl::enums::Chat> {
-    match r {
-        tl::enums::Updates::Updates(u) => u.chats.first(),
-        _ => None,
-    }
+    let chats: &[tl::enums::Chat] = match r {
+        tl::enums::Updates::Updates(u) => &u.chats,
+        tl::enums::Updates::Combined(u) => &u.chats,
+        // UpdateShort* / TooLong carry no chat list: the create succeeded but
+        // the response shape is not parseable for the chat object.
+        _ => return None,
+    };
+    chats.first()
 }
 
 pub(crate) async fn cache_created_chat<S: Session>(session: &S, chat: Option<&tl::enums::Chat>)
@@ -1903,6 +1907,27 @@ pub(crate) async fn chat_create_core(
     }
 }
 
+pub(crate) async fn current_signature_profiles(
+    client: &grammers_client::Client,
+    input_channel: &tl::enums::InputChannel,
+) -> TeleResult<bool> {
+    let full = client
+        .invoke(&tl::functions::channels::GetFullChannel {
+            channel: input_channel.clone(),
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::messages::ChatFull::Full(full) = full;
+    let tl::enums::ChatFull::ChannelFull(f) = full.full_chat else {
+        return Err(TeleError::Other(
+            "settings unavailable: server returned group info for this chat".to_string(),
+        ));
+    };
+    Ok(channel_from_chats(&full.chats, f.id)
+        .map(|c| c.signature_profiles)
+        .unwrap_or(false))
+}
+
 pub(crate) async fn chat_settings_core(
     shares: &crate::client::ServeShares,
     params: SettingsServeParams,
@@ -1946,11 +1971,12 @@ pub(crate) async fn chat_settings_core(
         if let Some(enabled) = signatures {
             applied.push("signatures");
             shares.rate_limiter.acquire().await;
+            let profiles = current_signature_profiles(&shares.client, &input_channel).await?;
             shares
                 .client
                 .invoke(&tl::functions::channels::ToggleSignatures {
                     signatures_enabled: enabled,
-                    profiles_enabled: false,
+                    profiles_enabled: profiles,
                     channel: input_channel.clone(),
                 })
                 .await

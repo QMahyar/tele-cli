@@ -708,6 +708,49 @@ fn create_accepts_known_kinds() {
     }
 }
 
+#[test]
+fn created_chat_parses_combined_updates_not_only_plain_updates() {
+    let chat = tl::enums::Chat::Chat(tl::types::Chat {
+        creator: true,
+        left: false,
+        deactivated: false,
+        call_active: false,
+        call_not_empty: false,
+        noforwards: false,
+        id: 4242,
+        title: "t".to_string(),
+        photo: tl::enums::ChatPhoto::Empty,
+        participants_count: 1,
+        date: 0,
+        version: 1,
+        migrated_to: None,
+        admin_rights: None,
+        default_banned_rights: None,
+    });
+    let plain = tl::enums::Updates::Updates(tl::types::Updates {
+        updates: Vec::new(),
+        users: Vec::new(),
+        chats: vec![chat.clone()],
+        date: 0,
+        seq: 0,
+    });
+    let combined = tl::enums::Updates::Combined(tl::types::UpdatesCombined {
+        updates: Vec::new(),
+        users: Vec::new(),
+        chats: vec![chat.clone()],
+        date: 0,
+        seq_start: 0,
+        seq: 0,
+    });
+    assert_eq!(created_chat(&plain).map(|c| c.id()), Some(4242));
+    assert_eq!(
+        created_chat(&combined).map(|c| c.id()),
+        Some(4242),
+        "create responses can arrive as UpdatesCombined; treating them as \"unexpected shape\" made the CLI error after the server already created the chat"
+    );
+    assert!(created_chat(&tl::enums::Updates::TooLong).is_none());
+}
+
 fn dryrun_flags(command: &str) -> GlobalFlags {
     GlobalFlags {
         account: vec!["me".to_string()],
