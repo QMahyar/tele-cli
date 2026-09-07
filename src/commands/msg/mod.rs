@@ -659,6 +659,29 @@ fn get_target_message_id(params: &GetParams) -> TeleResult<Option<i32>> {
     }
 }
 
+fn get_batch_ids(params: &GetParams) -> TeleResult<Option<Vec<i32>>> {
+    if params.ids.is_empty() {
+        return Ok(None);
+    }
+    if params.id.is_some() || params.last || params.offset_id.is_some() || params.watch {
+        return Err(TeleError::Usage(
+            "--ids is mutually exclusive with --id/--last/--offset-id/--watch".to_string(),
+        ));
+    }
+    if params.ids.iter().any(|&i| i <= 0) {
+        return Err(TeleError::Usage(
+            "--ids must be positive message ids".to_string(),
+        ));
+    }
+    let carried = entities::parse_target(&params.chat)?.msg_id;
+    if carried.is_some() {
+        return Err(TeleError::Usage(
+            "--ids conflicts with a message id carried by --chat".to_string(),
+        ));
+    }
+    Ok(Some(params.ids.clone()))
+}
+
 pub(crate) fn validate_read(args: &ReadArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat").map(|_| ())
 }
@@ -668,6 +691,7 @@ pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value>
         "dry_run": true,
         "chat": args.chat,
         "id": args.id,
+        "ids": args.ids,
         "limit": args.limit,
         "offset_id": args.offset_id,
         "last": args.last,
@@ -783,6 +807,7 @@ pub(crate) async fn get_core(
     params: GetParams,
 ) -> TeleResult<serde_json::Value> {
     let target_message = get_target_message_id(&params)?;
+    let batch_ids = get_batch_ids(&params)?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -798,6 +823,32 @@ pub(crate) async fn get_core(
             push_message_row(&mut rows, &msg)?;
         }
         return Ok(serde_json::json!({"messages": rows}));
+    }
+    if let Some(ids) = batch_ids {
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+        let mut missing: Vec<i32> = Vec::new();
+        for chunk in ids.chunks(100) {
+            shares.rate_limiter.acquire().await;
+            let fetched = shares
+                .client
+                .get_messages_by_id(chat_ref, chunk)
+                .await
+                .map_err(tele_invocation)?;
+            for (pos, msg) in fetched.into_iter().enumerate() {
+                match msg {
+                    Some(m) => push_message_row(&mut rows, &m)?,
+                    None => missing.push(chunk[pos]),
+                }
+            }
+        }
+        let value = serde_json::json!({"messages": rows});
+        return Ok(if missing.is_empty() {
+            value
+        } else {
+            let mut v = value;
+            v["missing_ids"] = serde_json::json!(missing);
+            v
+        });
     }
     let mut iter = shares.client.iter_messages(chat_ref);
     if let Some(offset) = params.offset_id {
@@ -889,6 +940,7 @@ pub(crate) async fn get_watch_core(
         let latest_params = GetParams {
             chat: params.chat.clone(),
             id: None,
+            ids: Vec::new(),
             limit: 1,
             offset_id: None,
             last: true,
@@ -2146,7 +2198,17 @@ pub(crate) async fn search_core(
         if let Some(u) = until {
             iter = iter.max_date(&u.into());
         }
-        if let Some(want) = from_id {
+        // Server-side own-messages filter when the user asked for "me": the
+        // sentinel peer resolves locally and avoids scanning the whole history.
+        if params.from.as_deref() == Some("me") {
+            iter = iter.sent_by_self();
+            iter = iter.limit(limit);
+            while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+                served += 1;
+                shares.rate_limiter.acquire_for_items(served).await;
+                push_message_row(&mut rows, &msg)?;
+            }
+        } else if let Some(want) = from_id {
             while rows.len() < limit {
                 match iter.next().await.map_err(tele_invocation)? {
                     Some(msg) => {

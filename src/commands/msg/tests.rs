@@ -628,6 +628,7 @@ fn get_rejects_last_with_offset_id() {
     let args = GetArgs {
         chat: "me".to_string(),
         id: None,
+        ids: Vec::new(),
         limit: 10,
         offset_id: Some(5),
         last: true,
@@ -640,6 +641,7 @@ fn get_rejects_last_with_offset_id() {
     let no_offset = GetArgs {
         chat: "me".to_string(),
         id: None,
+        ids: Vec::new(),
         limit: 10,
         offset_id: None,
         last: true,
@@ -652,6 +654,7 @@ fn get_rejects_last_with_offset_id() {
     let no_last = GetArgs {
         chat: "me".to_string(),
         id: None,
+        ids: Vec::new(),
         limit: 10,
         offset_id: Some(5),
         last: false,
@@ -669,6 +672,7 @@ fn get_params(chat: &str, id: Option<i32>) -> GetParams {
         id,
         limit: 10,
         offset_id: None,
+        ids: Vec::new(),
         last: false,
         dry_run: false,
 
@@ -709,6 +713,38 @@ fn get_target_id_uses_explicit_id_for_plain_targets() {
 }
 
 #[test]
+fn get_batch_ids_reject_conflicts_and_bad_ids() {
+    let mut p = get_params("@durov", None);
+    p.ids = vec![10, 20];
+    assert_eq!(get_batch_ids(&p).unwrap(), Some(vec![10, 20]));
+
+    let mut p = get_params("@durov", Some(3));
+    p.ids = vec![10];
+    assert!(matches!(get_batch_ids(&p), Err(TeleError::Usage(_))));
+
+    let mut p = get_params("t.me/durov/42", None);
+    p.ids = vec![10];
+    assert!(matches!(get_batch_ids(&p), Err(TeleError::Usage(_))));
+
+    let mut p = get_params("@durov", None);
+    p.ids = vec![10, 0, 20];
+    assert!(matches!(get_batch_ids(&p), Err(TeleError::Usage(_))));
+
+    let mut p = get_params("@durov", None);
+    p.ids = vec![-5];
+    assert!(matches!(get_batch_ids(&p), Err(TeleError::Usage(_))));
+
+    let mut p = get_params("@durov", None);
+    p.last = true;
+    p.ids = vec![10];
+    assert!(matches!(get_batch_ids(&p), Err(TeleError::Usage(_))));
+
+    let mut p = get_params("@durov", None);
+    p.ids = Vec::new();
+    assert_eq!(get_batch_ids(&p).unwrap(), None);
+}
+
+#[test]
 fn get_target_id_conflicts_when_link_carries_and_explicit_id_given() {
     let err = get_target_message_id(&get_params("https://t.me/durov/42", Some(7))).unwrap_err();
     assert!(matches!(err, TeleError::Usage(_)));
@@ -725,6 +761,7 @@ fn validate_get_accepts_deep_link_without_explicit_id() {
     let args = GetArgs {
         chat: "t.me/durov/42".to_string(),
         id: None,
+        ids: Vec::new(),
         limit: 10,
         offset_id: None,
         last: false,
@@ -737,6 +774,7 @@ fn validate_get_accepts_deep_link_without_explicit_id() {
     let c_form = GetArgs {
         chat: "https://t.me/c/1234567890/8".to_string(),
         id: None,
+        ids: Vec::new(),
         limit: 10,
         offset_id: None,
         last: false,
@@ -753,6 +791,7 @@ fn validate_get_rejects_deep_link_plus_explicit_id() {
     let args = GetArgs {
         chat: "t.me/durov/42".to_string(),
         id: Some(42),
+        ids: Vec::new(),
         limit: 10,
         offset_id: None,
         last: false,
@@ -777,6 +816,7 @@ fn validate_get_rejects_target_message_with_listing_flags() {
         let args = GetArgs {
             chat: "t.me/durov/42".to_string(),
             id,
+            ids: Vec::new(),
             limit: 10,
             offset_id,
             last,
@@ -793,6 +833,7 @@ fn validate_get_rejects_target_message_with_listing_flags() {
     let explicit_ok = GetArgs {
         chat: "@durov".to_string(),
         id: Some(3),
+        ids: Vec::new(),
         limit: 10,
         offset_id: None,
         last: false,
@@ -1011,6 +1052,7 @@ fn msg_validators_reject_empty_or_whitespace_chat() {
         let get = GetArgs {
             chat: chat.to_string(),
             id: None,
+            ids: Vec::new(),
             limit: 10,
             offset_id: None,
             last: false,
@@ -1765,6 +1807,7 @@ async fn get_dry_run_short_circuits_before_connect() {
         GetArgs {
             chat: "me".to_string(),
             id: None,
+            ids: Vec::new(),
             limit: 10,
             offset_id: None,
             last: false,
@@ -1791,6 +1834,7 @@ async fn get_without_dry_run_requires_a_real_session() {
         GetArgs {
             chat: "me".to_string(),
             id: None,
+            ids: Vec::new(),
             limit: 10,
             offset_id: None,
             last: false,

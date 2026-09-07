@@ -241,6 +241,12 @@ pub struct GetArgs {
         help = "fetch a single message by ID (conflicts with a msg id carried in --chat)"
     )]
     pub(crate) id: Option<i32>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "fetch a batch of messages by ID (comma-separated; mutually exclusive with --id/--last/--offset-id/--watch)"
+    )]
+    pub(crate) ids: Vec<i32>,
     #[arg(long, default_value_t = 10, help = "max results to return (1-10000)")]
     pub(crate) limit: u32,
     #[arg(long, help = "fetch messages before this ID")]
@@ -752,6 +758,8 @@ pub(crate) struct GetParams {
     pub(crate) chat: String,
     #[serde(default)]
     pub(crate) id: Option<i32>,
+    #[serde(default)]
+    pub(crate) ids: Vec<i32>,
     #[serde(default = "default_limit")]
     pub(crate) limit: u32,
     pub(crate) offset_id: Option<i32>,
@@ -772,6 +780,7 @@ impl From<&GetArgs> for GetParams {
         Self {
             chat: a.chat.clone(),
             id: a.id,
+            ids: a.ids.clone(),
             limit: a.limit,
             offset_id: a.offset_id,
             last: a.last,
@@ -788,6 +797,7 @@ impl From<&GetParams> for GetArgs {
         Self {
             chat: p.chat.clone(),
             id: p.id,
+            ids: p.ids.clone(),
             limit: p.limit,
             offset_id: p.offset_id,
             last: p.last,

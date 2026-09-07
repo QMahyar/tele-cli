@@ -219,6 +219,10 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 
 `tele msg get --chat X --id N --watch [--timeout-secs S]` polls until the message changes and returns the newest row: an edit to the watched message, or a newer message landing in the chat while the poll runs. `--timeout-secs` (default 60, must be > 0) bounds the whole poll; on expiry the command exits 3 with a `Timeout`-class error. The same `watch`/`timeout_secs` params are available over serve/MCP (`GetParams.watch`, `timeout_secs`).
 
+## `msg get --ids`
+
+`tele msg get --chat X --ids 10,20,30` batch-fetches messages by id (single-RPC batches of 100, additive `"missing_ids": [...]` row when some ids do not resolve). `--ids` is mutually exclusive with `--id/--last/--offset-id/--watch` and with a message id carried by `--chat`; ids must be positive. Available over serve/MCP via `GetParams.ids`.
+
 ## `msg delete`
 
 `results[].data` carries `requested` (how many ids you asked to delete) and `deleted` (how many the server actually removed). When `deleted < requested` (already-deleted ids, other people's messages, or missing permission), the row also carries `"partial": true` and the process exits 2. `--self-only` deletes only for yourself (private chats and basic groups; rejected for channels) via `messages.deleteMessages { revoke: false }`. It is mutually exclusive with `--all`.
