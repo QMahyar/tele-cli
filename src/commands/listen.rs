@@ -19,6 +19,18 @@ pub struct ListenArgs {
     )]
     timeout_secs: u64,
     #[arg(
+        long = "count",
+        value_name = "N",
+        help = "exit after emitting N event rows (all accounts combined)"
+    )]
+    count: Option<u64>,
+    #[arg(
+        long = "until",
+        value_name = "RFC3339|unix-ts|YYYY-MM-DD",
+        help = "exit after the first event at/after this timestamp"
+    )]
+    until: Option<String>,
+    #[arg(
         long,
         value_delimiter = ',',
         default_value = "NewMessage",
@@ -614,6 +626,17 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         output::log_line("info", "listen streams JSONL events on stdout");
     }
     let timeout_secs = args.timeout_secs;
+    let stopper = Arc::new(StreamStopper::new(
+        args.count,
+        args.until.as_deref().map(|v| {
+            crate::commands::msg::download::parse_download_date("--until", v)
+                .map(|dt| {
+                    std::time::Instant::now()
+                        + (dt - chrono::Utc::now()).to_std().unwrap_or_default()
+                })
+                .unwrap_or_else(|e| panic!("invalid --until: {}", e.message()))
+        }),
+    ));
     let direction = if args.out {
         Some(Direction::Out)
     } else if args.r#in {
@@ -635,6 +658,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let events = events.clone();
         let filter_patterns = filter_patterns.clone();
         let semaphore = Arc::clone(&semaphore);
+        let stopper = Arc::clone(&stopper);
         tasks.spawn(async move {
             let result: TeleResult<()> = async {
                 let creds =
@@ -769,7 +793,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         if let Some(d) = deadline {
                             if std::time::Instant::now() >= d {
                                 for done in album_flush(&name, &mut album) {
-                                    if emit_row_or_stop(&name, done).await? {
+                                    if emit_row_or_stop(&stopper, &name, done).await? {
                                         return Ok(());
                                     }
                                 }
@@ -804,7 +828,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 for done in
                                     album_sweep(&name, &mut album, tokio::time::Instant::now())
                                 {
-                                    if emit_row_or_stop(&name, done).await? {
+                                    if emit_row_or_stop(&stopper, &name, done).await? {
                                         return Ok(());
                                     }
                                 }
@@ -820,7 +844,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     return Err(crate::error::invocation_error(e));
                                 }
                                 for done in album_flush(&name, &mut album) {
-                                    if emit_row_or_stop(&name, done).await? {
+                                    if emit_row_or_stop(&stopper, &name, done).await? {
                                         return Ok(());
                                     }
                                 }
@@ -845,7 +869,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         }
                         if gap_on {
                             if let Some(signal) = gaps.observe(update.raw()) {
-                                                                if emit_row_or_stop(&name, gap_row(&name, &signal, update.state())).await? { return Ok(()); }
+                                                                if emit_row_or_stop(&stopper, &name, gap_row(&name, &signal, update.state())).await? { return Ok(()); }
 
                             }
                         }
@@ -908,7 +932,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             peer,
                                             None,
                                         );
-                                                                                if emit_row_or_stop(&name, service_row(
+                                                                                if emit_row_or_stop(&stopper, &name, service_row(
                                             &name, chat_id, svc_row, &svc.action,
                                         )).await? { return Ok(()); }
 
@@ -941,7 +965,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             gid,
                                             tokio::time::Instant::now(),
                                         ) {
-                                            if emit_row_or_stop(&name, done).await? {
+                                            if emit_row_or_stop(&stopper, &name, done).await? {
                                                 return Ok(());
                                             }
                                         }
@@ -953,11 +977,11 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 for done in
                                     album_flush_chat(&name, &mut album, chat_id)
                                 {
-                                    if emit_row_or_stop(&name, done).await? {
+                                    if emit_row_or_stop(&stopper, &name, done).await? {
                                         return Ok(());
                                     }
                                 }
-                                if emit_row_or_stop(&name, event_row(
+                                if emit_row_or_stop(&stopper, &name, event_row(
                                     "NewMessage",
                                     &name,
                                     chat_id,
@@ -1023,7 +1047,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                             peer,
                                             None,
                                         );
-                                                                                if emit_row_or_stop(&name, service_row(
+                                                                                if emit_row_or_stop(&stopper, &name, service_row(
                                             &name, chat_id, svc_row, &svc.action,
                                         )).await? { return Ok(()); }
 
@@ -1045,7 +1069,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                     }
                                 };
                                 crate::serialize::ensure_outer_peer_sender(&mut row, peer, None);
-                                                                if emit_row_or_stop(&name, event_row(
+                                                                if emit_row_or_stop(&stopper, &name, event_row(
                                     "MessageEdited",
                                     &name,
                                     chat_id,
@@ -1073,7 +1097,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 let Some(matched) = matched else {
                                     continue;
                                 };
-                                                                if emit_row_or_stop(&name, event_row(
+                                                                if emit_row_or_stop(&stopper, &name, event_row(
                                     "MessageDeleted",
                                     &name,
                                     sole_chat_label(&filter.chats),
@@ -1090,7 +1114,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
                                         }
-                                                                                if emit_row_or_stop(&name, row).await? { return Ok(()); }
+                                                                                if emit_row_or_stop(&stopper, &name, row).await? { return Ok(()); }
 
                                         continue;
                                     }
@@ -1102,7 +1126,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
                                         }
-                                                                                if emit_row_or_stop(&name, row).await? { return Ok(()); }
+                                                                                if emit_row_or_stop(&stopper, &name, row).await? { return Ok(()); }
 
                                         continue;
                                     }
@@ -1114,7 +1138,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                         if !filter.action_allows(peer, sender) {
                                             continue;
                                         }
-                                                                                if emit_row_or_stop(&name, row).await? { return Ok(()); }
+                                                                                if emit_row_or_stop(&stopper, &name, row).await? { return Ok(()); }
 
                                         continue;
                                     }
@@ -1125,7 +1149,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 if !filter.raw_allows(update_peer(update.raw())) {
                                     continue;
                                 }
-                                                                if emit_row_or_stop(&name, raw_row(&name, update.raw(), update.state())).await? { return Ok(()); }
+                                                                if emit_row_or_stop(&stopper, &name, raw_row(&name, update.raw(), update.state())).await? { return Ok(()); }
 
                             }
                         }
@@ -1167,15 +1191,62 @@ async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
     Ok(())
 }
 
-async fn emit_row_or_stop(account: &str, value: serde_json::Value) -> TeleResult<bool> {
-    match emit_row(value).await {
-        Ok(()) => Ok(false),
-        Err(e) if emit_stops_stream(&e) => Ok(true),
-        Err(e) => {
-            output::log_line("error", &format!("{account}: emit failed: {}", e.message()));
-            Ok(false)
+#[derive(Default)]
+struct StreamStopper {
+    remaining: std::sync::Mutex<Option<u64>>,
+    until: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+impl StreamStopper {
+    fn new(count: Option<u64>, until: Option<std::time::Instant>) -> Self {
+        StreamStopper {
+            remaining: std::sync::Mutex::new(count),
+            until: std::sync::Mutex::new(until),
         }
     }
+
+    fn time_up(&self) -> bool {
+        match self.until.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            Some(deadline) => std::time::Instant::now() >= deadline,
+            None => false,
+        }
+    }
+
+    /// Returns true when this emit consumed the last allowed row.
+    fn emitted(&self) -> bool {
+        let mut guard = self.remaining.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_mut() {
+            Some(0) => true,
+            Some(n) => {
+                *n -= 1;
+                false
+            }
+            None => false,
+        }
+    }
+}
+
+async fn emit_row_or_stop(
+    stopper: &StreamStopper,
+    account: &str,
+    value: serde_json::Value,
+) -> TeleResult<bool> {
+    if stopper.time_up() {
+        return Ok(true);
+    }
+    match emit_row(value).await {
+        Ok(()) => {}
+        Err(e) if emit_stops_stream(&e) => return Ok(true),
+        Err(e) => {
+            output::log_line("error", &format!("{account}: emit failed: {}", e.message()));
+            return Ok(false);
+        }
+    }
+    if stopper.emitted() {
+        output::log_line("info", "listen --count reached");
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn emit_stops_stream(err: &TeleError) -> bool {

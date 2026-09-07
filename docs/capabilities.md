@@ -108,7 +108,7 @@ Note on topic icons: `tele topic create --emoji` accepts only a single-codepoint
 | listen.album | Album | updates | `Update::NewMessage` (grouped) | `--events Album` (coalesce by grouped_id, ~500 ms quiescence flush) | done |
 | listen.gap | Gap (update-loss marker) | updates | pts tracking per message box | `--events Gap` (synthetic row when updates were dropped/difference ended early) | done |
 | listen.raw | Raw Update | updates | raw `Update` enum | `--events Raw` (base64 payload + state in row, allowlist-gated) | done |
-| listen.filters | Sender / direction / regex / multi-chat filters | client-side | client-side | `tele listen` with `--from USER` / `--in` / `--out` / `--pattern RE` (case-sensitive) / repeatable `--chat`; AND across dimensions, OR within | done |
+| listen.filters | Sender / direction / regex / multi-chat filters, finite-stream exits | client-side | client-side | `tele listen` with `--from USER` / `--in` / `--out` / `--pattern RE` (case-sensitive) / repeatable `--chat`; AND across dimensions, OR within; `--count N` / `--until TS` / `--timeout-secs S` end the stream with exit 0 | done |
 | listen.service | Parsed service messages (joins/leaves/pin + 63 more kinds) | updates `messageService` | typed `Message::Service` | `--events Service` rows with `service_action:{kind,label}`; composes chat/from/direction filters | done |
 | listen.callback | CallbackQuery (bot-account updates) | bot | `Update::CallbackQuery` | — (see `listen.callback-query` above, which covers presses on this account's bot messages) | never |
 | listen.inline | InlineQuery | bot | `Update::InlineQuery` | — | never |
