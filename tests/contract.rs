@@ -2670,3 +2670,20 @@ fn versions_are_in_sync_across_cargo_npm_and_changelog() {
         "Cargo.toml version and CHANGELOG head drift"
     );
 }
+
+#[test]
+fn skill_compatibility_matches_crate_version() {
+    let skill =
+        std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/skill.md")).unwrap();
+    let cargo = std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("Cargo.toml")).unwrap();
+    let version = cargo
+        .lines()
+        .find(|l| l.trim().starts_with("version"))
+        .and_then(|l| l.split('"').nth(1))
+        .expect("Cargo.toml version");
+    let stamp = format!("compatibility: tele {version}+");
+    assert!(
+        skill.contains(&stamp),
+        "skill.md compatibility stamp is stale: expected {stamp} in frontmatter",
+    );
+}

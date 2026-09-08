@@ -162,6 +162,10 @@ The numbers this file claims resolve as follows in the current tree:
 
 - Raw registry names (`kernel.raw` row): 25. Recount in PowerShell:
   `$s = Get-Content src/commands/raw.rs -Raw; $i = $s.IndexOf('pub const REGISTERED'); $j = $s.IndexOf('];', $i); ([regex]::Matches($s.Substring($i, $j - $i), '"[^"]+"')).Count`
-- Routed serve and MCP ops (`mcp` row): 78. Recount:
+- Routed serve and MCP ops (`mcp` row): 81. Recount:
   `rg -c 'serve_route!\(' src/` (or `(Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\(').Count`)
 - Every `done` row must expose a real CLI surface. The contract test enforces it: `cargo test --test contract -- done_rows_have_cli_surface`.
+
+## Deliberate non-goals
+
+- **Output i18n**: help, errors, and tables are English-only. `lang_code` config affects only the MTProto client identity sent to Telegram, never tele's output language. Revisit only if a real user need appears.

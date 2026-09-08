@@ -36,9 +36,26 @@ pub async fn run(cmd: SkillCmd, _flags: &crate::executor::GlobalFlags) -> TeleRe
     }
 }
 
+fn installed_freshness_note(target: &std::path::Path) {
+    if let Ok(existing) = std::fs::read_to_string(target) {
+        let stamp = format!("compatibility: tele {}+", env!("CARGO_PKG_VERSION"));
+        if !existing.contains(&stamp) {
+            crate::output::log_line(
+                "warn",
+                &format!(
+                    "existing skill at {} predates tele {}; reinstalling updates it (recipes may have drifted)",
+                    target.display(),
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
+        }
+    }
+}
+
 fn install(dir: Option<std::path::PathBuf>, force: bool) -> TeleResult<i32> {
     if let Some(dir) = dir {
         let target = dir.join("tele").join("SKILL.md");
+        installed_freshness_note(&target);
         write_skill(&target, force)?;
         crate::output::log_line("info", &format!("installed skill to {}", target.display()));
         return Ok(crate::error::EXIT_OK);
@@ -46,6 +63,7 @@ fn install(dir: Option<std::path::PathBuf>, force: bool) -> TeleResult<i32> {
     let mut written = Vec::new();
     for dir in detected_agent_dirs() {
         let target = dir.join("tele").join("SKILL.md");
+        installed_freshness_note(&target);
         if target.exists() && !force {
             crate::output::log_line(
                 "warn",
