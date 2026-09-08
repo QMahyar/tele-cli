@@ -7,7 +7,16 @@ pub(crate) const LEGACY_APP_DIR_NAME: &str = "telecli";
 
 pub fn app_data_dir() -> PathBuf {
     app_data_dir_from_env(|k| std::env::var(k)).unwrap_or_else(|e| {
-        panic!("cannot determine app data directory: {e}; set TELE_APP_DIR to choose a location")
+        // Panic (exit 101) with a scrubbed, actionable message instead of an
+        // unwrapped expect that could print env internals; TELE_APP_DIR is the
+        // escape hatch for headless environments without HOME/APPDATA.
+        crate::output::log_line(
+            "error",
+            &format!(
+                "cannot determine app data directory; set TELE_APP_DIR to choose a location ({e})"
+            ),
+        );
+        panic!("cannot determine app data directory; set TELE_APP_DIR to choose a location")
     })
 }
 
@@ -499,7 +508,15 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
+    // fsync the temp file so a crash/power-loss cannot leave config.toml
+    // pointing at zero-length or partial content after the rename.
     let result = crate::fs_util::write_file_private(&tmp_path, text.as_bytes())
+        .and_then(|()| {
+            std::fs::File::options()
+                .write(true)
+                .open(&tmp_path)?
+                .sync_all()
+        })
         .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
         .and_then(|()| std::fs::rename(&tmp_path, path));
     if result.is_err() {
