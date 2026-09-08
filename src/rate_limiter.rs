@@ -106,6 +106,14 @@ impl RateLimiter {
         }
         let tokens = self.tokens.load(Ordering::Acquire);
         if tokens >= self.capacity {
+            // A full bucket banks no idle credit: advance the refill anchor so
+            // idle time cannot accumulate into instant refills later.
+            if let Ok(mut last) = self.last_refill.try_lock() {
+                *last = Instant::now();
+                if let Ok(mut frac) = self.fractional.try_lock() {
+                    *frac = 0.0;
+                }
+            }
             return;
         }
         let mut last = match self.last_refill.try_lock() {
@@ -116,6 +124,10 @@ impl RateLimiter {
         if elapsed < 0.01 {
             return;
         }
+        // Credit at most the time needed to fill the remaining capacity; the
+        // rest of the idle window is discarded.
+        let room = (self.capacity - tokens) as f64 / self.refill_rate;
+        let elapsed = elapsed.min(room);
         let mut frac = match self.fractional.try_lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -321,8 +333,7 @@ mod tests {
             rl.acquire().await;
         }
         assert_eq!(rl.available_tokens(), 0);
-        // Simulate 3.2s of elapsed refill time without sleeping: rewind the
-        // refill anchor and run the same refill math.
+        // Simulate 3.2s of elapsed refill time without sleeping.
         *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_millis(3200);
         rl.maybe_refill();
         assert!(
@@ -370,5 +381,72 @@ mod tests {
         assert_eq!(rl.available_tokens(), 0);
         let frac = *rl.fractional.try_lock().unwrap();
         assert!(frac > 0.0, "remainder should accumulate, got {frac}");
+    }
+}
+
+#[cfg(test)]
+mod idle_credit_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn full_bucket_banks_no_idle_credit() {
+        let rl = RateLimiter::new(Some(30.0));
+        for _ in 0..30 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        // Fill to capacity via one bounded refill (60s at 0.5/s = 30 tokens).
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_secs(60);
+        rl.maybe_refill();
+        assert_eq!(rl.available_tokens(), 30);
+        // Idle a long while at FULL capacity: the anchor must advance and bank
+        // nothing, so nothing extra mints later.
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_secs(3600);
+        rl.maybe_refill();
+        assert_eq!(rl.available_tokens(), 30, "full bucket stays at capacity");
+        assert_eq!(*rl.fractional.try_lock().unwrap(), 0.0);
+    }
+
+    #[tokio::test]
+    async fn long_idle_does_not_compress_future_time() {
+        let rl = RateLimiter::new(Some(30.0));
+        for _ in 0..30 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        // One huge idle window refills at most to capacity ONCE; the leftover
+        // elapsed time must not keep minting at full rate afterwards.
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_secs(3600);
+        rl.maybe_refill();
+        assert_eq!(rl.available_tokens(), 30, "refill caps at capacity");
+        // Drain again and confirm the next window grants time-proportional
+        // tokens, not the banked overflow the old code kept in `frac`.
+        for _ in 0..30 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        *rl.fractional.try_lock().unwrap() = 0.0;
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_secs(6);
+        rl.maybe_refill();
+        assert_eq!(
+            rl.available_tokens(),
+            3,
+            "6s at 0.5/s = 3 tokens, no banked surplus"
+        );
+    }
+
+    #[tokio::test]
+    async fn refill_while_partial_caps_at_capacity() {
+        let rl = RateLimiter::new(Some(10.0));
+        for _ in 0..10 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        // Claim an hour of elapsed time: only 1 token (capacity room) may mint.
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_secs(3600);
+        rl.maybe_refill();
+        assert_eq!(rl.available_tokens(), 10, "refill caps at capacity");
+        assert_eq!(*rl.fractional.try_lock().unwrap(), 0.0);
     }
 }

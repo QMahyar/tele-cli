@@ -31,6 +31,14 @@ impl<K: Eq + Hash + Clone, V> CappedMap<K, V> {
     pub fn insert(&mut self, key: K, value: V) {
         if let Some(slot) = self.map.get_mut(&key) {
             *slot = value;
+            // Refresh the eviction position: a redelivered/updated key is
+            // "seen again" and must not be the next evicted (a stale-FIFO
+            // here would re-emit redelivered updates as new once the original
+            // entry rotates out).
+            if let Some(pos) = self.order.iter().position(|k| k == &key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key);
         } else {
             if self.map.len() >= self.cap {
                 if let Some(oldest) = self.order.pop_front() {
@@ -61,6 +69,12 @@ impl<K: Eq + Hash + Clone, V> CappedMap<K, V> {
 impl<K: Eq + Hash + Clone> CappedMap<K, ()> {
     pub fn check(&mut self, key: K) -> bool {
         if self.contains(&key) {
+            // Re-observation refreshes the eviction position, mirroring
+            // insert's refresh semantics.
+            if let Some(pos) = self.order.iter().position(|k| k == &key) {
+                self.order.remove(pos);
+                self.order.push_back(key);
+            }
             return true;
         }
         self.insert(key, ());
@@ -99,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_overwrites_value_but_keeps_eviction_position() {
+    fn insert_refreshes_eviction_position() {
         let mut m: CappedMap<i32, i32> = CappedMap::new(2);
         m.insert(1, 10);
         m.insert(2, 20);
@@ -108,9 +122,24 @@ mod tests {
         assert_eq!(m.get(&1), Some(&11));
         m.insert(3, 30);
         assert_eq!(m.len(), 2);
-        assert!(!m.contains(&1), "overwritten key keeps original position");
-        assert!(m.contains(&2));
+        // key 1 was re-inserted (refreshed), so key 2 is the oldest and must
+        // be evicted instead — a stale-FIFO here would evict the refreshed
+        // entry and re-emit a redelivered update as new.
+        assert!(!m.contains(&2), "unrefreshed oldest key evicted");
+        assert!(m.contains(&1));
         assert!(m.contains(&3));
+    }
+
+    #[test]
+    fn check_refreshes_eviction_position() {
+        let mut m: CappedMap<i32, ()> = CappedMap::new(2);
+        m.check(1);
+        m.check(2);
+        assert!(m.check(1), "redelivery is a duplicate");
+        assert!(!m.check(3), "key 2 (oldest, unrefreshed) is evicted");
+        assert!(m.contains(&1));
+        assert!(m.contains(&3));
+        assert!(!m.contains(&2));
     }
 
     #[test]

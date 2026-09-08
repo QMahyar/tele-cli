@@ -28,10 +28,10 @@ pub async fn resolve_peer(
 ) -> crate::error::TeleResult<grammers_client::peer::Peer> {
     match classify_target(target) {
         Target::Phone(digits) => {
-            if digits.is_empty() {
-                return Err(crate::error::TeleError::Usage(
-                    "invalid phone target: use +<digits>".to_string(),
-                ));
+            if digits.len() < MIN_PHONE_DIGITS {
+                return Err(crate::error::TeleError::Usage(format!(
+                    "phone target +{digits} has too few digits (minimum {MIN_PHONE_DIGITS}, including country code); refusing a contact-import lookup"
+                )));
             }
             crate::output::log_line(
                 "warn",
@@ -244,8 +244,10 @@ pub fn parse_target(target: &str) -> crate::error::TeleResult<ResolvedTarget> {
         .strip_prefix('+')
         .map(|p| p.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
     {
-        if digits.is_empty() {
-            return Err(invalid_target_error(target));
+        if digits.len() < MIN_PHONE_DIGITS {
+            return Err(crate::error::TeleError::Usage(format!(
+                "phone target {target:?} has too few digits (minimum {MIN_PHONE_DIGITS}, including country code)"
+            )));
         }
         return Ok(ResolvedTarget {
             peer_ref: format!("+{digits}"),
@@ -393,6 +395,18 @@ enum Target {
     Invalid,
 }
 
+/// Formatting characters accepted inside a `+phone` target beyond digits.
+/// `parse_target` strips exactly these when extracting digits, so
+/// `classify_target` must accept the same set or the two disagree (e.g.
+/// `+1 (555) 123` would classify as a username).
+fn is_phone_formatting(c: char) -> bool {
+    c == ' ' || c == '-' || c == '(' || c == ')' || c == '.'
+}
+
+/// Real phone numbers carry a country code; anything shorter is a typo (or
+/// something like `+1`) that must not reach `contacts.ImportContacts`.
+pub(crate) const MIN_PHONE_DIGITS: usize = 5;
+
 fn classify_target(raw: &str) -> Target {
     let t = raw.trim();
     if let Some(rest) = t.strip_prefix('+') {
@@ -403,7 +417,7 @@ fn classify_target(raw: &str) -> Target {
         if digits.len() <= 15
             && rest
                 .chars()
-                .all(|c| c.is_ascii_digit() || c == ' ' || c == '-')
+                .all(|c| c.is_ascii_digit() || is_phone_formatting(c))
         {
             return Target::Phone(digits);
         }
@@ -1714,7 +1728,11 @@ mod tests {
 
     #[test]
     fn parse_target_phone_precedes_numeric_for_plus_forms() {
-        assert_eq!(parse_target("+123").unwrap().peer_ref, "+123");
+        // Below the 5-digit minimum the parser now rejects instead of
+        // forwarding to contact-import side effects.
+        let err = parse_target("+123").unwrap_err();
+        assert!(err.message().contains("too few digits"), "{}", err.message());
+        assert_eq!(parse_target("+1234567890").unwrap().peer_ref, "+1234567890");
     }
 
     #[test]

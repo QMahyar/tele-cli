@@ -431,7 +431,14 @@ pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<Strin
     if p.port == 0 {
         return Err(anyhow::anyhow!("proxy for {name}: port must be non-zero"));
     }
-    Ok(Some(format!("socks5://{}:{}", p.host, p.port)))
+    // IPv6 literals must be bracket-wrapped in a URL authority or the
+    // parser reads `::1:9050` as host "" port garbage.
+    let host = if p.host.contains(':') {
+        format!("[{}]", p.host)
+    } else {
+        p.host.clone()
+    };
+    Ok(Some(format!("socks5://{}:{}", host, p.port)))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -286,6 +286,12 @@ fn select_from(
         if tagged.is_empty() {
             return Err(TeleError::Usage(format!("no accounts with tag {tag}")));
         }
+        for missing in tagged.difference(&sessions) {
+            crate::output::log_line(
+                "warn",
+                &format!("tag {tag}: account {missing} has no session file yet; skipping (run `tele account login {missing}`)"),
+            );
+        }
         selected.extend(tagged.intersection(sessions).cloned());
     }
     if accounts.is_empty() && tags.is_empty() {
