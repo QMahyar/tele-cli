@@ -3362,6 +3362,7 @@ mod chat_serve_tests {
             ("chat leave", Lane::Mutate, 30, false, true, true),
             ("chat link", Lane::Mutate, 30, false, false, true),
             ("chat participants", Lane::Read, 120, true, false, true),
+            ("chat permissions", Lane::Read, 30, true, false, true),
             ("chat requests", Lane::Mutate, 30, false, false, true),
             ("chat settings", Lane::Mutate, 30, false, false, true),
             ("chat stats", Lane::Read, 120, true, false, true),
@@ -3422,5 +3423,107 @@ mod chat_serve_tests {
             .map(|v| v.as_str().expect("string"))
             .collect();
         assert_eq!(required, vec!["user"]);
+    }
+
+    #[test]
+    fn validate_permissions_requires_non_empty_user() {
+        let args = PermissionsArgs {
+            chat: "@x".to_string(),
+            user: "  ".to_string(),
+        };
+        let err = participants::validate_permissions(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{}", err.message());
+        let args = PermissionsArgs {
+            chat: "@x".to_string(),
+            user: "@y".to_string(),
+        };
+        assert!(participants::validate_permissions(&args).is_ok());
+    }
+
+    #[test]
+    fn permissions_dry_run_names_user_and_chat() {
+        let args = PermissionsArgs {
+            chat: "@chat".to_string(),
+            user: "@admin".to_string(),
+        };
+        let payload = participants::permissions_serve_dry_run(&args).unwrap();
+        assert_eq!(payload["dry_run"], serde_json::json!(true));
+        assert_eq!(payload["chat"], serde_json::json!("@chat"));
+        assert_eq!(payload["user"], serde_json::json!("@admin"));
+        assert!(payload["would"].as_str().unwrap().contains("@admin"));
+    }
+
+    #[test]
+    fn admin_rights_row_covers_write_side_vocabulary() {
+        let raw = tl::types::ChatAdminRights {
+            change_info: true,
+            post_messages: false,
+            edit_messages: true,
+            delete_messages: false,
+            ban_users: true,
+            invite_users: false,
+            pin_messages: true,
+            add_admins: false,
+            anonymous: true,
+            manage_call: false,
+            other: true,
+            manage_topics: false,
+            post_stories: false,
+            edit_stories: false,
+            delete_stories: false,
+            manage_direct_messages: false,
+            manage_ranks: false,
+        };
+        let row = participants::admin_rights_row(&raw);
+        assert_eq!(row["change_info"], serde_json::json!(true));
+        assert_eq!(row["post_messages"], serde_json::json!(false));
+        for name in [
+            "change_info",
+            "post_messages",
+            "edit_messages",
+            "delete_messages",
+            "ban_users",
+            "invite_users",
+            "pin_messages",
+            "add_admins",
+            "manage_call",
+            "anonymous",
+            "other",
+            "manage_topics",
+        ] {
+            assert!(row.get(name).is_some(), "{name} missing from read-back row");
+        }
+    }
+
+    #[test]
+    fn banned_rights_row_carries_until_date() {
+        let raw = tl::types::ChatBannedRights {
+            view_messages: true,
+            send_messages: true,
+            send_media: true,
+            send_stickers: true,
+            send_gifs: true,
+            send_games: true,
+            send_inline: true,
+            embed_links: true,
+            send_polls: true,
+            change_info: true,
+            invite_users: true,
+            pin_messages: true,
+            manage_topics: false,
+            send_photos: false,
+            send_videos: false,
+            send_roundvideos: false,
+            send_audios: false,
+            send_voices: false,
+            send_docs: false,
+            send_plain: false,
+            edit_rank: false,
+            send_reactions: false,
+            until_date: 0,
+        };
+        let row = participants::banned_rights_row(&raw);
+        assert_eq!(row["view_messages"], serde_json::json!(true));
+        assert!(row["until_date"].is_string());
     }
 }

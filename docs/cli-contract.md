@@ -108,7 +108,11 @@ Rules:
 - `dialog list` rows also carry `pinned` (bool), `unread_mark` (bool), `unread_mentions`, `unread_reactions`, and `last_message_date` (RFC 3339; null when the dialog has no last message).
 - `dialog drafts` keys drafts by chat id: positive for users, negated (`-chat_id` or `-channel_id`) for basic groups and channels. This matches the Telegram bare-id convention used by numeric `--chat` targets.
 
-## `chat participants`, `chat kick`, and `chat admin`
+## `chat permissions`
+
+`tele chat permissions --account A --chat X --user U` reads back the rights a participant actually holds. For channels and supergroups it calls raw `channels.getParticipant` and emits the complete flag maps: admins carry `admin_rights` (all 12 write-side flags mirrored from `chat admin --rights` vocabulary), bans/restrictions carry `banned_rights` (all 22 flags plus `until_date` as RFC 3339), creators carry their `admin_rights`, and plain members carry `role: "member"`. Rows also carry additive `rank`, `can_edit`, `kicked_by`, and `promoted_by` when the server provides them. Basic groups only expose the participant role over MTProto; those rows carry `role` plus a `detail` note instead of flag maps. Serve/MCP: `chat permissions` op (Read lane, 30s), `PermissionsParams` with `deny_unknown_fields`.
+
+## `chat kick`, `chat kick`, and `chat admin`
 
 - `chat participants --chat X` accepts the additive filters `--role admin|banned|kicked|recent` and `--search <q>` on channels and supergroups. They map onto the grammers `iter_participants` filter parameter: `ChannelParticipantsAdmins`, `ChannelParticipantsBanned{q}`, `ChannelParticipantsKicked{q}`, `ChannelParticipantsSearch{q}` for a bare search, and `ChannelParticipantsRecent` otherwise. An unknown role is a Usage error before connect. On basic groups the filters fail with a clear Usage error instead of being ignored.
 - By default, `chat kick --chat X --user U` performs a plain friendly kick. With `--ban`, `--duration <secs|forever>`, or `--rights CSV`, the command builds `ChatBannedRights` through `set_banned_rights` instead (restrict or ban, with optional duration). `--duration` requires `--ban` or `--rights`. `--rights` takes comma-separated `name:true|false` pairs where `true` means the user keeps the right; names: `view_messages,send_messages,send_media,

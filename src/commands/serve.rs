@@ -1881,6 +1881,7 @@ mod tests {
             "chat leave",
             "chat link",
             "chat participants",
+            "chat permissions",
             "chat requests",
             "chat settings",
             "chat stats",
@@ -2726,6 +2727,7 @@ mod tests {
             ("chat leave", Lane::Mutate, Some(30)),
             ("chat link", Lane::Mutate, Some(30)),
             ("chat participants", Lane::Read, Some(120)),
+            ("chat permissions", Lane::Read, Some(30)),
             ("chat requests", Lane::Mutate, Some(30)),
             ("chat settings", Lane::Mutate, Some(30)),
             ("chat stats", Lane::Read, Some(120)),
@@ -2883,7 +2885,7 @@ mod tests {
         let routes = serve_op_routes();
         assert_eq!(
             routes.len(),
-            80,
+            81,
             "routed op count drifted; update docs/cli-contract.md and this lock"
         );
         let mut names: Vec<&str> = routes.iter().map(|r| r.op).collect();

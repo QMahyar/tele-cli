@@ -53,6 +53,22 @@ pub enum ChatCmd {
     Edit(EditArgs),
     Link(LinkArgs),
     Create(CreateArgs),
+    #[command(about = "show a participant's actual rights (read-back)")]
+    Permissions(PermissionsArgs),
+}
+
+#[derive(Args, Clone)]
+pub struct PermissionsArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, invite link, +phone, or me"
+    )]
+    chat: String,
+    #[arg(
+        long,
+        help = "user to inspect: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    user: String,
 }
 
 #[derive(Args)]
@@ -418,6 +434,7 @@ pub async fn run(cmd: ChatCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         ChatCmd::Edit(a) => settings::edit_chat(a, flags).await,
         ChatCmd::Link(a) => settings::link_chat(a, flags).await,
         ChatCmd::Create(a) => create(a, flags).await,
+        ChatCmd::Permissions(a) => participants::permissions(a, flags).await,
     }
 }
 
@@ -1589,6 +1606,37 @@ impl From<&ParticipantsServeParams> for ParticipantsArgs {
             role: p.role.clone(),
             search: p.search.clone(),
             limit: p.limit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PermissionsParams {
+    #[serde(default)]
+    pub(crate) chat: String,
+    #[serde(default)]
+    pub(crate) user: String,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+impl From<&PermissionsArgs> for PermissionsParams {
+    fn from(a: &PermissionsArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            user: a.user.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&PermissionsParams> for PermissionsArgs {
+    fn from(p: &PermissionsParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            user: p.user.clone(),
         }
     }
 }
@@ -2921,6 +2969,7 @@ crate::serve_runner!(run_admin_log, chat_admin_log_core, AdminLogServeParams);
 crate::serve_runner!(run_stats, chat_stats_core, StatsServeParams);
 crate::serve_runner!(run_invite, chat_invite_core, InviteServeParams);
 crate::serve_runner!(run_requests, chat_requests_core, RequestsServeParams);
+crate::serve_runner!(run_permissions, permissions_core, PermissionsParams);
 crate::serve_runner!(
     run_participants,
     chat_participants_core,
@@ -3147,6 +3196,21 @@ pub(crate) fn chat_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             })),
             run_participants,
             crate::commands::serve::params_schema::<ParticipantsServeParams>
+        ),
+        crate::serve_route!(
+            "chat permissions",
+            Lane::Read,
+            Some(OP_TIMEOUT_SIMPLE),
+            true,
+            false,
+            true,
+            "show a participant's actual rights (read-back)",
+            PermissionsParams,
+            PermissionsArgs,
+            participants::validate_permissions,
+            participants::permissions_serve_dry_run,
+            run_permissions,
+            crate::commands::serve::params_schema::<PermissionsParams>
         ),
     ]
 }

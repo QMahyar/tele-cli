@@ -675,3 +675,175 @@ pub(crate) fn participant_rows(
     }
     (rows, missing)
 }
+
+pub(crate) fn admin_rights_row(raw: &tl::types::ChatAdminRights) -> serde_json::Value {
+    serde_json::json!({
+        "change_info": raw.change_info,
+        "post_messages": raw.post_messages,
+        "edit_messages": raw.edit_messages,
+        "delete_messages": raw.delete_messages,
+        "ban_users": raw.ban_users,
+        "invite_users": raw.invite_users,
+        "pin_messages": raw.pin_messages,
+        "add_admins": raw.add_admins,
+        "manage_call": raw.manage_call,
+        "anonymous": raw.anonymous,
+        "other": raw.other,
+        "manage_topics": raw.manage_topics,
+    })
+}
+
+pub(crate) fn banned_rights_row(raw: &tl::types::ChatBannedRights) -> serde_json::Value {
+    let until = chrono::DateTime::from_timestamp(raw.until_date as i64, 0)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| "1970-01-01T00:00:00+00:00".to_string());
+    serde_json::json!({
+        "view_messages": raw.view_messages,
+        "send_messages": raw.send_messages,
+        "send_media": raw.send_media,
+        "send_stickers": raw.send_stickers,
+        "send_gifs": raw.send_gifs,
+        "send_games": raw.send_games,
+        "send_inline": raw.send_inline,
+        "embed_links": raw.embed_links,
+        "send_polls": raw.send_polls,
+        "change_info": raw.change_info,
+        "invite_users": raw.invite_users,
+        "pin_messages": raw.pin_messages,
+        "manage_topics": raw.manage_topics,
+        "send_photos": raw.send_photos,
+        "send_videos": raw.send_videos,
+        "send_roundvideos": raw.send_roundvideos,
+        "send_audios": raw.send_audios,
+        "send_voices": raw.send_voices,
+        "send_docs": raw.send_docs,
+        "send_plain": raw.send_plain,
+        "edit_rank": raw.edit_rank,
+        "send_reactions": raw.send_reactions,
+        "until_date": until,
+    })
+}
+
+pub(crate) fn validate_permissions(args: &PermissionsArgs) -> TeleResult<()> {
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    if args.user.trim().is_empty() {
+        return Err(TeleError::Usage("--user must not be empty".to_string()));
+    }
+    Ok(())
+}
+
+pub(crate) fn permissions_serve_dry_run(args: &PermissionsArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "user": args.user,
+        "would": format!("read back rights of {} in chat {}", args.user, args.chat)
+    }))
+}
+
+pub(crate) async fn permissions_core(
+    shares: &crate::client::ServeShares,
+    params: PermissionsParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "permissions")?;
+    let user_peer =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.user).await?;
+    let mut row = serde_json::json!({
+        "chat": params.chat,
+        "user": params.user,
+    });
+    if entities::is_channel(&chat) {
+        let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+        let participant = entities::input_peer(&user_peer)
+            .await
+            .map_err(tele_invocation)?;
+        let result: tl::enums::channels::ChannelParticipant = shares
+            .client
+            .invoke(&tl::functions::channels::GetParticipant {
+                channel: chat_ref.into(),
+                participant,
+            })
+            .await
+            .map_err(tele_invocation)?;
+        let tl::enums::channels::ChannelParticipant::Participant(full) = result;
+        match full.participant {
+            tl::enums::ChannelParticipant::Admin(p) => {
+                let tl::enums::ChatAdminRights::Rights(rights) = &p.admin_rights;
+                row["role"] = serde_json::json!("admin");
+                row["admin_rights"] = admin_rights_row(rights);
+                row["rank"] = p.rank.clone().into();
+                row["can_edit"] = serde_json::json!(p.can_edit);
+                row["promoted_by"] = serde_json::json!(p.promoted_by);
+            }
+            tl::enums::ChannelParticipant::Banned(p) => {
+                let tl::enums::ChatBannedRights::Rights(rights) = &p.banned_rights;
+                row["role"] = serde_json::json!("banned");
+                row["banned_rights"] = banned_rights_row(rights);
+                row["kicked_by"] = serde_json::json!(p.kicked_by);
+            }
+            tl::enums::ChannelParticipant::Creator(p) => {
+                row["role"] = serde_json::json!("creator");
+                row["admin_rights"] = match p.admin_rights {
+                    tl::enums::ChatAdminRights::Rights(ref r) => admin_rights_row(r),
+                };
+                row["rank"] = p.rank.clone().into();
+            }
+            _ => {
+                row["role"] = serde_json::json!("member");
+            }
+        }
+    } else {
+        // Basic groups: Telegram only exposes the participant role there.
+        let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+        let user_ref = entities::peer_ref(&user_peer)
+            .await
+            .map_err(tele_invocation)?;
+        let perms = shares
+            .client
+            .get_permissions(chat_ref, user_ref)
+            .await
+            .map_err(tele_invocation)?;
+        row["role"] = serde_json::json!(if perms.is_creator() {
+            "creator"
+        } else if perms.is_admin() {
+            "admin"
+        } else if perms.is_banned() {
+            "banned"
+        } else if perms.has_left() {
+            "left"
+        } else {
+            "member"
+        });
+        row["detail"] = serde_json::json!("basic groups expose the role only; full rights read-back requires a channel or supergroup");
+    }
+    Ok(row)
+}
+
+pub(crate) async fn permissions(args: PermissionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_permissions(&args)?;
+    crate::executor::require_explicit_selection("chat permissions", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = crate::executor::run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return permissions_serve_dry_run(&args);
+            }
+            let guard = crate::client::ClientGuard::connect(
+                &name,
+                crate::commands::credentials::creds_api_id()?,
+                config_path.as_deref(),
+            )
+            .await?;
+            crate::client::authorize(&guard.client).await?;
+            permissions_core(&guard.shares(), PermissionsParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
