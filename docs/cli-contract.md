@@ -280,6 +280,10 @@ Notes:
 
 This command removes the current profile photo. It reads the photo id from `users.getFullUser` (`full_user.profile_photo`) and calls raw `photos.deletePhotos`. It fails honestly when no photo is set. Setting a photo stays on `profile set --photo <path>`.
 
+## `profile photos`
+
+`tele profile photos [--user USER] [--limit N]` lists profile photo history (newest first) via grammers' `iter_profile_photos`: raw `photos.getUserPhotos` for users (incl. `me`), and a chat-photos message sweep for channels/supergroups. Each row carries `{id, date (RFC 3339, null for PhotoEmpty), size (bytes of the largest thumb, null when unavailable), sizes: [{type, size}], current: bool}` — `current` marks the first listed photo (the active one for users). Default `--limit 20` (1-100). Available over serve/MCP: `profile photos` op (Read lane, 120s), `PhotosParams` with `deny_unknown_fields`.
+
 ## `profile emoji-status`
 
 `tele profile emoji-status [--emoji <document-id> | --remove]` sets or clears the emoji status via raw `account.updateEmojiStatus`. The TL request takes an `EmojiStatus`: `emojiStatus{document_id}` to set, `emojiStatusEmpty` to clear (this layer has no separate Input constructor). `--emoji` and `--remove` are mutually exclusive, and one of them is required. Success rows carry `{"emoji_status": <id>|null, "removed": bool}`.

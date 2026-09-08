@@ -1921,6 +1921,7 @@ mod tests {
             "profile emoji-status",
             "profile get",
             "profile photo",
+            "profile photos",
             "profile set",
             "raw",
             "sticker install",
@@ -2685,6 +2686,7 @@ mod tests {
             ("profile emoji-status", Lane::Mutate, Some(30)),
             ("profile get", Lane::Read, Some(120)),
             ("profile photo", Lane::Mutate, Some(30)),
+            ("profile photos", Lane::Read, Some(120)),
             ("profile set", Lane::Mutate, Some(30)),
             ("raw", Lane::Mutate, Some(120)),
             ("sticker install", Lane::Mutate, Some(30)),
@@ -2881,7 +2883,7 @@ mod tests {
         let routes = serve_op_routes();
         assert_eq!(
             routes.len(),
-            79,
+            80,
             "routed op count drifted; update docs/cli-contract.md and this lock"
         );
         let mut names: Vec<&str> = routes.iter().map(|r| r.op).collect();

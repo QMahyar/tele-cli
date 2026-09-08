@@ -15,6 +15,7 @@ pub enum ProfileCmd {
     Get(GetArgs),
     Set(SetArgs),
     Photo(PhotoArgs),
+    Photos(PhotosArgs),
     EmojiStatus(EmojiStatusArgs),
 }
 
@@ -59,6 +60,7 @@ pub async fn run(cmd: ProfileCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         ProfileCmd::Get(a) => get(a, flags).await,
         ProfileCmd::Set(a) => set(a, flags).await,
         ProfileCmd::Photo(a) => photo(a, flags).await,
+        ProfileCmd::Photos(a) => photos(a, flags).await,
         ProfileCmd::EmojiStatus(a) => emoji_status(a, flags).await,
     }
 }
@@ -347,6 +349,108 @@ async fn photo(args: PhotoArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) fn validate_photos(args: &PhotosArgs) -> TeleResult<()> {
+    crate::commands::validate_limit(args.limit, 100, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn photos_serve_dry_run(args: &PhotosArgs) -> TeleResult<serde_json::Value> {
+    let target = args.user.clone().unwrap_or_else(|| "me".to_string());
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "user": target,
+        "limit": args.limit,
+        "would": format!("list up to {} profile photos of {target}", args.limit)
+    }))
+}
+
+async fn photos(args: PhotosArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_photos(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return photos_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            let row = photos_core(&guard.shares(), PhotosParams::from(&args)).await?;
+            if !output::machine_mode(json, jsonl) {
+                let rows = row["photos"].as_array().cloned().unwrap_or_default();
+                let table_rows: Vec<Vec<String>> = rows
+                    .iter()
+                    .map(|p| {
+                        vec![
+                            p["id"].to_string(),
+                            p["date"].as_str().unwrap_or_default().to_string(),
+                            p["size"]
+                                .as_u64()
+                                .map(|b| b.to_string())
+                                .unwrap_or_default(),
+                        ]
+                    })
+                    .collect();
+                output::print_account_table(&name, multi, &["id", "date", "size"], &table_rows)?;
+            }
+            Ok(row)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+pub(crate) async fn photos_core(
+    shares: &crate::client::ServeShares,
+    params: PhotosParams,
+) -> TeleResult<serde_json::Value> {
+    let target = params.user.clone().unwrap_or_else(|| "me".to_string());
+    shares.rate_limiter.acquire().await;
+    let peer = entities::resolve_peer(&shares.client, shares.session.as_ref(), &target).await?;
+    let peer_ref = entities::peer_ref(&peer).await.map_err(tele_invocation)?;
+    let mut iter = shares.client.iter_profile_photos(peer_ref);
+    let mut photos: Vec<serde_json::Value> = Vec::new();
+    while photos.len() < params.limit as usize {
+        let photo = match iter.next().await.map_err(tele_invocation)? {
+            Some(p) => p,
+            None => break,
+        };
+        let id = photo.id();
+        let date = match photo.raw.photo.as_ref() {
+            Some(tl::enums::Photo::Photo(raw)) => {
+                chrono::DateTime::from_timestamp(raw.date as i64, 0).map(|dt| dt.to_rfc3339())
+            }
+            _ => None,
+        };
+        let size = photo.size();
+        let mut sizes: Vec<serde_json::Value> = Vec::new();
+        for thumb in photo.thumbs() {
+            sizes.push(serde_json::json!({
+                "type": thumb.photo_type(),
+                "size": thumb.size(),
+            }));
+        }
+        photos.push(serde_json::json!({
+            "id": id,
+            "date": date,
+            "size": size.map(|s| s as u64),
+            "sizes": sizes,
+            "current": photos.is_empty(),
+        }));
+    }
+    Ok(serde_json::json!({
+        "user": target,
+        "count": photos.len(),
+        "photos": photos,
+    }))
+}
+
 async fn current_photo_input_photo(
     shares: &crate::client::ServeShares,
 ) -> TeleResult<tl::enums::InputPhoto> {
@@ -503,6 +607,52 @@ pub(crate) struct PhotoParams {
     pub(crate) remove: bool,
     #[serde(default)]
     pub(crate) dry_run: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct PhotosArgs {
+    #[arg(
+        long,
+        help = "target user/chat: @username, numeric ID, or me (default)"
+    )]
+    user: Option<String>,
+    #[arg(long, default_value_t = 20, help = "max photos to list (1-100)")]
+    limit: u32,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PhotosParams {
+    #[serde(default)]
+    pub(crate) user: Option<String>,
+    #[serde(default = "default_photos_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+fn default_photos_limit() -> u32 {
+    20
+}
+
+impl From<&PhotosArgs> for PhotosParams {
+    fn from(a: &PhotosArgs) -> Self {
+        Self {
+            user: a.user.clone(),
+            limit: a.limit,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&PhotosParams> for PhotosArgs {
+    fn from(p: &PhotosParams) -> Self {
+        Self {
+            user: p.user.clone(),
+            limit: p.limit,
+        }
+    }
 }
 
 impl From<&PhotoArgs> for PhotoParams {
@@ -841,6 +991,21 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             crate::commands::serve::params_schema::<PhotoParams>
         ),
         crate::serve_route!(
+            "profile photos",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list profile photo history (id/date/sizes)",
+            PhotosParams,
+            PhotosArgs,
+            validate_photos,
+            photos_serve_dry_run,
+            run_photos,
+            crate::commands::serve::params_schema::<PhotosParams>
+        ),
+        crate::serve_route!(
             "profile set",
             Lane::Mutate,
             Some(OP_TIMEOUT_SIMPLE),
@@ -861,6 +1026,7 @@ pub(crate) fn profile_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
 crate::serve_runner!(run_get, get_core, GetParams);
 crate::serve_runner!(run_set, set_core, SetParams);
 crate::serve_runner!(run_photo, photo_core, PhotoParams);
+crate::serve_runner!(run_photos, photos_core, PhotosParams);
 crate::serve_runner!(run_emoji_status, emoji_status_core, EmojiStatusParams);
 
 #[cfg(test)]
@@ -1302,6 +1468,7 @@ mod tests {
             ),
             ("profile get", Lane::Read, Some(OP_TIMEOUT_PAGINATED)),
             ("profile photo", Lane::Mutate, Some(OP_TIMEOUT_SIMPLE)),
+            ("profile photos", Lane::Read, Some(OP_TIMEOUT_PAGINATED)),
             ("profile set", Lane::Mutate, Some(OP_TIMEOUT_SIMPLE)),
         ];
         assert_eq!(routes.len(), want.len());
@@ -1549,6 +1716,57 @@ mod tests {
         assert_eq!(v["type"], "object");
         assert_eq!(v["additionalProperties"], serde_json::json!(false));
         for field in ["emoji", "remove", "dry_run"] {
+            assert!(v["properties"][field].is_object(), "{field} missing");
+        }
+    }
+
+    #[test]
+    fn validate_photos_rejects_zero_and_over_limit() {
+        let args = PhotosArgs {
+            user: None,
+            limit: 0,
+        };
+        let err = validate_photos(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{}", err.message());
+        let args = PhotosArgs {
+            user: None,
+            limit: 101,
+        };
+        let err = validate_photos(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{}", err.message());
+        let args = PhotosArgs {
+            user: None,
+            limit: 100,
+        };
+        assert!(validate_photos(&args).is_ok());
+    }
+
+    #[test]
+    fn photos_dry_run_defaults_to_me() {
+        let args = PhotosArgs {
+            user: None,
+            limit: 5,
+        };
+        let payload = photos_serve_dry_run(&args).unwrap();
+        assert_eq!(payload["user"], serde_json::json!("me"));
+        assert_eq!(payload["limit"], serde_json::json!(5));
+        assert!(payload["would"]
+            .as_str()
+            .unwrap()
+            .contains("profile photos"));
+        let args = PhotosArgs {
+            user: Some("@durov".to_string()),
+            limit: 3,
+        };
+        let payload = photos_serve_dry_run(&args).unwrap();
+        assert_eq!(payload["user"], serde_json::json!("@durov"));
+    }
+
+    #[test]
+    fn photos_params_schema_carries_user_and_limit() {
+        let v = crate::commands::serve::params_schema::<PhotosParams>();
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+        for field in ["user", "limit", "dry_run"] {
             assert!(v["properties"][field].is_object(), "{field} missing");
         }
     }
