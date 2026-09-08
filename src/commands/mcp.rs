@@ -365,6 +365,25 @@ pub async fn run(args: &McpArgs, flags: &crate::executor::GlobalFlags) -> TeleRe
 async fn serve_session(guard: &ClientGuard, args: &McpArgs) -> TeleResult<i32> {
     crate::client::authorize(&guard.client).await?;
     let shares = guard.shares();
+    if let Some(groups) = &args.groups {
+        let known: std::collections::HashSet<&str> = crate::commands::serve::serve_op_routes()
+            .iter()
+            .map(|r| group_of(r.op))
+            .collect();
+        for g in groups {
+            let g = g.trim().to_lowercase();
+            if !g.is_empty() && !known.contains(g.as_str()) {
+                return Err(TeleError::Usage(format!(
+                    "unknown --groups entry '{g}': valid groups are {}",
+                    {
+                        let mut names: Vec<&str> = known.into_iter().collect();
+                        names.sort_unstable();
+                        names.join(", ")
+                    }
+                )));
+            }
+        }
+    }
     let server = TeleMcp::new(
         shares,
         args.account.clone(),

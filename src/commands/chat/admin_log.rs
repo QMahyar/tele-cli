@@ -23,6 +23,13 @@ pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleRe
         .as_deref()
         .map(crate::commands::parse_unixtime)
         .transpose()?;
+    if let Some(u) = &until {
+        if i32::try_from(u.timestamp()).is_err() {
+            return Err(TeleError::Usage(
+                "--until is out of range (max 2038-01-19 03:14:07 UTC)".to_string(),
+            ));
+        }
+    }
     if let (Some(s), Some(u)) = (&since, &until) {
         if s > u {
             return Err(TeleError::Usage(
@@ -88,7 +95,15 @@ pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleRe
                         .map_err(tele_invocation)?])
                 }
             };
-            let until_ts = until.map(|u| u.timestamp() as i32);
+            let until_ts = match until.map(|u| i32::try_from(u.timestamp())) {
+                Some(Ok(ts)) => Some(ts),
+                Some(Err(_)) => {
+                    return Err(TeleError::Usage(
+                        "--until is out of range (max 2038-01-19 03:14:07 UTC)".to_string(),
+                    ))
+                }
+                None => None,
+            };
             let collected = {
                 let guard_ref = &guard;
                 let channel_ref = &channel;

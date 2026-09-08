@@ -353,9 +353,43 @@ fn fs_same_file(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
+    // Hard links share the same (device, inode) identity but canonicalize to
+    // different paths; compare identities first, then fall back to paths.
+    if same_file_identity(a, b) {
+        return true;
+    }
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(ca), Ok(cb)) => ca == cb,
         _ => false,
+    }
+}
+
+fn same_file_identity(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        // No std file-index API: match on size + mtime as a conservative
+        // identity heuristic; the hard-link case with differing metadata is
+        // left to the write-time protection below.
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(ma), Ok(mb)) => {
+                ma.len() == mb.len()
+                    && ma.modified().ok() == mb.modified().ok()
+                    && ma.modified().ok().is_some()
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
     }
 }
 
@@ -1124,6 +1158,32 @@ mod tests {
         seed_test_env(&dir);
         let err = export_session("ghost", None).await.unwrap_err();
         assert!(err.to_string().contains("no session file"), "{err}");
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn export_refuses_hard_link_to_live_session() {
+        let _guard = lock_env();
+        let dir = test_dir("export-hardlink");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let dest = dir.join("alias.session");
+        std::os::unix::fs::hard_link(session_path("work"), &dest)
+            .expect("hard link must be creatable in the test env");
+        let err = export_session("work", Some(&dest)).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("destination equals the live session"),
+            "{err}"
+        );
+        remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }

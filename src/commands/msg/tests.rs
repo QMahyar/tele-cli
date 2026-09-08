@@ -201,6 +201,9 @@ fn is_sensitive_basename_covers_private_key_families() {
         ".env.local",
         "work.session",
         "work.session-journal",
+        // tele's own export-session default suffix — full auth key material
+        "work.session.export",
+        "work.session.tmp",
     ] {
         assert!(
             is_sensitive_basename(&name.to_lowercase()),

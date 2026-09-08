@@ -2378,7 +2378,15 @@ pub(crate) async fn chat_admin_log_core(
                 .map_err(tele_invocation)?])
         }
     };
-    let until_ts = until.map(|u| u.timestamp() as i32);
+    let until_ts = match until.map(|u| i32::try_from(u.timestamp())) {
+        Some(Ok(ts)) => Some(ts),
+        Some(Err(_)) => {
+            return Err(TeleError::Usage(
+                "--until is out of range (max 2038-01-19 03:14:07 UTC)".to_string(),
+            ))
+        }
+        None => None,
+    };
     let collected = {
         let client_ref = &shares.client;
         let limiter = &shares.rate_limiter;
