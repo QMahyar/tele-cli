@@ -333,6 +333,10 @@ pub(crate) struct ResumePoint {
     pub max_seen_id: i32,
 }
 
+pub(crate) fn resume_should_skip(msg_id: i32, point: &ResumePoint) -> bool {
+    msg_id >= point.last_message_id && msg_id <= point.max_seen_id
+}
+
 pub(crate) async fn load_checkpoint(path: &std::path::Path) -> Option<ResumePoint> {
     let raw = tokio::fs::read_to_string(path).await.ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -402,7 +406,7 @@ pub(crate) async fn download_bulk_core(
             max_seen = Some(msg.id());
         }
         if let Some(point) = resume {
-            if msg.id() >= point.last_message_id && msg.id() <= point.max_seen_id {
+            if resume_should_skip(msg.id(), &point) {
                 continue;
             }
         }

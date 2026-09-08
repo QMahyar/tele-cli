@@ -358,8 +358,8 @@ mod tests {
         };
         let err = print_line_to(&mut w, "boom").unwrap_err();
         assert!(
-            crate::error::TeleError::BrokenPipe.is_broken_pipe(),
-            "variant exists"
+            err.is_broken_pipe(),
+            "failing writer's error must be the broken-pipe variant"
         );
         assert_eq!(err.exit_code(), crate::error::EXIT_OK);
     }

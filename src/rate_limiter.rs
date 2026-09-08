@@ -321,8 +321,14 @@ mod tests {
             rl.acquire().await;
         }
         assert_eq!(rl.available_tokens(), 0);
-        tokio::time::sleep(Duration::from_millis(3200)).await;
-        assert!(rl.available_tokens() >= 1);
+        // Simulate 3.2s of elapsed refill time without sleeping: rewind the
+        // refill anchor and run the same refill math.
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_millis(3200);
+        rl.maybe_refill();
+        assert!(
+            rl.available_tokens() >= 1,
+            "3.2s at 30/s refills >= 1 token"
+        );
         rl.acquire().await;
     }
 
@@ -335,7 +341,8 @@ mod tests {
         assert_eq!(rl.available_tokens(), 0);
         rl.needs_wait.store(true, Ordering::Release);
         assert!(rl.is_limited());
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Age the refill anchor so maybe_refill credits tokens immediately.
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_millis(200);
         rl.maybe_refill();
         assert!(!rl.is_limited());
         assert!(rl.available_tokens() >= 1);

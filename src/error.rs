@@ -739,7 +739,11 @@ mod tests {
 
     #[test]
     fn test_scrub_hash_exact_and_encoded() {
-        // Set env var so scrubbing can find it
+        // Set env var so scrubbing can find it (serialized with every other
+        // env-mutating test via the shared lock).
+        let _env_guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("TELE_API_HASH", "deadbeefdeadbeefdeadbeefdeadbeef");
         let hash = "deadbeefdeadbeefdeadbeefdeadbeef";
         let encoded = url_encode(hash);

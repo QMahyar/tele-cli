@@ -3210,4 +3210,43 @@ mod tests {
         assert_eq!(value["id"], 8);
         assert_eq!(value["error"]["type"], "ServeError");
     }
+
+    #[test]
+    fn every_destructive_op_runs_on_the_mutate_lane() {
+        let offenders: Vec<&str> = serve_op_routes()
+            .iter()
+            .filter(|r| r.destructive && r.lane != Lane::Mutate)
+            .map(|r| r.op)
+            .collect();
+        assert_eq!(
+            offenders,
+            Vec::<&str>::new(),
+            "a destructive op must never ride the read lane (ordering is the only confirm-gate backstop)"
+        );
+    }
+
+    #[test]
+    fn every_destructive_op_has_a_confirm_would_payload() {
+        for r in serve_op_routes().iter().filter(|r| r.destructive) {
+            // First submission without confirm must hit the gate.
+            let raw = serde_json::json!({"dry_run": true});
+            let gate = apply_confirm_gate(r.op, r.destructive, r.planner, &mut raw.clone());
+            assert!(
+                gate.is_err(),
+                "{}: destructive op without confirm must be gated",
+                r.op
+            );
+            // With confirm, the gate passes and strips the confirm key before
+            // the planner sees the params (would-payload shapes are covered by
+            // per-op dry-run tests).
+            let mut raw = serde_json::json!({"dry_run": true, "confirm": true});
+            apply_confirm_gate(r.op, r.destructive, r.planner, &mut raw)
+                .expect("confirm gate must pass with confirm:true");
+            assert!(
+                raw.get("confirm").is_none(),
+                "{}: confirm key must be stripped before params parsing",
+                r.op
+            );
+        }
+    }
 }

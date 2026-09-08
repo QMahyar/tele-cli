@@ -349,6 +349,17 @@ mod tests {
         assert_eq!(scoped.len(), 2);
         let miss = search_cache(&account, "", Some(999), 10).await.unwrap();
         assert!(miss.is_empty());
+        // FTS branch WITH a chat filter: quoted query + chat scope takes the
+        // three-param SQL arm; chat scoping must actually filter matches.
+        let fts_scoped = search_cache(&account, "\"deploy\"", Some(100), 10)
+            .await
+            .unwrap();
+        assert_eq!(fts_scoped.len(), 1, "FTS + chat filter hit");
+        assert_eq!(fts_scoped[0].id, 1);
+        let fts_other_chat = search_cache(&account, "\"deploy\"", Some(999), 10)
+            .await
+            .unwrap();
+        assert!(fts_other_chat.is_empty(), "FTS + chat filter miss");
         let stats = cache_stats(&account).await.unwrap();
         assert_eq!(stats["messages"], 2);
         assert_eq!(stats["chats"], 1);

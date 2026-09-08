@@ -30,6 +30,8 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test
+        env:
+          TELE_SKIP_TL_DRIFT_CHECK: "1"
         run: cargo test
 
   msrv:

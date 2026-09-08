@@ -4757,3 +4757,39 @@ fn send_dry_run_payload_keeps_stdin_file_marker() {
     assert_eq!(payload["file_size"], serde_json::json!(2048));
     assert_eq!(payload["file_name"], serde_json::json!("report.pdf"));
 }
+
+#[test]
+fn resume_should_skip_covers_both_bounds_inclusively() {
+    let point = download::ResumePoint {
+        last_message_id: 100,
+        max_seen_id: 900,
+    };
+    assert!(
+        download::resume_should_skip(100, &point),
+        "lower bound inclusive"
+    );
+    assert!(
+        download::resume_should_skip(900, &point),
+        "upper bound inclusive"
+    );
+    assert!(
+        download::resume_should_skip(500, &point),
+        "between bounds skipped"
+    );
+    assert!(
+        !download::resume_should_skip(99, &point),
+        "below floor is fresh work"
+    );
+    assert!(
+        !download::resume_should_skip(901, &point),
+        "above ceiling is fresh work"
+    );
+    let inverted = download::ResumePoint {
+        last_message_id: 900,
+        max_seen_id: 100,
+    };
+    assert!(
+        !download::resume_should_skip(500, &inverted),
+        "an inverted checkpoint window can never silently skip the gap"
+    );
+}
