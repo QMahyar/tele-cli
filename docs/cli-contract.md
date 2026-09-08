@@ -19,6 +19,8 @@ Globals (root callback, inherited):
   --config PATH
 ```
 
+Per-account runtime budget (CLI fan-out): each account task gets a 300s deadline; on expiry the task is **aborted** (not left running) and the row reports a `Timeout` failure (exit 3). `msg download`, `msg export`, `story send`, and `takeout export` are the documented no-budget lanes: they run to completion exactly like the serve lane table below, because a 5-minute kill mid-transfer contradicts "streams until completion".
+
 An empty account selection (no `--account`, no `--tag`) is a usage error for mutating commands, `tele listen`, and takeout — they call `require_explicit_selection` and exit 1. Read-only commands (`msg get`, `msg search`, `profile get`, `account status`, and the list/read-back commands under dialog/contact/chat/sticker/story, `privacy get`, and `raw`) instead fan out across every session by default. `tele serve` with no selection serves every account, validated to 1..=32. Exceptions that never require a selection: `tele account list` and `tele account add`.
 
 ## Exit codes

@@ -9,6 +9,18 @@ use crate::output::{log_line, AccountOutcome};
 
 const ACCOUNT_TIMEOUT_SECS: u64 = 300;
 
+/// Commands whose runtime is legitimately unbounded (bulk media transfer,
+/// streaming) run without the per-account timeout budget; the documented lane
+/// table in docs/cli-contract.md mirrors this (download = none). Timeout
+/// here would kill mid-transfer work and report a misleading exit 3.
+const UNBUDGETED_COMMANDS: &[&str] = &["msg download", "story send", "takeout export"];
+
+fn command_is_unbudgeted(command: &str) -> bool {
+    UNBUDGETED_COMMANDS
+        .iter()
+        .any(|c| command == *c || command.starts_with(&format!("{c} ")))
+}
+
 #[derive(Clone)]
 pub struct GlobalFlags {
     pub account: Vec<String>,
@@ -56,7 +68,11 @@ pub async fn run_fanout(
             }),
         ));
     }
-    let outcomes = collect_outcomes(&mut handles).await;
+    let outcomes = if command_is_unbudgeted(&flags.command) {
+        collect_outcomes_unbudgeted(&mut handles).await
+    } else {
+        collect_outcomes(&mut handles).await
+    };
     for o in &outcomes {
         if let Some(line) = outcome_error_line(o) {
             log_line("error", &line);
@@ -123,6 +139,41 @@ async fn collect_outcomes(
     collect_outcomes_with_budget(handles, Duration::from_secs(ACCOUNT_TIMEOUT_SECS)).await
 }
 
+async fn collect_outcomes_unbudgeted(
+    handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
+) -> Vec<AccountOutcome> {
+    let mut outcomes: Vec<AccountOutcome> = Vec::new();
+    let _abort_guard = AbortOnDrop(handles);
+    for (name, handle) in _abort_guard.0.iter_mut() {
+        let outcome = match handle.await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(e)) => failed_outcome(name.clone(), e),
+            Err(e) if e.is_cancelled() => failed_outcome(
+                name.clone(),
+                TeleError::Other("account task cancelled".to_string()),
+            ),
+            Err(e) => {
+                let msg = match e.try_into_panic() {
+                    Ok(payload) => {
+                        if let Some(s) = payload.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else if let Some(s) = payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "account task panicked".to_string()
+                        }
+                    }
+                    Err(_) => "account task panicked".to_string(),
+                };
+                failed_outcome(name.clone(), TeleError::TaskPanic(msg))
+            }
+        };
+        outcomes.push(outcome);
+    }
+    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
+    outcomes
+}
+
 async fn collect_outcomes_with_budget(
     handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
     budget: Duration,
@@ -131,7 +182,7 @@ async fn collect_outcomes_with_budget(
     {
         let _abort_guard = AbortOnDrop(handles);
         for (name, handle) in _abort_guard.0.iter_mut() {
-            let outcome = match tokio::time::timeout(budget, handle).await {
+            let outcome = match tokio::time::timeout(budget, &mut *handle).await {
                 Ok(joined) => match joined {
                     Ok(Ok(outcome)) => outcome,
                     Ok(Err(e)) => failed_outcome(name.clone(), e),
@@ -155,13 +206,18 @@ async fn collect_outcomes_with_budget(
                         failed_outcome(name.clone(), TeleError::TaskPanic(msg))
                     }
                 },
-                Err(_) => failed_outcome(
-                    name.clone(),
-                    TeleError::Timeout(format!(
-                        "account task exceeded {}s deadline",
-                        budget.as_secs()
-                    )),
-                ),
+                Err(_) => {
+                    // The task lost the race with the budget; stop it now so
+                    // it cannot linger on the shared runtime after we return.
+                    handle.abort();
+                    failed_outcome(
+                        name.clone(),
+                        TeleError::Timeout(format!(
+                            "account task exceeded {}s deadline",
+                            budget.as_secs()
+                        )),
+                    )
+                }
             };
             outcomes.push(outcome);
         }
@@ -952,6 +1008,57 @@ mod tests {
         )
         .await;
         assert!(outcomes[0].ok, "task finishing inside budget is ok");
+    }
+    #[tokio::test]
+    async fn timed_out_task_is_aborted_not_left_running() {
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&finished);
+        let handle = tokio::task::spawn(async move {
+            run_one("a".to_string(), permit().await, async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                ok_data()
+            })
+            .await
+        });
+        let outcomes = collect_outcomes_with_budget(
+            &mut vec![("a".to_string(), handle)],
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(!outcomes[0].ok, "timeout is a failure");
+        assert_eq!(outcomes[0].error.as_ref().unwrap()["type"], "Timeout");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "timed-out task must be aborted, not left running"
+        );
+    }
+
+    #[test]
+    fn unbudgeted_commands_cover_long_lanes() {
+        assert!(command_is_unbudgeted("msg download"));
+        assert!(command_is_unbudgeted("story send"));
+        assert!(command_is_unbudgeted("takeout export"));
+        assert!(!command_is_unbudgeted("msg send"));
+        assert!(
+            command_is_unbudgeted("msg download --all"),
+            "subforms stay unbudgeted"
+        );
+        assert!(!command_is_unbudgeted("listen"));
+    }
+
+    #[tokio::test]
+    async fn unbudgeted_collect_joins_long_tasks_without_timeout() {
+        let handle = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                ok_data()
+            })
+            .await
+        });
+        let outcomes = collect_outcomes_unbudgeted(&mut vec![("a".to_string(), handle)]).await;
+        assert!(outcomes[0].ok, "long task completes without budget");
     }
 
     #[tokio::test]
