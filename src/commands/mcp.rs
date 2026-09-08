@@ -5,8 +5,9 @@ use std::time::Duration;
 use clap::Parser;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
-    Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerInfo, Tool, ToolAnnotations,
+    Implementation, JsonObject, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ReadResourceRequestParams, ReadResourceResponse, Resource, ResourceContents,
+    ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
@@ -200,9 +201,14 @@ Destructive tools carry annotations.destructiveHint=true: the first call rejects
                 " This instance was started with --read-only, so mutating tools are hidden.",
             );
         }
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("tele", env!("CARGO_PKG_VERSION")))
-            .with_instructions(instructions)
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new("tele", env!("CARGO_PKG_VERSION")))
+        .with_instructions(instructions)
     }
 
     async fn call_core(
@@ -272,6 +278,10 @@ use tools/list to see the {visible} available tele tools"
     }
 }
 
+fn mcp_error(e: TeleError) -> ErrorData {
+    ErrorData::internal_error(e.message(), None)
+}
+
 impl ServerHandler for TeleMcp {
     fn get_info(&self) -> ServerInfo {
         self.info()
@@ -293,6 +303,99 @@ impl ServerHandler for TeleMcp {
         self.call_core(request.name.as_ref(), request.arguments)
             .await
             .map(CallToolResponse::Complete)
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(resource_list()))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        Ok(ReadResourceResponse::Complete(
+            rmcp::model::ReadResourceResult::new(vec![
+                self.read_resource_core(&request.uri).await?,
+            ]),
+        ))
+    }
+}
+
+const RESOURCE_SKILL_URI: &str = "tele://skill";
+const RESOURCE_PROFILE_URI: &str = "tele://profile";
+const RESOURCE_DIALOGS_URI: &str = "tele://dialogs";
+
+fn resource_list() -> Vec<Resource> {
+    vec![
+        Resource::new(RESOURCE_SKILL_URI, "tele-skill")
+            .with_title("tele agent skill")
+            .with_description(
+                "The tele SKILL.md agent guide, embedded in this binary (same bytes as `tele skill print`).",
+            )
+            .with_mime_type("text/markdown"),
+        Resource::new(RESOURCE_PROFILE_URI, "tele-profile")
+            .with_title("bound account profile")
+            .with_description(
+                "Profile of the account this server is bound to, as the profile get tool reports it.",
+            )
+            .with_mime_type("application/json"),
+        Resource::new(RESOURCE_DIALOGS_URI, "tele-dialogs")
+            .with_title("dialog list")
+            .with_description(
+                "Current dialog list (up to 100 entries) as the dialog list tool reports it.",
+            )
+            .with_mime_type("application/json"),
+    ]
+}
+
+impl TeleMcp {
+    async fn read_resource_core(&self, uri: &str) -> Result<ResourceContents, ErrorData> {
+        let contents = match uri {
+            RESOURCE_SKILL_URI => ResourceContents::text(crate::commands::skill::SKILL_MD, uri)
+                .with_mime_type("text/markdown"),
+            RESOURCE_PROFILE_URI => {
+                let data = crate::commands::profile::get_core(
+                    &self.shares,
+                    crate::commands::profile::GetParams {
+                        chat: None,
+                        show_phone: false,
+                        dry_run: false,
+                    },
+                )
+                .await
+                .map_err(mcp_error)?;
+                ResourceContents::text(serde_json::to_string(&data).unwrap_or_default(), uri)
+                    .with_mime_type("application/json")
+            }
+            RESOURCE_DIALOGS_URI => {
+                let data = crate::commands::dialog::dialog_list_core(
+                    &self.shares,
+                    crate::commands::dialog::ListParams {
+                        limit: 100,
+                        folder: None,
+                        dry_run: false,
+                    },
+                )
+                .await
+                .map_err(mcp_error)?;
+                ResourceContents::text(serde_json::to_string(&data).unwrap_or_default(), uri)
+                    .with_mime_type("application/json")
+            }
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "unknown resource {other}; available: {RESOURCE_SKILL_URI}, {RESOURCE_PROFILE_URI}, {RESOURCE_DIALOGS_URI}"
+                    ),
+                    None,
+                ));
+            }
+        };
+        Ok(contents)
     }
 }
 
@@ -790,5 +893,70 @@ mod tests {
         let full = rt.block_on(offline_handler(false, None));
         let instructions = full.info().instructions.unwrap();
         assert!(!instructions.contains("read-only"), "{instructions}");
+    }
+
+    #[test]
+    fn info_advertises_tools_and_resources_capabilities() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handler = rt.block_on(offline_handler(false, None));
+        let caps_json = serde_json::to_value(handler.info().capabilities).unwrap();
+        assert!(caps_json.get("resources").is_some(), "{caps_json}");
+        assert!(caps_json.get("tools").is_some(), "{caps_json}");
+        let handler = rt.block_on(offline_handler(true, None));
+        let caps_json = serde_json::to_value(handler.info().capabilities).unwrap();
+        assert!(caps_json.get("resources").is_some());
+    }
+
+    #[test]
+    fn resource_list_covers_skill_profile_dialogs() {
+        let uris: Vec<String> = resource_list().into_iter().map(|r| r.uri).collect();
+        assert_eq!(
+            uris,
+            vec![
+                "tele://skill".to_string(),
+                "tele://profile".to_string(),
+                "tele://dialogs".to_string()
+            ]
+        );
+        for r in resource_list() {
+            assert!(r.description.is_some(), "{} missing description", r.uri);
+            assert!(r.mime_type.is_some(), "{} missing mime type", r.uri);
+        }
+    }
+
+    #[test]
+    fn skill_resource_carries_the_embedded_skill_bytes() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handler = rt.block_on(offline_handler(false, None));
+        let contents = rt
+            .block_on(handler.read_resource_core("tele://skill"))
+            .unwrap();
+        match contents {
+            ResourceContents::TextResourceContents {
+                text,
+                mime_type,
+                uri,
+                ..
+            } => {
+                assert_eq!(uri, "tele://skill");
+                assert_eq!(mime_type.as_deref(), Some("text/markdown"));
+                assert_eq!(text, crate::commands::skill::SKILL_MD);
+            }
+            other => panic!("expected text contents, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_resource_is_a_clean_invalid_params_error() {
+        let handler = offline_handler(false, None).await;
+        let err = handler.read_resource_core("tele://nope").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("tele://skill"));
     }
 }

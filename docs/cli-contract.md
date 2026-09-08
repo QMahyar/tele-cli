@@ -687,6 +687,10 @@ tele mcp --account NAME [--read-only] [--groups g1,g2]
 
 `tele mcp` is an MCP stdio server for LLM agents. It exposes every routed `tele serve` op as an MCP tool, so an agent drives one Telegram account through the same planner/runner core as the CLI, without shelling out or parsing CLI tables. It is implemented on rmcp 3.1 (the official Rust SDK) and speaks JSON-RPC 2.0 over stdio per the Model Context Protocol. An MCP client spawns the process (client config snippets below); you do not run it interactively.
 
+### MCP resources
+
+`tele mcp` also advertises the MCP `resources` capability with three read-only context resources: `tele://skill` (the SKILL.md agent guide embedded in the binary, `text/markdown`, same bytes as `tele skill print`), `tele://profile` (the bound account's profile as JSON, same shape as `profile get`), and `tele://dialogs` (the first 100 dialogs as JSON, same shape as `dialog list --limit 100`). `resources/list` and `resources/read` work in both full and `--read-only` modes; `profile` and `dialogs` reads hit the network exactly like the equivalent tools. Unknown URIs fail with MCP error `-32602` listing the available set.
+
 Process model:
 
 - Exactly one account: `--account NAME` is fixed for the server's lifetime, and every tool runs as that account. The standard OS-level session lock applies: while `tele mcp` holds the session, no other tele process can open it, and the reverse holds too ("session <name> is in use by another process").
