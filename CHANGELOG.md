@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-08
+
+Full audit ship: six new capabilities, a release supply chain (SBOM + build provenance), and roughly forty fixes from the five-domain adversarial audit (kernel, commands, streams, security, release engineering). Every `done` capability row is contract-tested against the real CLI surface.
+
+### Added
+
+- **`msg export`** - per-chat history export: `tele msg export --account A --chat X [--format txt|jsonl] [--out FILE] [--limit N] [--offset-id M] [--since T] [--until T]`. One message JSON object per line (default) or a human transcript; `--out` files are created with private permissions and sensitive basenames are refused; channel rows carry an additive `link` t.me permalink (`https://t.me/<user>/<id>` or `https://t.me/c/<internal>/<id>`); rows carry `count`/`scanned`/`truncated` when writing to a file. Also routed as a serve/MCP `msg export` op (Read lane, unbounded like download).
+- **`msg get --replied`** - with a single `--id`, fetches the message the target replies to via grammers' `get_reply_to_message` (resolves cross-chat discussion parents for channel-post comments) and embeds it as an additive `replied_to` object. Rejected for `--ids` batches; absent when there is no parent. Serve/MCP: `GetParams.replied`.
+- **`profile photos`** - profile photo history via `iter_profile_photos`: `tele profile photos [--user USER] [--limit N]`. Rows carry `{id, date, size, sizes[], current}` (photos.getUserPhotos for users, chat-photos sweep for channels/supergroups). Serve/MCP: `profile photos` op.
+- **`chat permissions`** - participant rights read-back: `tele chat permissions --chat X --user U`. Full admin-rights flag map (12 write-side flags), full banned-rights map (22 flags + `until_date` as RFC 3339), creator rights, plus `rank`/`can_edit`/`kicked_by`/`promoted_by` where provided; basic groups degrade to the participant role with an explanatory note. Serve/MCP: `chat permissions` op.
+- **`msg send --file -`** - streamed stdin uploads via `upload_stream`: `--file-size <BYTES>` (exact stdin byte count) and `--file-name <NAME>` required; same 2 GiB cap; cannot be combined with other `--file` paths or albums; `--file-size`/`--file-name` are rejected when no stdin upload is present.
+- **MCP resources** - `tele mcp` now advertises the MCP `resources` capability with three read-only context resources: `tele://skill` (the embedded SKILL.md, same bytes as `tele skill print`), `tele://profile` (bound account profile as JSON), and `tele://dialogs` (first 100 dialogs as JSON). Available in full and `--read-only` modes; unknown URIs fail with a clean `-32602` listing the valid set.
+- **Release supply chain** - every release target ships an SPDX SBOM (anchore/sbom-action) and a build-provenance attestation (actions/attest-build-provenance); both actions are SHA-pinned and the token scope is limited to the build job. `docs/release.md` documents `gh attestation verify` and corrects the manual npm-publish fallback to reproduce the CI staging (publishing from the bare `npm/` directory would ship a launcher that can never find a binary).
+- **Skill versioning** - the installed `SKILL.md` compatibility line is stamped from the binary version and `tele skill install` warns when an existing install predates the running binary; a contract test pins the stamp to `Cargo.toml` so it cannot drift again.
+
+### Fixed
+
+**Kernel and executor**
+- FTS5 message cache: `INSERT OR REPLACE` no longer silently bypasses the sync triggers - `PRAGMA recursive_triggers = ON` at open, with an `fts5vocab`/`integrity-check` regression test that fails without it.
+- Token bucket: idle time no longer banks credit - the refill anchor advances while the bucket is full and refills are bounded by the remaining room, so a long idle gap cannot mint an instant full refill or keep over-minting afterwards.
+- Replay dedupe (`CappedMap`): re-delivered updates refresh their eviction position, so a redelivered update is no longer re-emitted as new when its original entry rotates out.
+- Peer eviction set is bounded (1024, clear-on-full) instead of permanent and unbounded.
+- `+phone` targets now require at least 5 digits (including country code): `+1` can no longer trigger a real `contacts.ImportContacts` side effect; parenthesized/dotted phone spellings classify consistently between `parse_target` and `classify_target`.
+- Per-account fan-out: `msg download`, `msg export`, `story send`, and `takeout export` run without the 300s per-account budget (matching the documented serve lane table - the old cap killed legitimate mid-transfer work and reported exit 3), and timed-out account tasks are aborted instead of left running.
+- Proxy URLs: IPv6 hosts are bracket-wrapped (`socks5://[::1]:9050`) instead of producing a malformed authority.
+- `--tag` warns on tagged accounts that have no session file yet instead of skipping them silently.
+- `config.toml` writes fsync the temp file before rename (no zero-length config on crash); the missing-HOME panic prints an actionable, scrubbed message on stderr.
+- Session import: stale `-wal`/`-shm` sidecars of the previous database are deleted before the rename (a hot WAL from a crashed run would be replayed onto the imported session), and the account lock now covers only the copy+probe+install window instead of the whole source read.
+- Cache open: directory creation and permission hardening run via `spawn_blocking` instead of blocking the async runtime.
+
+**Messaging**
+- `msg delete` reports the server's real affected count (`partial` when some ids were not deleted) instead of fabricating `"deleted": N`.
+- `msg download --all` resume no longer permanently skips the checkpoint boundary: two-bound checkpoints (`last_message_id` + `max_seen_id`), local-timezone `--since`/`--until` date handling, and an additive `truncated` flag.
+- `msg get --ids` batch fetch (single-RPC chunks of 100, additive `missing_ids`).
+- `msg search --from me` uses the server-side own-messages filter.
+- `msg send --split N` chunks oversized text into sequential UTF-16-aware messages (paragraph-preferred cuts).
+- `listen --count N` and `--until <ts>` finite-stream exits (combined across accounts, stderr notice, exit 0).
+- `listen`: the connect semaphore no longer starves accounts at `--parallel 1`; gap detection uses the incoming `pts_count` (grammers continuity rule) and gap/peer state now survives reconnects; stream task panics surface their payload; filter applicability is consistent and documented (direction/pattern filters suppress action-family rows instead of silently bypassing them).
+- `chat settings --noforwards` actually works: `messages.toggleNoForwards` exists at layer 227 and is now wired (the old rejection claimed the layer lacked it).
+- `admin-log --until` rejects post-2038 timestamps instead of silently wrapping via `as i32` and disabling pagination early-stop; `--since` is now counted against the limit inside collection so it can no longer hide matching events.
+
+**Chats and contacts**
+- `chat create` no longer reports failure after server-side success on `Updates::Combined` responses (the retry path duplicated chats).
+- `contact add` no longer reports first-time adds as failures (min-user `contact:false` response is a warning).
+- `--signatures` no longer clears author profiles (writes `signature_profiles` too).
+- `chat requests`: `--user` with `--link` is rejected instead of silently ignoring the link scope.
+- `chat kick`: `--ban` no longer overrides an explicit `--rights view_messages` value; `--demote` rejects `--preset/--rights` (they were silently discarded); empty `--rights` is rejected instead of promoting nobody.
+- Bare invite hashes are canonicalized to full `https://t.me/+...` URLs where the API expects a link (`--edit`/`--importers`), while `--check` still extracts the hash.
+- `dialog --folder` pagination anchors per-page and album bundling no longer drops entries.
+- `dialog folder-create` verifies the written filter after `UpdateDialogFilter` (a racing creator overwriting the id now surfaces an honest error) and counts Chatlist folders when allocating ids.
+- `dialog drafts` docs pinned to the exact channel-id form (the `-100` Bot-API convention, matching numeric `--chat`).
+
+**Accounts, privacy, and security**
+- Login: inverted `session_existed_before` fixed (failed logins deleted good sessions) across the code and staged paths.
+- Staged login: `--stage resend`/`--stage cancel-code`, 303 DC migration on sign-in/resend/cancel and change-phone flows (auto home-DC switch + one retry), 2FA accepts piped stdin like the code step, takeout start clears stale export artifacts.
+- `account delete` purges session, pending secrets, and config entry after server-side delete; `--dry-run` is reachable without `--yes`.
+- `privacy set --replace` (revocation) added; merge mode rejects a user resolved on both the allow and deny sides (alias-proof: username vs numeric id of the same person).
+- `phone --confirm-code` dry-run redacts the OTP code and `phone_code_hash`; one-time secrets on argv (`--confirm-code`/`--phone-hash`) warn about process listings like `--phone` does; `--show-token` bypasses the log scrubber so the promised login URI actually prints in quiet mode.
+- `account sessions --terminate` dry-run applies the same current-session guard as the real run instead of promising a refused action.
+- Upload exfiltration guard blocks `.session.export`/`.session.tmp`; `export-session` refuses a hard link to the live session (file-identity comparison).
+- Callback button `data_str` decodes lossy UTF-8 (invalid bytes become U+FFFD) instead of an empty string, consistent with listen rows and the click selector.
+- `rand_seed` mixes a process-wide call counter: same-tick topic creations no longer collide on `random_id`.
+
+**Streams and serving**
+- `stream.resync` now arms on every StreamError (auto-catch-up after a broken stream) and completion guards use bounded retries, so a saturated driver cannot silently drop final envelopes (10s drain budget documented).
+- Dispatcher responses use bounded backpressure: a driver that stops reading stdout while writing stdin no longer deadlocks the pair.
+- `mcp --groups` fails fast on unknown groups instead of starting a silent zero-tool server.
+- MCP tool surface and counts documented honestly (81 routed ops; read-only set 24; `raw` joins the destructive confirm-gated set).
+
+**Release and CI**
+- All GitHub Actions pinned to full commit SHAs, least-privilege job permissions, `--locked` release builds, npm publish behind the `npm` environment gate, and tag-to-`Cargo.toml`-to-CHANGELOG verification as a release preflight (plus an offline contract test enforcing the same sync).
+- npm launcher: musl detection prefers `process.report` (no execSync on the hot path), a failed binary spawn falls through to the next candidate, and the deprecated `telecli` alias prints a warning.
+- Contract test gate hardened: every backticked CLI reference in the capability matrix is checked (not just the first), status cells are normalized and unknown statuses fail loudly, wildcards expand against real subcommands, group-only rows must have subcommands - the first run caught a stale matrix reference.
+
+### Changed
+- Docs: every broken example and recipe fixed (`--target` to `--chat`, `--type` to `--kind`, story examples carrying the required `--chat`, correct jq paths, the real Unix sessions path, real output API in CONTRIBUTING, MCP tool count 81, listen filter applicability contract, supervisor guidance for long-running listen/serve).
+- Docs: recorded deliberate non-goal - output i18n (English-only; `lang_code` affects only the MTProto client identity).
+- Capability matrix: 6 stale rows corrected (TTL flags, pin `--notify`, forward notify behavior, `--clear-username`, `schedule_repeat_period`, `--noforwards` attribution).
+
 ## [0.11.3] - 2026-09-04
 
 ### Fixed

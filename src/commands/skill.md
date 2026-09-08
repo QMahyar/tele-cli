@@ -2,7 +2,7 @@
 name: tele
 description: Drive real Telegram user accounts through the `tele` CLI (MTProto user sessions, no bot tokens). Use when sending, reading, editing, forwarding, or deleting messages; managing chats, dialogs, forum topics, contacts, privacy, or stories; streaming live updates; running multi-account automation; or exposing Telegram to an MCP client. Triggers: "send a telegram message", "check my telegram", "read telegram chat", "stream telegram events", "telegram automation".
 license: MIT
-compatibility: tele 0.11.3+ (generated; do not hand-edit - the binary stamps this from its own version)
+compatibility: tele 0.12.0+ (generated; do not hand-edit - the binary stamps this from its own version)
 ---
 
 # tele — Telegram user-account CLI
