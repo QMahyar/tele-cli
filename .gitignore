@@ -18,3 +18,8 @@ dist/
 .ruff_cache/
 .superpowers/
 .claude/
+.playwright-mcp/
+err*.txt
+out*.txt
+stderr.txt
+stdout.txt
