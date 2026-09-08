@@ -199,6 +199,7 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 ## `msg send`
 
 - `--file` is repeatable: one path sends a single media, and 2-10 paths send an album (`{"album": [message objects]}`). Albums do not support `--schedule` (including `--schedule online`) or `--thumbnail`.
+- `--file -` streams the file from stdin via grammers' `upload_stream` instead of reading a path. It requires `--file-size <BYTES>` (the exact stdin byte count; the part uploader reads exactly that many bytes) and `--file-name <NAME>` (the name the recipient sees), cannot be combined with other `--file` paths or albums, and is capped at the same 2 GiB limit. `--file-size`/`--file-name` are rejected when no stdin upload is present.
 - `--schedule online` schedules delivery for when the peer comes online (dry-run `data.schedule` is `0` for online).
 - `--media-ttl <secs>` sets an auto-destruct timer on sent media.
 - `--thumbnail <path>` attaches a custom thumbnail to single-document uploads.

@@ -38,7 +38,7 @@ RPCs without a friendly wrapper stay reachable through `tele raw <registry-name>
 | msg.history | Get / iter history | `messages.getHistory` | `get_messages_by_id`, `iter_messages`, `get_reply_to_message` | `tele msg get` (single `--id` accepts `--replied` to attach the additive `replied_to` message row via `get_reply_to_message`, incl. cross-chat discussion parents) | done |
 | msg.pin | Pin / unpin | `messages.updatePinnedMessage` | `pin_message`, `unpin_message` | `tele msg pin` (unpin always silent via grammers; `--notify` controls the pin notification) | done |
 | msg.read | Mark read | `messages.readHistory` | `mark_as_read` | `tele msg read` | done |
-| msg.file | Send file | `messages.sendMedia` | `upload_file` + `send_message` | `tele msg send --file` | done |
+| msg.file | Send file | `messages.sendMedia` | `upload_file` + `send_message` (+ `upload_stream` for stdin) | `tele msg send --file` (`--file -` streams stdin with required `--file-size`/`--file-name`) | done |
 | msg.download | Download media | upload/download API | `download_media`, `iter_download` | `tele msg download` (single `--id`, album siblings via `--id N --album`, whole-chat sweep via `--all [--since/--until] [--limit]` with per-chat checkpoint resume) | done |
 | msg.react | Reactions | `/api/reactions` | `send_reactions` | `tele msg react` | done |
 | msg.poll | Polls: create, render in message rows + vote | `/api/poll`, `messages.sendVote` (no close flag at layer 227 — closing polls impossible) | `sendMedia` + `InputMediaPoll` for create; raw arm; `Media::Poll` answers | `tele msg send --poll Q --option A --option B`; `tele msg vote --chat X --id N --option 1[,2]`; additive `poll` object on msg get/search rows | done |

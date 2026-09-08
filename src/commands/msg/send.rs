@@ -100,6 +100,38 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "unknown --format {other} (use plain or markdown)"
         ))),
     }?;
+    if args.files.iter().any(|f| f == "-") {
+        if args.files.len() > 1 {
+            return Err(TeleError::Usage(
+                "stdin upload (--file -) cannot be combined with other files".to_string(),
+            ));
+        }
+        let size = args.file_size.ok_or_else(|| {
+            TeleError::Usage(
+                "--file - requires --file-size BYTES (exact stdin byte count)".to_string(),
+            )
+        })?;
+        if size == 0 {
+            return Err(TeleError::Usage("--file-size must be > 0".to_string()));
+        }
+        crate::commands::msg::validate::check_upload_size(size as u64)?;
+        match &args.file_name {
+            Some(name) => super::validate::validate_filename(name)?,
+            None => {
+                return Err(TeleError::Usage(
+                    "--file - requires --file-name NAME (name shown to the recipient)".to_string(),
+                ))
+            }
+        }
+    } else if args.file_size.is_some() {
+        return Err(TeleError::Usage(
+            "--file-size only applies to stdin uploads (--file -)".to_string(),
+        ));
+    } else if args.file_name.is_some() {
+        return Err(TeleError::Usage(
+            "--file-name only applies to stdin uploads (--file -)".to_string(),
+        ));
+    }
     if args.poll.is_some() && (args.text.is_some() || !args.files.is_empty()) {
         return Err(TeleError::Usage(
             "--poll is mutually exclusive with --text/--file".to_string(),
@@ -510,6 +542,8 @@ pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> se
         "text": args.text,
         "split": args.split,
         "files": args.files,
+        "file_size": args.file_size,
+        "file_name": args.file_name,
         "url": args.url,
         "kind": args.kind,
         "copy_from": args.copy_from,
@@ -855,11 +889,27 @@ pub(crate) async fn send_core(
         return Ok(serde_json::json!({"album": rows}));
     }
     let mut msg = if let Some(path) = files.first() {
-        let uploaded = shares
-            .client
-            .upload_file(path)
-            .await
-            .map_err(upload_error)?;
+        let uploaded = if path == "-" {
+            let size = params
+                .file_size
+                .ok_or_else(|| TeleError::Usage("--file - requires --file-size".to_string()))?;
+            let name = params
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "stdin".to_string());
+            let mut stdin = tokio::io::stdin();
+            shares
+                .client
+                .upload_stream(&mut stdin, size, name)
+                .await
+                .map_err(upload_error)?
+        } else {
+            shares
+                .client
+                .upload_file(path)
+                .await
+                .map_err(upload_error)?
+        };
         if let Some(as_media) = &as_media {
             send_as_media_message(uploaded, as_media)?
         } else {

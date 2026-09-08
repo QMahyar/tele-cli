@@ -15,6 +15,9 @@ pub(crate) fn is_reserved_device_name(stem: &str) -> bool {
 }
 
 pub(crate) fn validate_filename(name: &str) -> TeleResult<()> {
+    if name.is_empty() {
+        return Err(TeleError::Usage("file name must not be empty".to_string()));
+    }
     if name.ends_with([' ', '.']) {
         return Err(TeleError::Usage(format!(
             "refusing to upload file {name:?}: name ends with a character Windows would strip"
@@ -50,6 +53,11 @@ pub fn validate_upload_path(path: &str) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_upload_path_inner(path: &str, dry_run: bool) -> TeleResult<()> {
+    if path == "-" {
+        // stdin upload: no on-disk path checks; --file-size/--file-name are
+        // validated by validate_send.
+        return Ok(());
+    }
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     validate_filename(base)?;
     let app_dir = canonical_guard_path(&crate::config::app_data_dir().to_string_lossy());

@@ -65,6 +65,8 @@ fn send_args(format: &str) -> SendArgs {
         split: None,
         schedule: None,
         files: vec![],
+        file_size: None,
+        file_name: None,
         media_ttl: None,
         thumbnail: None,
         url: None,
@@ -2333,6 +2335,8 @@ fn validate_send_url_requires_kind_and_conflicts_with_text() {
         split: None,
         schedule: None,
         files: vec![],
+        file_size: None,
+        file_name: None,
         media_ttl: None,
         thumbnail: None,
         url: Some("https://example.com/cat.jpg".to_string()),
@@ -4664,4 +4668,92 @@ fn get_dry_run_carries_replied_flag() {
     let payload = get_serve_dry_run(&args).unwrap();
     assert_eq!(payload["replied"], serde_json::json!(true));
     assert!(payload["would"].as_str().unwrap().contains("reply parent"));
+}
+
+#[test]
+fn validate_send_stdin_upload_requires_size_and_name() {
+    let mut args = send_args("plain");
+    args.text = None;
+    args.files = vec!["-".to_string()];
+    let err = validate_send(&args).unwrap_err();
+    assert!(
+        err.message().contains("--file - requires --file-size"),
+        "{}",
+        err.message()
+    );
+    args.file_size = Some(0);
+    let err = validate_send(&args).unwrap_err();
+    assert!(err.message().contains("--file-size must be > 0"));
+    args.file_size = Some(100);
+    let err = validate_send(&args).unwrap_err();
+    assert!(
+        err.message().contains("--file - requires --file-name"),
+        "{}",
+        err.message()
+    );
+    args.file_name = Some("payload.bin".to_string());
+    assert!(validate_send(&args).is_ok(), "valid stdin upload rejected");
+}
+
+#[test]
+fn validate_send_stdin_cannot_mix_files_or_oversize() {
+    let mut args = send_args("plain");
+    args.text = None;
+    args.files = vec!["-".to_string(), "other.txt".to_string()];
+    args.file_size = Some(10);
+    args.file_name = Some("a".to_string());
+    let err = validate_send(&args).unwrap_err();
+    assert!(
+        err.message()
+            .contains("cannot be combined with other files"),
+        "{}",
+        err.message()
+    );
+    let mut args = send_args("plain");
+    args.text = None;
+    args.files = vec!["-".to_string()];
+    args.file_size = Some(crate::commands::msg::validate::MAX_UPLOAD_BYTES as usize + 1);
+    args.file_name = Some("a".to_string());
+    let err = validate_send(&args).unwrap_err();
+    assert!(err.message().contains("2 GiB"), "{}", err.message());
+}
+
+#[test]
+fn validate_send_size_flags_rejected_without_stdin() {
+    let mut args = send_args("plain");
+    args.text = None;
+    args.files = vec!["notes.txt".to_string()];
+    args.file_size = Some(10);
+    let err = validate_send(&args).unwrap_err();
+    assert!(
+        err.message().contains("--file-size only applies to stdin"),
+        "{}",
+        err.message()
+    );
+    args.file_size = None;
+    args.file_name = Some("x".to_string());
+    let err = validate_send(&args).unwrap_err();
+    assert!(
+        err.message().contains("--file-name only applies to stdin"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
+fn upload_path_validation_passes_stdin_dash_through() {
+    assert!(validate_upload_path("-").is_ok());
+}
+
+#[test]
+fn send_dry_run_payload_keeps_stdin_file_marker() {
+    let mut args = send_args("plain");
+    args.text = None;
+    args.files = vec!["-".to_string()];
+    args.file_size = Some(2048);
+    args.file_name = Some("report.pdf".to_string());
+    let payload = send_dry_run_payload(&args, None);
+    assert_eq!(payload["files"], serde_json::json!(["-"]));
+    assert_eq!(payload["file_size"], serde_json::json!(2048));
+    assert_eq!(payload["file_name"], serde_json::json!("report.pdf"));
 }

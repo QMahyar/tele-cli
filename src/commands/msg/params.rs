@@ -26,9 +26,20 @@ pub struct SendArgs {
     #[arg(
         long = "file",
         value_name = "PATH",
-        help = "file path(s) to upload; 2-10 paths send as an album (mutually exclusive with --text)"
+        help = "file path(s) to upload; 2-10 paths send as an album (mutually exclusive with --text); '-' reads a single file from stdin"
     )]
     pub(crate) files: Vec<String>,
+    #[arg(
+        long,
+        value_name = "BYTES",
+        help = "stdin byte size for --file - (required when reading from stdin; parts must be <=512KB)"
+    )]
+    pub(crate) file_size: Option<usize>,
+    #[arg(
+        long,
+        help = "file name shown to the recipient for --file - (default: stdin upload)"
+    )]
+    pub(crate) file_name: Option<String>,
     #[arg(long, help = "caption for uploaded file(s) (requires --file)")]
     pub(crate) caption: Option<String>,
     #[arg(long, help = "message ID to reply to")]
@@ -500,6 +511,10 @@ pub(crate) struct SendParams {
     pub(crate) schedule: Option<String>,
     #[serde(default)]
     pub(crate) files: Vec<String>,
+    #[serde(default)]
+    pub(crate) file_size: Option<usize>,
+    #[serde(default)]
+    pub(crate) file_name: Option<String>,
     pub(crate) caption: Option<String>,
     pub(crate) reply: Option<i32>,
     pub(crate) topic: Option<i32>,
@@ -543,6 +558,8 @@ impl From<&SendArgs> for SendParams {
             split: a.split,
             schedule: a.schedule.clone(),
             files: a.files.clone(),
+            file_size: a.file_size,
+            file_name: a.file_name.clone(),
             caption: a.caption.clone(),
             reply: a.reply,
             topic: a.topic,
@@ -576,6 +593,8 @@ impl From<&SendParams> for SendArgs {
             split: p.split,
             schedule: p.schedule.clone(),
             files: p.files.clone(),
+            file_size: p.file_size,
+            file_name: p.file_name.clone(),
             caption: p.caption.clone(),
             reply: p.reply,
             topic: p.topic,
