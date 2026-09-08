@@ -313,7 +313,9 @@ This command removes the current profile photo. It reads the photo id from `user
 
 ## `tele listen` streaming
 
-`tele listen` always streams JSON Lines on stdout, one event per line; `--json` is accepted as a no-op for symmetry. Stdout writes are backpressured: `listen` pauses on a slow reader instead of dropping events. Finite streams: `--timeout-secs S` bounds the whole run, `--count N` exits after N emitted event rows (all accounts combined), and `--until <RFC3339|unix-ts|YYYY-MM-DD>` exits after the first event at/after that timestamp — each prints a stderr info line and exits 0.
+`tele listen` always streams JSON Lines on stdout, one event per line; `--json` is accepted as a no-op for symmetry. Stdout writes are backpressured: `listen` pauses on a slow reader instead of dropping events.
+
+Filter applicability per event family: `--from SENDER` applies to NewMessage/MessageEdited/MessageDeleted-adjacent rows that carry a sender, `--chat` applies wherever a chat id is present, and `--in/--out/--pattern` apply only to message rows. When `--in/--out/--pattern` are set, rows that structurally cannot match them (Raw, MessageDeleted, ChatAction, UserUpdate, CallbackQuery) are suppressed rather than bypassing the filter; `--from` and `--chat` still apply to ChatAction/UserUpdate/CallbackQuery rows. This keeps `--pattern ERROR` from drowning in typing-indicator rows while keeping `--from @bob` working on actions. Finite streams: `--timeout-secs S` bounds the whole run, `--count N` exits after N emitted event rows (all accounts combined), and `--until <RFC3339|unix-ts|YYYY-MM-DD>` exits after the first event at/after that timestamp — each prints a stderr info line and exits 0.
 
 ```json
 {"event":"NewMessage","account":"work","id":123,"chat_id":456,"text":"...","date":"2026-08-13T12:00:00+00:00"}
