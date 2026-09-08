@@ -605,12 +605,21 @@ fn log_stale_cache_retry(id: i64, e: &InvocationError) {
 static EVICTED_PEERS: LazyLock<Mutex<BTreeSet<i64>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
+/// Upper bound on the process-global eviction set. A full set is cleared:
+/// eviction is a negative cache for lookups that failed, and a peer may
+/// legitimately appear later (fresh session, access-hash refresh), so
+/// periodic forgetting is safer than permanent blacklisting.
+const EVICTED_PEERS_CAP: usize = 1024;
+
 fn is_evicted(id: i64) -> bool {
     EVICTED_PEERS.lock().is_ok_and(|set| set.contains(&id))
 }
 
 fn evict_stale_peers(id: i64) {
     if let Ok(mut set) = EVICTED_PEERS.lock() {
+        if set.len() >= EVICTED_PEERS_CAP {
+            set.clear();
+        }
         set.insert(id);
         set.insert(if id < 0 { negative_id_raw(id) } else { id });
     }

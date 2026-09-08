@@ -855,6 +855,33 @@ pub(crate) async fn set_core(
     }
     allow_users = dedupe_input_users(allow_users);
     disallow_users = dedupe_input_users(disallow_users);
+    // Alias-proof cross-side check: "@alice" and "12345" normalize to
+    // different lexical keys, so only the resolved ids can catch the same
+    // person on both sides of one key.
+    let allow_ids: Vec<i64> = allow_users
+        .iter()
+        .filter_map(|u| match u {
+            tl::enums::InputUser::User(x) => Some(x.user_id),
+            _ => None,
+        })
+        .collect();
+    let deny_ids: Vec<i64> = disallow_users
+        .iter()
+        .filter_map(|u| match u {
+            tl::enums::InputUser::User(x) => Some(x.user_id),
+            _ => None,
+        })
+        .collect();
+    let aliased: Vec<i64> = allow_ids
+        .iter()
+        .filter(|id| deny_ids.contains(id))
+        .copied()
+        .collect();
+    if !aliased.is_empty() {
+        return Err(TeleError::Usage(format!(
+            "allow and deny lists share resolved user id(s) {aliased:?}; the same account cannot be on both sides of one privacy key (username vs numeric id spellings count as the same user)"
+        )));
+    }
     let fetched = fetch_privacy_rules(&shares.client, &tl_key).await?;
     if !params.replace {
         let base = split_base_rule_ids(&fetched.rules);

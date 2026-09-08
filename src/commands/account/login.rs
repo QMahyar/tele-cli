@@ -599,7 +599,9 @@ pub(crate) fn render_qr(uri: &str, show_token: bool, quiet: bool) {
             if let Some(warning) = warning {
                 output::log_line("warn", warning);
             }
-            output::log_line("info", &line);
+            // --show-token promises the URI on stderr; log_line's scrubber
+            // redacts the tg://login token, so bypass it here. Stderr only.
+            let _ = writeln!(std::io::stderr(), "{line}");
         } else {
             output::log_line(
                 "warn",

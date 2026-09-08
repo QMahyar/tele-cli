@@ -353,6 +353,15 @@ pub(crate) async fn execute_phone_action(
 pub(crate) async fn phone(args: &PhoneArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let action = validate_phone_modes(args)?;
     require_explicit_selection("account phone", flags)?;
+    // One-time secrets on argv share the --phone exposure risk; warn the same way.
+    if let PhoneAction::Confirm { .. } = action {
+        if !flags.dry_run {
+            crate::output::log_line(
+                "warn",
+                "--confirm-code/--phone-hash are visible in process listings and shell history; prefer an interactive prompt or TELE_* env",
+            );
+        }
+    }
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let envelope = run_fanout(flags, move |name| {
