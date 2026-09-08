@@ -14,6 +14,8 @@ jobs:
   build:
     permissions:
       contents: read
+      id-token: write
+      attestations: write
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -145,6 +147,18 @@ jobs:
           else
             shasum -a 256 "$(basename "$ASSET")" > "$(basename "$ASSET").sha256"
           fi
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          format: spdx-json
+          artifact-name: tele-${{ steps.version.outputs.version }}-${{ matrix.target }}.sbom.spdx.json
+          upload-release-assets: true
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@9d57eef8c06cd9d6b433effeeb7a6a77b3ff94ad # main (v4 line)
+        with:
+          subject-path: dist/tele-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -37,12 +37,20 @@ The push triggers the `release` workflow.
 
 ## Verify the release
 
-1. Open the GitHub Release page and confirm 26 assets (13 archives + 13 `.sha256`).
+1. Open the GitHub Release page and confirm the asset set: 13 archives + 13 `.sha256` files + 13 SPDX SBOMs (`tele-<version>-<target>.sbom.spdx.json`) + 13 build-provenance attestations (`*.attestation` bundle uploaded by the attestation action). The count grows additively with the target matrix.
 2. Download a binary and smoke-test it. `tele --help` and `tele --dry-run` must respond.
 3. Run `npm view @qmahyar/telecli version` and confirm it shows the tag version. Then install and check:
 
 ```bash
 npm install -g @qmahyar/telecli && tele --version
+```
+
+4. Verify build provenance and inspect the SBOM (GitHub CLI v2.61+):
+
+```bash
+gh attestation verify --repo QMahyar/tele-cli tele-<version>-x86_64-pc-windows-msvc.zip
+# inspect the dependency inventory:
+jq '.packages[].name' tele-<version>-x86_64-pc-windows-msvc.sbom.spdx.json
 ```
 
 ## Handle an npm failure
@@ -53,11 +61,19 @@ Publishing authenticates through npm trusted publishing (OIDC). The `@qmahyar/te
 gh run rerun <run-id> --job <npm-job-id>
 ```
 
-The GitHub Release ships even when npm fails. To publish npm by hand instead, use your own npm login with publish rights:
+The GitHub Release ships even when npm fails. Do **not** run `npm publish` from the repo's `npm/` directory: it contains only the JS launcher, no binaries, and a package published from there always fails at spawn with "no binary bundled". The publish job builds the real package by downloading the 13 build artifacts and staging every binary into `pkg-main/bin/` before invoking npm. To publish by hand instead, reproduce those steps with your own npm login:
 
 ```bash
-cd npm && npm version <ver> --no-git-tag-version --allow-same-version && npm publish --access=public
+VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+mkdir -p pkg-main/bin
+# stage every platform binary from the workflow artifacts (tele-<version>-<triple>.tar.gz / .zip):
+#   extract each archive's tele (or tele.exe) to pkg-main/bin/tele-<triple>[.exe]
+cp npm/bin/tele.js pkg-main/bin/tele.js
+jq --arg v "$VERSION" '.version = $v' npm/package.json > pkg-main/package.json
+cd pkg-main && npm publish --access=public
 ```
+
+Prefer rerunning the failed job (`gh run rerun <run-id> --job <npm-job-id>`) so the OIDC attestation chain stays intact.
 
 ## Order crates.io separately
 
