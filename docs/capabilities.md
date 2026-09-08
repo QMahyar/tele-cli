@@ -35,7 +35,7 @@ RPCs without a friendly wrapper stay reachable through `tele raw <registry-name>
 | msg.edit | Edit | `messages.editMessage` | `edit_message` | `tele msg edit` (text/caption via `--text`/`--caption` with `--format plain`/`markdown`, media swap via `--file`, `--no-preview` sets `no_webpage`) | done |
 | msg.delete | Delete | `messages.deleteMessages` | `delete_messages` | `tele msg delete` (partial reporting + `--self-only`) | done |
 | msg.forward | Forward | `messages.forwardMessages` | `forward_messages` | `tele msg forward` (no silent flag; grammers 0.10 does not set the TL silent flag, so forwarded messages notify recipients) | done |
-| msg.history | Get / iter history | `messages.getHistory` | `get_messages_by_id`, `iter_messages` | `tele msg get` | done |
+| msg.history | Get / iter history | `messages.getHistory` | `get_messages_by_id`, `iter_messages`, `get_reply_to_message` | `tele msg get` (single `--id` accepts `--replied` to attach the additive `replied_to` message row via `get_reply_to_message`, incl. cross-chat discussion parents) | done |
 | msg.pin | Pin / unpin | `messages.updatePinnedMessage` | `pin_message`, `unpin_message` | `tele msg pin` (unpin always silent via grammers; `--notify` controls the pin notification) | done |
 | msg.read | Mark read | `messages.readHistory` | `mark_as_read` | `tele msg read` | done |
 | msg.file | Send file | `messages.sendMedia` | `upload_file` + `send_message` | `tele msg send --file` | done |

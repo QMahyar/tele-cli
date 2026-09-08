@@ -642,6 +642,7 @@ fn get_rejects_last_with_offset_id() {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     };
     assert!(matches!(validate_get(&args), Err(TeleError::Usage(_))));
     let no_offset = GetArgs {
@@ -655,6 +656,7 @@ fn get_rejects_last_with_offset_id() {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     };
     assert!(validate_get(&no_offset).is_ok());
     let no_last = GetArgs {
@@ -668,6 +670,7 @@ fn get_rejects_last_with_offset_id() {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     };
     assert!(validate_get(&no_last).is_ok());
 }
@@ -685,6 +688,7 @@ fn get_params(chat: &str, id: Option<i32>) -> GetParams {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     }
 }
 
@@ -775,6 +779,7 @@ fn validate_get_accepts_deep_link_without_explicit_id() {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     };
     assert!(validate_get(&args).is_ok());
     let c_form = GetArgs {
@@ -788,6 +793,7 @@ fn validate_get_accepts_deep_link_without_explicit_id() {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     };
     assert!(validate_get(&c_form).is_ok());
 }
@@ -805,6 +811,7 @@ fn validate_get_rejects_deep_link_plus_explicit_id() {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     };
     let err = validate_get(&args).unwrap_err();
     assert!(matches!(err, TeleError::Usage(_)));
@@ -830,6 +837,7 @@ fn validate_get_rejects_target_message_with_listing_flags() {
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
+            replied: false,
         };
         assert!(
             matches!(validate_get(&args), Err(TeleError::Usage(_))),
@@ -847,6 +855,7 @@ fn validate_get_rejects_target_message_with_listing_flags() {
         watch: false,
         timeout_secs: 60,
         poll_interval: 2,
+        replied: false,
     };
     assert!(validate_get(&explicit_ok).is_ok());
 }
@@ -1066,6 +1075,7 @@ fn msg_validators_reject_empty_or_whitespace_chat() {
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
+            replied: false,
         };
         assert!(
             matches!(validate_get(&get), Err(TeleError::Usage(_))),
@@ -1821,6 +1831,7 @@ async fn get_dry_run_short_circuits_before_connect() {
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
+            replied: false,
         },
         &dryrun_flags("msg get", true),
     )
@@ -1848,6 +1859,7 @@ async fn get_without_dry_run_requires_a_real_session() {
             watch: false,
             timeout_secs: 60,
             poll_interval: 2,
+            replied: false,
         },
         &dryrun_flags("msg get", false),
     )
@@ -4580,4 +4592,76 @@ fn message_permalink_formats_public_and_private_channels() {
     });
     let group_peer = grammers_client::peer::Peer::from_raw(&client, group);
     assert!(message_permalink(&group_peer, 1).is_none());
+}
+
+#[test]
+fn validate_get_replied_requires_single_id() {
+    let args = GetArgs {
+        chat: "@x".to_string(),
+        id: None,
+        ids: vec![1, 2],
+        limit: 10,
+        offset_id: None,
+        last: false,
+        watch: false,
+        timeout_secs: 60,
+        poll_interval: 2,
+        replied: true,
+    };
+    let err = validate_get(&args).unwrap_err();
+    assert!(
+        err.message().contains("--replied requires a single --id"),
+        "{}",
+        err.message()
+    );
+    let args = GetArgs {
+        chat: "@x".to_string(),
+        id: None,
+        ids: Vec::new(),
+        limit: 10,
+        offset_id: None,
+        last: false,
+        watch: false,
+        timeout_secs: 60,
+        poll_interval: 2,
+        replied: true,
+    };
+    let err = validate_get(&args).unwrap_err();
+    assert!(
+        err.message().contains("--replied requires --id"),
+        "{}",
+        err.message()
+    );
+    let args = GetArgs {
+        chat: "@x".to_string(),
+        id: Some(7),
+        ids: Vec::new(),
+        limit: 10,
+        offset_id: None,
+        last: false,
+        watch: false,
+        timeout_secs: 60,
+        poll_interval: 2,
+        replied: true,
+    };
+    assert!(validate_get(&args).is_ok());
+}
+
+#[test]
+fn get_dry_run_carries_replied_flag() {
+    let args = GetArgs {
+        chat: "@x".to_string(),
+        id: Some(7),
+        ids: Vec::new(),
+        limit: 10,
+        offset_id: None,
+        last: false,
+        watch: false,
+        timeout_secs: 60,
+        poll_interval: 2,
+        replied: true,
+    };
+    let payload = get_serve_dry_run(&args).unwrap();
+    assert_eq!(payload["replied"], serde_json::json!(true));
+    assert!(payload["would"].as_str().unwrap().contains("reply parent"));
 }

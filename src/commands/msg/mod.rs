@@ -648,7 +648,23 @@ pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
                 .to_string(),
         ));
     }
+    if args.replied {
+        if params_ids_active(args) {
+            return Err(TeleError::Usage(
+                "--replied requires a single --id; it does not apply to --ids batches".to_string(),
+            ));
+        }
+        if target.is_none() {
+            return Err(TeleError::Usage(
+                "--replied requires --id (or a deep-link message id in --chat)".to_string(),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn params_ids_active(args: &GetArgs) -> bool {
+    !args.ids.is_empty()
 }
 
 fn get_target_message_id(params: &GetParams) -> TeleResult<Option<i32>> {
@@ -691,17 +707,22 @@ pub(crate) fn validate_read(args: &ReadArgs) -> TeleResult<()> {
 
 pub(crate) fn get_serve_dry_run(args: &GetArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
-        "dry_run": true,
-        "chat": args.chat,
-        "id": args.id,
-        "ids": args.ids,
-        "limit": args.limit,
-        "offset_id": args.offset_id,
-        "last": args.last,
-        "watch": args.watch,
-        "timeout_secs": args.timeout_secs,
-        "poll_interval": args.poll_interval,
-        "would": format!("get messages from chat {}", args.chat)}))
+    "dry_run": true,
+    "chat": args.chat,
+    "id": args.id,
+    "ids": args.ids,
+    "limit": args.limit,
+    "offset_id": args.offset_id,
+    "last": args.last,
+    "watch": args.watch,
+    "timeout_secs": args.timeout_secs,
+    "poll_interval": args.poll_interval,
+    "replied": args.replied,
+    "would": format!(
+        "get messages from chat {}{}",
+        args.chat,
+        if args.replied { " with reply parent" } else { "" }
+    )}))
 }
 
 fn buttons_summary(row: &serde_json::Value) -> Option<String> {
@@ -824,6 +845,19 @@ pub(crate) async fn get_core(
         let mut rows: Vec<serde_json::Value> = Vec::new();
         for msg in fetched.into_iter().flatten() {
             push_message_row(&mut rows, &msg)?;
+            if params.replied {
+                if let Some(parent) = shares
+                    .client
+                    .get_reply_to_message(&msg)
+                    .await
+                    .map_err(tele_invocation)?
+                {
+                    let parent_row = crate::serialize::message_to_json(&parent)?;
+
+                    let value = serde_json::json!({"messages": [parent_row]});
+                    rows.last_mut().unwrap()["replied_to"] = value["messages"][0].clone();
+                }
+            }
         }
         return Ok(serde_json::json!({"messages": rows}));
     }
@@ -951,6 +985,7 @@ pub(crate) async fn get_watch_core(
             watch: false,
             timeout_secs: params.timeout_secs,
             poll_interval: params.poll_interval,
+            replied: false,
         };
         let latest = get_core(shares, latest_params).await?;
         if let Some(max_id) = extract_max_id(&latest) {

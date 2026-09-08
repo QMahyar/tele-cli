@@ -278,6 +278,11 @@ pub struct GetArgs {
         help = "poll interval in seconds (must be >=1)"
     )]
     pub(crate) poll_interval: u64,
+    #[arg(
+        long,
+        help = "also fetch the message this one replies to (requires --id); adds an additive replied_to row"
+    )]
+    pub(crate) replied: bool,
 }
 
 #[derive(Args, Clone)]
@@ -783,6 +788,8 @@ pub(crate) struct GetParams {
     pub(crate) timeout_secs: u64,
     #[serde(default = "default_poll_interval")]
     pub(crate) poll_interval: u64,
+    #[serde(default)]
+    pub(crate) replied: bool,
 }
 
 impl From<&GetArgs> for GetParams {
@@ -798,6 +805,7 @@ impl From<&GetArgs> for GetParams {
             watch: a.watch,
             timeout_secs: a.timeout_secs,
             poll_interval: a.poll_interval,
+            replied: a.replied,
         }
     }
 }
@@ -814,6 +822,7 @@ impl From<&GetParams> for GetArgs {
             watch: p.watch,
             timeout_secs: p.timeout_secs,
             poll_interval: p.poll_interval,
+            replied: p.replied,
         }
     }
 }
