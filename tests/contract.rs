@@ -2610,3 +2610,40 @@ fn skill_install_refuses_overwrite_without_force() {
     );
     assert_eq!(code3, 0, "--force must overwrite");
 }
+
+#[test]
+fn versions_are_in_sync_across_cargo_npm_and_changelog() {
+    let cargo = std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("Cargo.toml")).unwrap();
+    let cargo_version = cargo
+        .lines()
+        .find(|l| l.trim().starts_with("version"))
+        .and_then(|l| l.split('"').nth(1))
+        .expect("Cargo.toml version");
+    let npm: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("npm/package.json")).unwrap(),
+    )
+    .unwrap();
+    let npm_version = npm["version"].as_str().expect("npm version");
+    let changelog =
+        std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("CHANGELOG.md")).unwrap();
+    // The first released section (Unreleased never counts as the head
+    // release); the release workflow enforces the same rule at tag time.
+    let changelog_version = changelog
+        .lines()
+        .filter(|l| l.starts_with("## ["))
+        .find_map(|l| {
+            let ver = l.split('[').nth(1)?.split(']').next()?;
+            (ver != "Unreleased").then_some(ver.to_string())
+        })
+        .unwrap_or_else(|| {
+            panic!("CHANGELOG.md has no released section — every version bump must add one")
+        });
+    assert_eq!(
+        cargo_version, npm_version,
+        "Cargo.toml and npm/package.json versions drift"
+    );
+    assert_eq!(
+        cargo_version, changelog_version,
+        "Cargo.toml version and CHANGELOG head drift"
+    );
+}

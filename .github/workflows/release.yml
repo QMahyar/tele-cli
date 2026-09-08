@@ -101,6 +101,21 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify tag matches Cargo.toml and CHANGELOG
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          CHANGELOG_VERSION=$(grep -m1 '^## \[' CHANGELOG.md | sed 's/## \[\(.*\)\]/\1/')
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "tag v$VERSION != Cargo.toml $CARGO_VERSION — bump Cargo.toml and re-tag" >&2
+            exit 1
+          fi
+          if [ "$CHANGELOG_VERSION" != "$VERSION" ]; then
+            echo "tag v$VERSION not at the top of CHANGELOG.md (head is $CHANGELOG_VERSION)" >&2
+            exit 1
+          fi
+
       - name: Package binary
         shell: bash
         run: |
