@@ -3007,7 +3007,7 @@ mod tests {
     }
 
     #[test]
-    fn all_67_routes_have_unique_op_names_and_non_empty_summaries() {
+    fn all_routes_have_unique_op_names_and_non_empty_summaries() {
         let routes = serve_op_routes();
         assert_eq!(
             routes.len(),
