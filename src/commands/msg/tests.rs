@@ -15,6 +15,8 @@ use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
     validate_filename, validate_markdown, MAX_UPLOAD_BYTES,
 };
+use crate::serialize::message_permalink;
+use grammers_client::tl;
 use grammers_session::types::PeerKind;
 
 #[test]
@@ -4284,4 +4286,298 @@ fn click_button_contains_conflicts_with_button_and_index_via_clap() {
         res3.is_err(),
         "expected conflict for --button + --button-index"
     );
+}
+
+#[test]
+fn validate_export_rejects_unknown_format() {
+    let args = ExportArgs {
+        chat: "@durov".to_string(),
+        format: "yaml".to_string(),
+        out: None,
+        limit: 10,
+        offset_id: None,
+        since: None,
+        until: None,
+    };
+    let err = validate_export(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert!(err.message().contains("jsonl"), "{}", err.message());
+}
+
+#[test]
+fn validate_export_accepts_jsonl_and_txt() {
+    for format in ["jsonl", "txt"] {
+        let args = ExportArgs {
+            chat: "@durov".to_string(),
+            format: format.to_string(),
+            out: None,
+            limit: 10,
+            offset_id: None,
+            since: None,
+            until: None,
+        };
+        assert!(validate_export(&args).is_ok(), "format {format}");
+    }
+}
+
+#[test]
+fn validate_export_rejects_sensitive_out() {
+    for name in ["account.session", "keys.pem", "config.toml", ".env"] {
+        let args = ExportArgs {
+            chat: "@durov".to_string(),
+            format: "jsonl".to_string(),
+            out: Some(name.to_string()),
+            limit: 10,
+            offset_id: None,
+            since: None,
+            until: None,
+        };
+        let err = validate_export(&args).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{name}");
+    }
+}
+
+#[test]
+fn validate_export_rejects_bad_dates_and_inversion() {
+    let args = ExportArgs {
+        chat: "@durov".to_string(),
+        format: "jsonl".to_string(),
+        out: None,
+        limit: 10,
+        offset_id: None,
+        since: Some("not-a-date".to_string()),
+        until: None,
+    };
+    let err = validate_export(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "{}", err.message());
+    let args = ExportArgs {
+        chat: "@durov".to_string(),
+        format: "jsonl".to_string(),
+        out: None,
+        limit: 10,
+        offset_id: None,
+        since: Some("2026-06-01".to_string()),
+        until: Some("2026-01-01".to_string()),
+    };
+    let err = validate_export(&args).unwrap_err();
+    assert!(
+        err.message().contains("--since must not be after --until"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
+fn validate_export_rejects_zero_limit() {
+    let args = ExportArgs {
+        chat: "@durov".to_string(),
+        format: "jsonl".to_string(),
+        out: None,
+        limit: 0,
+        offset_id: None,
+        since: None,
+        until: None,
+    };
+    let err = validate_export(&args).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "{}", err.message());
+}
+
+#[test]
+fn export_dry_run_lists_would() {
+    let args = ExportArgs {
+        chat: "@durov".to_string(),
+        format: "txt".to_string(),
+        out: Some("history.txt".to_string()),
+        limit: 25,
+        offset_id: None,
+        since: None,
+        until: None,
+    };
+    let payload = export_serve_dry_run(&args).unwrap();
+    assert_eq!(payload["dry_run"], serde_json::json!(true));
+    assert_eq!(payload["format"], serde_json::json!("txt"));
+    assert!(payload["would"]
+        .as_str()
+        .unwrap()
+        .contains("export up to 25 messages"));
+}
+
+#[test]
+fn export_txt_line_carries_sender_media_and_text() {
+    let row = serde_json::json!({
+        "id": 7,
+        "date": "2026-01-01T00:00:00Z",
+        "sender": {"name": "Alice", "id": 1, "kind": "user", "username": "alice"},
+        "text": "hello world",
+        "media_kind": "photo",
+    });
+    let line = export_txt_line(&row);
+    assert!(line.starts_with("#7 "), "{line}");
+    assert!(line.contains("Alice"), "{line}");
+    assert!(line.contains("[photo]"), "{line}");
+    assert!(line.contains("hello world"), "{line}");
+}
+
+#[test]
+fn export_payload_jsonl_emits_one_object_per_row() {
+    let rows = vec![
+        serde_json::json!({"id": 1, "text": "a"}),
+        serde_json::json!({"id": 2, "text": "b"}),
+    ];
+    let body = export_payload(&rows, "jsonl");
+    let lines: Vec<&str> = body.lines().collect();
+    assert_eq!(lines.len(), 2);
+    let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(parsed["id"], serde_json::json!(1));
+}
+
+#[test]
+fn export_payload_txt_uses_transcript_lines() {
+    let rows = vec![serde_json::json!({
+        "id": 3,
+        "date": "2026-01-01T00:00:00Z",
+        "sender": {"name": "Bob", "id": 2, "kind": "user", "username": "bob"},
+        "text": "hi",
+    })];
+    let body = export_payload(&rows, "txt");
+    assert_eq!(body.lines().count(), 1);
+    assert!(body.contains("#3 ["), "{body}");
+}
+
+#[test]
+fn message_permalink_formats_public_and_private_channels() {
+    let session = std::sync::Arc::new(grammers_session::storages::MemorySession::default());
+    let pool = grammers_client::SenderPool::new(session, 12345);
+    let client = grammers_client::Client::new(pool.handle);
+    let public_chat = tl::enums::Chat::Channel(tl::types::Channel {
+        creator: false,
+        left: false,
+        broadcast: true,
+        verified: false,
+        megagroup: false,
+        restricted: false,
+        signatures: true,
+        min: false,
+        scam: false,
+        has_link: false,
+        has_geo: false,
+        slowmode_enabled: false,
+        call_active: false,
+        call_not_empty: false,
+        fake: false,
+        gigagroup: false,
+        noforwards: false,
+        join_to_send: false,
+        join_request: false,
+        forum: false,
+        stories_hidden: false,
+        stories_hidden_min: false,
+        stories_unavailable: false,
+        signature_profiles: false,
+        autotranslation: false,
+        broadcast_messages_allowed: false,
+        monoforum: false,
+        forum_tabs: false,
+        id: 42,
+        access_hash: Some(1),
+        title: "t".into(),
+        username: Some("durov".into()),
+        photo: tl::enums::ChatPhoto::Empty,
+        date: 0,
+        restriction_reason: None,
+        admin_rights: None,
+        banned_rights: None,
+        default_banned_rights: None,
+        participants_count: None,
+        usernames: None,
+        stories_max_id: None,
+        color: None,
+        profile_color: None,
+        emoji_status: None,
+        level: None,
+        subscription_until_date: None,
+        bot_verification_icon: None,
+        send_paid_messages_stars: None,
+        linked_monoforum_id: None,
+    });
+    let peer = grammers_client::peer::Peer::from_raw(&client, public_chat);
+    assert_eq!(
+        message_permalink(&peer, 7).as_deref(),
+        Some("https://t.me/durov/7")
+    );
+    let private_chat = tl::enums::Chat::Channel(tl::types::Channel {
+        creator: false,
+        left: false,
+        broadcast: true,
+        verified: false,
+        megagroup: false,
+        restricted: false,
+        signatures: true,
+        min: false,
+        scam: false,
+        has_link: false,
+        has_geo: false,
+        slowmode_enabled: false,
+        call_active: false,
+        call_not_empty: false,
+        fake: false,
+        gigagroup: false,
+        noforwards: false,
+        join_to_send: false,
+        join_request: false,
+        forum: false,
+        stories_hidden: false,
+        stories_hidden_min: false,
+        stories_unavailable: false,
+        signature_profiles: false,
+        autotranslation: false,
+        broadcast_messages_allowed: false,
+        monoforum: false,
+        forum_tabs: false,
+        id: 99,
+        access_hash: Some(1),
+        title: "secret".into(),
+        username: None,
+        photo: tl::enums::ChatPhoto::Empty,
+        date: 0,
+        restriction_reason: None,
+        admin_rights: None,
+        banned_rights: None,
+        default_banned_rights: None,
+        participants_count: None,
+        usernames: None,
+        stories_max_id: None,
+        color: None,
+        profile_color: None,
+        emoji_status: None,
+        level: None,
+        subscription_until_date: None,
+        bot_verification_icon: None,
+        send_paid_messages_stars: None,
+        linked_monoforum_id: None,
+    });
+    let private_peer = grammers_client::peer::Peer::from_raw(&client, private_chat);
+    assert_eq!(
+        message_permalink(&private_peer, 8).as_deref(),
+        Some("https://t.me/c/99/8")
+    );
+    let group = tl::enums::Chat::Chat(tl::types::Chat {
+        creator: true,
+        left: false,
+        deactivated: false,
+        call_active: false,
+        call_not_empty: false,
+        noforwards: false,
+        id: 123,
+        title: "g".to_string(),
+        photo: tl::enums::ChatPhoto::Empty,
+        participants_count: 1,
+        date: 0,
+        version: 1,
+        migrated_to: None,
+        admin_rights: None,
+        default_banned_rights: None,
+    });
+    let group_peer = grammers_client::peer::Peer::from_raw(&client, group);
+    assert!(message_permalink(&group_peer, 1).is_none());
 }

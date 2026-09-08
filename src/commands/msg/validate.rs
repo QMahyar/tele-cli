@@ -117,6 +117,24 @@ pub fn is_sensitive_basename(lower: &str) -> bool {
         || lower.contains("id_ed25519")
 }
 
+pub(crate) fn validate_export_out(out: &str) -> TeleResult<()> {
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        return Err(TeleError::Usage("--out must name a file".to_string()));
+    }
+    let lower = std::path::Path::new(trimmed)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if is_sensitive_basename(&lower) {
+        return Err(TeleError::Usage(
+            "refusing to write --out over a sensitive file (session, key, or credentials)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_download_dir(dir: &str) -> TeleResult<()> {
     let app_dir = canonical_guard_path(&crate::config::app_data_dir().to_string_lossy());
     let sessions_dir = canonical_guard_path(&crate::session::session_dir().to_string_lossy());

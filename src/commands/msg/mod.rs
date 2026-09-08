@@ -18,14 +18,14 @@ use download::{download, download_core, download_serve_dry_run, validate_downloa
 use send::{send, send_core, send_serve_dry_run};
 
 pub use params::{
-    ClickArgs, DeleteArgs, DownloadArgs, EditArgs, ForwardArgs, GetArgs, PinArgs, ReactArgs,
-    ReadArgs, ScheduledArgs, ScheduledDeleteArgs, ScheduledSendArgs, SearchArgs, SendArgs,
-    TypingArgs, VoteArgs,
+    ClickArgs, DeleteArgs, DownloadArgs, EditArgs, ExportArgs, ForwardArgs, GetArgs, PinArgs,
+    ReactArgs, ReadArgs, ScheduledArgs, ScheduledDeleteArgs, ScheduledSendArgs, SearchArgs,
+    SendArgs, TypingArgs, VoteArgs,
 };
 pub(crate) use params::{
-    ClickParams, DeleteParams, DownloadParams, EditParams, ForwardParams, GetParams, PinParams,
-    ReactParams, ReadParams, ScheduledDeleteParams, ScheduledParams, ScheduledSendParams,
-    SearchParams, SendParams, TypingParams, VoteParams,
+    ClickParams, DeleteParams, DownloadParams, EditParams, ExportParams, ForwardParams, GetParams,
+    PinParams, ReactParams, ReadParams, ScheduledDeleteParams, ScheduledParams,
+    ScheduledSendParams, SearchParams, SendParams, TypingParams, VoteParams,
 };
 pub(crate) use send::validate_send;
 pub use validate::validate_upload_path;
@@ -51,6 +51,8 @@ pub enum MsgCmd {
     ScheduledDelete(ScheduledDeleteArgs),
     #[command(about = "send scheduled messages now by id")]
     ScheduledSend(ScheduledSendArgs),
+    #[command(about = "export chat history to JSONL or TXT")]
+    Export(ExportArgs),
 }
 
 pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -71,6 +73,7 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         MsgCmd::Scheduled(a) => scheduled(a, flags).await,
         MsgCmd::ScheduledDelete(a) => scheduled_delete(a, flags).await,
         MsgCmd::ScheduledSend(a) => scheduled_send(a, flags).await,
+        MsgCmd::Export(a) => export(a, flags).await,
     }
 }
 
@@ -2233,6 +2236,190 @@ pub(crate) async fn search_core(
     Ok(serde_json::json!({"messages": rows}))
 }
 
+pub(crate) fn validate_export(args: &ExportArgs) -> TeleResult<()> {
+    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    crate::commands::validate_limit(args.limit, 100_000, "limit")?;
+    if !matches!(args.format.as_str(), "jsonl" | "txt") {
+        return Err(TeleError::Usage(format!(
+            "unknown --format {} (use jsonl or txt)",
+            args.format
+        )));
+    }
+    if let Some(out) = &args.out {
+        crate::commands::msg::validate::validate_export_out(out)?;
+    }
+    if let (Some(s), Some(u)) = (&args.since, &args.until) {
+        let since = download::parse_download_date("--since", s)?;
+        let until = download::parse_download_date("--until", u)?;
+        if since > until {
+            return Err(TeleError::Usage(
+                "--since must not be after --until".to_string(),
+            ));
+        }
+    } else if args.since.is_some() {
+        download::parse_download_date("--since", args.since.as_deref().unwrap_or(""))?;
+    } else if let Some(u) = &args.until {
+        download::parse_download_date("--until", u)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn export_serve_dry_run(args: &ExportArgs) -> TeleResult<serde_json::Value> {
+    Ok(serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "format": args.format,
+        "out": args.out,
+        "limit": args.limit,
+        "since": args.since,
+        "until": args.until,
+        "would": format!("export up to {} messages from chat {}", args.limit, args.chat)
+    }))
+}
+
+fn export_txt_line(row: &serde_json::Value) -> String {
+    let sender = row
+        .get("sender")
+        .and_then(|s| s.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("?");
+    let date = row.get("date").and_then(|d| d.as_str()).unwrap_or("?");
+    let id = row.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+    let text = row.get("text").and_then(|t| t.as_str()).unwrap_or("");
+    let media = row
+        .get("media_kind")
+        .and_then(|m| m.as_str())
+        .map(|k| format!(" [{k}]"))
+        .unwrap_or_default();
+    format!("#{id} [{date}] {sender}{media}: {text}")
+}
+
+fn export_payload(rows: &[serde_json::Value], format: &str) -> String {
+    let mut body = String::new();
+    for row in rows {
+        if format == "txt" {
+            body.push_str(&export_txt_line(row));
+        } else {
+            body.push_str(&row.to_string());
+        }
+        body.push('\n');
+    }
+    body
+}
+
+pub(crate) async fn export_core(
+    shares: &crate::client::ServeShares,
+    params: ExportParams,
+) -> TeleResult<serde_json::Value> {
+    shares.rate_limiter.acquire().await;
+    let chat =
+        entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
+    let since = match &params.since {
+        Some(v) => Some(download::parse_download_date("--since", v)?),
+        None => None,
+    };
+    let until = match &params.until {
+        Some(v) => Some(download::parse_download_date("--until", v)?),
+        None => None,
+    };
+    let mut iter = shares.client.iter_messages(chat_ref);
+    if let Some(offset) = params.offset_id {
+        iter = iter.offset_id(offset);
+    }
+    iter = iter.limit(params.limit as usize);
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut scanned = 0usize;
+    let mut served = 0usize;
+    while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+        scanned += 1;
+        let date = msg.date();
+        if until.is_some_and(|u| date.timestamp() > u.timestamp()) {
+            continue;
+        }
+        if since.is_some_and(|s| date.timestamp() < s.timestamp()) {
+            break;
+        }
+        served += 1;
+        shares.rate_limiter.acquire_for_items(served).await;
+        let mut row = crate::serialize::message_to_json(&msg)?;
+        crate::serialize::upgrade_peer_identity(&mut row, &chat);
+        if let Some(link) = crate::serialize::message_permalink(&chat, msg.id()) {
+            row["link"] = serde_json::json!(link);
+        }
+        rows.push(row);
+    }
+    let truncated = scanned >= params.limit as usize;
+    match &params.out {
+        Some(out) => {
+            let body = export_payload(&rows, &params.format);
+            let path = std::path::PathBuf::from(out);
+            let dir = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_path_buf());
+            if let Some(dir) = dir {
+                tokio::task::spawn_blocking(move || crate::fs_util::create_dir_private(&dir))
+                    .await
+                    .map_err(|e| TeleError::Other(format!("export dir task failed: {e}")))??;
+            }
+            let write_path = path.clone();
+            tokio::task::spawn_blocking(move || {
+                use std::io::Write;
+                let mut file = crate::fs_util::create_file_private(&write_path)?;
+                file.write_all(body.as_bytes())?;
+                file.sync_all()?;
+                crate::fs_util::restrict_file_private(&write_path)
+            })
+            .await
+            .map_err(|e| TeleError::Other(format!("export write task failed: {e}")))??;
+            Ok(serde_json::json!({
+                "chat": params.chat,
+                "format": params.format,
+                "out": path.to_string_lossy(),
+                "count": rows.len(),
+                "scanned": scanned,
+                "truncated": truncated,
+            }))
+        }
+        None => Ok(serde_json::json!({
+            "chat": params.chat,
+            "format": params.format,
+            "count": rows.len(),
+            "scanned": scanned,
+            "truncated": truncated,
+            "messages": rows,
+        })),
+    }
+}
+
+async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_export(&args)?;
+    crate::executor::require_explicit_selection("msg export", flags)?;
+    if crate::executor::select_accounts(flags)?.len() > 1 {
+        return Err(TeleError::Usage(
+            "msg export operates on a single account; narrow --account/--tag to one".to_string(),
+        ));
+    }
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return export_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            export_core(&guard.shares(), ExportParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 #[path = "tests.rs"]
@@ -2285,6 +2472,21 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             download_serve_dry_run,
             run_download,
             crate::commands::serve::params_schema::<DownloadParams>
+        ),
+        crate::serve_route!(
+            "msg export",
+            Lane::Read,
+            None,
+            true,
+            false,
+            false,
+            "export chat history to JSONL or TXT",
+            ExportParams,
+            ExportArgs,
+            validate_export,
+            export_serve_dry_run,
+            run_export,
+            crate::commands::serve::params_schema::<ExportParams>
         ),
         crate::serve_route!(
             "msg edit",
@@ -2494,6 +2696,7 @@ crate::serve_runner!(run_read, read_core, ReadParams);
 crate::serve_runner!(run_react, react_core, ReactParams);
 crate::serve_runner!(run_search, search_core, SearchParams);
 crate::serve_runner!(run_download, download_core, DownloadParams);
+crate::serve_runner!(run_export, export_core, ExportParams);
 crate::serve_runner!(run_vote, vote_core, VoteParams);
 crate::serve_runner!(run_typing, typing_core, TypingParams);
 crate::serve_runner!(run_click, click_core, ClickParams);

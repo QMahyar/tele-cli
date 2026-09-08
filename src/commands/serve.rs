@@ -1903,6 +1903,7 @@ mod tests {
             "msg delete",
             "msg download",
             "msg edit",
+            "msg export",
             "msg forward",
             "msg get",
             "msg pin",
@@ -2670,6 +2671,7 @@ mod tests {
             ("msg download", Lane::Read, None),
             ("msg edit", Lane::Mutate, Some(30)),
             ("msg forward", Lane::Mutate, Some(30)),
+            ("msg export", Lane::Read, None),
             ("msg get", Lane::Read, Some(120)),
             ("msg pin", Lane::Mutate, Some(30)),
             ("msg react", Lane::Mutate, Some(30)),
@@ -2879,7 +2881,7 @@ mod tests {
         let routes = serve_op_routes();
         assert_eq!(
             routes.len(),
-            78,
+            79,
             "routed op count drifted; update docs/cli-contract.md and this lock"
         );
         let mut names: Vec<&str> = routes.iter().map(|r| r.op).collect();

@@ -1270,3 +1270,99 @@ impl From<&ScheduledSendParams> for ScheduledSendArgs {
         }
     }
 }
+
+#[derive(Args, Clone)]
+pub struct ExportArgs {
+    #[arg(
+        long,
+        help = "target chat: @username, t.me link, numeric ID, +phone, or me"
+    )]
+    pub(crate) chat: String,
+    #[arg(
+        long,
+        default_value = "jsonl",
+        help = "output format: jsonl (one JSON message per line) or txt (human transcript)"
+    )]
+    pub(crate) format: String,
+    #[arg(
+        long,
+        help = "write to FILE instead of stdout (created with private permissions)"
+    )]
+    pub(crate) out: Option<String>,
+    #[arg(
+        long,
+        default_value_t = 10_000,
+        help = "max messages to export (1-100000)"
+    )]
+    pub(crate) limit: u32,
+    #[arg(long, help = "export messages before this ID")]
+    pub(crate) offset_id: Option<i32>,
+    #[arg(
+        long,
+        help = "only messages on/after this date: RFC 3339, Unix timestamp, or YYYY-MM-DD (date-only values use local midnight)"
+    )]
+    pub(crate) since: Option<String>,
+    #[arg(
+        long,
+        help = "only messages up to this date: RFC 3339, Unix timestamp, or YYYY-MM-DD (date-only values use local end-of-day)"
+    )]
+    pub(crate) until: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct ExportParams {
+    pub(crate) chat: String,
+    #[serde(default = "default_export_format")]
+    pub(crate) format: String,
+    #[serde(default)]
+    pub(crate) out: Option<String>,
+    #[serde(default = "default_export_limit")]
+    pub(crate) limit: u32,
+    #[serde(default)]
+    pub(crate) offset_id: Option<i32>,
+    #[serde(default)]
+    pub(crate) since: Option<String>,
+    #[serde(default)]
+    pub(crate) until: Option<String>,
+    #[serde(default)]
+    pub(crate) dry_run: bool,
+}
+
+fn default_export_format() -> String {
+    "jsonl".to_string()
+}
+
+fn default_export_limit() -> u32 {
+    10_000
+}
+
+impl From<&ExportArgs> for ExportParams {
+    fn from(a: &ExportArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            format: a.format.clone(),
+            out: a.out.clone(),
+            limit: a.limit,
+            offset_id: a.offset_id,
+            since: a.since.clone(),
+            until: a.until.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ExportParams> for ExportArgs {
+    fn from(p: &ExportParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            format: p.format.clone(),
+            out: p.out.clone(),
+            limit: p.limit,
+            offset_id: p.offset_id,
+            since: p.since.clone(),
+            until: p.until.clone(),
+        }
+    }
+}

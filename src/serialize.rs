@@ -84,6 +84,18 @@ pub fn peer_kind(peer: &Peer) -> &'static str {
     }
 }
 
+pub fn message_permalink(chat: &Peer, msg_id: i32) -> Option<String> {
+    if !crate::entities::is_channel(chat) {
+        return None;
+    }
+    if let Some(username) = chat.username() {
+        return Some(format!("https://t.me/{username}/{msg_id}"));
+    }
+    chat.id()
+        .bare_id()
+        .map(|internal| format!("https://t.me/c/{internal}/{msg_id}"))
+}
+
 pub(crate) fn upgrade_peer_identity(row: &mut serde_json::Value, resolved_peer: &Peer) {
     let full = peer_key(resolved_peer);
     let needs_peer = row.get("peer").is_none_or(|v| v.get("username").is_none());

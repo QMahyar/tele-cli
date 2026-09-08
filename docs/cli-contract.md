@@ -224,6 +224,10 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 
 `tele msg get --chat X --ids 10,20,30` batch-fetches messages by id (single-RPC batches of 100, additive `"missing_ids": [...]` row when some ids do not resolve). `--ids` is mutually exclusive with `--id/--last/--offset-id/--watch` and with a message id carried by `--chat`; ids must be positive. Available over serve/MCP via `GetParams.ids`.
 
+## `msg export`
+
+`tele msg export --account A --chat X [--format txt|jsonl] [--out FILE] [--limit N] [--offset-id M] [--since T] [--until T]` streams a chat history export through `iter_messages` and the shared row serializer. Default format is `jsonl` (one message JSON object per line); `txt` emits a human transcript (`#id [date] sender [media_kind]: text`). Rows carry an additive `link` field with the t.me permalink (`https://t.me/<username>/<id>` for public channels/supergroups, `https://t.me/c/<internal>/<id>` for private ones; absent for users and basic groups). Without `--out`, rows stream to stdout under the standard envelope (`data.messages`); with `--out FILE` the envelope instead carries `{chat, format, out, count, scanned, truncated}` and the file is created with private permissions (sensitive basenames refused). Export always requires an explicit single account (`--account`/`--tag`); `"truncated": true` means the limit was reached and more messages may exist. Serve/MCP: `msg export` op (Read lane, no op timeout), `ExportParams` mirrors the flags with `deny_unknown_fields`.
+
 ## `msg delete`
 
 `results[].data` carries `requested` (how many ids you asked to delete) and `deleted` (how many the server actually removed). When `deleted < requested` (already-deleted ids, other people's messages, or missing permission), the row also carries `"partial": true` and the process exits 2. `--self-only` deletes only for yourself (private chats and basic groups; rejected for channels) via `messages.deleteMessages { revoke: false }`. It is mutually exclusive with `--all`.
