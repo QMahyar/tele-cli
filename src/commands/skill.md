@@ -49,7 +49,7 @@ compatibility: tele 0.8.0+
 Every one-shot command with `--json` emits one object:
 
 ```json
-{"ok": true, "command": "msg send", "results": [{"account": "work", "ok": true, "data": {}, "error": null}]}
+{"ok": true, "command": "msg send", "dry_run": false, "results": [{"account": "work", "ok": true, "data": {}, "error": null}]}
 ```
 
 - Success means `ok: true` at the top and on every result you care about.

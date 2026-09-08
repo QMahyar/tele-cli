@@ -316,8 +316,10 @@ Valid names: `NewMessage`, `MessageEdited`, `MessageDeleted`, `Raw`, `Album`,
 With `--events CallbackQuery`, button presses by other users on this account's bot messages emit slim rows (parsed from grammers' raw `BotCallbackQuery`/`InlineBotCallbackQuery` wrapper; with `CallbackQuery` absent from the allowlist these updates fall through to `Raw`):
 
 ```json
-{"event":"CallbackQuery","account":"work","user_id":123,"chat_id":123,"message_id":456,"data":"force_sub:refresh","data_b64":"Zm9yY2Vfc3ViOnJlZnJlc2g=","seq":9}
+{"event":"CallbackQuery","account":"work","user_id":123,"chat_id":123,"message_id":456,"data":"force_sub:refresh","data_b64":"Zm9yY2Vfc3ViOnJlZnJlc2g="}
 ```
+
+Top-level `seq` is a serve-only concept; listen rows carry none.
 
 `chat_id` appears only for chat-scoped callbacks (`BotCallbackQuery`); inline callbacks carry `user_id` only. `data` is the decoded callback payload (lossy UTF-8); `data_b64` is the exact bytes. Answering a callback query is not exposed at this layer.
 
@@ -473,7 +475,7 @@ Inline ops handled by the serve loop itself (no route entry):
 
 `ping` and `stream.resync` respond immediately, and so does `ops.list`; none of the three occupies an op lane. Each `ops.list` entry has the schema
 `{"op","summary","group","read_only","destructive","retry_safe"}` where
-`group` is the leading word of a spaced op (`account`, `chat`, `dialog`,
+`group` is the leading word of a spaced op (`account`, `cache`, `chat`, `dialog`,
 `msg`, `privacy`, `profile`, `raw`, `sticker`, `story`, `topic`,
 `contact`) or `transport` for the three inline ops. The list covers all 78 routed ops plus the 3 inline ops, so it holds 81 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
 
@@ -500,7 +502,8 @@ Destructive ops refuse to execute until the driver proves intent. Submitting one
 ```
 
 - The destructive set today: `chat kick`, `chat leave`, `contact remove`, `dialog delete`,
-  `msg delete`, `sticker remove`, `story delete`, `topic delete`.
+  `msg delete`, `raw`, `sticker remove`, `story delete`, `topic delete` — the `raw` registry is
+  gated as a whole because individual registry entries include mutating methods.
 - Resubmit the same params plus `"confirm":true` to proceed. `"confirm":false` does not unlock the gate.
 - The gate applies even to `"dry_run":true` submissions of destructive ops.
 - Once accepted, the `confirm` key is stripped before params parsing (it never trips `deny_unknown_fields`). Non-destructive ops strip a stray `confirm` the same way; sending `confirm` inside `params` without passing the gate is an unknown-field `ServeError`.
@@ -672,7 +675,7 @@ Process model:
 - Exactly one account: `--account NAME` is fixed for the server's lifetime, and every tool runs as that account. The standard OS-level session lock applies: while `tele mcp` holds the session, no other tele process can open it, and the reverse holds too ("session <name> is in use by another process").
 - Logs stay on stderr; stdout is transport only. Startup emits
   `mcp: serving N tools (full|read-only) over stdio for account NAME`.
-- `--read-only` omits every mutating tool from `tools/list`; only the 20 read-only tools of the table below are discoverable.
+- `--read-only` omits every mutating tool from `tools/list`; only the 24 read-only tools of the table below are discoverable.
 - `--groups msg,dialog` keeps only tools whose op group matches (comma-delimited, case-insensitive). Combined with `--read-only`, the two filters AND together. Both flags are discovery filters: a hidden tool is also rejected at `tools/call` with an `invalid_params` error, so treat them as a firm security gate, not just curation.
 - EOF on stdin shuts down cleanly: the Telegram client disconnects and the exit code is 0.
 
@@ -715,8 +718,8 @@ No separate `title` field is emitted; clients fall back to `name`. Annotations a
 ### Safety model
 
 - Dry-run everywhere: every tool accepts `"dry_run": true` and answers offline with the CLI-shaped would payload (`dry_run:true`, a human-readable `would`, and the operation's own argument keys). No network call is made.
-- Confirm gate: destructive tools reject the first call with an `isError:true` result whose text contains the `ConfirmRequired` envelope including the computed `would` preview. Resend the same arguments plus `"confirm": true` to run (`"confirm": false` does not unlock). The destructive set today is 8 tools: `chat_kick`, `chat_leave`, `contact_remove`,
-  `dialog_delete`, `msg_delete`, `sticker_remove`, `story_delete`,
+- Confirm gate: destructive tools reject the first call with an `isError:true` result whose text contains the `ConfirmRequired` envelope including the computed `would` preview. Resend the same arguments plus `"confirm": true` to run (`"confirm": false` does not unlock). The destructive set today is 9 tools: `chat_kick`, `chat_leave`, `contact_remove`,
+  `dialog_delete`, `msg_delete`, `raw`, `sticker_remove`, `story_delete`,
   and `topic_delete`. All of them carry `destructiveHint: true`.
 - `--read-only`: mutating tools are absent from `tools/list`.
 - `--groups`: least-privilege curation before the first request (for example,
@@ -1014,7 +1017,7 @@ tele skill print
 tele skill install [--dir PATH] [--force]
 ```
 
-`tele skill` (and `tele skill print`) writes the embedded agent skill — an `SKILL.md` following the [Agent Skills](https://agentskills.io) spec (YAML frontmatter `name`/`description`/`license`/`compatibility`, markdown body) — to stdout and exits 0. The body carries the usage rules for driving tele: JSON-only parsing, exit codes, account/chat targeting, the 17 command groups (the 16 feature groups plus completions), the output envelope, and recipes. No account selection or network is involved. Stdout carries the skill; stderr stays empty on success.
+`tele skill` (and `tele skill print`) writes the embedded agent skill — an `SKILL.md` following the [Agent Skills](https://agentskills.io) spec (YAML frontmatter `name`/`description`/`license`/`compatibility`, markdown body) — to stdout and exits 0. The body carries the usage rules for driving tele: JSON-only parsing, exit codes, account/chat targeting, the 17 command groups (completions, the 18th command, is intentionally out of scope), the output envelope, and recipes. No account selection or network is involved. Stdout carries the skill; stderr stays empty on success.
 
 `tele skill install` writes the same `SKILL.md` to `tele/SKILL.md` under each detected agent skill directory (any of `$HOME/.claude/skills`, `$HOME/.config/opencode/skills`, `$HOME/.cursor/skills` that exists). With `--dir PATH` it writes to `PATH/tele/SKILL.md` instead and skips detection. Existing files are refused without `--force`. Progress lines go to stderr; exit is 0 on success, non-zero when nothing was written and no `--dir` was given.
 
