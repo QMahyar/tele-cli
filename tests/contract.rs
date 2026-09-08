@@ -1800,14 +1800,6 @@ fn sticker_search_rejects_blank_query_offline() {
 #[test]
 fn story_mutators_require_explicit_account_offline() {
     for args in [
-        vec![
-            "story",
-            "send",
-            "--chat",
-            "me",
-            "--file",
-            "C:/missing/pic.png",
-        ],
         vec!["story", "read", "--chat", "me", "--max-id", "5"],
         vec!["story", "delete", "--chat", "me", "--ids", "1,2"],
         vec!["story", "pin", "--chat", "me", "--ids", "1"],
@@ -1911,13 +1903,22 @@ fn story_list_rejects_bad_limit_and_blank_chat_offline() {
 fn story_mutator_dry_run_reports_args_with_session() {
     let dir = isolated_appdir("sydry");
     write_session(&dir, "work");
+    let media = std::env::temp_dir().join(format!(
+        "tele-story-media-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&media, b"png").unwrap();
     let send_args = [
         "story",
         "send",
         "--chat",
         "@someone",
         "--file",
-        "C:/tmp/pic.png",
+        media.to_str().unwrap(),
         "--caption",
         "cap",
         "--privacy",
@@ -1935,14 +1936,18 @@ fn story_mutator_dry_run_reports_args_with_session() {
     let d = parse_json(&out)["results"][0]["data"].clone();
     assert_eq!(d["dry_run"], serde_json::json!(true));
     assert_eq!(d["chat"], serde_json::json!("@someone"));
-    assert_eq!(d["file"], serde_json::json!("C:/tmp/pic.png"));
+    assert_eq!(d["file"], serde_json::json!(media.to_str().unwrap()));
     assert_eq!(d["privacy"], serde_json::json!("close-friends"));
     assert_eq!(d["pinned"], serde_json::json!(true));
     assert_eq!(d["period"], serde_json::json!(86_400));
     assert_eq!(
         d["would"],
-        serde_json::json!("send story C:/tmp/pic.png to @someone")
+        serde_json::json!(format!(
+            "send story {} to @someone",
+            media.to_str().unwrap()
+        ))
     );
+    let _ = std::fs::remove_file(&media);
 
     for (verb, id_flag, id_value, would) in [
         (

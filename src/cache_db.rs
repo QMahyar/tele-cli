@@ -40,11 +40,20 @@ END;
 
 async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
     let dir = cache_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| TeleError::Other(format!("cannot create cache dir {}: {e}", dir.display())))?;
-    crate::fs_util::create_dir_private(&dir).map_err(|e| {
-        TeleError::Other(format!("cannot restrict cache dir {}: {e}", dir.display()))
-    })?;
+    // Directory creation and permission hardening are blocking FS calls; run
+    // them off the async worker threads (create_dir_private walks metadata
+    // and chmods on unix).
+    tokio::task::spawn_blocking(move || -> TeleResult<()> {
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            TeleError::Other(format!("cannot create cache dir {}: {e}", dir.display()))
+        })?;
+        crate::fs_util::create_dir_private(&dir).map_err(|e| {
+            TeleError::Other(format!("cannot restrict cache dir {}: {e}", dir.display()))
+        })?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| TeleError::Other(format!("cache dir task failed: {e}")))??;
     let path = cache_path(account);
     let db = libsql::Builder::new_local(&path)
         .build()
@@ -59,8 +68,13 @@ async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
     conn.execute_batch("PRAGMA recursive_triggers = ON;")
         .await
         .map_err(|e| TeleError::Other(format!("cannot set pragma: {e}")))?;
-    crate::fs_util::restrict_file_private(&path)
-        .map_err(|e| TeleError::Other(format!("cannot restrict cache db: {e}")))?;
+    let restrict_path = path.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::fs_util::restrict_file_private(&restrict_path)
+            .map_err(|e| TeleError::Other(format!("cannot restrict cache db: {e}")))
+    })
+    .await
+    .map_err(|e| TeleError::Other(format!("cache restrict task failed: {e}")))??;
     Ok(conn)
 }
 

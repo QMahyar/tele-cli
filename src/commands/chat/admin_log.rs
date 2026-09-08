@@ -107,7 +107,7 @@ pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleRe
             let collected = {
                 let guard_ref = &guard;
                 let channel_ref = &channel;
-                collect_admin_log(limit, until_ts, move |max_id, page_limit| {
+                collect_admin_log(limit, since, until_ts, move |max_id, page_limit| {
                     let q = search_q.clone();
                     let filter = events_filter.clone();
                     let admins = admins.clone();
@@ -348,6 +348,7 @@ pub(crate) struct CollectedAdminLog {
 
 pub(crate) async fn collect_admin_log<F, Fut>(
     limit: u32,
+    since: Option<chrono::DateTime<chrono::Utc>>,
     until: Option<i32>,
     mut fetch: F,
 ) -> TeleResult<CollectedAdminLog>
@@ -358,8 +359,21 @@ where
     let mut events = Vec::new();
     let mut users: HashMap<i64, tl::enums::User> = HashMap::new();
     let mut max_id = 0i64;
+    // Events older than --since can never come back into the window
+    // (pagination walks newest-first), so once a page dips below the
+    // boundary collection stops. Counting only in-window events against
+    // the limit keeps --since from hiding matches the naive limit-burn
+    // would have swallowed.
+    let since_ts = since.map(|d| d.timestamp());
     loop {
-        let remaining = limit.saturating_sub(events.len() as u32);
+        let in_window = events
+            .iter()
+            .filter(|e| {
+                let tl::enums::ChannelAdminLogEvent::Event(ev) = e;
+                since_ts.is_none_or(|s| i64::from(ev.date) >= s)
+            })
+            .count() as u32;
+        let remaining = limit.saturating_sub(in_window);
         if remaining == 0 {
             break;
         }
@@ -371,8 +385,17 @@ where
                 users.insert(uu.id, u);
             }
         }
-        events.extend(page.events);
-        if page_len == 0 {
+        let mut below_since = false;
+        for e in page.events {
+            if let (Some(s), tl::enums::ChannelAdminLogEvent::Event(ev)) = (&since_ts, &e) {
+                if i64::from(ev.date) < *s {
+                    below_since = true;
+                    continue;
+                }
+            }
+            events.push(e);
+        }
+        if page_len == 0 || below_since {
             break;
         }
         if let Some(until_ts) = until {

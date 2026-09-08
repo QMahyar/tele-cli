@@ -150,7 +150,14 @@ impl EventFilter {
     }
 
     fn action_allows(&self, peer: Option<PeerId>, sender: Option<PeerId>) -> bool {
-        self.chat_allows(peer) && self.sender_allows(sender)
+        // Consistency with raw/deletion rows: direction and pattern filters
+        // structurally cannot apply to chat-action-family rows (no text, no
+        // direction), so when they are active the rows are suppressed instead
+        // of silently bypassing the filter. Sender/chat filters do apply.
+        self.direction.is_none()
+            && self.patterns.is_empty()
+            && self.chat_allows(peer)
+            && self.sender_allows(sender)
     }
 
     fn deletions_pass(&self) -> bool {
@@ -679,6 +686,11 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     Ok(rl) => rl,
                     Err(e) => return Err(TeleError::from(e)),
                 };
+                // Gap/peer/album state outlives reconnects: recreating them
+                // per attempt would blind gap detection and deletion signals
+                // across outages.
+                let mut gaps = GapTracker::default();
+                let mut observed = ObservedPeers::new();
                 loop {
                     if let Some(d) = deadline {
                         if std::time::Instant::now() >= d {
@@ -779,8 +791,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         }
                     };
                     failures = on_reconnect_success(failures);
-                    let mut gaps = GapTracker::default();
-                    let mut observed = ObservedPeers::new();
+                    // gaps/observed/album are declared before the reconnect
+                    // loop (see below) so gap detection and peer bookkeeping
+                    // survive an outage instead of resetting blind.
                     let mut album = AlbumBuffer::new();
                     let gap_on = events.iter().any(|e| e == "Gap");
                     let album_on = events.iter().any(|e| e == "Album");
@@ -1170,7 +1183,23 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         match joined {
             Ok(Ok(())) => ok_count += 1,
             Ok(Err(e)) => failed.push(e.exit_code()),
-            Err(_) => failed.push(crate::error::EXIT_ALL_FAILED),
+            Err(e) if e.is_cancelled() => failed.push(crate::error::EXIT_ALL_FAILED),
+            Err(e) => {
+                let msg = match e.try_into_panic() {
+                    Ok(payload) => {
+                        if let Some(s) = payload.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else if let Some(s) = payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "stream task panicked".to_string()
+                        }
+                    }
+                    Err(_) => "stream task panicked".to_string(),
+                };
+                output::log_line("error", &format!("a listen stream task panicked: {msg}"));
+                failed.push(TeleError::TaskPanic(msg.clone()).exit_code());
+            }
         }
     }
     if timeout_secs > 0 {

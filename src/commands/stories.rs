@@ -719,6 +719,7 @@ pub(crate) fn unpin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Valu
 
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_send_args(&args)?;
+    validate_upload_path(&args.file)?;
     require_explicit_selection("story send", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -1022,10 +1023,16 @@ pub(crate) async fn delete_core(
         })
         .await
         .map_err(tele_invocation)?;
-    Ok(serde_json::json!({
+    let partial = deleted.len() < ids.len();
+    let mut row = serde_json::json!({
         "chat": chat_target,
         "requested_ids": ids,
-        "deleted_ids": deleted}))
+        "deleted_ids": deleted,
+    });
+    if partial {
+        row["partial"] = serde_json::json!(true);
+    }
+    Ok(row)
 }
 
 async fn toggle_pinned(args: PinArgs, pinned: bool, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1090,11 +1097,17 @@ pub(crate) async fn toggle_core(
         })
         .await
         .map_err(tele_invocation)?;
-    Ok(serde_json::json!({
+    let partial = updated.len() < ids.len();
+    let mut row = serde_json::json!({
         "chat": chat_target,
         "pinned": pinned,
         "requested_ids": ids,
-        "updated_ids": updated}))
+        "updated_ids": updated,
+    });
+    if partial {
+        row["partial"] = serde_json::json!(true);
+    }
+    Ok(row)
 }
 
 pub(crate) async fn pin_core(

@@ -171,7 +171,7 @@ async fn collect_admin_log_accumulates_users_across_pages() {
     let pages: [(i64, u32, Vec<i64>, Vec<i64>); 2] =
         [(0, 2, vec![9], vec![11]), (9, 1, vec![8], Vec::new())];
     let mut next = 0usize;
-    let collected = collect_admin_log(2, None, |_max_id, _limit| {
+    let collected = collect_admin_log(2, None, None, |_max_id, _limit| {
         let (_want_max, _want_limit, ids, user_ids) = pages[next].clone();
         next += 1;
         let new_max = *ids.last().unwrap_or(&0);
@@ -515,7 +515,7 @@ fn test_tl_message(id: i32) -> tl::enums::Message {
 #[tokio::test]
 async fn collect_admin_log_stops_on_empty_page() {
     let mut calls = Vec::new();
-    let collected = collect_admin_log(10, None, |max_id, page_limit| {
+    let collected = collect_admin_log(10, None, None, |max_id, page_limit| {
         calls.push((max_id, page_limit));
         async move {
             Ok(AdminLogPage {
@@ -536,7 +536,7 @@ async fn collect_admin_log_probes_after_partial_page() {
     let pages: [(i64, u32, Vec<i64>, i64); 2] = [(0, 5, vec![10, 9], 9), (9, 3, Vec::new(), 0)];
     let mut next = 0usize;
     let mut calls = Vec::new();
-    let collected = collect_admin_log(5, None, |max_id, page_limit| {
+    let collected = collect_admin_log(5, None, None, |max_id, page_limit| {
         let (want_max, want_limit, ids, new_max) = pages[next].clone();
         next += 1;
         calls.push((max_id, page_limit));
@@ -561,7 +561,7 @@ async fn collect_admin_log_paginates_until_limit() {
     let pages: [(i64, u32, Vec<i64>, i64); 2] = [(0, 5, vec![10, 9, 8], 8), (8, 2, vec![7, 6], 6)];
     let mut next = 0usize;
     let mut calls = Vec::new();
-    let collected = collect_admin_log(5, None, |max_id, page_limit| {
+    let collected = collect_admin_log(5, None, None, |max_id, page_limit| {
         let (want_max, want_limit, ids, new_max) = pages[next].clone();
         next += 1;
         calls.push((max_id, page_limit));
@@ -584,7 +584,7 @@ async fn collect_admin_log_paginates_until_limit() {
 #[tokio::test]
 async fn collect_admin_log_stops_when_limit_reached_exactly() {
     let mut calls = Vec::new();
-    let collected = collect_admin_log(3, None, |max_id, page_limit| {
+    let collected = collect_admin_log(3, None, None, |max_id, page_limit| {
         calls.push((max_id, page_limit));
         async move {
             Ok(AdminLogPage {
@@ -604,7 +604,7 @@ async fn collect_admin_log_stops_when_limit_reached_exactly() {
 async fn collect_admin_log_page_size_capped_at_100() {
     let mut next = 0usize;
     let mut calls = Vec::new();
-    let collected = collect_admin_log(250, None, |max_id, page_limit| {
+    let collected = collect_admin_log(250, None, None, |max_id, page_limit| {
         let ids: Vec<i64> = (0..page_limit)
             .map(|i| 1000 - next as i64 * 100 - i as i64)
             .collect();
@@ -2282,7 +2282,8 @@ fn requests_limit_and_link_validate_offline() {
     a.link = Some("+abc123".to_string());
     let plan = validate_requests(&a).unwrap();
     assert_eq!(plan.action, RequestsAction::List);
-    assert_eq!(plan.link.as_deref(), Some("+abc123"));
+    // bare hash canonicalizes to the full URL form
+    assert_eq!(plan.link.as_deref(), Some("https://t.me/+abc123"));
     let mut b = requests_args("@c");
     b.link = Some("@notalink".to_string());
     assert!(matches!(validate_requests(&b), Err(TeleError::Usage(_))));
@@ -2366,7 +2367,9 @@ fn invite_check_normalizes_link_forms() {
 
     a.check = Some("+abc-xyz_1".to_string());
     let p = validate_invite(&a).unwrap();
-    assert_eq!(p.link.as_deref(), Some("+abc-xyz_1"));
+    // Bare hashes canonicalize to the full URL form (the send paths for
+    // edit/importers take the URL); hash extraction is unchanged.
+    assert_eq!(p.link.as_deref(), Some("https://t.me/+abc-xyz_1"));
     assert_eq!(p.hash.as_deref(), Some("abc-xyz_1"));
 
     a.check = Some("  t.me/joinchat/plainhash  ".to_string());
@@ -3087,7 +3090,7 @@ mod chat_serve_tests {
             )
             .unwrap_err(),
         );
-        assert!(msg.contains("unknown preset"), "{msg}");
+        assert!(msg.contains("takes no --preset/--rights"), "{msg}");
 
         let plan = plan_chat_op(
             "chat admin",

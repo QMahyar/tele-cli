@@ -2214,28 +2214,31 @@ fn action_allows_composes_chat_and_sender_dimensions() {
 }
 
 #[test]
-fn action_allows_ignores_direction_and_pattern_honestly() {
+fn action_allows_suppresses_inapplicable_dimensions() {
+    // Direction/pattern cannot apply to typing/status rows, so with those
+    // filters active action rows are suppressed (same policy as Raw and
+    // MessageDeleted) instead of silently bypassing the filter.
     let f_dir = EventFilter {
         direction: Some(Direction::In),
         ..Default::default()
     };
     assert!(
-        f_dir.action_allows(
+        !f_dir.action_allows(
             Some(PeerId::user_unchecked(7)),
             Some(PeerId::user_unchecked(7))
         ),
-        "direction has no meaning for typing/status rows and must not block them"
+        "direction filter suppresses action rows (no silent bypass)"
     );
     let f_pattern = EventFilter {
         patterns: compile_pattern(&["x".to_string()]).unwrap(),
         ..Default::default()
     };
     assert!(
-        f_pattern.action_allows(
+        !f_pattern.action_allows(
             Some(PeerId::user_unchecked(7)),
             Some(PeerId::user_unchecked(7))
         ),
-        "pattern has no text to match on typing/status rows"
+        "pattern filter suppresses action rows (no silent bypass)"
     );
 }
 

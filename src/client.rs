@@ -113,7 +113,26 @@ impl ClientGuard {
         self.client.disconnect();
         if let Some(mut runner) = self.runner.take() {
             tokio::select! {
-                _ = &mut runner => {}
+                joined = &mut runner => {
+                    if let Err(join_err) = joined {
+                        let detail = join_err
+                            .try_into_panic()
+                            .map(|p| {
+                                if let Some(s) = p.downcast_ref::<&str>() {
+                                    (*s).to_string()
+                                } else if let Some(s) = p.downcast_ref::<String>() {
+                                    s.clone()
+                                } else {
+                                    "sender pool runner panicked".to_string()
+                                }
+                            })
+                            .unwrap_or_else(|_| "sender pool runner task failed".to_string());
+                        crate::output::log_line(
+                            "error",
+                            &format!("sender pool runner ended abnormally: {detail}"),
+                        );
+                    }
+                }
                 _ = tokio::time::sleep(Duration::from_secs(3)) => {
                     runner.abort();
                 }

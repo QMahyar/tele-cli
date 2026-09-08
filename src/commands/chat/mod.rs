@@ -512,6 +512,15 @@ fn validate_requests(args: &RequestsArgs) -> TeleResult<ValidatedRequests> {
             "--approve and --dismiss are mutually exclusive".to_string(),
         ));
     }
+    if args.user.is_some() && args.link.is_some() {
+        // The single-user path invokes messages.hideChatJoinRequest directly,
+        // which has no link scope; a silent drop would approve/dismiss the
+        // user's request in scopes the --link filter was meant to restrict.
+        return Err(TeleError::Usage(
+            "--user with --approve/--dismiss acts on the user's request directly and cannot be scoped by --link; use --link with --all"
+                .to_string(),
+        ));
+    }
     if args.all && args.user.is_some() {
         return Err(TeleError::Usage(
             "--all and --user are mutually exclusive".to_string(),
@@ -2292,7 +2301,9 @@ pub(crate) async fn chat_kick_core(
             _ => call,
         };
     }
-    if ban {
+    // --ban forces view_messages=false only without an explicit --rights CSV
+    // (an explicit view_messages value must win over the --ban default).
+    if ban && rights_entries.is_empty() {
         call = call.view_messages(false);
     }
     if let Some(secs) = until_secs {
@@ -2439,7 +2450,7 @@ pub(crate) async fn chat_admin_log_core(
         let client_ref = &shares.client;
         let limiter = &shares.rate_limiter;
         let channel_ref = &channel;
-        collect_admin_log(params.limit, until_ts, move |max_id, page_limit| {
+        collect_admin_log(params.limit, since, until_ts, move |max_id, page_limit| {
             let q = search_q.clone();
             let filter = events_filter.clone();
             let admins = admins.clone();

@@ -198,6 +198,7 @@ pub(crate) fn phone_dry_run_data(name: &str, action: &PhoneAction) -> serde_json
 
 pub(crate) async fn send_change_phone_code(
     client: &grammers_client::Client,
+    storage: &std::sync::Arc<grammers_client::session::storages::SqliteSession>,
     phone: &str,
     flashcall: bool,
 ) -> TeleResult<String> {
@@ -226,6 +227,24 @@ pub(crate) async fn send_change_phone_code(
             "verification requires a paid product ({})",
             x.store_product
         ))),
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 303 => {
+            let Some(dc_id) = rpc.value.and_then(|v| i32::try_from(v).ok()) else {
+                return Err(TeleError::Auth(
+                    "DC migration hint arrived without a target DC; re-run the command".to_string(),
+                ));
+            };
+            use grammers_client::session::Session as _;
+            storage.set_home_dc_id(dc_id).await.map_err(|e| {
+                TeleError::Other(format!("failed to switch home DC to {dc_id}: {e}"))
+            })?;
+            match client.invoke(&request).await {
+                Ok(tl::enums::auth::SentCode::Code(code)) => Ok(code.phone_code_hash),
+                Err(e) => Err(tele_invocation(e)),
+                Ok(_) => Err(TeleError::Other(
+                    "unexpected response after DC migration".to_string(),
+                )),
+            }
+        }
         Err(e) => Err(tele_invocation(e)),
     }
 }
@@ -242,9 +261,11 @@ pub(crate) async fn confirm_change_phone(
         ));
     };
     if !phone_hash_matches(pending, hash) {
-        remove_pending_phone_under(&config::app_data_dir(), name).ok();
+        // A typo in --phone-hash must NOT wipe the pending request: the SMS
+        // code is still valid, so preserve pending state and let the user
+        // retry. Only an explicit cancel/new request removes it.
         return Err(TeleError::Usage(
-            "--phone-hash does not match the pending change-phone request; run tele account phone --change-phone again"
+            "--phone-hash does not match the pending change-phone request; check the hash from the change-phone output and retry (pending state is preserved)"
                 .to_string(),
         ));
     }
@@ -267,6 +288,31 @@ pub(crate) async fn confirm_change_phone(
         Ok(grammers_client::tl::enums::User::Empty(_)) => Err(TeleError::Other(
             "server returned an empty user after changing the phone".to_string(),
         )),
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 303 => {
+            let Some(dc_id) = rpc.value.and_then(|v| i32::try_from(v).ok()) else {
+                return Err(TeleError::Auth(
+                    "DC migration hint arrived without a target DC; re-run the command".to_string(),
+                ));
+            };
+            use grammers_client::session::Session as _;
+            guard.session.set_home_dc_id(dc_id).await.map_err(|e| {
+                TeleError::Other(format!("failed to switch home DC to {dc_id}: {e}"))
+            })?;
+            match guard.client.invoke(&request).await {
+                Ok(grammers_client::tl::enums::User::User(user)) => {
+                    remove_pending_phone(name)?;
+                    Ok(serde_json::json!({
+                        "changed": true,
+                        "user_id": user.id,
+                        "username": user.username,
+                    }))
+                }
+                Ok(grammers_client::tl::enums::User::Empty(_)) => Err(TeleError::Other(
+                    "server returned an empty user after changing the phone".to_string(),
+                )),
+                Err(e) => Err(tele_invocation(e)),
+            }
+        }
         Err(e) => Err(tele_invocation(e)),
     }
 }
@@ -279,7 +325,8 @@ pub(crate) async fn execute_phone_action(
     match action {
         PhoneAction::Send { phone, flashcall } => {
             guard.rate_limiter.acquire().await;
-            let phone_code_hash = send_change_phone_code(&guard.client, phone, *flashcall).await?;
+            let phone_code_hash =
+                send_change_phone_code(&guard.client, &guard.session, phone, *flashcall).await?;
             save_pending_phone(&PendingPhone::new(name, phone, phone_code_hash.clone()))?;
             log_line(
                 "info",

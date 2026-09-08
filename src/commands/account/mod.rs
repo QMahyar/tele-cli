@@ -803,7 +803,9 @@ async fn delete(args: &DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let reason = validate_delete_reason(&args.reason)?;
     require_explicit_selection("account delete", flags)?;
     refuse_interactive_with_multiple_accounts("account delete", flags)?;
-    if !args.yes {
+    if !args.yes && !flags.dry_run {
+        // Dry-run stays reachable without --yes so the agent can preview the
+        // would-payload before committing; only real deletes demand it.
         let targets = crate::executor::select_accounts(flags)?;
         let list = targets.join(", ");
         let would = delete_would(&list, reason);
@@ -832,7 +834,34 @@ async fn delete(args: &DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let result = guard.client.invoke(&request).await;
             drop(guard);
             match result {
-                Ok(true) => Ok(serde_json::json!({"deleted": true})),
+                Ok(true) => {
+                    // Server-side delete succeeded: purge local state so no
+                    // ghost session/pending secrets/config entry remain.
+                    login::purge_pending(&name);
+                    if let Err(e) = session::remove_session(&name).await {
+                        log_line("warn", &format!("could not remove session files: {e:#}"));
+                    }
+                    match crate::config::load_config(config_path.as_deref()) {
+                        Ok(mut cfg) => {
+                            if cfg.accounts.remove(&name).is_some() {
+                                let path = config_path.clone().unwrap_or_else(|| {
+                                    crate::config::app_data_dir().join("config.toml")
+                                });
+                                if let Err(e) = crate::config::write_config(&path, &cfg) {
+                                    log_line(
+                                        "warn",
+                                        &format!("could not update config.toml: {e:#}"),
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => log_line(
+                            "warn",
+                            &format!("could not load config to remove the entry: {e:#}"),
+                        ),
+                    }
+                    Ok(serde_json::json!({"deleted": true, "local_state_removed": true}))
+                }
                 Ok(false) => Err(TeleError::Other(
                     "server refused to delete the account".to_string(),
                 )),
@@ -881,6 +910,26 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         Box::pin(async move {
             if dry_run {
                 if let Some(would) = mode.dry_run_description() {
+                    // A terminate dry-run must not promise something the real
+                    // run would refuse: fetch the authorizations and apply the
+                    // same current-session guard the live path uses.
+                    if mode.is_mutator() {
+                        let guard =
+                            ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
+                                .await?;
+                        guard.rate_limiter.acquire().await;
+                        match mode {
+                            SessionsMode::Terminate(hash) => {
+                                let auths = fetch_authorizations(&guard.client).await?;
+                                terminate_decision(hash, &auths)?;
+                            }
+                            SessionsMode::TerminateWeb(hash) => {
+                                let webs = fetch_web_authorizations(&guard.client).await?;
+                                web_hash_decision(hash, &webs)?;
+                            }
+                            _ => {}
+                        }
+                    }
                     return Ok(serde_json::json!({
                         "dry_run": true,
                         "would": would,

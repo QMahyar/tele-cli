@@ -334,7 +334,10 @@ pub(crate) async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32>
                     _ => call,
                 };
             }
-            if ban {
+            // --ban forces view_messages=false only when the user did not
+            // pass an explicit --rights CSV (an explicit view_messages value
+            // must win over the --ban default).
+            if ban && rights_entries.is_empty() {
                 call = call.view_messages(false);
             }
             if let Some(secs) = until_secs {
@@ -385,12 +388,29 @@ pub(crate) fn validate_admin(args: &AdminArgs) -> TeleResult<()> {
             "--preset and --rights are mutually exclusive".to_string(),
         ));
     }
+    if args.demote && (args.preset.is_some() || args.rights.is_some()) {
+        // Demotion revokes all rights; preset/rights would be silently
+        // discarded by resolve_admin_rights, so reject the misleading combo.
+        return Err(TeleError::Usage(
+            "--demote revokes all admin rights and takes no --preset/--rights".to_string(),
+        ));
+    }
     if let Some(preset) = &args.preset {
         if preset != "moderator" && preset != "editor" && preset != "admin" {
             return Err(TeleError::Usage(format!(
                 "unknown preset '{}': use moderator, editor, or admin",
                 preset
             )));
+        }
+    }
+    if let Some(rights) = &args.rights {
+        // An empty --rights would promote with an all-false rights map —
+        // a silent no-op promotion; require at least one right.
+        let has_any = rights.split(',').any(|part| !part.trim().is_empty());
+        if !has_any {
+            return Err(TeleError::Usage(
+                "--rights must name at least one right; for a demotion use --demote".to_string(),
+            ));
         }
     }
     Ok(())

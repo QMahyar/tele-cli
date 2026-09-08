@@ -576,6 +576,12 @@ pub(crate) fn normalized_validated_link(input: &str, flag: &str) -> TeleResult<S
     let normalized = normalize_invite_link(input);
     validate_invite_link(&normalized)
         .map_err(|e| TeleError::Usage(format!("{flag}: {}", e.message())))?;
+    // The edit/importers RPCs take the full URL in `link`; a bare hash was
+    // accepted by validation but must not be sent raw.
+    if is_bare_invite_hash(&normalized) {
+        let hash = normalized.strip_prefix('+').unwrap_or(&normalized);
+        return Ok(format!("https://t.me/+{hash}"));
+    }
     Ok(normalized)
 }
 

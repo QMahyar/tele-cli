@@ -1731,7 +1731,11 @@ mod tests {
         // Below the 5-digit minimum the parser now rejects instead of
         // forwarding to contact-import side effects.
         let err = parse_target("+123").unwrap_err();
-        assert!(err.message().contains("too few digits"), "{}", err.message());
+        assert!(
+            err.message().contains("too few digits"),
+            "{}",
+            err.message()
+        );
         assert_eq!(parse_target("+1234567890").unwrap().peer_ref, "+1234567890");
     }
 

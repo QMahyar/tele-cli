@@ -389,7 +389,7 @@ pub(crate) async fn staged_code_flow(
             ));
         };
         let code = code_line.trim().to_string();
-        match raw_sign_in(&guard.client, pending, &code).await {
+        match raw_sign_in(&guard.client, &guard.session, pending, &code).await {
             StagedSignIn::SignedIn(auth) => {
                 *signed_in = true;
                 complete_staged_login(guard, *auth).await?;
@@ -405,12 +405,8 @@ pub(crate) async fn staged_code_flow(
                 return code_envelope(flags, pending, true);
             }
             StagedSignIn::PasswordNeeded => {
-                if !std::io::stdin().is_terminal() {
-                    return Err(TeleError::Auth(
-                        "2FA password required; re-run this command in an interactive terminal"
-                            .to_string(),
-                    ));
-                }
+                // Piped stdin is fine here — same contract as the code step:
+                // prompt_line reads from the shared stdin lock either way.
                 let pw_token = refresh_password_token(&guard.client).await?;
                 password_flow(&guard.client, pw_token, &mut stdin, &mut stderr).await?;
                 let _ = remove_pending(&pending.account);
@@ -544,6 +540,42 @@ pub(crate) async fn staged_resend_flow(
                 x.store_product
             )))
         }
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 303 => {
+            let Some(dc_id) = rpc.value.and_then(|v| i32::try_from(v).ok()) else {
+                return Err(TeleError::Auth(
+                    "DC migration hint arrived without a target DC; re-run the command".to_string(),
+                ));
+            };
+            use grammers_client::session::Session as _;
+            guard.session.set_home_dc_id(dc_id).await.map_err(|e| {
+                TeleError::Other(format!("failed to switch home DC to {dc_id}: {e}"))
+            })?;
+            match guard.client.invoke(&request).await {
+                Ok(grammers_client::tl::enums::auth::SentCode::Code(code)) => {
+                    let updated = PendingLogin {
+                        phone_code_hash: code.phone_code_hash,
+                        ..pending.clone()
+                    };
+                    save_pending(&updated)?;
+                    log_line(
+                        "info",
+                        &format!(
+                            "login code resent after DC migration; finish with tele account login --name {name} --stage code",
+                            name = pending.account
+                        ),
+                    );
+                    let data = serde_json::json!({"stage": "resend", "resent": true});
+                    crate::executor::finish(
+                        flags,
+                        &action_envelope(&pending.account, data, flags.dry_run, &flags.command),
+                    )
+                }
+                Err(e) => Err(tele_invocation(e)),
+                Ok(_) => Err(TeleError::Other(
+                    "unexpected response after DC migration".to_string(),
+                )),
+            }
+        }
         Err(e) => Err(tele_invocation(e)),
     }
 }
@@ -602,6 +634,33 @@ pub(crate) async fn staged_cancel_code_flow(
         Ok(false) => Err(TeleError::Other(
             "server refused to cancel the sent login code; local pending state kept".to_string(),
         )),
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 303 => {
+            // Cancel travels to the account's real DC: migrate and retry once.
+            let Some(dc_id) = rpc.value.and_then(|v| i32::try_from(v).ok()) else {
+                return Err(TeleError::Auth(
+                    "DC migration hint arrived without a target DC; re-run the command".to_string(),
+                ));
+            };
+            use grammers_client::session::Session as _;
+            guard.session.set_home_dc_id(dc_id).await.map_err(|e| {
+                TeleError::Other(format!("failed to switch home DC to {dc_id}: {e}"))
+            })?;
+            match guard.client.invoke(&request).await {
+                Ok(true) => {
+                    remove_pending(&pending.account)?;
+                    Ok(serde_json::json!({
+                        "stage": "cancel-code",
+                        "cancelled": true,
+                        "server_notified": true,
+                    }))
+                }
+                Ok(false) => Err(TeleError::Other(
+                    "server refused to cancel the sent login code; local pending state kept"
+                        .to_string(),
+                )),
+                Err(e) => Err(tele_invocation(e)),
+            }
+        }
         Err(e) => Err(tele_invocation(e)),
     }
 }
@@ -617,10 +676,11 @@ pub(crate) enum StagedSignIn {
 
 pub(crate) async fn raw_sign_in(
     client: &grammers_client::Client,
+    storage: &Arc<grammers_client::session::storages::SqliteSession>,
     pending: &PendingLogin,
     code: &str,
 ) -> StagedSignIn {
-    use grammers_client::tl;
+    use grammers_client::{session::Session as _, tl};
     let request = tl::functions::auth::SignIn {
         phone_number: pending.phone.clone(),
         phone_code_hash: pending.phone_code_hash.clone(),
@@ -640,6 +700,39 @@ pub(crate) async fn raw_sign_in(
         }
         Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.name.starts_with("PHONE_CODE_") => {
             StagedSignIn::InvalidCode
+        }
+        // 303 DC migration, same treatment as send_login_code: move the
+        // session's home DC and retry once — the code is still valid.
+        Err(grammers_client::InvocationError::Rpc(rpc)) if rpc.code == 303 => {
+            let Some(dc_id) = rpc.value.and_then(|v| i32::try_from(v).ok()) else {
+                return StagedSignIn::Failed(TeleError::Auth(
+                    "DC migration hint arrived without a target DC; re-run the command".to_string(),
+                ));
+            };
+            if let Err(e) = storage.set_home_dc_id(dc_id).await {
+                return StagedSignIn::Failed(TeleError::Other(format!(
+                    "failed to switch home DC to {dc_id}: {e}"
+                )));
+            }
+            match client.invoke(&request).await {
+                Ok(tl::enums::auth::Authorization::Authorization(x)) => {
+                    StagedSignIn::SignedIn(Box::new(x))
+                }
+                Ok(tl::enums::auth::Authorization::SignUpRequired(_)) => {
+                    StagedSignIn::SignUpRequired
+                }
+                Err(grammers_client::InvocationError::Rpc(r))
+                    if r.name == "SESSION_PASSWORD_NEEDED" =>
+                {
+                    StagedSignIn::PasswordNeeded
+                }
+                Err(grammers_client::InvocationError::Rpc(r))
+                    if r.name.starts_with("PHONE_CODE_") =>
+                {
+                    StagedSignIn::InvalidCode
+                }
+                Err(e) => StagedSignIn::Failed(tele_invocation(e)),
+            }
         }
         Err(e) => StagedSignIn::Failed(tele_invocation(e)),
     }

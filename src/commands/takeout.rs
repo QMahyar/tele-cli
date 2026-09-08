@@ -577,7 +577,16 @@ async fn run_export(
                     human_progress,
                     &dialog_page_message(dialog_index, total_dialogs, &chat_name, count),
                 );
-                if m_last_chunk || count >= limit {
+                if count >= limit && !m_last_chunk {
+                    // The dialog was truncated by --message-limit, NOT
+                    // finished: keep the partial checkpoint (the oldest
+                    // written id, recorded above) so a future re-export with
+                    // a higher limit resumes instead of being silently
+                    // skipped by a false DONE checkpoint.
+                    persist_checkpoints(dir, takeout_id, &checkpoints)?;
+                    break;
+                }
+                if m_last_chunk {
                     checkpoints.insert(dialog_key.clone(), CHECKPOINT_DONE);
                     persist_checkpoints(dir, takeout_id, &checkpoints)?;
                     break;
@@ -782,7 +791,11 @@ async fn finish(args: FinishArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             match result {
                 Ok(server_success) => {
                     delete_takeout_state(&dir);
-                    Ok(serde_json::json!({"finished": server_success}))
+                    Ok(serde_json::json!({
+                        "finished": server_success,
+                        "success": success,
+                        "abandon": abandon,
+                    }))
                 }
                 Err(grammers_client::InvocationError::Rpc(e))
                     if e.name == "TAKEOUT_REQUIRED" || e.name == "TAKEOUT_INVALID" =>
