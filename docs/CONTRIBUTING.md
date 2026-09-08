@@ -120,15 +120,14 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if dry_run {
                 return list_dry_run(&args);
             }
-            let (_guard, client, _sender) =
-                crate::client::connect(&name, &config_path).await?;
-            // ... RPC calls through `client` ...
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            // ... RPC calls through `guard.client` ...
             // Return Ok(Value) for JSON envelope
         })
     }).await?;
 
-    crate::output::printEnvelope(&envelope, json, flags.jsonl)?;
-    Ok(crate::output::exit_code(&envelope))
+    crate::executor::finish(flags, &envelope)
 }
 ```
 

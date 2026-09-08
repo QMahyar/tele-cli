@@ -122,7 +122,7 @@ Every command emits one JSON envelope with per-account results:
 
 Exit codes: `0` success, `1` usage error, `2` partial failure, `3` all failed, `4` auth required, `130` interrupted.
 
-Most commands accept `--chat` or `--target` as `@username`, a `t.me/` link, a numeric ID, `me`, or `+phone`.
+Most commands accept `--chat` as `@username`, a `t.me/` link, a numeric ID, `me`, or `+phone`.
 
 The full JSON shapes, MCP tool table, and protocol rules are the public contract in [docs/cli-contract.md](docs/cli-contract.md). Contract changes are additive; anything else is a bug.
 

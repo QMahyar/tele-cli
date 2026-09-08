@@ -176,7 +176,7 @@ Wraps per-account results into the JSON envelope on stdout.
 
 ## MCP server (mcp.rs)
 
-The MCP server exposes 67 tools through the Model Context Protocol. Each tool maps to a CLI command:
+The MCP server exposes 81 tools through the Model Context Protocol (all 78 routed serve ops plus the transport-level set locked by tests). Each tool maps to a CLI command:
 
 ```
 tele mcp --account work

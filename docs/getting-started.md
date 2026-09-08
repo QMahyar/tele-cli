@@ -61,7 +61,7 @@ Set-Content "$env:APPDATA\tele\.env" "TELE_API_ID=1234567`nTELE_API_HASH=0123456
 tele account add --name work
 ```
 
-This prompts for your phone number. Then login:
+This registers the account entry in config.toml (no prompt). Then login, which prompts for the phone number:
 
 ```bash
 # Code login (SMS)
@@ -117,7 +117,7 @@ tele msg send --chat me --text "test" --json
 tele listen --events NewMessage --chat me --timeout-secs 10 --jsonl
 
 # Use with jq
-tele dialog list --json | jq '.results[].data[].name'
+tele dialog list --json | jq '.results[].data.dialogs[].chat.name'
 ```
 
 ## MCP for AI agents

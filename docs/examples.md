@@ -118,85 +118,85 @@ On ambiguous substring (≥2 matches) the command exits 1 with `Did you mean #i 
 ### Join a chat
 
 ```bash
-tele chat join --target @publicgroup
-tele chat join --target https://t.me/joinchat/ABC123
+tele chat join --chat @publicgroup
+tele chat join --chat https://t.me/joinchat/ABC123
 ```
 
 ### Leave a chat
 
 ```bash
-tele chat leave --target @group
+tele chat leave --chat @group
 ```
 
 ### Create a chat
 
 ```bash
-tele chat create --title "My Group" --type group
-tele chat create --title "My Channel" --type channel
+tele chat create --title "My Group" --kind group
+tele chat create --title "My Channel" --kind channel
 ```
 
 ### List participants
 
 ```bash
-tele chat participants --target @group
-tele chat participants --target @group --role admin
-tele chat participants --target @group --search "alice"
+tele chat participants --chat @group
+tele chat participants --chat @group --role admin
+tele chat participants --chat @group --search "alice"
 ```
 
 ### Kick or ban a user
 
 ```bash
-tele chat kick --target @group --user @spammer
-tele chat kick --target @group --user @spammer --ban
-tele chat kick --target @group --user @spammer --ban --duration 3600
+tele chat kick --chat @group --user @spammer
+tele chat kick --chat @group --user @spammer --ban
+tele chat kick --chat @group --user @spammer --ban --duration 3600
 ```
 
 ### Manage admins
 
 ```bash
-tele chat admin --target @group --user @alice --rights admin
-tele chat admin --target @group --user @alice --rights moderator
+tele chat admin --chat @group --user @alice --preset admin
+tele chat admin --chat @group --user @alice --preset moderator
 ```
 
 ### View admin log
 
 ```bash
-tele chat admin-log --target @group
-tele chat admin-log --target @group --limit 20
-tele chat admin-log --target @group --admin @alice
+tele chat admin-log --chat @group
+tele chat admin-log --chat @group --limit 20
+tele chat admin-log --chat @group --admin @alice
 ```
 
 ### Chat statistics
 
 ```bash
-tele chat stats --target @channel
+tele chat stats --chat @channel
 ```
 
 ### Manage invite links
 
 ```bash
-tele chat invite --target @group --user @alice
-tele chat invite --target @group --title "Team Link" --expire 7d
-tele chat invite --target @group --list
-tele chat invite --target @group --delete-revoked
+tele chat invite --chat @group --user @alice
+tele chat invite --chat @group --title "Team Link" --expire 7d
+tele chat invite --chat @group --list
+tele chat invite --chat @group --delete-revoked
 ```
 
 ### Chat settings
 
 ```bash
-tele chat settings --target @channel
-tele chat settings --target @channel --slow-mode 300
-tele chat settings --target @channel --signatures on
-tele chat settings --target @channel --join-request on
+tele chat settings --chat @channel
+tele chat settings --chat @channel --slow-mode 300
+tele chat settings --chat @channel --signatures on
+tele chat settings --chat @channel --join-request on
 ```
 
 ### Edit chat info
 
 ```bash
-tele chat edit --target @group --title "New Name"
-tele chat edit --target @group --about "Updated description"
-tele chat edit --target @group --photo ./new-photo.jpg
-tele chat edit --target @group --photo remove
+tele chat edit --chat @group --title "New Name"
+tele chat edit --chat @group --about "Updated description"
+tele chat edit --chat @group --photo ./new-photo.jpg
+tele chat edit --chat @group --photo remove
 ```
 
 ## Dialogs
@@ -279,7 +279,7 @@ tele profile get
 tele profile set --name "New Name"
 tele profile set --bio "Updated bio"
 tele profile set --username newname
-tele profile set --username remove
+tele profile set --clear-username
 tele profile photo --remove
 tele profile emoji-status --emoji 1234567890
 tele profile emoji-status --remove
@@ -297,13 +297,13 @@ tele privacy set --key forwards --deny @spammer
 ## Stories
 
 ```bash
-tele story list
-tele story send --file ./photo.jpg --caption "My story"
-tele story send --file ./video.mp4 --privacy contacts --period 86400
-tele story read --max-id 100
-tele story delete --ids 100
-tele story pin --ids 100
-tele story unpin --ids 100
+tele story list --chat @mychannel
+tele story send --chat @mychannel --file ./photo.jpg --caption "My story"
+tele story send --chat @mychannel --file ./video.mp4 --privacy contacts --period 86400
+tele story read --chat @mychannel --max-id 100
+tele story delete --chat @mychannel --ids 100
+tele story pin --chat @mychannel --ids 100
+tele story unpin --chat @mychannel --ids 100
 ```
 
 ## Stickers
@@ -398,7 +398,7 @@ tele listen --events NewMessage --chat me --jsonl
 tele msg send --chat me --text "test" --json --dry-run
 
 # Pipe to jq
-tele dialog list --json | jq '.results[].data[].name'
+tele dialog list --json | jq '.results[].data.dialogs[].chat.name'
 ```
 
 ## MCP integration
@@ -541,7 +541,7 @@ tele cache sync --account work --chat @team --limit 500
 # Offline search (no network)
 tele cache search --account work --query "deploy"
 tele cache search --account work --query "" --limit 20   # list recent
-tele cache search --account work --query "release" --chat-id -1001234
+tele cache search --account work --query "release" --chat-id=-1001234
 
 # Cache info and cleanup
 tele cache stats --account work

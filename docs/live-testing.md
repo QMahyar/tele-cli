@@ -8,7 +8,7 @@ Telegram punishes automation patterns. See the [spam FAQ](https://telegram.org/f
 
 - **FloodWait.** Run sequentially. Keep `--parallel 1`. Space writes at least 5 seconds apart. grammers sleeps through one wait of up to 60 seconds ([AutoSleep](https://docs.rs/grammers-client/latest/grammers_client/client/struct.AutoSleep.html)) and returns longer waits to you. Honor any `FLOOD_WAIT` or `SLOWMODE_WAIT` value you receive.
 - **Spam restrictions.** Send only to Saved Messages (`me`). Cap self-sends at 5 per run. Bound each run at 5 minutes. Never message strangers, never post to public groups, never mass forward. Cold outreach earns PeerFlood restrictions and spam reports.
-- **Sessions.** Keep one session file per account, under `%APPDATA%\tele\sessions\` on Windows and `~/.tele/sessions/` on Linux and macOS. Never share a file between processes.
+- **Sessions.** Keep one session file per account, under `%APPDATA%\tele\sessions\` on Windows and `~/.config/tele/sessions/` on Linux and macOS. Never share a file between processes.
 - **CI.** Never run live tests from CI. Datacenter IPs raise Telegram's abuse score. CI cannot handle interactive login.
 - **Third parties.** Joins, cold sends, forwards, contact adds, and group creation need explicit operator approval and disposable accounts. Join at most 1 chat per 10 minutes.
 
@@ -49,7 +49,7 @@ del %APPDATA%\tele\sessions\<name>.session
 On Linux and macOS:
 
 ```
-rm ~/.tele/sessions/<name>.session
+rm ~/.config/tele/sessions/<name>.session
 ```
 
 Then run `tele account login`. Login is interactive. Enter the phone number, the verification code, and the 2FA password if the account has one. The suite never stores or prompts for 2FA passwords. See [docs/security.md](security.md).
@@ -73,7 +73,7 @@ Takeout qualifies too. `takeout start`, `takeout export`, and `takeout finish` l
 
 Every write targets `me`. Cleanup is mandatory, because leftover test messages pollute a real account.
 
-1. Send a marker message with `msg send --to me`.
+1. Send a marker message with `msg send --chat me`.
 2. Exercise `msg edit`, `msg react`, `msg pin`, and `msg read` on messages you own.
 3. Record every message ID the run creates.
 4. Delete all recorded IDs with `msg delete` during teardown. If deletion fails, print the leftover IDs so you can remove them by hand.
