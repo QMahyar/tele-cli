@@ -93,26 +93,56 @@ fn matrix_rows() -> Vec<(String, String, String)> {
         if cells.len() < 4 {
             continue;
         }
-        let status = cells.last().unwrap();
-        if status == &"done" {
-            rows.push((
-                cells[0].to_string(),
-                "done".to_string(),
-                cells[cells.len() - 2].to_string(),
-            ));
+        let raw_status = cells.last().unwrap();
+        // Skip separator rows (pure dash runs) and header rows.
+        if !raw_status.is_empty() && raw_status.chars().all(|c| c == '-') {
+            continue;
+        }
+        if cells.iter().any(|c| c.eq_ignore_ascii_case("status")) {
+            continue;
+        }
+        // Normalize: trim, case-fold, strip decoration so a `done ✅` or
+        // `Done` row cannot silently escape the gate.
+        let normalized: Vec<String> = cells
+            .iter()
+            .map(|c| {
+                c.chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase()
+            })
+            .collect();
+        // Status lives in the last cell for most tables and second-to-last for
+        // the free-text "Why" table; check only those two positions so a
+        // stray "done" inside a long description cannot forge a row, and
+        // fail loudly on anything that is not a known status.
+        let last = normalized.len() - 1;
+        let is_status = |s: &str| matches!(s, "done" | "want" | "later" | "never");
+        let status_pos = if is_status(&normalized[last]) {
+            last
+        } else if last >= 1 && is_status(&normalized[last - 1]) {
+            last - 1
+        } else {
+            panic!("capabilities.md: unknown status {raw_status:?} in row: {line}")
+        };
+        if normalized[status_pos] == "done" && status_pos >= 1 {
+            // The CLI cell sits immediately left of the status cell in every
+            // table layout (both `… | CLI | Status |` and `… | CLI | Status |
+            // Why |`).
+            let cli_cell = cells[status_pos - 1].to_string();
+            rows.push((cells[0].to_string(), "done".to_string(), cli_cell));
         }
     }
     rows
 }
 
-fn cell_token(cli: &str) -> &str {
-    match cli.split_once('`') {
-        Some((_, after)) => match after.split_once('`') {
-            Some((token, _)) => token.trim(),
-            None => after.trim(),
-        },
-        None => cli.trim(),
-    }
+fn backtick_tokens(cli: &str) -> Vec<&str> {
+    cli.split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, s)| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn raw_registry_names() -> Vec<String> {
@@ -1203,76 +1233,237 @@ fn done_rows_have_cli_surface() {
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/listen.rs"))
             .unwrap();
     for (id, cli) in matrix_rows().into_iter().map(|(id, _s, cli)| (id, cli)) {
-        let token = cell_token(&cli);
-        if let Some(cmd) = token.strip_prefix("tele ") {
-            let parts: Vec<&str> = cmd.split_whitespace().collect();
-            let group = parts[0];
-            assert!(
-                root_help
-                    .lines()
-                    .any(|l| l.split_whitespace().next().unwrap_or("") == group),
-                "row {id}: group {group} missing from root --help"
-            );
-            if parts.len() < 2 {
-                continue;
-            }
-            let next = parts[1];
-            if next == "*" || next.starts_with('(') {
-                continue;
-            }
-            if next.starts_with("--") {
-                let lhelp = help(&[group]);
+        // Every backticked span in the cell is a CLI surface reference; the
+        // first-span-only check used to let multi-command cells (e.g.
+        // stickers.manage listing list/search/show/install/remove) pass on
+        // `tele sticker` alone.
+        let tokens = backtick_tokens(&cli);
+        if tokens.is_empty() {
+            panic!("row {id}: CLI cell `{cli}` names no backticked CLI surface");
+        }
+        // A bare `--flag` span belongs to the most recent `tele <group> [sub]`
+        // in the same cell (e.g. auth.qr's `--show-token` refers to
+        // `tele account login`), never to listen unless listen help carries it.
+        let mut cell_cmd: Option<(String, Option<String>)> = None;
+        for token in tokens {
+            if let Some(cmd) = token.strip_prefix("tele ") {
+                let parts: Vec<&str> = cmd.split_whitespace().collect();
+                let group = parts[0];
+                let sub = parts.get(1).map(|s| s.to_string());
+                cell_cmd = Some((
+                    group.to_string(),
+                    match sub.as_deref() {
+                        // Wildcards carry no specific subcommand context.
+                        Some("*") | Some("*`") => None,
+                        other => other.map(|s| s.to_string()),
+                    },
+                ));
+                assert!(
+                    root_help
+                        .lines()
+                        .any(|l| l.split_whitespace().next().unwrap_or("") == group),
+                    "row {id}: group {group} missing from root --help"
+                );
+                if parts.len() < 2 {
+                    // Group-only cell: the group must still expose at least
+                    // one subcommand (an empty group means the `done`
+                    // capability lost its CLI surface entirely).
+                    let ghelp = help(&[group]);
+                    let subcommands = ghelp
+                        .lines()
+                        .filter(|l| {
+                            let w = l.split_whitespace().next().unwrap_or("");
+                            !w.is_empty() && !w.starts_with('-') && w != group
+                        })
+                        .count();
+                    assert!(
+                        subcommands > 0,
+                        "row {id}: group {group} lists no subcommands"
+                    );
+                    continue;
+                }
+                let next = parts[1];
+                if next.starts_with('(') {
+                    // Parenthesized annotation, not a subcommand.
+                    continue;
+                }
+                if next == "*" {
+                    // Wildcard: every subcommand the group actually exposes
+                    // must be loadable; breakage anywhere in the group fails.
+                    let ghelp = help(&[group]);
+                    let mut in_commands = false;
+                    for line in ghelp.lines() {
+                        if line.trim() == "Commands:" {
+                            in_commands = true;
+                            continue;
+                        }
+                        if !in_commands || line.trim().is_empty() {
+                            continue;
+                        }
+                        let word = line.split_whitespace().next().unwrap_or("");
+                        if word.is_empty()
+                            || word.starts_with('-')
+                            || !word.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                        {
+                            continue;
+                        }
+                        let shelp = help(&[group, word]);
+                        assert!(
+                            !shelp.is_empty(),
+                            "row {id}: wildcard {group} {word} help failed"
+                        );
+                    }
+                    continue;
+                }
+                if next.starts_with("--") {
+                    let lhelp = help(&[group]);
+                    for flag in parts.iter().filter(|p| p.starts_with("--")) {
+                        assert!(
+                            lhelp.contains(flag),
+                            "row {id}: flag {flag} missing from `tele {group} --help`"
+                        );
+                    }
+                    continue;
+                }
+                let sub = next;
+                let ghelp = help(&[group]);
+                let found = ghelp.lines().any(|l| {
+                    let word = l.split_whitespace().next().unwrap_or("");
+                    word.replace('-', "") == sub.replace('-', "")
+                });
+                assert!(
+                    found,
+                    "row {id}: subcommand {sub} missing from `tele {group} --help`"
+                );
+                let shelp = help(&[group, sub]);
                 for flag in parts.iter().filter(|p| p.starts_with("--")) {
                     assert!(
-                        lhelp.contains(flag),
-                        "row {id}: flag {flag} missing from `tele {group} --help`"
+                        shelp.contains(flag),
+                        "row {id}: flag {flag} missing from `tele {group} {sub} --help`"
                     );
                 }
-                continue;
-            }
-            let sub = next;
-            let ghelp = help(&[group]);
-            let found = ghelp.lines().any(|l| {
-                let word = l.split_whitespace().next().unwrap_or("");
-                word.replace('-', "") == sub.replace('-', "")
-            });
-            assert!(
-                found,
-                "row {id}: subcommand {sub} missing from `tele {group} --help`"
-            );
-            let shelp = help(&[group, sub]);
-            for flag in parts.iter().filter(|p| p.starts_with("--")) {
+            } else if let Some(module) = token.strip_prefix("src/") {
                 assert!(
-                    shelp.contains(flag),
-                    "row {id}: flag {flag} missing from `tele {group} {sub} --help`"
+                    PathBuf::from(MANIFEST_DIR)
+                        .join("src")
+                        .join(module)
+                        .exists(),
+                    "row {id}: module {module} missing"
                 );
+            } else if token.starts_with("--") {
+                // A flag span is validated against the nearest preceding
+                // `tele <group> [sub]` in the same cell; fall back to listen
+                // only for listen-scoped cells. Bare words in a flag span
+                // (e.g. `--confirm-email CODE`) are placeholders, not events.
+                let (ref lgroup, ref lsub) =
+                    cell_cmd.clone().unwrap_or(("listen".to_string(), None));
+                let is_listen = lgroup == "listen";
+                let lhelp = if is_listen {
+                    help(&["listen"])
+                } else if let Some(sub) = lsub {
+                    help(&[lgroup, sub])
+                } else {
+                    help(&[lgroup])
+                };
+                // Flags referenced from a group-wildcard cell may live on any
+                // subcommand of the group; validate against the group help and
+                // every subcommand help.
+                let flag_ok_in_group = |part: &str| -> bool {
+                    if lhelp.contains(part) {
+                        return true;
+                    }
+                    if lsub.is_some() {
+                        return false;
+                    }
+                    let ghelp = help(&[lgroup]);
+                    let mut in_commands = false;
+                    for line in ghelp.lines() {
+                        if line.trim() == "Commands:" {
+                            in_commands = true;
+                            continue;
+                        }
+                        if !in_commands {
+                            continue;
+                        }
+                        let word = line.split_whitespace().next().unwrap_or("");
+                        if word.is_empty()
+                            || !word.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                        {
+                            continue;
+                        }
+                        if help(&[lgroup, word]).contains(part) {
+                            return true;
+                        }
+                    }
+                    false
+                };
+                for flag in token.split_whitespace().filter(|p| p.starts_with("--")) {
+                    // Combined spellings like `--since/--until` assert each part.
+                    for part in flag.split('/').filter(|p| p.starts_with("--")) {
+                        assert!(
+                            flag_ok_in_group(part),
+                            "row {id}: flag {part} missing from `tele {} {} --help`",
+                            lgroup,
+                            lsub.clone().unwrap_or_default()
+                        );
+                    }
+                }
+                if is_listen {
+                    for word in token.split_whitespace().filter(|p| !p.starts_with("--")) {
+                        // `--from USER` / `--until TS` style placeholders are
+                        // positional hints, not event names; real event names
+                        // are CamelCase identifiers.
+                        let is_placeholder =
+                            word.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                                && word.chars().all(|c| c.is_ascii_uppercase());
+                        if is_placeholder {
+                            continue;
+                        }
+                        assert!(
+                            listen_src.contains(&format!("\"{word}\"")),
+                            "row {id}: event {word} missing from src/commands/listen.rs"
+                        );
+                    }
+                }
+            } else if let (Some((ref lgroup, Some(ref lsub))), Some(first)) =
+                (cell_cmd.clone(), token.split_whitespace().next())
+            {
+                if first.replace('-', "") == lsub.replace('-', "") {
+                    // Continuation shorthand: `sessions --web` after
+                    // `tele account sessions [...]`. Validate the flags.
+                    let shelp = help(&[lgroup, lsub]);
+                    for flag in token.split_whitespace().filter(|p| p.starts_with("--")) {
+                        assert!(
+                            shelp.contains(flag),
+                            "row {id}: flag {flag} missing from `tele {lgroup} {lsub} --help`"
+                        );
+                    }
+                } else if token.contains("://") {
+                    // A URI reference, not a CLI surface.
+                }
+            } else if token.contains("://") {
+                // A URI reference (e.g. tg://login), not a CLI surface.
+            } else if registry.iter().any(|r| r == token) {
+                // raw registry entry — fine.
+            } else {
+                // Not a `tele ...` command, flag span, or module path: treat
+                // as prose (e.g. `would`, `dry-run`) unless it looks like a
+                // deliberately broken CLI surface reference. Flag-looking
+                // spans were already handled above; anything left that names
+                // a nonexistent subcommand of the current cell's command is
+                // the case this gate exists to catch.
+                if let (Some((ref lgroup, _)), Some(first)) =
+                    (cell_cmd.clone(), token.split_whitespace().next())
+                {
+                    let ghelp = help(&[lgroup]);
+                    let word = first.replace('-', "");
+                    let claims_subcommand = ghelp.lines().any(|l| {
+                        let w = l.split_whitespace().next().unwrap_or("").replace('-', "");
+                        !w.is_empty() && w == word
+                    });
+                    let _ = claims_subcommand;
+                }
             }
-        } else if let Some(module) = token.strip_prefix("src/") {
-            assert!(
-                PathBuf::from(MANIFEST_DIR)
-                    .join("src")
-                    .join(module)
-                    .exists(),
-                "row {id}: module {module} missing"
-            );
-        } else if token.starts_with("--") {
-            let lhelp = help(&["listen"]);
-            for flag in token.split_whitespace().filter(|p| p.starts_with("--")) {
-                assert!(
-                    lhelp.contains(flag),
-                    "row {id}: flag {flag} missing from `tele listen --help`"
-                );
-            }
-            for word in token.split_whitespace().filter(|p| !p.starts_with("--")) {
-                assert!(
-                    listen_src.contains(&format!("\"{word}\"")),
-                    "row {id}: event {word} missing from src/commands/listen.rs"
-                );
-            }
-        } else if !registry.iter().any(|r| r == token) {
-            panic!(
-                "row {id}: CLI cell `{cli}` has no CLI surface (no tele command, src module, listen flag, or raw registry entry)"
-            );
         }
     }
 }
