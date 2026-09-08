@@ -477,7 +477,10 @@ pub async fn import_session(
     }
     crate::config::ensure_app_data_dir()?;
     crate::fs_util::create_dir_private(&session_dir())?;
-    let _lock = acquire_lock_file(&name).await?;
+    // Size cap and header validation run WITHOUT the account lock so a big
+    // slow source copy cannot spuriously fail concurrent commands on the
+    // same account with "in use by another process"; the lock is taken only
+    // for the copy+probe+install window inside install_copied_session.
     let byte_len = std::fs::metadata(file)?.len();
     if byte_len > MAX_SESSION_FILE_BYTES {
         return Err(anyhow::anyhow!(
@@ -485,6 +488,7 @@ pub async fn import_session(
             file.display()
         ));
     }
+    let _lock = acquire_lock_file(&name).await?;
     install_copied_session(&name, file, byte_len).await
 }
 
@@ -521,6 +525,12 @@ async fn install_copied_session(
     if let Err(e) = probe_result {
         cleanup_partial_import(name);
         return Err(e.context("not a valid session file"));
+    }
+    // Remove any previous database's sidecars BEFORE the rename lands: a
+    // stale hot -wal from a crashed prior run would be replayed onto the
+    // imported session and corrupt it. The account lock is held here.
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(sidecar_path(name, suffix));
     }
     std::fs::rename(&tmp_path, &path)?;
     restrict_session_files(name)?;

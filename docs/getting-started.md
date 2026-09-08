@@ -180,6 +180,8 @@ tele takeout finish --account work
 
 Another tele process is using this account. Wait for it to finish, or check for hanging processes.
 
+Running `tele listen` / `tele serve` for long stretches: they are foreground programs, so run them under a supervisor (NSSM or Task Scheduler on Windows, systemd on Linux) with automatic restart. The OS-level session lock is held only while the process lives: a crashed holder releases it automatically and any leftover `.session.lock` marker file is harmless.
+
 ### "auth required"
 
 Run `tele account login --name NAME` to re-authenticate.

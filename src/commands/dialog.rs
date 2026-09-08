@@ -1130,8 +1130,12 @@ pub(crate) async fn dialog_folder_create_core(
     let mut max_id = 1i32;
     let tl::enums::messages::DialogFilters::Filters(f) = &filters;
     for filter in &f.filters {
-        if let tl::enums::DialogFilter::Filter(df) = filter {
-            max_id = max_id.max(df.id + 1);
+        // Chatlist folders carry ids in the same space; ignoring them let a
+        // new folder collide with an existing chatlist.
+        match filter {
+            tl::enums::DialogFilter::Filter(df) => max_id = max_id.max(df.id + 1),
+            tl::enums::DialogFilter::Chatlist(cl) => max_id = max_id.max(cl.id + 1),
+            _ => {}
         }
     }
     let new_id = max_id.max(2);
@@ -1164,6 +1168,25 @@ pub(crate) async fn dialog_folder_create_core(
         })
         .await
         .map_err(tele_invocation)?;
+    // Verify the folder survived the write: a racing creator could have
+    // overwritten this id between GetDialogFilters and UpdateDialogFilter.
+    let verify: tl::enums::messages::DialogFilters = shares
+        .client
+        .invoke(&tl::functions::messages::GetDialogFilters {})
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::messages::DialogFilters::Filters(vf) = &verify;
+    let created_ok = vf.filters.iter().any(|filter| match filter {
+        tl::enums::DialogFilter::Filter(df) => {
+            df.id == new_id && dialog_filter_title(&df.title) == params.title
+        }
+        _ => false,
+    });
+    if !created_ok {
+        return Err(TeleError::Other(format!(
+            "folder id {new_id} was overwritten by a concurrent create; re-run to allocate a fresh id"
+        )));
+    }
     Ok(serde_json::json!({ "id": new_id, "title": params.title, "created": true }))
 }
 

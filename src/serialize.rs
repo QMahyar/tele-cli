@@ -395,7 +395,9 @@ fn keyboard_button_to_json(button: &tl::enums::KeyboardButton) -> serde_json::Va
             out.insert("type".into(), serde_json::json!("callback"));
             out.insert("text".into(), serde_json::json!(b.text));
             let encoded = STANDARD.encode(&b.data);
-            let data_str = String::from_utf8(b.data.clone()).unwrap_or_default();
+            // Lossy UTF-8 per the contract: non-UTF-8 payloads keep their
+            // bytes via U+FFFD instead of collapsing to an empty string.
+            let data_str = String::from_utf8_lossy(&b.data).into_owned();
             out.insert("callback_data".into(), serde_json::json!(&encoded));
             out.insert("data".into(), serde_json::json!(&encoded));
             out.insert("data_str".into(), serde_json::json!(data_str));
@@ -1599,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_button_data_str_invalid_utf8_is_empty() {
+    fn callback_button_data_str_invalid_utf8_is_lossy() {
         let client = offline_client();
         let data = vec![0xff, 0xfe, 0xfd];
         let markup = inline_markup(vec![vec![callback_button("btn", &data)]]);
@@ -1607,7 +1609,11 @@ mod tests {
         set_reply_markup(&mut msg, Some(markup));
         let value = message_to_json(&msg).unwrap();
         let btn = &value["reply_markup"]["rows"][0][0];
-        assert_eq!(btn["data_str"], "");
+        // Lossy UTF-8: each invalid byte becomes the replacement char.
+        let data_str = btn["data_str"].as_str().unwrap();
+        assert_eq!(data_str.chars().count(), 3, "{data_str}");
+        let replacement: char = char::from_u32(0xFFFD).unwrap();
+        assert!(data_str.chars().all(|c| c == replacement), "{data_str}");
         assert_eq!(btn["data"], btn["callback_data"]);
     }
 

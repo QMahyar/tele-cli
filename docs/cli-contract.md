@@ -108,7 +108,7 @@ Rules:
 - Message objects may carry `media_kind` (`photo`, `document`, `sticker`, `poll`, and more) and `media_label` (a filename, emoji, or poll question; null when the kind has none), alongside the legacy colon-joined `media` string.
 - When present on the Telegram message, message objects may also carry `grouped_id`, `views`, `forwards`, `edit_date` (RFC 3339), `reply_to` (the replied-to message id), and `via_bot` (the inline bot user id). Absent keys are omitted, like the media block.
 - `dialog list` rows also carry `pinned` (bool), `unread_mark` (bool), `unread_mentions`, `unread_reactions`, and `last_message_date` (RFC 3339; null when the dialog has no last message).
-- `dialog drafts` keys drafts by chat id: positive for users, negated (`-chat_id` or `-channel_id`) for basic groups and channels. This matches the Telegram bare-id convention used by numeric `--chat` targets.
+- `dialog drafts` keys drafts by chat id: positive for users, negated for groups: `-chat_id` for basic groups and `-(1_000_000_000_000 + channel_id)` (the Bot-API `-100` form) for channels, exactly matching what numeric `--chat` targets accept.
 
 ## `chat permissions`
 

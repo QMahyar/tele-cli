@@ -519,12 +519,20 @@ fn is_emoji_codepoint(c: char) -> bool {
 }
 
 fn rand_seed() -> i64 {
+    use std::sync::atomic::{AtomicI64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static CALLS: AtomicI64 = AtomicI64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as i64)
         .unwrap_or(0);
-    nanos ^ (nanos << 21) ^ (nanos >> 19)
+    // Clock alone collides for same-tick concurrent creates (two accounts
+    // creating topics in the same nanosecond window); the process-wide
+    // counter guarantees distinct seeds per call.
+    let calls = CALLS
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15u64 as i64);
+    nanos ^ (nanos << 21) ^ (nanos >> 19) ^ calls
 }
 
 fn list_dry_run_payload(target: &str) -> serde_json::Value {

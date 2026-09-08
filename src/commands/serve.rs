@@ -906,9 +906,18 @@ async fn dispatch_action(
     params: serde_json::Value,
 ) -> TeleResult<()> {
     if op == "ping" {
-        let _ = responses
-            .send(response_ok(id, serde_json::json!({ "pong": true })))
-            .await;
+        let response = response_ok(id, serde_json::json!({ "pong": true }));
+        loop {
+            match responses.try_send(response.clone()) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Bounded backpressure: yield instead of blocking
+                    // intake when the driver stops reading stdout.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         return Ok(());
     }
     if op == "stream.resync" {
@@ -916,12 +925,34 @@ async fn dispatch_action(
         let selected = match resync_targets(served, &mut params) {
             Ok(a) => a,
             Err(error) => {
-                let _ = responses.send(response_err(Some(id), error)).await;
+                let response = response_err(Some(id), error);
+                loop {
+                    match responses.try_send(response.clone()) {
+                        Ok(()) => break,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            // Bounded backpressure: yield instead of blocking
+                            // intake when the driver stops reading stdout.
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                    }
+                }
                 return Ok(());
             }
         };
         if let Err(error) = validate_no_params(op, &params) {
-            let _ = responses.send(response_err(Some(id), error)).await;
+            let response = response_err(Some(id), error);
+            loop {
+                match responses.try_send(response.clone()) {
+                    Ok(()) => break,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Bounded backpressure: yield instead of blocking
+                        // intake when the driver stops reading stdout.
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
             return Ok(());
         }
         for name in &selected {
@@ -929,51 +960,146 @@ async fn dispatch_action(
                 let _ = tx.send(()).await;
             }
         }
-        let _ = responses
-            .send(response_ok(id, serde_json::json!({ "resync": "started" })))
-            .await;
+        let response = response_ok(id, serde_json::json!({ "resync": "started" }));
+        loop {
+            match responses.try_send(response.clone()) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Bounded backpressure: yield instead of blocking
+                    // intake when the driver stops reading stdout.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         return Ok(());
     }
     if op == "ops.list" {
         if let Err(error) = validate_no_params(op, &params) {
-            let _ = responses.send(response_err(Some(id), error)).await;
+            let response = response_err(Some(id), error);
+            loop {
+                match responses.try_send(response.clone()) {
+                    Ok(()) => break,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Bounded backpressure: yield instead of blocking
+                        // intake when the driver stops reading stdout.
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
             return Ok(());
         }
-        let _ = responses.send(response_ok(id, ops_list_data())).await;
+        let response = response_ok(id, ops_list_data());
+        loop {
+            match responses.try_send(response.clone()) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Bounded backpressure: yield instead of blocking
+                    // intake when the driver stops reading stdout.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         return Ok(());
     }
     let Some(route) = find_route(op) else {
-        let _ = responses
-            .send(response_err(Some(id), not_implemented(op)))
-            .await;
+        let response = response_err(Some(id), not_implemented(op));
+        loop {
+            match responses.try_send(response.clone()) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Bounded backpressure: yield instead of blocking
+                    // intake when the driver stops reading stdout.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         return Ok(());
     };
     let mut raw = params;
     let account = match select_op_account(served, &mut raw) {
         Ok(a) => a,
         Err(error) => {
-            let _ = responses.send(response_err(Some(id), error)).await;
+            let response = response_err(Some(id), error);
+            loop {
+                match responses.try_send(response.clone()) {
+                    Ok(()) => break,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Bounded backpressure: yield instead of blocking
+                        // intake when the driver stops reading stdout.
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
             return Ok(());
         }
     };
     if let Err(error) = apply_confirm_gate(op, route.destructive, route.planner, &mut raw) {
-        let _ = responses.send(response_err(Some(id), error)).await;
+        let response = response_err(Some(id), error);
+        loop {
+            match responses.try_send(response.clone()) {
+                Ok(()) => break,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Bounded backpressure: yield instead of blocking
+                    // intake when the driver stops reading stdout.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
         return Ok(());
     }
     match (route.planner)(op, raw) {
         Err(error) => {
-            let _ = responses.send(response_err(Some(id), error)).await;
+            let response = response_err(Some(id), error);
+            loop {
+                match responses.try_send(response.clone()) {
+                    Ok(()) => break,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Bounded backpressure: yield instead of blocking
+                        // intake when the driver stops reading stdout.
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
             Ok(())
         }
         Ok(Plan::DryRun(data)) => {
-            let _ = responses.send(response_ok(id, data)).await;
+            let response = response_ok(id, data);
+            loop {
+                match responses.try_send(response.clone()) {
+                    Ok(()) => break,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Bounded backpressure: yield instead of blocking
+                        // intake when the driver stops reading stdout.
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
             Ok(())
         }
         Ok(Plan::Execute(raw)) => {
             let shares = match pool.shares_for(&account) {
                 Ok(shares) => shares,
                 Err(error) => {
-                    let _ = responses.send(response_err(Some(id), error)).await;
+                    let response = response_err(Some(id), error);
+                    loop {
+                        match responses.try_send(response.clone()) {
+                            Ok(()) => break,
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                // Bounded backpressure: yield instead of blocking
+                                // intake when the driver stops reading stdout.
+                                tokio::time::sleep(Duration::from_millis(25)).await;
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                        }
+                    }
                     return Ok(());
                 }
             };
