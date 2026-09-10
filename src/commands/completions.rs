@@ -26,10 +26,56 @@ fn bin_name_from_arg(arg: Option<&str>) -> String {
         std::path::Path::new(p)
             .file_stem()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_owned())
+            .map(normalize_npm_stem)
     })
     .filter(|s| !s.is_empty())
     .unwrap_or_else(|| env!("CARGO_BIN_NAME").to_string())
+}
+
+/// The npm launcher spawns `tele-<target-triple>[.exe]` (legacy alias
+/// `telecli-`), so completions must collapse platform-suffixed stems back to
+/// the command name the user actually types.
+fn normalize_npm_stem(stem: &str) -> String {
+    for prefix in ["tele-", "telecli-"] {
+        if let Some(rest) = stem.strip_prefix(prefix) {
+            if looks_like_target_triple(rest) {
+                return prefix.trim_end_matches('-').to_string();
+            }
+        }
+    }
+    stem.to_string()
+}
+
+fn looks_like_target_triple(rest: &str) -> bool {
+    const ARCHES: &[&str] = &[
+        "x86_64",
+        "i686",
+        "i586",
+        "i386",
+        "aarch64",
+        "arm",
+        "thumb",
+        "riscv",
+        "wasm",
+        "loongarch",
+        "mips",
+        "powerpc",
+        "s390x",
+        "sparc",
+        "hexagon",
+        "xtensa",
+    ];
+    let segments: Vec<&str> = rest.split('-').collect();
+    if segments.len() < 3
+        || !segments.iter().all(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+    {
+        return false;
+    }
+    ARCHES.iter().any(|a| segments[0].starts_with(a))
 }
 
 pub async fn run(shell: Shell, _flags: &GlobalFlags) -> TeleResult<i32> {
@@ -93,6 +139,36 @@ mod tests {
     fn bin_name_from_arg_falls_back_to_cargo_bin_name() {
         assert_eq!(bin_name_from_arg(None), env!("CARGO_BIN_NAME"));
         assert_eq!(bin_name_from_arg(Some("")), env!("CARGO_BIN_NAME"));
+    }
+
+    #[test]
+    fn bin_name_from_arg_normalizes_npm_platform_suffixed_stems() {
+        assert_eq!(
+            bin_name_from_arg(Some("tele-x86_64-pc-windows-msvc")),
+            "tele"
+        );
+        assert_eq!(
+            bin_name_from_arg(Some("telecli-x86_64-pc-windows-msvc")),
+            "telecli"
+        );
+        assert_eq!(bin_name_from_arg(Some("tele-aarch64-apple-darwin")), "tele");
+        assert_eq!(
+            bin_name_from_arg(Some("tele-x86_64-unknown-linux-musl")),
+            "tele"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            bin_name_from_arg(Some("C:\\npm\\tele-x86_64-pc-windows-msvc.exe")),
+            "tele"
+        );
+    }
+
+    #[test]
+    fn bin_name_from_arg_keeps_alias_and_non_triple_stems() {
+        assert_eq!(bin_name_from_arg(Some("tele")), "tele");
+        assert_eq!(bin_name_from_arg(Some("tele.exe")), "tele");
+        assert_eq!(bin_name_from_arg(Some("telecli")), "telecli");
+        assert_eq!(bin_name_from_arg(Some("tele-server")), "tele-server");
     }
 
     #[test]
