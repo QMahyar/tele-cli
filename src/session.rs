@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -823,16 +823,28 @@ fn telethon_dc_sockets(
         anyhow::anyhow!("unsupported Telethon server_address {server_address:?}: not an IP literal")
     })?;
     let port = port as u16;
-    Ok(match ip {
-        IpAddr::V4(v4) => (
-            SocketAddrV4::new(v4, port),
-            SocketAddrV6::new(v4.to_ipv6_mapped(), port, 0, 0),
-        ),
-        IpAddr::V6(v6) => (
-            SocketAddrV4::new(v6.to_ipv4().unwrap_or(Ipv4Addr::UNSPECIFIED), port),
-            SocketAddrV6::new(v6, port, 0, 0),
-        ),
-    })
+    let v4 = match ip {
+        IpAddr::V4(v4) => v4,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(mapped) => mapped,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "unsupported Telethon server_address {server_address:?}: it is an IPv6-only \
+                     address; the session points at a data center reachable only over IPv6, \
+                     which this build cannot connect to. Re-login into a new session or import \
+                     one recorded with an IPv4 server_address"
+                ))
+            }
+        },
+    };
+    let v6 = match ip {
+        IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+        IpAddr::V6(v6) => v6,
+    };
+    Ok((
+        SocketAddrV4::new(v4, port),
+        SocketAddrV6::new(v6, port, 0, 0),
+    ))
 }
 
 pub async fn write_native_from_telethon(
@@ -1910,13 +1922,45 @@ mod tests {
 
         let mut ipv6 = fixture_telethon(2);
         ipv6.server_address = "2001:b28:f23d:f001::a".to_string();
-        write_native_from_telethon("ipv6case", &ipv6, false)
+        let err = write_native_from_telethon("ipv6case", &ipv6, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("IPv6"), "{err}");
+        assert!(
+            !session_path("ipv6case").exists(),
+            "rejected IPv6-only imports must write nothing"
+        );
+
+        let mut mapped = fixture_telethon(2);
+        mapped.server_address = "::ffff:149.154.167.51".to_string();
+        write_native_from_telethon("ipv6case", &mapped, false)
             .await
             .unwrap();
+        {
+            let reopened = open_session("ipv6case").await.unwrap();
+            let option = reopened.session.dc_option(2).unwrap().expect("dc option");
+            assert_eq!(option.ipv4.to_string(), "149.154.167.51:443");
+        }
         remove_session("ipv6case").await.unwrap();
 
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn telethon_dc_sockets_rejects_ipv6_only_address() {
+        let err = telethon_dc_sockets("2001:b28:f23d:f001::a", 443).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("IPv6"), "{msg}");
+        assert!(msg.contains("2001:b28:f23d:f001::a"), "{msg}");
+    }
+
+    #[test]
+    fn telethon_dc_sockets_maps_ipv4_mapped_v6_to_routable_v4() {
+        let (v4, _v6) = telethon_dc_sockets("::ffff:149.154.167.51", 443).unwrap();
+        assert_eq!(v4.to_string(), "149.154.167.51:443");
+        let (v4, _v6) = telethon_dc_sockets("149.154.167.51", 443).unwrap();
+        assert_eq!(v4.to_string(), "149.154.167.51:443");
     }
 
     #[test]
