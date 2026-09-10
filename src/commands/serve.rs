@@ -35,6 +35,8 @@ const SERVE_OUTPUT_CAPACITY: usize = 256;
 const SERVE_MAX_ACCOUNTS: usize = 32;
 const ACCOUNT_TICK_CAPACITY: usize = 256;
 
+type ServeResponseSender = tokio::sync::mpsc::Sender<serde_json::Value>;
+
 type ShareMap = std::sync::RwLock<HashMap<String, ServeShares>>;
 
 pub(crate) struct ServePool {
@@ -272,6 +274,30 @@ fn queue_full_envelope(id: u64, op: &str, lane: Lane) -> serde_json::Value {
             ),
         ),
     )
+}
+
+const RESPONSE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+const RESPONSE_RETRY_SLEEP: std::time::Duration = std::time::Duration::from_millis(20);
+
+async fn try_send_with_retry(
+    responses: &ServeResponseSender,
+    value: serde_json::Value,
+    budget: std::time::Duration,
+) -> bool {
+    if responses.try_send(value.clone()).is_ok() {
+        return true;
+    }
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        match responses.try_send(value.clone()) {
+            Ok(()) => return true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tokio::time::sleep(RESPONSE_RETRY_SLEEP).await;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return false,
+        }
+    }
+    false
 }
 
 const INLINE_OPS: &[(&str, &str, bool, bool, bool)] = &[
@@ -1124,7 +1150,15 @@ async fn dispatch_action(
                     let lane = route.lane;
                     job.guard.completed = true;
                     drop(job);
-                    let _ = responses.try_send(queue_full_envelope(id, op, lane));
+                    let envelope = queue_full_envelope(id, op, lane);
+                    if !try_send_with_retry(responses, envelope, RESPONSE_RETRY_BUDGET).await {
+                        output::log_line(
+                            "warn",
+                            &format!(
+                                "serve: dropped QueueFull reply for request {id} ({op}): response channel stayed saturated",
+                            ),
+                        );
+                    }
                 }
                 LaneSend::Closed => {
                     output::log_line("warn", "serve: op queue closed before dispatch");
@@ -3417,6 +3451,54 @@ mod tests {
             result.message().contains("giving up"),
             "give-up error must say so: {}",
             result.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn try_send_with_retry_gives_up_after_deadline_when_receiver_never_drains() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        tx.send(serde_json::json!({"filler": 0})).await.unwrap();
+        let value = serde_json::json!({"type": "response", "id": 9});
+        let sent = try_send_with_retry(&tx, value.clone(), RESPONSE_RETRY_SLEEP * 3).await;
+        assert!(!sent, "saturated channel with no drain must give up");
+        assert!(
+            tx.try_send(serde_json::json!({"probe": 1})).is_err(),
+            "channel must still be full"
+        );
+        let first = rx.recv().await.expect("original filler stays queued");
+        assert_eq!(first["filler"], 0);
+        assert!(rx.try_recv().is_err(), "gave-up value must not be enqueued");
+    }
+
+    #[tokio::test]
+    async fn try_send_with_retry_sends_as_capacity_frees() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        tx.send(serde_json::json!({"filler": 0})).await.unwrap();
+        let drainer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let first = rx.recv().await.expect("drained filler");
+            let second = rx.recv().await.expect("retry value after slot freed");
+            (first, second)
+        });
+        let value = serde_json::json!({"type": "response", "id": 8});
+        let sent = try_send_with_retry(&tx, value, RESPONSE_RETRY_BUDGET).await;
+        assert!(sent, "must send once a slot frees within the deadline");
+        let (first, second) = drainer.await.unwrap();
+        assert_eq!(first["filler"], 0);
+        assert_eq!(second["id"], 8);
+    }
+
+    #[tokio::test]
+    async fn try_send_with_retry_returns_false_immediately_when_channel_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        drop(rx);
+        let started = std::time::Instant::now();
+        let sent =
+            try_send_with_retry(&tx, serde_json::json!({"x": 1}), Duration::from_secs(5)).await;
+        assert!(!sent);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "closed channel must fail fast, not wait out the deadline"
         );
     }
 }
