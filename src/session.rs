@@ -142,9 +142,11 @@ fn sweep_session_artifacts(name: &str) -> anyhow::Result<()> {
         targets.push(sidecar_path(name, suffix));
     }
     let tmp_prefix = format!("{name}.session.tmp-");
+    let export_tmp_prefix = format!(".{name}.session.export.tmp-");
     if let Ok(entries) = std::fs::read_dir(session_dir()) {
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(&tmp_prefix) {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with(&tmp_prefix) || file_name.starts_with(&export_tmp_prefix) {
                 targets.push(entry.path());
             }
         }
@@ -267,6 +269,23 @@ pub struct ImportedSession {
     pub bytes: u64,
 }
 
+fn export_temp_path(dest: &Path) -> anyhow::Result<PathBuf> {
+    let stem = dest
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("cannot export to {}: not a file path", dest.display()))?
+        .to_string_lossy()
+        .to_string();
+    let rand: u16 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u16)
+        .unwrap_or(0);
+    Ok(dest.with_file_name(format!(".{stem}.tmp-{}-{rand}", std::process::id())))
+}
+
+#[cfg(test)]
+static TEST_FAIL_EXPORT_COPY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<ExportedSession> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     let source = session_path(name);
@@ -315,21 +334,39 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
     }
     let dest_for_task = dest.clone();
     let (size, sha) = tokio::task::spawn_blocking(move || -> anyhow::Result<(u64, String)> {
-        let mut f = crate::fs_util::create_file_private(&dest_for_task).map_err(|e| {
+        let tmp = export_temp_path(&dest_for_task)?;
+        #[cfg(test)]
+        if TEST_FAIL_EXPORT_COPY.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!(
+                "failed to copy session to {}: forced test failure",
+                dest_for_task.display()
+            );
+        }
+        let copy_result = (|| -> std::io::Result<u64> {
+            let mut f = crate::fs_util::create_file_private(&tmp)?;
+            let mut src = std::fs::File::open(&source)?;
+            let size = std::io::copy(&mut src, &mut f)?;
+            f.sync_all()?;
+            Ok(size)
+        })();
+        let size = match copy_result {
+            Ok(size) => size,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                anyhow::bail!("failed to copy session to {}: {e}", dest_for_task.display());
+            }
+        };
+        crate::fs_util::restrict_file_private(&tmp).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
             anyhow::anyhow!(
-                "failed to create export file {}: {e}",
+                "failed to restrict export file {}: {e}",
                 dest_for_task.display()
             )
         })?;
-        let mut src = std::fs::File::open(&source)?;
-        let size = std::io::copy(&mut src, &mut f).map_err(|e| {
-            let _ = std::fs::remove_file(&dest_for_task);
-            anyhow::anyhow!("failed to copy session to {}: {e}", dest_for_task.display())
-        })?;
-        f.sync_all().ok();
-        crate::fs_util::restrict_file_private(&dest_for_task).map_err(|e| {
+        std::fs::rename(&tmp, &dest_for_task).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
             anyhow::anyhow!(
-                "failed to restrict export file {}: {e}",
+                "failed to finalize export file {}: {e}",
                 dest_for_task.display()
             )
         })?;
@@ -1233,6 +1270,45 @@ mod tests {
         export_session("work", Some(&out.join("w.session")))
             .await
             .unwrap();
+        remove_session("work").await.unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn export_failure_preserves_preexisting_destination() {
+        let _guard = lock_env();
+        let dir = test_dir("export-preserves-dest");
+        let out = dir.join("out");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&out).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let dest = out.join("precious.session");
+        std::fs::write(&dest, b"do-not-destroy").unwrap();
+        TEST_FAIL_EXPORT_COPY.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = export_session("work", Some(&dest)).await.unwrap_err();
+        assert!(err.to_string().contains("failed to copy session"), "{err}");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"do-not-destroy",
+            "pre-existing destination must survive a failed export untouched"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec!["precious.session".to_string()],
+            "failed export must clean up its temp file"
+        );
         remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
