@@ -22,7 +22,7 @@ pub const SERVE_PROTOCOL_MIN: u32 = 1;
 
 const SERVE_EVENTS: &[&str] = &["NewMessage", "MessageEdited"];
 
-const SERVE_MAX_RECONNECT_ATTEMPTS: u32 = u32::MAX;
+const SERVE_MAX_RECONNECT_ATTEMPTS: u32 = 5;
 
 const SERVE_DEDUPE_CAP: usize = 10_000;
 
@@ -3374,5 +3374,49 @@ mod tests {
                 r.op
             );
         }
+    }
+
+    #[test]
+    fn serve_reconnect_attempts_match_documented_contract() {
+        assert_eq!(
+            SERVE_MAX_RECONNECT_ATTEMPTS, 5,
+            "docs/cli-contract.md promises reconnects 'up to 5 consecutive attempts'"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_stream_failure_gives_up_after_five_consecutive_attempts() {
+        let mut failures = 0u32;
+        for attempt in 0..5u32 {
+            let result = handle_stream_failure(
+                "acct",
+                TeleError::Other("boom".into()),
+                &mut failures,
+                Some(std::time::Instant::now()),
+                SERVE_MAX_RECONNECT_ATTEMPTS,
+            )
+            .await;
+            failures += attempt;
+            assert!(
+                result.is_ok(),
+                "failure {failures} within the 5-attempt cap must reconnect"
+            );
+            failures -= attempt;
+        }
+        assert_eq!(failures, 5);
+        let result = handle_stream_failure(
+            "acct",
+            TeleError::Other("boom".into()),
+            &mut failures,
+            Some(std::time::Instant::now()),
+            SERVE_MAX_RECONNECT_ATTEMPTS,
+        )
+        .await
+        .expect_err("6th consecutive failure must give up");
+        assert!(
+            result.message().contains("giving up"),
+            "give-up error must say so: {}",
+            result.message()
+        );
     }
 }
