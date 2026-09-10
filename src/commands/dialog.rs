@@ -179,7 +179,7 @@ pub async fn run(cmd: DialogCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    validate_limit(args.limit, 10_000, "limit")?;
+    validate_list(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
@@ -2460,6 +2460,44 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("--folder"));
+    }
+
+    #[tokio::test]
+    async fn list_rejects_out_of_range_folder() {
+        let flags = GlobalFlags {
+            account: vec!["work".to_string()],
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: None,
+            command: "dialog list".to_string(),
+        };
+        let err = list(
+            ListArgs {
+                limit: 20,
+                folder: Some(2),
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("--folder must be 0 or 1"));
+    }
+
+    #[test]
+    fn validate_list_accepts_zero_one_and_unset_folder() {
+        for folder in [None, Some(0), Some(1)] {
+            assert!(validate_list(&ListArgs { limit: 20, folder }).is_ok());
+        }
+        assert!(validate_list(&ListArgs {
+            limit: 20,
+            folder: Some(2)
+        })
+        .is_err());
     }
 
     #[test]
