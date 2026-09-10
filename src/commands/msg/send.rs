@@ -572,20 +572,71 @@ pub(crate) fn send_serve_dry_run(args: &SendArgs) -> TeleResult<serde_json::Valu
     Ok(send_dry_run_payload(args, schedule))
 }
 
-fn voice_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessage {
+pub(crate) fn file_message(
+    uploaded: grammers_client::media::Uploaded,
+    thumbnail: Option<grammers_client::media::Uploaded>,
+    is_image: bool,
+    media_ttl: Option<i32>,
+    format: &str,
+    caption: Option<String>,
+) -> InputMessage {
+    let caption = caption.unwrap_or_default();
+    let mut msg = match format {
+        "markdown" => InputMessage::new().markdown(caption),
+        _ => InputMessage::new().text(caption),
+    };
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    if is_image {
+        msg.photo(uploaded)
+    } else {
+        let msg = msg.document(uploaded);
+        match thumbnail {
+            Some(thumb) => msg.thumbnail(thumb),
+            None => msg,
+        }
+    }
+}
+
+pub(crate) fn url_message(url: &str, is_document: bool, media_ttl: Option<i32>) -> InputMessage {
+    let mut msg = InputMessage::new();
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    if is_document {
+        msg.document_url(url)
+    } else {
+        msg.photo_url(url)
+    }
+}
+
+fn voice_note_message(
+    uploaded: grammers_client::media::Uploaded,
+    media_ttl: Option<i32>,
+) -> InputMessage {
     use std::time::Duration;
-    InputMessage::new()
-        .document(uploaded)
+    let mut msg = InputMessage::new();
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    msg.document(uploaded)
         .attribute(grammers_client::media::Attribute::Voice {
             duration: Duration::ZERO,
             waveform: None,
         })
 }
 
-fn video_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessage {
+fn video_note_message(
+    uploaded: grammers_client::media::Uploaded,
+    media_ttl: Option<i32>,
+) -> InputMessage {
     use std::time::Duration;
-    InputMessage::new()
-        .document(uploaded)
+    let mut msg = InputMessage::new();
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    msg.document(uploaded)
         .attribute(grammers_client::media::Attribute::Video {
             round_message: true,
             supports_streaming: false,
@@ -598,10 +649,11 @@ fn video_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessag
 pub(crate) fn send_as_media_message(
     uploaded: grammers_client::media::Uploaded,
     as_media: &str,
+    media_ttl: Option<i32>,
 ) -> TeleResult<InputMessage> {
     match as_media {
-        "voice" => Ok(voice_note_message(uploaded)),
-        "video-note" => Ok(video_note_message(uploaded)),
+        "voice" => Ok(voice_note_message(uploaded, media_ttl)),
+        "video-note" => Ok(video_note_message(uploaded, media_ttl)),
         other => Err(TeleError::Usage(format!(
             "unknown --as {other:?} (valid: voice, video-note)"
         ))),
@@ -812,9 +864,6 @@ pub(crate) async fn send_core(
         if background {
             msg = msg.background(true);
         }
-        if let Some(ttl) = media_ttl {
-            msg = msg.media_ttl(ttl);
-        }
         msg
     };
     if let Some(src_chat) = &copy_from {
@@ -854,10 +903,7 @@ pub(crate) async fn send_core(
         return Ok(row);
     }
     if let Some(link) = &url {
-        let base = match kind.as_deref() {
-            Some("document") => InputMessage::new().document_url(link),
-            _ => InputMessage::new().photo_url(link),
-        };
+        let base = url_message(link, kind.as_deref() == Some("document"), media_ttl);
         let base = if let Some(cap) = &caption {
             match format.as_str() {
                 "markdown" => base.markdown(cap.clone()),
@@ -934,25 +980,26 @@ pub(crate) async fn send_core(
                 .map_err(upload_error)?
         };
         if let Some(as_media) = &as_media {
-            send_as_media_message(uploaded, as_media)?
+            send_as_media_message(uploaded, as_media, media_ttl)?
         } else {
-            let mut base = match format.as_str() {
-                "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
-                _ => InputMessage::new().text(caption.unwrap_or_default()),
+            let thumb = match &thumbnail {
+                Some(thumb_path) => Some(
+                    shares
+                        .client
+                        .upload_file(thumb_path)
+                        .await
+                        .map_err(upload_error)?,
+                ),
+                None => None,
             };
-            if let Some(thumb_path) = &thumbnail {
-                let thumb_uploaded = shares
-                    .client
-                    .upload_file(thumb_path)
-                    .await
-                    .map_err(upload_error)?;
-                base = base.thumbnail(thumb_uploaded);
-            }
-            if looks_like_image(path) {
-                base.photo(uploaded)
-            } else {
-                base.document(uploaded)
-            }
+            file_message(
+                uploaded,
+                thumb,
+                looks_like_image(path),
+                media_ttl,
+                format.as_str(),
+                caption,
+            )
         }
     } else {
         let text_owned = text.clone().unwrap_or_default();

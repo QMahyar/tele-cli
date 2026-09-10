@@ -8,8 +8,9 @@ use crate::commands::msg::download::{
 };
 use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
-    message_random_id, parse_as_media, parse_poll_mode, parse_schedule, send_dry_run_payload,
-    send_poll_message, split_chunk_opts, split_text_utf16,
+    file_message, message_random_id, parse_as_media, parse_poll_mode, parse_schedule,
+    send_as_media_message, send_dry_run_payload, send_poll_message, split_chunk_opts,
+    split_text_utf16, url_message,
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
@@ -2276,6 +2277,52 @@ fn split_text_utf16_respects_cap_and_prefers_paragraph_breaks() {
         .iter()
         .all(|c| c.chars().map(char::len_utf16).sum::<usize>() <= 4096));
     assert_eq!(chunks.concat(), flat);
+}
+
+fn uploaded_fixture(id: i64, name: &str) -> grammers_client::media::Uploaded {
+    grammers_client::media::Uploaded {
+        raw: tl::enums::InputFile::Big(tl::types::InputFileBig {
+            id,
+            parts: 1,
+            name: name.to_string(),
+        }),
+    }
+}
+
+#[test]
+fn file_message_builds_document_and_photo_media_from_upload_inputs() {
+    let uploaded = uploaded_fixture(1, "clip.mp4");
+    let thumb = uploaded_fixture(2, "thumb.jpg");
+    let _doc = file_message(
+        uploaded.clone(),
+        Some(thumb),
+        false,
+        Some(60),
+        "plain",
+        None,
+    );
+    let _photo = file_message(
+        uploaded,
+        None,
+        true,
+        Some(30),
+        "markdown",
+        Some("cap".to_string()),
+    );
+}
+
+#[test]
+fn url_message_builds_photo_and_document_external_from_url_inputs() {
+    let _doc = url_message("https://example.com/f.bin", true, Some(60));
+    let _photo = url_message("https://example.com/p.jpg", false, None);
+}
+
+#[test]
+fn send_as_media_message_accepts_media_ttl() {
+    let uploaded = uploaded_fixture(3, "note.ogg");
+    assert!(send_as_media_message(uploaded.clone(), "voice", Some(60)).is_ok());
+    assert!(send_as_media_message(uploaded.clone(), "video-note", Some(60)).is_ok());
+    assert!(send_as_media_message(uploaded, "photo", None).is_err());
 }
 
 #[test]
