@@ -2342,6 +2342,33 @@ fn export_payload(rows: &[serde_json::Value], format: &str) -> String {
     body
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExportScan {
+    Skip,
+    Stop,
+    CapReached,
+    Keep,
+}
+
+pub(crate) fn export_scan_decision(
+    served: usize,
+    limit: usize,
+    date_ts: i64,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> ExportScan {
+    if until.is_some_and(|u| date_ts > u) {
+        return ExportScan::Skip;
+    }
+    if since.is_some_and(|s| date_ts < s) {
+        return ExportScan::Stop;
+    }
+    if served >= limit {
+        return ExportScan::CapReached;
+    }
+    ExportScan::Keep
+}
+
 pub(crate) async fn export_core(
     shares: &crate::client::ServeShares,
     params: ExportParams,
@@ -2362,18 +2389,28 @@ pub(crate) async fn export_core(
     if let Some(offset) = params.offset_id {
         iter = iter.offset_id(offset);
     }
-    iter = iter.limit(params.limit as usize);
+    let since_ts = since.as_ref().map(|d| d.timestamp());
+    let until_ts = until.as_ref().map(|d| d.timestamp());
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut scanned = 0usize;
     let mut served = 0usize;
+    let mut truncated = false;
     while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
         scanned += 1;
-        let date = msg.date();
-        if until.is_some_and(|u| date.timestamp() > u.timestamp()) {
-            continue;
-        }
-        if since.is_some_and(|s| date.timestamp() < s.timestamp()) {
-            break;
+        match export_scan_decision(
+            served,
+            params.limit as usize,
+            msg.date().timestamp(),
+            since_ts,
+            until_ts,
+        ) {
+            ExportScan::Skip => continue,
+            ExportScan::Stop => break,
+            ExportScan::CapReached => {
+                truncated = true;
+                break;
+            }
+            ExportScan::Keep => {}
         }
         served += 1;
         shares.rate_limiter.acquire_for_items(served).await;
@@ -2384,7 +2421,6 @@ pub(crate) async fn export_core(
         }
         rows.push(row);
     }
-    let truncated = scanned >= params.limit as usize;
     match &params.out {
         Some(out) => {
             let body = export_payload(&rows, &params.format);
@@ -2459,6 +2495,83 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 #[allow(clippy::await_holding_lock)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod msg_mod_tests {
+    use super::*;
+
+    #[test]
+    fn export_scan_decision_returns_keep_for_exactly_limit_messages() {
+        let limit = 3usize;
+        let mut served = 0usize;
+        for ts in [1_100i64, 1_200, 1_300] {
+            assert_eq!(
+                export_scan_decision(served, limit, ts, None, None),
+                ExportScan::Keep
+            );
+            served += 1;
+        }
+        assert_eq!(served, limit);
+    }
+
+    #[test]
+    fn export_scan_decision_reports_truncation_only_when_extra_message_exists() {
+        let limit = 3usize;
+        let mut served = 0usize;
+        for ts in [1_100i64, 1_200, 1_300] {
+            assert_eq!(
+                export_scan_decision(served, limit, ts, None, None),
+                ExportScan::Keep
+            );
+            served += 1;
+        }
+        assert_eq!(
+            export_scan_decision(served, limit, 1_400, None, None),
+            ExportScan::CapReached
+        );
+    }
+
+    #[test]
+    fn export_scan_decision_orders_until_skip_and_since_stop_before_cap() {
+        let limit = 1usize;
+        assert_eq!(
+            export_scan_decision(1, limit, 2_000, None, Some(1_000)),
+            ExportScan::Skip
+        );
+        assert_eq!(
+            export_scan_decision(1, limit, 500, Some(1_000), None),
+            ExportScan::Stop
+        );
+        assert_eq!(
+            export_scan_decision(1, limit, 1_500, None, None),
+            ExportScan::CapReached
+        );
+    }
+
+    #[test]
+    fn export_scan_decision_until_skips_do_not_consume_row_budget_or_report_truncation() {
+        let until = Some(1_000i64);
+        let msgs = [1_400i64, 1_300, 1_200, 1_100, 1_050, 990, 980, 970];
+        let mut served = 0usize;
+        let mut rows = 0usize;
+        let mut truncated = false;
+        for ts in msgs {
+            match export_scan_decision(served, 4, ts, None, until) {
+                ExportScan::Skip => continue,
+                ExportScan::Stop => break,
+                ExportScan::CapReached => {
+                    truncated = true;
+                    break;
+                }
+                ExportScan::Keep => {}
+            }
+            served += 1;
+            rows += 1;
+        }
+        assert_eq!(rows, 3);
+        assert!(!truncated);
+    }
+}
 
 pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
     use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
