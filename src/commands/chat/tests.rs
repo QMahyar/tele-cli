@@ -1762,6 +1762,27 @@ fn banned_rights_csv_rejects_bad_entries() {
 }
 
 #[test]
+fn ban_default_view_messages_applies_only_without_explicit_view_messages() {
+    assert!(ban_defaults_view_messages(true, &[]));
+    assert!(!ban_defaults_view_messages(false, &[]));
+
+    let csv_without = parse_banned_rights_csv("send_stickers:false").unwrap();
+    assert!(ban_defaults_view_messages(true, &csv_without));
+    assert!(!ban_defaults_view_messages(false, &csv_without));
+
+    for value in ["view_messages:true", "view_messages:false"] {
+        let csv = parse_banned_rights_csv(value).unwrap();
+        assert!(
+            !ban_defaults_view_messages(true, &csv),
+            "explicit {value} must win over the --ban default"
+        );
+    }
+
+    let mixed = parse_banned_rights_csv("send_stickers:false,view_messages:true").unwrap();
+    assert!(!ban_defaults_view_messages(true, &mixed));
+}
+
+#[test]
 fn kick_duration_requires_ban_or_rights() {
     let base = |duration: Option<String>, ban: bool, rights: Option<String>| KickArgs {
         chat: "@c".to_string(),
