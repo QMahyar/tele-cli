@@ -13,7 +13,8 @@ const ACCOUNT_TIMEOUT_SECS: u64 = 300;
 /// streaming) run without the per-account timeout budget; the documented lane
 /// table in docs/cli-contract.md mirrors this (download = none). Timeout
 /// here would kill mid-transfer work and report a misleading exit 3.
-const UNBUDGETED_COMMANDS: &[&str] = &["msg download", "story send", "takeout export"];
+const UNBUDGETED_COMMANDS: &[&str] =
+    &["msg download", "msg export", "story send", "takeout export"];
 
 fn command_is_unbudgeted(command: &str) -> bool {
     UNBUDGETED_COMMANDS
@@ -1043,14 +1044,17 @@ mod tests {
 
     #[test]
     fn unbudgeted_commands_cover_long_lanes() {
-        assert!(command_is_unbudgeted("msg download"));
-        assert!(command_is_unbudgeted("story send"));
-        assert!(command_is_unbudgeted("takeout export"));
+        for lane in ["msg download", "msg export", "story send", "takeout export"] {
+            assert!(
+                command_is_unbudgeted(lane),
+                "documented no-budget lane {lane} must run without the 300s budget"
+            );
+            assert!(
+                command_is_unbudgeted(&format!("{lane} --flag")),
+                "subforms of {lane} stay unbudgeted"
+            );
+        }
         assert!(!command_is_unbudgeted("msg send"));
-        assert!(
-            command_is_unbudgeted("msg download --all"),
-            "subforms stay unbudgeted"
-        );
         assert!(!command_is_unbudgeted("listen"));
     }
 
