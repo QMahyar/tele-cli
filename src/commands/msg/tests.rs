@@ -9,7 +9,7 @@ use crate::commands::msg::download::{
 use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
     message_random_id, parse_as_media, parse_poll_mode, parse_schedule, send_dry_run_payload,
-    send_poll_message, split_text_utf16,
+    send_poll_message, split_chunk_opts, split_text_utf16,
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
@@ -2276,6 +2276,24 @@ fn split_text_utf16_respects_cap_and_prefers_paragraph_breaks() {
         .iter()
         .all(|c| c.chars().map(char::len_utf16).sum::<usize>() <= 4096));
     assert_eq!(chunks.concat(), flat);
+}
+
+#[test]
+fn split_chunk_opts_applies_reply_and_schedule_to_first_chunk_only() {
+    let reply = Some(42);
+    let schedule = Some(1_700_000_000);
+    let (chunk_reply, chunk_schedule) = split_chunk_opts(0, reply, schedule);
+    assert_eq!(chunk_reply, reply, "first chunk keeps --reply");
+    assert_eq!(chunk_schedule, schedule, "first chunk keeps --schedule");
+
+    for chunk in [1usize, 2, 7] {
+        let (chunk_reply, chunk_schedule) = split_chunk_opts(chunk, reply, schedule);
+        assert!(chunk_reply.is_none(), "chunk {chunk} must not reply");
+        assert!(chunk_schedule.is_none(), "chunk {chunk} must not schedule");
+    }
+
+    let (chunk_reply, chunk_schedule) = split_chunk_opts(0, None, None);
+    assert!(chunk_reply.is_none() && chunk_schedule.is_none());
 }
 
 #[test]

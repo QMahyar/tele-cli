@@ -731,6 +731,29 @@ pub(crate) fn split_text_utf16(text: &str, cap: usize) -> Vec<String> {
     out
 }
 
+pub(crate) fn split_chunk_opts(
+    chunk: usize,
+    reply: Option<i32>,
+    schedule: Option<u64>,
+) -> (Option<i32>, Option<u64>) {
+    if chunk == 0 {
+        (reply, schedule)
+    } else {
+        (None, None)
+    }
+}
+
+fn apply_schedule(msg: InputMessage, schedule: Option<u64>) -> InputMessage {
+    match schedule {
+        None => msg,
+        Some(0) => msg.schedule_once_online(),
+        Some(s) => {
+            let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
+            msg.schedule_date(Some(ts))
+        }
+    }
+}
+
 pub(crate) async fn send_core(
     shares: &crate::client::ServeShares,
     params: SendParams,
@@ -781,7 +804,7 @@ pub(crate) async fn send_core(
         crate::serialize::upgrade_peer_identity(&mut row, &chat);
         return Ok(row);
     }
-    let apply_common = |msg: InputMessage| -> InputMessage {
+    let apply_common = |msg: InputMessage, reply: Option<i32>| -> InputMessage {
         let mut msg = msg.reply_to(reply);
         if silent {
             msg = msg.silent(true);
@@ -823,7 +846,7 @@ pub(crate) async fn send_core(
         let base = base.link_preview(preview);
         let sent = shares
             .client
-            .send_message(chat_ref, apply_common(base))
+            .send_message(chat_ref, apply_common(base, reply))
             .await
             .map_err(tele_invocation)?;
         let mut row = crate::serialize::message_to_json(&sent)?;
@@ -846,7 +869,7 @@ pub(crate) async fn send_core(
         let base = base.link_preview(preview);
         let sent = shares
             .client
-            .send_message(chat_ref, apply_common(base))
+            .send_message(chat_ref, apply_common(base, reply))
             .await
             .map_err(tele_invocation)?;
         let mut row = crate::serialize::message_to_json(&sent)?;
@@ -946,19 +969,9 @@ pub(crate) async fn send_core(
                     _ => InputMessage::new().text(chunk),
                 };
                 let base = base.link_preview(preview);
-                let base = if i == 0 { base.reply_to(reply) } else { base };
-                let msg = apply_common(base);
-                let msg = if let Some(s) = schedule {
-                    if s == 0 {
-                        msg.schedule_once_online()
-                    } else {
-                        let ts =
-                            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
-                        msg.schedule_date(Some(ts))
-                    }
-                } else {
-                    msg
-                };
+                let (chunk_reply, chunk_schedule) = split_chunk_opts(i, reply, schedule);
+                let msg = apply_common(base, chunk_reply);
+                let msg = apply_schedule(msg, chunk_schedule);
                 let sent = shares
                     .client
                     .send_message(chat_ref, msg)
@@ -999,15 +1012,8 @@ pub(crate) async fn send_core(
         };
         base.link_preview(preview)
     };
-    if let Some(s) = schedule {
-        if s == 0 {
-            msg = msg.schedule_once_online();
-        } else {
-            let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
-            msg = msg.schedule_date(Some(ts));
-        }
-    }
-    msg = apply_common(msg);
+    msg = apply_schedule(msg, schedule);
+    msg = apply_common(msg, reply);
     let sent = shares
         .client
         .send_message(chat_ref, msg)
