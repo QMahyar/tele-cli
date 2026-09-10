@@ -2024,6 +2024,49 @@ async fn delete_dry_run_with_yes_is_offline_noop() {
     .await;
 }
 
+#[tokio::test]
+async fn delete_refuses_interactive_when_tag_resolves_to_multiple_accounts() {
+    with_tele_app_env(|dir| async move {
+        std::fs::write(
+            dir.join("config.toml"),
+            "[accounts.alpha]\ntags = [\"prod\"]\n\n[accounts.beta]\ntags = [\"prod\"]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions").join("alpha.session"), b"x").unwrap();
+        std::fs::write(dir.join("sessions").join("beta.session"), b"x").unwrap();
+        let mut flags = test_flags("account delete", true, true, &dir.join("config.toml"));
+        flags.tag = vec!["prod".to_string()];
+        let err = delete(&delete_args("Delete my account", true), &flags)
+            .await
+            .unwrap_err();
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE, "{err}");
+        assert!(err.message().contains("single --account"), "{err}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn delete_allows_single_resolved_tagged_account_offline() {
+    with_tele_app_env(|dir| async move {
+        std::fs::write(
+            dir.join("config.toml"),
+            "[accounts.solo]\ntags = [\"prod\"]\n\n[accounts.other]\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions").join("solo.session"), b"x").unwrap();
+        let mut flags = test_flags("account delete", true, true, &dir.join("config.toml"));
+        flags.tag = vec!["prod".to_string()];
+        let code = delete(&delete_args("Delete my account", true), &flags)
+            .await
+            .unwrap();
+        assert_eq!(code, 0);
+        assert!(dir.join("sessions").join("solo.session").exists());
+    })
+    .await;
+}
+
 #[test]
 fn delete_dry_run_row_carries_would_and_reason() {
     let row = delete_dry_run_data("work", "spam");
