@@ -240,19 +240,19 @@ pub struct ResolvedTarget {
 
 pub fn parse_target(target: &str) -> crate::error::TeleResult<ResolvedTarget> {
     let t = target.trim();
-    if let Some(digits) = t
-        .strip_prefix('+')
-        .map(|p| p.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
-    {
-        if digits.len() < MIN_PHONE_DIGITS {
-            return Err(crate::error::TeleError::Usage(format!(
-                "phone target {target:?} has too few digits (minimum {MIN_PHONE_DIGITS}, including country code)"
-            )));
+    if let Some(rest) = t.strip_prefix('+') {
+        if is_phone_shaped(rest) {
+            let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() < MIN_PHONE_DIGITS {
+                return Err(crate::error::TeleError::Usage(format!(
+                    "phone target {target:?} has too few digits (minimum {MIN_PHONE_DIGITS}, including country code)"
+                )));
+            }
+            return Ok(ResolvedTarget {
+                peer_ref: format!("+{digits}"),
+                msg_id: None,
+            });
         }
-        return Ok(ResolvedTarget {
-            peer_ref: format!("+{digits}"),
-            msg_id: None,
-        });
     }
     if let Ok(id) = t.parse::<i64>() {
         if id == 0 {
@@ -397,10 +397,22 @@ enum Target {
 
 /// Formatting characters accepted inside a `+phone` target beyond digits.
 /// `parse_target` strips exactly these when extracting digits, so
-/// `classify_target` must accept the same set or the two disagree (e.g.
-/// `+1 (555) 123` would classify as a username).
+/// `is_phone_shaped` must gate both routers on the same set or the two
+/// disagree (e.g. `+1 (555) 123` would classify as a username).
 fn is_phone_formatting(c: char) -> bool {
     c == ' ' || c == '-' || c == '(' || c == ')' || c == '.'
+}
+
+/// Shared phone-shape gate so `parse_target` and `classify_target` route
+/// every `+`-prefixed target identically: digits plus formatting characters
+/// only, capped at 15 digits (E.164); an empty digit run stays phone-shaped.
+fn is_phone_shaped(rest: &str) -> bool {
+    let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits.is_empty()
+        || (digits.len() <= 15
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_digit() || is_phone_formatting(c)))
 }
 
 /// Real phone numbers carry a country code; anything shorter is a typo (or
@@ -410,15 +422,8 @@ pub(crate) const MIN_PHONE_DIGITS: usize = 5;
 fn classify_target(raw: &str) -> Target {
     let t = raw.trim();
     if let Some(rest) = t.strip_prefix('+') {
-        let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.is_empty() {
-            return Target::Phone(digits);
-        }
-        if digits.len() <= 15
-            && rest
-                .chars()
-                .all(|c| c.is_ascii_digit() || is_phone_formatting(c))
-        {
+        if is_phone_shaped(rest) {
+            let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
             return Target::Phone(digits);
         }
     }
@@ -1872,5 +1877,78 @@ mod tests {
                 Target::Numeric(-(1_000_000_000_000i64 + raw))
             );
         }
+    }
+
+    #[test]
+    fn parse_and_classify_agree_on_plus_prefixed_phone_targets() {
+        for (raw, digits) in [
+            ("+989121234567", "989121234567"),
+            ("+98 912 123 4567", "989121234567"),
+            ("+1 (555) 123", "1555123"),
+            ("+1-555-123-4567", "15551234567"),
+            ("+1555123", "1555123"),
+        ] {
+            assert_eq!(
+                classify_target(raw),
+                Target::Phone(digits.to_string()),
+                "{raw}"
+            );
+            let rt = parse_target(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
+            assert_eq!(rt.peer_ref, format!("+{digits}"), "{raw}");
+            assert_eq!(rt.msg_id, None, "{raw}");
+        }
+        for raw in ["+", "+abc"] {
+            assert_eq!(classify_target(raw), Target::Phone(String::new()), "{raw}");
+            let err = parse_target(raw).unwrap_err();
+            assert!(
+                matches!(err, crate::error::TeleError::Usage(_)),
+                "{raw}: {err}"
+            );
+        }
+        for (raw, digits) in [("+1", "1"), ("+123", "123"), ("+ (555)", "555")] {
+            assert_eq!(
+                classify_target(raw),
+                Target::Phone(digits.to_string()),
+                "{raw}"
+            );
+            let err = parse_target(raw).unwrap_err();
+            assert!(
+                matches!(err, crate::error::TeleError::Usage(_)),
+                "{raw}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_and_classify_agree_on_non_phone_plus_targets() {
+        for raw in ["+1-555-ext9", "+15551234567ext9", "+15551234567 x"] {
+            assert!(
+                !matches!(classify_target(raw), Target::Phone(_)),
+                "{raw} must not classify as a phone"
+            );
+            let rt = parse_target(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
+            assert_eq!(rt.peer_ref, raw, "{raw} must keep the original text");
+        }
+        assert_eq!(
+            classify_target("+1234567890123456"),
+            Target::Numeric(1234567890123456)
+        );
+        assert_eq!(
+            parse_target("+1234567890123456")
+                .unwrap()
+                .peer_ref
+                .parse::<i64>()
+                .unwrap(),
+            1234567890123456,
+            "16-digit + targets resolve numerically, not as phones"
+        );
+        assert!(matches!(
+            classify_target("+12345678901234567890"),
+            Target::Username(_)
+        ));
+        assert_eq!(
+            parse_target("+12345678901234567890").unwrap().peer_ref,
+            "+12345678901234567890"
+        );
     }
 }
