@@ -300,6 +300,16 @@ async fn try_send_with_retry(
     false
 }
 
+async fn send_reply(responses: &ServeResponseSender, id: u64, reply: serde_json::Value) {
+    if try_send_with_retry(responses, reply, RESPONSE_RETRY_BUDGET).await {
+        return;
+    }
+    output::log_line(
+        "warn",
+        &format!("serve: dropped reply for request {id}: response channel stayed saturated"),
+    );
+}
+
 const INLINE_OPS: &[(&str, &str, bool, bool, bool)] = &[
     (
         "ops.list",
@@ -933,17 +943,7 @@ async fn dispatch_action(
 ) -> TeleResult<()> {
     if op == "ping" {
         let response = response_ok(id, serde_json::json!({ "pong": true }));
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     if op == "stream.resync" {
@@ -952,33 +952,13 @@ async fn dispatch_action(
             Ok(a) => a,
             Err(error) => {
                 let response = response_err(Some(id), error);
-                loop {
-                    match responses.try_send(response.clone()) {
-                        Ok(()) => break,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            // Bounded backpressure: yield instead of blocking
-                            // intake when the driver stops reading stdout.
-                            tokio::time::sleep(Duration::from_millis(25)).await;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                    }
-                }
+                send_reply(responses, id, response).await;
                 return Ok(());
             }
         };
         if let Err(error) = validate_no_params(op, &params) {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             return Ok(());
         }
         for name in &selected {
@@ -987,62 +967,22 @@ async fn dispatch_action(
             }
         }
         let response = response_ok(id, serde_json::json!({ "resync": "started" }));
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     if op == "ops.list" {
         if let Err(error) = validate_no_params(op, &params) {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             return Ok(());
         }
         let response = response_ok(id, ops_list_data());
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     let Some(route) = find_route(op) else {
         let response = response_err(Some(id), not_implemented(op));
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     };
     let mut raw = params;
@@ -1050,64 +990,24 @@ async fn dispatch_action(
         Ok(a) => a,
         Err(error) => {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             return Ok(());
         }
     };
     if let Err(error) = apply_confirm_gate(op, route.destructive, route.planner, &mut raw) {
         let response = response_err(Some(id), error);
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     match (route.planner)(op, raw) {
         Err(error) => {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             Ok(())
         }
         Ok(Plan::DryRun(data)) => {
             let response = response_ok(id, data);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             Ok(())
         }
         Ok(Plan::Execute(raw)) => {
@@ -1115,17 +1015,7 @@ async fn dispatch_action(
                 Ok(shares) => shares,
                 Err(error) => {
                     let response = response_err(Some(id), error);
-                    loop {
-                        match responses.try_send(response.clone()) {
-                            Ok(()) => break,
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                // Bounded backpressure: yield instead of blocking
-                                // intake when the driver stops reading stdout.
-                                tokio::time::sleep(Duration::from_millis(25)).await;
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                        }
-                    }
+                    send_reply(responses, id, response).await;
                     return Ok(());
                 }
             };
@@ -3519,5 +3409,51 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "closed channel must fail fast, not wait out the deadline"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatch_ping_reply_survives_saturated_response_channel() {
+        let pool = ServePool {
+            shares: std::sync::RwLock::new(HashMap::new()),
+            resync: HashMap::new(),
+        };
+        let mutations = tokio::sync::mpsc::channel::<Job>(4).0;
+        let reads: Vec<tokio::sync::mpsc::Sender<Job>> = Vec::new();
+        let read_counter = std::sync::atomic::AtomicUsize::new(0);
+        let (response_tx, mut response_rx) =
+            tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
+        for i in 0..RESPONSE_CAPACITY {
+            response_tx
+                .send(serde_json::json!({"filler": i}))
+                .await
+                .unwrap();
+        }
+        let drainer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            while response_rx.try_recv().is_ok() {}
+            response_rx.recv().await
+        });
+        let started = std::time::Instant::now();
+        dispatch_action(
+            &pool,
+            &[],
+            &mutations,
+            &reads,
+            &read_counter,
+            &response_tx,
+            9,
+            "ping",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("ping dispatch must succeed");
+        let reply = tokio::time::timeout(Duration::from_secs(3), drainer)
+            .await
+            .expect("ping reply must land well within the retry budget")
+            .expect("drainer task joined")
+            .expect("ping reply present");
+        assert!(started.elapsed() >= Duration::from_millis(25));
+        assert_eq!(reply["id"], 9);
+        assert_eq!(reply["data"]["pong"], true);
     }
 }
