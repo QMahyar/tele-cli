@@ -1786,6 +1786,48 @@ fn settings_args(chat: &str) -> SettingsArgs {
     }
 }
 
+fn settings_serve_params(chat: &str) -> SettingsServeParams {
+    SettingsServeParams {
+        chat: chat.to_string(),
+        slow_mode: None,
+        noforwards: None,
+        signatures: None,
+        pre_history: None,
+        join_request: None,
+        dry_run: false,
+    }
+}
+
+#[test]
+fn settings_toggles_parse_noforwards_from_serve_params() {
+    let mut params = settings_serve_params("@x");
+    params.noforwards = Some("on".to_string());
+    let toggles = SettingsToggles::parse(&params).unwrap();
+    assert_eq!(toggles.noforwards, Some(true));
+    assert!(toggles.any(), "noforwards on must count as a toggle");
+
+    params.noforwards = Some("off".to_string());
+    let toggles = SettingsToggles::parse(&params).unwrap();
+    assert_eq!(toggles.noforwards, Some(false));
+    assert!(toggles.any());
+}
+
+#[test]
+fn settings_toggles_reject_invalid_noforwards_like_siblings() {
+    let mut params = settings_serve_params("@x");
+    params.noforwards = Some("maybe".to_string());
+    assert!(matches!(
+        SettingsToggles::parse(&params),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn settings_toggles_without_any_value_read_instead_of_toggle() {
+    let toggles = SettingsToggles::parse(&settings_serve_params("@x")).unwrap();
+    assert!(!toggles.any());
+}
+
 #[test]
 fn on_off_values_parse_strictly() {
     assert_eq!(parse_on_off(None).unwrap(), None);

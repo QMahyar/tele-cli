@@ -1985,18 +1985,39 @@ pub(crate) async fn current_signature_profiles(
         .unwrap_or(false))
 }
 
+struct SettingsToggles {
+    slow_mode: Option<i32>,
+    noforwards: Option<bool>,
+    signatures: Option<bool>,
+    pre_history: Option<bool>,
+    join_request: Option<bool>,
+}
+
+impl SettingsToggles {
+    fn parse(params: &SettingsServeParams) -> TeleResult<Self> {
+        Ok(Self {
+            slow_mode: parse_slow_mode(params.slow_mode.as_deref())?,
+            noforwards: parse_on_off(params.noforwards.as_deref())?,
+            signatures: parse_on_off(params.signatures.as_deref())?,
+            pre_history: parse_on_off(params.pre_history.as_deref())?,
+            join_request: parse_on_off(params.join_request.as_deref())?,
+        })
+    }
+
+    fn any(&self) -> bool {
+        self.slow_mode.is_some()
+            || self.noforwards.is_some()
+            || self.signatures.is_some()
+            || self.pre_history.is_some()
+            || self.join_request.is_some()
+    }
+}
+
 pub(crate) async fn chat_settings_core(
     shares: &crate::client::ServeShares,
     params: SettingsServeParams,
 ) -> TeleResult<serde_json::Value> {
-    let slow_mode = parse_slow_mode(params.slow_mode.as_deref())?;
-    let signatures = parse_on_off(params.signatures.as_deref())?;
-    let pre_history = parse_on_off(params.pre_history.as_deref())?;
-    let join_request = parse_on_off(params.join_request.as_deref())?;
-    let has_toggles = slow_mode.is_some()
-        || signatures.is_some()
-        || pre_history.is_some()
-        || join_request.is_some();
+    let toggles = SettingsToggles::parse(&params)?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -2011,9 +2032,9 @@ pub(crate) async fn chat_settings_core(
     let input_channel = entities::input_channel(&chat)
         .await
         .map_err(tele_invocation)?;
-    if has_toggles {
+    if toggles.any() {
         let mut applied = Vec::new();
-        if let Some(secs) = slow_mode {
+        if let Some(secs) = toggles.slow_mode {
             applied.push("slow_mode");
             shares.rate_limiter.acquire().await;
             shares
@@ -2025,7 +2046,7 @@ pub(crate) async fn chat_settings_core(
                 .await
                 .map_err(tele_invocation)?;
         }
-        if let Some(enabled) = signatures {
+        if let Some(enabled) = toggles.signatures {
             applied.push("signatures");
             shares.rate_limiter.acquire().await;
             let profiles = current_signature_profiles(&shares.client, &input_channel).await?;
@@ -2039,7 +2060,7 @@ pub(crate) async fn chat_settings_core(
                 .await
                 .map_err(tele_invocation)?;
         }
-        if let Some(enabled) = pre_history {
+        if let Some(enabled) = toggles.pre_history {
             applied.push("pre_history");
             shares.rate_limiter.acquire().await;
             shares
@@ -2051,7 +2072,7 @@ pub(crate) async fn chat_settings_core(
                 .await
                 .map_err(tele_invocation)?;
         }
-        if let Some(enabled) = join_request {
+        if let Some(enabled) = toggles.join_request {
             applied.push("join_request");
             shares.rate_limiter.acquire().await;
             shares
@@ -2061,6 +2082,20 @@ pub(crate) async fn chat_settings_core(
                     channel: input_channel.clone(),
                     enabled,
                     guard_bot: None,
+                })
+                .await
+                .map_err(tele_invocation)?;
+        }
+        if let Some(enabled) = toggles.noforwards {
+            applied.push("noforwards");
+            shares.rate_limiter.acquire().await;
+            let input_peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            shares
+                .client
+                .invoke(&tl::functions::messages::ToggleNoForwards {
+                    peer: input_peer,
+                    enabled,
+                    request_msg_id: None,
                 })
                 .await
                 .map_err(tele_invocation)?;
