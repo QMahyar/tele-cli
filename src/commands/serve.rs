@@ -1412,25 +1412,44 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             Tick::Line(line) => match parse_incoming(&line) {
                 Err(error) => {
-                    let _ = main_response_tx.try_send(response_err(None, error));
+                    let reply = response_err(None, error);
+                    if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET).await {
+                        output::log_line(
+                            "warn",
+                            "serve: dropped parse-error reply: response channel stayed saturated",
+                        );
+                    }
                 }
                 Ok(ServeIn::Hello { protocol }) => {
                     let _ = protocol;
-                    let _ = main_response_tx.try_send(hello_out_accounts(
-                        &hello_entries(&identities),
-                        last_seq_of(&seq),
-                    ));
+                    let reply = hello_out_accounts(&hello_entries(&identities), last_seq_of(&seq));
+                    if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET).await {
+                        output::log_line(
+                            "warn",
+                            "serve: dropped hello reply: response channel stayed saturated",
+                        );
+                    }
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
                     match dispatch_tx.try_send((id, op, params)) {
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            let _ = main_response_tx.try_send(response_err(
+                            let reply = response_err(
                                 Some(id),
                                 err_json(
                                     "ServeError",
                                     "dispatcher queue full; driver is outpacing the op lanes",
                                 ),
-                            ));
+                            );
+                            if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET)
+                                .await
+                            {
+                                output::log_line(
+                                    "warn",
+                                    &format!(
+                                        "serve: dropped dispatcher-queue-full reply for request {id}",
+                                    ),
+                                );
+                            }
                         }
                         Err(_) => {
                             output::log_line("warn", "serve: dispatch queue closed");
