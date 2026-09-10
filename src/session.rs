@@ -136,8 +136,11 @@ fn restrict_session_files(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn sweep_session_artifacts(name: &str) -> anyhow::Result<()> {
-    let mut targets = vec![session_path(name), lock_path(name)];
+fn sweep_session_artifacts(name: &str, include_lock: bool) -> anyhow::Result<()> {
+    let mut targets = vec![session_path(name)];
+    if include_lock {
+        targets.push(lock_path(name));
+    }
     for suffix in SESSION_SIDECAR_SUFFIXES {
         targets.push(sidecar_path(name, suffix));
     }
@@ -165,11 +168,12 @@ pub async fn remove_session(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     if session_path(name).try_exists()? {
         let lock = acquire_lock_file(name).await?;
-        let result = sweep_session_artifacts(name);
+        let result = sweep_session_artifacts(name, false);
         drop(lock);
         result?;
+        let _ = std::fs::remove_file(lock_path(name));
     } else {
-        sweep_session_artifacts(name)?;
+        sweep_session_artifacts(name, true)?;
     }
     Ok(())
 }
@@ -1115,6 +1119,30 @@ mod tests {
         remove_session("work").await.unwrap();
         assert!(!session_path("work").exists());
         assert!(!lock_path("work").exists());
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn artifact_sweep_keeps_lock_file_while_held() {
+        let _guard = lock_env();
+        let dir = test_dir("sweep-keeps-lock");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        assert!(session_path("work").exists());
+        assert!(lock_path("work").exists());
+        sweep_session_artifacts("work", false).unwrap();
+        assert!(!session_path("work").exists());
+        assert!(
+            lock_path("work").exists(),
+            "the lock file must outlive the held lock so concurrent acquirers keep contending on the same inode"
+        );
+        let _ = std::fs::remove_file(lock_path("work"));
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
