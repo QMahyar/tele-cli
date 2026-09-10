@@ -2544,6 +2544,7 @@ pub(crate) async fn chat_stats_core(
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
+    ensure_chat_peer(&chat, "chat stats")?;
     let channel = entities::input_channel(&chat)
         .await
         .map_err(tele_invocation)?;

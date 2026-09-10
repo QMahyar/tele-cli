@@ -1357,6 +1357,20 @@ async fn ensure_chat_peer_rejects_user_peer() {
 }
 
 #[tokio::test]
+async fn ensure_chat_peer_rejects_user_peer_for_chat_stats_serve_route() {
+    let client = offline_client();
+    let user_peer = grammers_client::peer::Peer::User(grammers_client::peer::User::from_raw(
+        &client,
+        tl::enums::User::Empty(tl::types::UserEmpty { id: 0 }),
+    ));
+    let err = ensure_chat_peer(&user_peer, "chat stats").unwrap_err();
+    assert!(err
+        .message()
+        .contains("chat stats requires a chat, got a user"));
+    assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+}
+
+#[tokio::test]
 async fn ensure_chat_peer_accepts_group() {
     let client = offline_client();
     let group_peer = grammers_client::peer::Peer::Group(grammers_client::peer::Group::from_raw(
