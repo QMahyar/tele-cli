@@ -68,6 +68,29 @@ pub(crate) fn validate_staged(
 
 pub(crate) use crate::commands::account::PendingLogin;
 
+pub(crate) const UNSENT_CODE_HASH: &str = "code-request-unconfirmed";
+
+fn pending_attempt(name: &str, phone: &str) -> PendingLogin {
+    PendingLogin::new(name, phone, UNSENT_CODE_HASH.to_string())
+}
+
+fn pending_confirmed(attempt: &PendingLogin, phone_code_hash: &str) -> PendingLogin {
+    PendingLogin {
+        phone_code_hash: phone_code_hash.to_string(),
+        ..attempt.clone()
+    }
+}
+
+fn ensure_code_requested(pending: &PendingLogin) -> TeleResult<()> {
+    if pending.phone_code_hash == UNSENT_CODE_HASH {
+        return Err(TeleError::Usage(format!(
+            "pending login for account {} has no confirmed code request; re-run tele account login --name {} --stage begin",
+            pending.account, pending.account
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn save_pending(pending: &PendingLogin) -> TeleResult<()> {
     save_pending_under(&config::app_data_dir(), pending)
 }
@@ -244,6 +267,8 @@ pub(crate) async fn staged_begin_flow(
         let data = serde_json::json!({"authorized": true, "method": "code"});
         return crate::executor::finish(flags, &action_envelope(name, data, false, &flags.command));
     }
+    let attempt = pending_attempt(name, phone);
+    save_pending(&attempt)?;
     let sent = send_login_code(
         &guard.client,
         &guard.session,
@@ -252,7 +277,12 @@ pub(crate) async fn staged_begin_flow(
         &credentials.api_hash,
     )
     .await?;
-    save_pending(&PendingLogin::new(name, phone, sent.phone_code_hash))?;
+    if let Err(e) = save_pending(&pending_confirmed(&attempt, &sent.phone_code_hash)) {
+        return Err(TeleError::Other(format!(
+            "login code was sent to {} but pending state could not be persisted ({e}); the phone code hash is lost — re-run tele account login --name {name} --stage begin (Telegram may throttle repeated code requests)",
+            redact_phone(phone)
+        )));
+    }
     log_line(
         "info",
         &format!(
@@ -368,6 +398,7 @@ pub(crate) async fn staged_code_flow(
     flags: &GlobalFlags,
     signed_in: &mut bool,
 ) -> TeleResult<i32> {
+    ensure_code_requested(pending)?;
     guard.rate_limiter.acquire().await;
     let already = guard
         .client
@@ -788,4 +819,55 @@ pub(crate) async fn complete_staged_login(
             .map_err(|e| TeleError::Other(format!("failed to store update state: {e}")))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_base(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("telecli-staged-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn code_stage_rejects_unconfirmed_pending() {
+        let attempt = pending_attempt("work", "+15551234567");
+        assert_eq!(attempt.phone_code_hash, UNSENT_CODE_HASH);
+        let err = ensure_code_requested(&attempt).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+        assert!(err.message().contains("--stage begin"), "err: {err}");
+    }
+
+    #[test]
+    fn code_stage_accepts_confirmed_pending() {
+        let attempt = pending_attempt("work", "+15551234567");
+        let confirmed = pending_confirmed(&attempt, "abc123hash");
+        assert!(ensure_code_requested(&confirmed).is_ok());
+        assert_eq!(confirmed.phone_code_hash, "abc123hash");
+        assert_eq!(confirmed.account, "work");
+        assert_eq!(confirmed.phone, "+15551234567");
+    }
+
+    #[test]
+    fn begin_attempt_persists_before_rpc_and_confirms_after() {
+        let base = temp_base("transition");
+        let attempt = pending_attempt("work", "+15551234567");
+        save_pending_under(&base, &attempt).unwrap();
+        let loaded = load_pending_under(&base, "work")
+            .unwrap()
+            .expect("attempt must be on disk before the code request");
+        assert!(
+            ensure_code_requested(&loaded).is_err(),
+            "--stage code must refuse a pre-confirmation attempt"
+        );
+        let confirmed = pending_confirmed(&loaded, "realhash");
+        save_pending_under(&base, &confirmed).unwrap();
+        let loaded = load_pending_under(&base, "work").unwrap().unwrap();
+        assert_eq!(loaded.phone_code_hash, "realhash");
+        assert!(ensure_code_requested(&loaded).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
