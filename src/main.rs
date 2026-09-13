@@ -19,7 +19,6 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use commands::*;
 use executor::GlobalFlags;
-use std::io::Write as _;
 
 #[derive(Parser)]
 #[command(
@@ -223,9 +222,9 @@ fn main() -> std::process::ExitCode {
     }
     if config::app_data_dir_checked().is_err() {
         let message = "cannot determine app data directory; set TELE_APP_DIR to choose a location";
-        let _ = writeln!(std::io::stderr(), "[error] {message}");
+        output::log_line("error", message);
         if output::machine_mode(flags.json, flags.jsonl) {
-            let error_json = serde_json::json!({"type": "ConfigError", "message": message});
+            let error_json = crate::error::TeleError::Config(message.to_string()).as_json();
             let envelope = output::Envelope::failed(flags.dry_run, &flags.command, error_json);
             if let Ok(v) = serde_json::to_value(&envelope) {
                 let _ = output::print_json(&v);
