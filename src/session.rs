@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -136,15 +136,20 @@ fn restrict_session_files(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn sweep_session_artifacts(name: &str) -> anyhow::Result<()> {
-    let mut targets = vec![session_path(name), lock_path(name)];
+fn sweep_session_artifacts(name: &str, include_lock: bool) -> anyhow::Result<()> {
+    let mut targets = vec![session_path(name)];
+    if include_lock {
+        targets.push(lock_path(name));
+    }
     for suffix in SESSION_SIDECAR_SUFFIXES {
         targets.push(sidecar_path(name, suffix));
     }
     let tmp_prefix = format!("{name}.session.tmp-");
+    let export_tmp_prefix = format!(".{name}.session.export.tmp-");
     if let Ok(entries) = std::fs::read_dir(session_dir()) {
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(&tmp_prefix) {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with(&tmp_prefix) || file_name.starts_with(&export_tmp_prefix) {
                 targets.push(entry.path());
             }
         }
@@ -163,11 +168,12 @@ pub async fn remove_session(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     if session_path(name).try_exists()? {
         let lock = acquire_lock_file(name).await?;
-        let result = sweep_session_artifacts(name);
+        let result = sweep_session_artifacts(name, false);
         drop(lock);
         result?;
+        let _ = std::fs::remove_file(lock_path(name));
     } else {
-        sweep_session_artifacts(name)?;
+        sweep_session_artifacts(name, true)?;
     }
     Ok(())
 }
@@ -267,6 +273,23 @@ pub struct ImportedSession {
     pub bytes: u64,
 }
 
+fn export_temp_path(dest: &Path) -> anyhow::Result<PathBuf> {
+    let stem = dest
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("cannot export to {}: not a file path", dest.display()))?
+        .to_string_lossy()
+        .to_string();
+    let rand: u16 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u16)
+        .unwrap_or(0);
+    Ok(dest.with_file_name(format!(".{stem}.tmp-{}-{rand}", std::process::id())))
+}
+
+#[cfg(test)]
+static TEST_FAIL_EXPORT_COPY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<ExportedSession> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     let source = session_path(name);
@@ -315,21 +338,39 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
     }
     let dest_for_task = dest.clone();
     let (size, sha) = tokio::task::spawn_blocking(move || -> anyhow::Result<(u64, String)> {
-        let mut f = crate::fs_util::create_file_private(&dest_for_task).map_err(|e| {
+        let tmp = export_temp_path(&dest_for_task)?;
+        #[cfg(test)]
+        if TEST_FAIL_EXPORT_COPY.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!(
+                "failed to copy session to {}: forced test failure",
+                dest_for_task.display()
+            );
+        }
+        let copy_result = (|| -> std::io::Result<u64> {
+            let mut f = crate::fs_util::create_file_private(&tmp)?;
+            let mut src = std::fs::File::open(&source)?;
+            let size = std::io::copy(&mut src, &mut f)?;
+            f.sync_all()?;
+            Ok(size)
+        })();
+        let size = match copy_result {
+            Ok(size) => size,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                anyhow::bail!("failed to copy session to {}: {e}", dest_for_task.display());
+            }
+        };
+        crate::fs_util::restrict_file_private(&tmp).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
             anyhow::anyhow!(
-                "failed to create export file {}: {e}",
+                "failed to restrict export file {}: {e}",
                 dest_for_task.display()
             )
         })?;
-        let mut src = std::fs::File::open(&source)?;
-        let size = std::io::copy(&mut src, &mut f).map_err(|e| {
-            let _ = std::fs::remove_file(&dest_for_task);
-            anyhow::anyhow!("failed to copy session to {}: {e}", dest_for_task.display())
-        })?;
-        f.sync_all().ok();
-        crate::fs_util::restrict_file_private(&dest_for_task).map_err(|e| {
+        std::fs::rename(&tmp, &dest_for_task).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
             anyhow::anyhow!(
-                "failed to restrict export file {}: {e}",
+                "failed to finalize export file {}: {e}",
                 dest_for_task.display()
             )
         })?;
@@ -823,16 +864,28 @@ fn telethon_dc_sockets(
         anyhow::anyhow!("unsupported Telethon server_address {server_address:?}: not an IP literal")
     })?;
     let port = port as u16;
-    Ok(match ip {
-        IpAddr::V4(v4) => (
-            SocketAddrV4::new(v4, port),
-            SocketAddrV6::new(v4.to_ipv6_mapped(), port, 0, 0),
-        ),
-        IpAddr::V6(v6) => (
-            SocketAddrV4::new(v6.to_ipv4().unwrap_or(Ipv4Addr::UNSPECIFIED), port),
-            SocketAddrV6::new(v6, port, 0, 0),
-        ),
-    })
+    let v4 = match ip {
+        IpAddr::V4(v4) => v4,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(mapped) => mapped,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "unsupported Telethon server_address {server_address:?}: it is an IPv6-only \
+                     address; the session points at a data center reachable only over IPv6, \
+                     which this build cannot connect to. Re-login into a new session or import \
+                     one recorded with an IPv4 server_address"
+                ))
+            }
+        },
+    };
+    let v6 = match ip {
+        IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+        IpAddr::V6(v6) => v6,
+    };
+    Ok((
+        SocketAddrV4::new(v4, port),
+        SocketAddrV6::new(v6, port, 0, 0),
+    ))
 }
 
 pub async fn write_native_from_telethon(
@@ -1071,6 +1124,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifact_sweep_keeps_lock_file_while_held() {
+        let _guard = lock_env();
+        let dir = test_dir("sweep-keeps-lock");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        assert!(session_path("work").exists());
+        assert!(lock_path("work").exists());
+        sweep_session_artifacts("work", false).unwrap();
+        assert!(!session_path("work").exists());
+        assert!(
+            lock_path("work").exists(),
+            "the lock file must outlive the held lock so concurrent acquirers keep contending on the same inode"
+        );
+        let _ = std::fs::remove_file(lock_path("work"));
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn remove_session_rejects_in_use_session() {
         let _guard = lock_env();
         let dir = test_dir("session-lock-remove-held");
@@ -1221,6 +1298,45 @@ mod tests {
         export_session("work", Some(&out.join("w.session")))
             .await
             .unwrap();
+        remove_session("work").await.unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn export_failure_preserves_preexisting_destination() {
+        let _guard = lock_env();
+        let dir = test_dir("export-preserves-dest");
+        let out = dir.join("out");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&out).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let dest = out.join("precious.session");
+        std::fs::write(&dest, b"do-not-destroy").unwrap();
+        TEST_FAIL_EXPORT_COPY.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = export_session("work", Some(&dest)).await.unwrap_err();
+        assert!(err.to_string().contains("failed to copy session"), "{err}");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"do-not-destroy",
+            "pre-existing destination must survive a failed export untouched"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec!["precious.session".to_string()],
+            "failed export must clean up its temp file"
+        );
         remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1910,13 +2026,45 @@ mod tests {
 
         let mut ipv6 = fixture_telethon(2);
         ipv6.server_address = "2001:b28:f23d:f001::a".to_string();
-        write_native_from_telethon("ipv6case", &ipv6, false)
+        let err = write_native_from_telethon("ipv6case", &ipv6, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("IPv6"), "{err}");
+        assert!(
+            !session_path("ipv6case").exists(),
+            "rejected IPv6-only imports must write nothing"
+        );
+
+        let mut mapped = fixture_telethon(2);
+        mapped.server_address = "::ffff:149.154.167.51".to_string();
+        write_native_from_telethon("ipv6case", &mapped, false)
             .await
             .unwrap();
+        {
+            let reopened = open_session("ipv6case").await.unwrap();
+            let option = reopened.session.dc_option(2).unwrap().expect("dc option");
+            assert_eq!(option.ipv4.to_string(), "149.154.167.51:443");
+        }
         remove_session("ipv6case").await.unwrap();
 
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn telethon_dc_sockets_rejects_ipv6_only_address() {
+        let err = telethon_dc_sockets("2001:b28:f23d:f001::a", 443).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("IPv6"), "{msg}");
+        assert!(msg.contains("2001:b28:f23d:f001::a"), "{msg}");
+    }
+
+    #[test]
+    fn telethon_dc_sockets_maps_ipv4_mapped_v6_to_routable_v4() {
+        let (v4, _v6) = telethon_dc_sockets("::ffff:149.154.167.51", 443).unwrap();
+        assert_eq!(v4.to_string(), "149.154.167.51:443");
+        let (v4, _v6) = telethon_dc_sockets("149.154.167.51", 443).unwrap();
+        assert_eq!(v4.to_string(), "149.154.167.51:443");
     }
 
     #[test]
