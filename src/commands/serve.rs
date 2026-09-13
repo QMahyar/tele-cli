@@ -22,7 +22,7 @@ pub const SERVE_PROTOCOL_MIN: u32 = 1;
 
 const SERVE_EVENTS: &[&str] = &["NewMessage", "MessageEdited"];
 
-const SERVE_MAX_RECONNECT_ATTEMPTS: u32 = u32::MAX;
+const SERVE_MAX_RECONNECT_ATTEMPTS: u32 = 5;
 
 const SERVE_DEDUPE_CAP: usize = 10_000;
 
@@ -34,6 +34,8 @@ const RESPONSE_CAPACITY: usize = 64;
 const SERVE_OUTPUT_CAPACITY: usize = 256;
 const SERVE_MAX_ACCOUNTS: usize = 32;
 const ACCOUNT_TICK_CAPACITY: usize = 256;
+
+type ServeResponseSender = tokio::sync::mpsc::Sender<serde_json::Value>;
 
 type ShareMap = std::sync::RwLock<HashMap<String, ServeShares>>;
 
@@ -272,6 +274,40 @@ fn queue_full_envelope(id: u64, op: &str, lane: Lane) -> serde_json::Value {
             ),
         ),
     )
+}
+
+const RESPONSE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+const RESPONSE_RETRY_SLEEP: std::time::Duration = std::time::Duration::from_millis(20);
+
+async fn try_send_with_retry(
+    responses: &ServeResponseSender,
+    value: serde_json::Value,
+    budget: std::time::Duration,
+) -> bool {
+    if responses.try_send(value.clone()).is_ok() {
+        return true;
+    }
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        match responses.try_send(value.clone()) {
+            Ok(()) => return true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tokio::time::sleep(RESPONSE_RETRY_SLEEP).await;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return false,
+        }
+    }
+    false
+}
+
+async fn send_reply(responses: &ServeResponseSender, id: u64, reply: serde_json::Value) {
+    if try_send_with_retry(responses, reply, RESPONSE_RETRY_BUDGET).await {
+        return;
+    }
+    output::log_line(
+        "warn",
+        &format!("serve: dropped reply for request {id}: response channel stayed saturated"),
+    );
 }
 
 const INLINE_OPS: &[(&str, &str, bool, bool, bool)] = &[
@@ -907,17 +943,7 @@ async fn dispatch_action(
 ) -> TeleResult<()> {
     if op == "ping" {
         let response = response_ok(id, serde_json::json!({ "pong": true }));
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     if op == "stream.resync" {
@@ -926,33 +952,13 @@ async fn dispatch_action(
             Ok(a) => a,
             Err(error) => {
                 let response = response_err(Some(id), error);
-                loop {
-                    match responses.try_send(response.clone()) {
-                        Ok(()) => break,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            // Bounded backpressure: yield instead of blocking
-                            // intake when the driver stops reading stdout.
-                            tokio::time::sleep(Duration::from_millis(25)).await;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                    }
-                }
+                send_reply(responses, id, response).await;
                 return Ok(());
             }
         };
         if let Err(error) = validate_no_params(op, &params) {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             return Ok(());
         }
         for name in &selected {
@@ -961,62 +967,22 @@ async fn dispatch_action(
             }
         }
         let response = response_ok(id, serde_json::json!({ "resync": "started" }));
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     if op == "ops.list" {
         if let Err(error) = validate_no_params(op, &params) {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             return Ok(());
         }
         let response = response_ok(id, ops_list_data());
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     let Some(route) = find_route(op) else {
         let response = response_err(Some(id), not_implemented(op));
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     };
     let mut raw = params;
@@ -1024,64 +990,24 @@ async fn dispatch_action(
         Ok(a) => a,
         Err(error) => {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             return Ok(());
         }
     };
     if let Err(error) = apply_confirm_gate(op, route.destructive, route.planner, &mut raw) {
         let response = response_err(Some(id), error);
-        loop {
-            match responses.try_send(response.clone()) {
-                Ok(()) => break,
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    // Bounded backpressure: yield instead of blocking
-                    // intake when the driver stops reading stdout.
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-            }
-        }
+        send_reply(responses, id, response).await;
         return Ok(());
     }
     match (route.planner)(op, raw) {
         Err(error) => {
             let response = response_err(Some(id), error);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             Ok(())
         }
         Ok(Plan::DryRun(data)) => {
             let response = response_ok(id, data);
-            loop {
-                match responses.try_send(response.clone()) {
-                    Ok(()) => break,
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        // Bounded backpressure: yield instead of blocking
-                        // intake when the driver stops reading stdout.
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                }
-            }
+            send_reply(responses, id, response).await;
             Ok(())
         }
         Ok(Plan::Execute(raw)) => {
@@ -1089,17 +1015,7 @@ async fn dispatch_action(
                 Ok(shares) => shares,
                 Err(error) => {
                     let response = response_err(Some(id), error);
-                    loop {
-                        match responses.try_send(response.clone()) {
-                            Ok(()) => break,
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                // Bounded backpressure: yield instead of blocking
-                                // intake when the driver stops reading stdout.
-                                tokio::time::sleep(Duration::from_millis(25)).await;
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                        }
-                    }
+                    send_reply(responses, id, response).await;
                     return Ok(());
                 }
             };
@@ -1124,7 +1040,15 @@ async fn dispatch_action(
                     let lane = route.lane;
                     job.guard.completed = true;
                     drop(job);
-                    let _ = responses.try_send(queue_full_envelope(id, op, lane));
+                    let envelope = queue_full_envelope(id, op, lane);
+                    if !try_send_with_retry(responses, envelope, RESPONSE_RETRY_BUDGET).await {
+                        output::log_line(
+                            "warn",
+                            &format!(
+                                "serve: dropped QueueFull reply for request {id} ({op}): response channel stayed saturated",
+                            ),
+                        );
+                    }
                 }
                 LaneSend::Closed => {
                     output::log_line("warn", "serve: op queue closed before dispatch");
@@ -1378,25 +1302,44 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             }
             Tick::Line(line) => match parse_incoming(&line) {
                 Err(error) => {
-                    let _ = main_response_tx.try_send(response_err(None, error));
+                    let reply = response_err(None, error);
+                    if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET).await {
+                        output::log_line(
+                            "warn",
+                            "serve: dropped parse-error reply: response channel stayed saturated",
+                        );
+                    }
                 }
                 Ok(ServeIn::Hello { protocol }) => {
                     let _ = protocol;
-                    let _ = main_response_tx.try_send(hello_out_accounts(
-                        &hello_entries(&identities),
-                        last_seq_of(&seq),
-                    ));
+                    let reply = hello_out_accounts(&hello_entries(&identities), last_seq_of(&seq));
+                    if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET).await {
+                        output::log_line(
+                            "warn",
+                            "serve: dropped hello reply: response channel stayed saturated",
+                        );
+                    }
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
                     match dispatch_tx.try_send((id, op, params)) {
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            let _ = main_response_tx.try_send(response_err(
+                            let reply = response_err(
                                 Some(id),
                                 err_json(
                                     "ServeError",
                                     "dispatcher queue full; driver is outpacing the op lanes",
                                 ),
-                            ));
+                            );
+                            if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET)
+                                .await
+                            {
+                                output::log_line(
+                                    "warn",
+                                    &format!(
+                                        "serve: dropped dispatcher-queue-full reply for request {id}",
+                                    ),
+                                );
+                            }
                         }
                         Err(_) => {
                             output::log_line("warn", "serve: dispatch queue closed");
@@ -3374,5 +3317,143 @@ mod tests {
                 r.op
             );
         }
+    }
+
+    #[test]
+    fn serve_reconnect_attempts_match_documented_contract() {
+        assert_eq!(
+            SERVE_MAX_RECONNECT_ATTEMPTS, 5,
+            "docs/cli-contract.md promises reconnects 'up to 5 consecutive attempts'"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_stream_failure_gives_up_after_five_consecutive_attempts() {
+        let mut failures = 0u32;
+        for attempt in 0..5u32 {
+            let result = handle_stream_failure(
+                "acct",
+                TeleError::Other("boom".into()),
+                &mut failures,
+                Some(std::time::Instant::now()),
+                SERVE_MAX_RECONNECT_ATTEMPTS,
+            )
+            .await;
+            failures += attempt;
+            assert!(
+                result.is_ok(),
+                "failure {failures} within the 5-attempt cap must reconnect"
+            );
+            failures -= attempt;
+        }
+        assert_eq!(failures, 5);
+        let result = handle_stream_failure(
+            "acct",
+            TeleError::Other("boom".into()),
+            &mut failures,
+            Some(std::time::Instant::now()),
+            SERVE_MAX_RECONNECT_ATTEMPTS,
+        )
+        .await
+        .expect_err("6th consecutive failure must give up");
+        assert!(
+            result.message().contains("giving up"),
+            "give-up error must say so: {}",
+            result.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn try_send_with_retry_gives_up_after_deadline_when_receiver_never_drains() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        tx.send(serde_json::json!({"filler": 0})).await.unwrap();
+        let value = serde_json::json!({"type": "response", "id": 9});
+        let sent = try_send_with_retry(&tx, value.clone(), RESPONSE_RETRY_SLEEP * 3).await;
+        assert!(!sent, "saturated channel with no drain must give up");
+        assert!(
+            tx.try_send(serde_json::json!({"probe": 1})).is_err(),
+            "channel must still be full"
+        );
+        let first = rx.recv().await.expect("original filler stays queued");
+        assert_eq!(first["filler"], 0);
+        assert!(rx.try_recv().is_err(), "gave-up value must not be enqueued");
+    }
+
+    #[tokio::test]
+    async fn try_send_with_retry_sends_as_capacity_frees() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        tx.send(serde_json::json!({"filler": 0})).await.unwrap();
+        let drainer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let first = rx.recv().await.expect("drained filler");
+            let second = rx.recv().await.expect("retry value after slot freed");
+            (first, second)
+        });
+        let value = serde_json::json!({"type": "response", "id": 8});
+        let sent = try_send_with_retry(&tx, value, RESPONSE_RETRY_BUDGET).await;
+        assert!(sent, "must send once a slot frees within the deadline");
+        let (first, second) = drainer.await.unwrap();
+        assert_eq!(first["filler"], 0);
+        assert_eq!(second["id"], 8);
+    }
+
+    #[tokio::test]
+    async fn try_send_with_retry_returns_false_immediately_when_channel_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<serde_json::Value>(1);
+        drop(rx);
+        let started = std::time::Instant::now();
+        let sent =
+            try_send_with_retry(&tx, serde_json::json!({"x": 1}), Duration::from_secs(5)).await;
+        assert!(!sent);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "closed channel must fail fast, not wait out the deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_ping_reply_survives_saturated_response_channel() {
+        let pool = ServePool {
+            shares: std::sync::RwLock::new(HashMap::new()),
+            resync: HashMap::new(),
+        };
+        let mutations = tokio::sync::mpsc::channel::<Job>(4).0;
+        let reads: Vec<tokio::sync::mpsc::Sender<Job>> = Vec::new();
+        let read_counter = std::sync::atomic::AtomicUsize::new(0);
+        let (response_tx, mut response_rx) =
+            tokio::sync::mpsc::channel::<serde_json::Value>(RESPONSE_CAPACITY);
+        for i in 0..RESPONSE_CAPACITY {
+            response_tx
+                .send(serde_json::json!({"filler": i}))
+                .await
+                .unwrap();
+        }
+        let drainer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            while response_rx.try_recv().is_ok() {}
+            response_rx.recv().await
+        });
+        let started = std::time::Instant::now();
+        dispatch_action(
+            &pool,
+            &[],
+            &mutations,
+            &reads,
+            &read_counter,
+            &response_tx,
+            9,
+            "ping",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("ping dispatch must succeed");
+        let reply = tokio::time::timeout(Duration::from_secs(3), drainer)
+            .await
+            .expect("ping reply must land well within the retry budget")
+            .expect("drainer task joined")
+            .expect("ping reply present");
+        assert!(started.elapsed() >= Duration::from_millis(25));
+        assert_eq!(reply["id"], 9);
+        assert_eq!(reply["data"]["pong"], true);
     }
 }
