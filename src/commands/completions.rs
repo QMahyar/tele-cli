@@ -32,9 +32,6 @@ fn bin_name_from_arg(arg: Option<&str>) -> String {
     .unwrap_or_else(|| env!("CARGO_BIN_NAME").to_string())
 }
 
-/// The npm launcher spawns `tele-<target-triple>[.exe]` (legacy alias
-/// `telecli-`), so completions must collapse platform-suffixed stems back to
-/// the command name the user actually types.
 fn normalize_npm_stem(stem: &str) -> String {
     for prefix in ["tele-", "telecli-"] {
         if let Some(rest) = stem.strip_prefix(prefix) {

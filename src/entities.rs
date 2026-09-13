@@ -403,9 +403,6 @@ fn is_phone_formatting(c: char) -> bool {
     c == ' ' || c == '-' || c == '(' || c == ')' || c == '.'
 }
 
-/// Shared phone-shape gate so `parse_target` and `classify_target` route
-/// every `+`-prefixed target identically: digits plus formatting characters
-/// only, capped at 15 digits (E.164); an empty digit run stays phone-shaped.
 fn is_phone_shaped(rest: &str) -> bool {
     let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
     digits.is_empty()
