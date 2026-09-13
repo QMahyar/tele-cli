@@ -247,6 +247,12 @@ pub(crate) fn parse_banned_rights_csv(csv: &str) -> TeleResult<Vec<(String, bool
     Ok(out)
 }
 
+pub(crate) fn ban_defaults_view_messages(ban: bool, rights_entries: &[(String, bool)]) -> bool {
+    ban && !rights_entries
+        .iter()
+        .any(|(right, _)| right == "view_messages")
+}
+
 pub(crate) fn validate_kick(args: &KickArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
     let has_duration = args.duration.is_some();
@@ -334,10 +340,10 @@ pub(crate) async fn kick(args: KickArgs, flags: &GlobalFlags) -> TeleResult<i32>
                     _ => call,
                 };
             }
-            // --ban forces view_messages=false only when the user did not
-            // pass an explicit --rights CSV (an explicit view_messages value
-            // must win over the --ban default).
-            if ban && rights_entries.is_empty() {
+            // --ban forces view_messages=false only when the --rights CSV
+            // does not set view_messages explicitly (an explicit view_messages
+            // value must win over the --ban default).
+            if ban_defaults_view_messages(ban, &rights_entries) {
                 call = call.view_messages(false);
             }
             if let Some(secs) = until_secs {
