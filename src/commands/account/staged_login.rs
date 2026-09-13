@@ -70,6 +70,12 @@ pub(crate) use crate::commands::account::PendingLogin;
 
 pub(crate) const UNSENT_CODE_HASH: &str = "code-request-unconfirmed";
 
+fn restore_previous_pending(base: &std::path::Path, previous: Option<PendingLogin>) {
+    if let Some(prev) = previous {
+        let _ = save_pending_under(base, &prev);
+    }
+}
+
 fn pending_attempt(name: &str, phone: &str) -> PendingLogin {
     PendingLogin::new(name, phone, UNSENT_CODE_HASH.to_string())
 }
@@ -267,16 +273,24 @@ pub(crate) async fn staged_begin_flow(
         let data = serde_json::json!({"authorized": true, "method": "code"});
         return crate::executor::finish(flags, &action_envelope(name, data, false, &flags.command));
     }
+    let previous = load_pending(name).unwrap_or(None);
     let attempt = pending_attempt(name, phone);
     save_pending(&attempt)?;
-    let sent = send_login_code(
+    let sent = match send_login_code(
         &guard.client,
         &guard.session,
         phone,
         credentials.api_id,
         &credentials.api_hash,
     )
-    .await?;
+    .await
+    {
+        Ok(sent) => sent,
+        Err(e) => {
+            restore_previous_pending(&config::app_data_dir(), previous);
+            return Err(e);
+        }
+    };
     if let Err(e) = save_pending(&pending_confirmed(&attempt, &sent.phone_code_hash)) {
         return Err(TeleError::Other(format!(
             "login code was sent to {} but pending state could not be persisted ({e}); the phone code hash is lost — re-run tele account login --name {name} --stage begin (Telegram may throttle repeated code requests)",
@@ -849,6 +863,24 @@ mod tests {
         assert_eq!(confirmed.phone_code_hash, "abc123hash");
         assert_eq!(confirmed.account, "work");
         assert_eq!(confirmed.phone, "+15551234567");
+    }
+
+    #[test]
+    fn begin_send_failure_restores_previous_confirmed_pending() {
+        let base = temp_base("restore");
+        let attempt = pending_attempt("work", "+15551234567");
+        let confirmed = pending_confirmed(&attempt, "abc123hash");
+        save_pending_under(&base, &confirmed).unwrap();
+        let previous = load_pending_under(&base, "work").unwrap();
+        save_pending_under(&base, &pending_attempt("work", "+15551234567")).unwrap();
+        assert_eq!(
+            load_pending_under(&base, "work").unwrap().unwrap().phone_code_hash,
+            UNSENT_CODE_HASH
+        );
+        restore_previous_pending(&base, previous);
+        let restored = load_pending_under(&base, "work").unwrap().unwrap();
+        assert_eq!(restored.phone_code_hash, "abc123hash");
+        assert_eq!(restored.account, "work");
     }
 
     #[test]
