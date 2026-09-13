@@ -1,3 +1,4 @@
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use crate::error::{TeleError, TeleResult};
@@ -6,17 +7,26 @@ pub const APP_DIR_NAME: &str = "tele";
 pub(crate) const LEGACY_APP_DIR_NAME: &str = "telecli";
 
 pub fn app_data_dir() -> PathBuf {
-    app_data_dir_from_env(|k| std::env::var(k)).unwrap_or_else(|e| {
-        // Panic (exit 101) with a scrubbed, actionable message instead of an
-        // unwrapped expect that could print env internals; TELE_APP_DIR is the
-        // escape hatch for headless environments without HOME/APPDATA.
-        crate::output::log_line(
-            "error",
-            &format!(
-                "cannot determine app data directory; set TELE_APP_DIR to choose a location ({e})"
-            ),
+    app_data_dir_checked().unwrap_or_else(|_| {
+        let _ = writeln!(
+            std::io::stderr(),
+            "[error] cannot determine app data directory; set TELE_APP_DIR to choose a location"
         );
         panic!("cannot determine app data directory; set TELE_APP_DIR to choose a location")
+    })
+}
+
+pub fn app_data_dir_checked() -> TeleResult<PathBuf> {
+    app_data_dir_checked_from_env(|k| std::env::var(k))
+}
+
+fn app_data_dir_checked_from_env(
+    get: impl FnMut(&str) -> Result<String, std::env::VarError>,
+) -> TeleResult<PathBuf> {
+    app_data_dir_from_env(get).map_err(|e| {
+        TeleError::Config(format!(
+            "cannot determine app data directory; set TELE_APP_DIR to choose a location ({e})"
+        ))
     })
 }
 
@@ -289,8 +299,21 @@ fn env_overlay_key() -> EnvOverlayKey {
 #[cfg(test)]
 static ENV_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+fn overlay_process_env(
+    env: &mut std::collections::HashMap<String, String>,
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) {
+    for (k, v) in vars {
+        if let (Ok(k), Ok(v)) = (k.into_string(), v.into_string()) {
+            if !v.trim().is_empty() {
+                env.insert(k, v);
+            }
+        }
+    }
+}
+
 pub fn credentials() -> anyhow::Result<Credentials> {
-    let path = app_data_dir().join(".env");
+    let path = app_data_dir_checked()?.join(".env");
     if path.exists() {
         if let Err(e) = crate::fs_util::restrict_file_private(&path) {
             crate::output::log_line(
@@ -311,11 +334,7 @@ pub fn credentials() -> anyhow::Result<Credentials> {
         return Ok(creds.clone());
     }
     let mut env = load_env(&path);
-    for (k, v) in std::env::vars() {
-        if !v.trim().is_empty() {
-            env.insert(k, v);
-        }
-    }
+    overlay_process_env(&mut env, std::env::vars_os());
     let api_id = parse_api_id(&env)?;
     let api_hash = env
         .get("TELE_API_HASH")
@@ -351,7 +370,7 @@ fn parse_api_id(env: &std::collections::HashMap<String, String>) -> anyhow::Resu
 pub fn load_config(path: Option<&std::path::Path>) -> TeleResult<AppConfig> {
     let cfg_path = match path {
         Some(p) => p.to_path_buf(),
-        None => app_data_dir().join("config.toml"),
+        None => app_data_dir_checked()?.join("config.toml"),
     };
     let stamp = FileStamp::of(&cfg_path);
     if let Some((cached_stamp, cfg)) = CONFIG_CACHE
@@ -1014,6 +1033,32 @@ mod tests {
     }
 
     #[test]
+    fn app_data_dir_checked_maps_missing_env_to_config_error() {
+        let err = app_data_dir_checked_from_env(|_k| Err(std::env::VarError::NotPresent))
+            .expect_err("missing env must be an error");
+        assert!(matches!(err, TeleError::Config(_)));
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+        assert_eq!(err.as_json()["type"], "ConfigError");
+        assert!(err
+            .message()
+            .contains("cannot determine app data directory"));
+        assert!(err.message().contains("TELE_APP_DIR"));
+    }
+
+    #[test]
+    fn app_data_dir_checked_honors_tele_app_dir_override() {
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir =
+            std::env::temp_dir().join(format!("telecli-config-checked-{}", std::process::id()));
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let resolved = app_data_dir_checked();
+        std::env::remove_var("TELE_APP_DIR");
+        assert_eq!(resolved.unwrap(), dir);
+    }
+
+    #[test]
     fn env_nonempty_falls_through_for_empty_and_whitespace() {
         let _guard = TEST_ENV_LOCK
             .lock()
@@ -1174,6 +1219,65 @@ mod tests {
         assert_eq!(parse_api_id(&ok).unwrap(), 1234567);
     }
 
+    #[cfg(windows)]
+    fn invalid_utf8_os_string() -> std::ffi::OsString {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[0xD800])
+    }
+
+    #[cfg(not(windows))]
+    fn invalid_utf8_os_string() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(vec![0xFF, 0xFE])
+    }
+
+    #[test]
+    fn process_env_overlay_skips_non_utf8_and_blank_entries() {
+        let mut env = std::collections::HashMap::new();
+        overlay_process_env(
+            &mut env,
+            [
+                (
+                    std::ffi::OsString::from("TELE_API_ID"),
+                    std::ffi::OsString::from("42"),
+                ),
+                (invalid_utf8_os_string(), std::ffi::OsString::from("x")),
+                (
+                    std::ffi::OsString::from("TELE_GOOD_KEY"),
+                    invalid_utf8_os_string(),
+                ),
+                (
+                    std::ffi::OsString::from("TELE_API_HASH"),
+                    std::ffi::OsString::from("hash"),
+                ),
+                (
+                    std::ffi::OsString::from("TELE_BLANK"),
+                    std::ffi::OsString::from("   "),
+                ),
+            ],
+        );
+        assert_eq!(env.get("TELE_API_ID").map(String::as_str), Some("42"));
+        assert_eq!(env.get("TELE_API_HASH").map(String::as_str), Some("hash"));
+        assert_eq!(env.len(), 2);
+    }
+
+    #[test]
+    fn process_env_overlay_overrides_file_values() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("TELE_API_HASH".to_string(), "from-file".to_string());
+        overlay_process_env(
+            &mut env,
+            [(
+                std::ffi::OsString::from("TELE_API_HASH"),
+                std::ffi::OsString::from("from-process"),
+            )],
+        );
+        assert_eq!(
+            env.get("TELE_API_HASH").map(String::as_str),
+            Some("from-process")
+        );
+    }
+
     fn creds_env_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("telecli-config-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1266,6 +1370,59 @@ mod tests {
         assert!(err.contains("TELE_API_HASH must be set"), "err: {err}");
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const APP_DIR_ENV_KEYS: [&str; 6] = [
+        "TELE_APP_DIR",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "HOME",
+    ];
+
+    struct RestoreEnv(Vec<(&'static str, Option<String>)>);
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn save_app_dir_env() -> RestoreEnv {
+        RestoreEnv(
+            APP_DIR_ENV_KEYS
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn credentials_and_load_config_report_missing_app_dir_as_config_error() {
+        let _guard = TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = save_app_dir_env();
+        for key in APP_DIR_ENV_KEYS {
+            std::env::remove_var(key);
+        }
+        let creds_err = credentials()
+            .err()
+            .expect("missing app dir must fail credentials()");
+        let cfg_err = load_config(None).expect_err("missing app dir must fail load_config(None)");
+        let creds_typed = creds_err
+            .downcast_ref::<TeleError>()
+            .expect("credentials error must preserve the typed TeleError");
+        assert!(matches!(creds_typed, TeleError::Config(_)));
+        assert_eq!(creds_typed.exit_code(), crate::error::EXIT_USAGE);
+        assert!(matches!(cfg_err, TeleError::Config(_)));
+        assert_eq!(cfg_err.exit_code(), crate::error::EXIT_USAGE);
     }
 
     fn atomic_dir(tag: &str) -> std::path::PathBuf {
