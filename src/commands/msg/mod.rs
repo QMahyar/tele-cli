@@ -2360,6 +2360,10 @@ pub(crate) enum ExportScan {
     Keep,
 }
 
+pub(crate) fn export_skip_budget(limit: usize) -> usize {
+    limit.saturating_mul(10).max(100)
+}
+
 pub(crate) fn export_scan_decision(
     served: usize,
     limit: usize,
@@ -2401,9 +2405,13 @@ pub(crate) async fn export_core(
     }
     let since_ts = since.as_ref().map(|d| d.timestamp());
     let until_ts = until.as_ref().map(|d| d.timestamp());
+    if since_ts.is_none() && until_ts.is_none() {
+        iter = iter.limit(params.limit as usize + 1);
+    }
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut scanned = 0usize;
     let mut served = 0usize;
+    let mut skipped = 0usize;
     let mut truncated = false;
     while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
         scanned += 1;
@@ -2414,7 +2422,14 @@ pub(crate) async fn export_core(
             since_ts,
             until_ts,
         ) {
-            ExportScan::Skip => continue,
+            ExportScan::Skip => {
+                skipped += 1;
+                if skipped > export_skip_budget(params.limit as usize) {
+                    truncated = true;
+                    break;
+                }
+                continue;
+            }
             ExportScan::Stop => break,
             ExportScan::CapReached => {
                 truncated = true;
@@ -2509,6 +2524,13 @@ mod tests;
 #[cfg(test)]
 mod msg_mod_tests {
     use super::*;
+
+    #[test]
+    fn export_skip_budget_scales_with_limit_and_has_floor() {
+        assert_eq!(export_skip_budget(5), 100);
+        assert_eq!(export_skip_budget(50), 500);
+        assert_eq!(export_skip_budget(0), 100);
+    }
 
     #[test]
     fn export_scan_decision_returns_keep_for_exactly_limit_messages() {
