@@ -87,20 +87,36 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     })
     .await?;
     if !output::machine_mode(flags.json, flags.jsonl) {
-        let value = serde_json::to_value(&envelope)?;
-        match human_display(&value) {
-            HumanView::Lines(lines) => {
-                for line in lines {
-                    crate::output::print_line(&line)?;
-                }
+        let multi = envelope.accounts.len() > 1;
+        for (account, view) in human_views(&envelope) {
+            if multi {
+                output::print_line(&format!("== {account} =="))?;
             }
-            HumanView::Table(headers, rows) => {
-                let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
-                crate::output::print_table(&header_refs, &rows)?;
+            match view {
+                HumanView::Lines(lines) => {
+                    for line in lines {
+                        output::print_line(&line)?;
+                    }
+                }
+                HumanView::Table(headers, rows) => {
+                    let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+                    output::print_table(&header_refs, &rows)?;
+                }
             }
         }
     }
     crate::executor::finish(flags, &envelope)
+}
+
+fn human_views(envelope: &crate::output::Envelope) -> Vec<(String, HumanView)> {
+    envelope
+        .accounts
+        .iter()
+        .filter_map(|outcome| {
+            let data = outcome.data.as_ref()?;
+            Some((outcome.account.clone(), human_display(data)))
+        })
+        .collect()
 }
 
 fn raw_dry_run_payload(name: &str, params: &serde_json::Value) -> serde_json::Value {
@@ -210,6 +226,7 @@ fn requires_explicit_account(method: &str) -> bool {
     generated::requires_explicit_account(method)
 }
 
+#[derive(Debug)]
 enum HumanView {
     Lines(Vec<String>),
     Table(Vec<String>, Vec<Vec<String>>),
@@ -1634,6 +1651,115 @@ mod tests {
                 "non-string filter must be a usage error: {err}"
             );
             assert!(err.message().contains("valid names"), "err: {err}");
+        }
+    }
+
+    #[test]
+    fn human_views_render_per_account_payloads_not_envelope() {
+        let envelope = output::Envelope::new(
+            vec![output::AccountOutcome {
+                account: "work".to_string(),
+                ok: true,
+                error: None,
+                data: Some(serde_json::json!({"users": 2, "count": 7})),
+                exit_code: None,
+            }],
+            false,
+            "raw",
+        );
+        let views = human_views(&envelope);
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].0, "work");
+        match &views[0].1 {
+            HumanView::Lines(lines) => {
+                assert!(lines.iter().any(|l| l == "users: 2"), "lines: {lines:?}");
+                assert!(lines.iter().any(|l| l == "count: 7"), "lines: {lines:?}");
+                assert!(
+                    !lines.iter().any(|l| l.starts_with("ok:")),
+                    "envelope wrapper must not leak: {lines:?}"
+                );
+                assert!(
+                    !lines.iter().any(|l| l.starts_with("results:")),
+                    "envelope wrapper must not leak: {lines:?}"
+                );
+                assert!(
+                    !lines.iter().any(|l| l.starts_with("dry_run:")),
+                    "envelope wrapper must not leak: {lines:?}"
+                );
+            }
+            other => panic!("object payload should render as lines: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn human_views_skip_error_outcomes() {
+        let ok = output::AccountOutcome {
+            account: "a".to_string(),
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({"count": 1})),
+            exit_code: None,
+        };
+        let failed = output::AccountOutcome {
+            account: "b".to_string(),
+            ok: false,
+            error: Some(serde_json::json!({"message": "boom"})),
+            data: None,
+            exit_code: Some(3),
+        };
+        let envelope = output::Envelope::new(vec![ok, failed], false, "raw");
+        let views = human_views(&envelope);
+        assert_eq!(views.len(), 1, "error outcome must not render: {views:?}");
+        assert_eq!(views[0].0, "a");
+    }
+
+    #[test]
+    fn human_views_cover_every_account_with_data_in_order() {
+        let first = output::AccountOutcome {
+            account: "a".to_string(),
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({"n": 1})),
+            exit_code: None,
+        };
+        let second = output::AccountOutcome {
+            account: "b".to_string(),
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!({"n": 2})),
+            exit_code: None,
+        };
+        let envelope = output::Envelope::new(vec![first, second], false, "raw");
+        let views = human_views(&envelope);
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].0, "a");
+        assert_eq!(views[1].0, "b");
+        assert!(
+            matches!(&views[1].1, HumanView::Lines(lines) if lines.iter().any(|l| l == "n: 2"))
+        );
+    }
+
+    #[test]
+    fn human_views_render_table_payloads() {
+        let outcome = output::AccountOutcome {
+            account: "work".to_string(),
+            ok: true,
+            error: None,
+            data: Some(serde_json::json!([
+                {"id": 1, "name": "alice"},
+                {"id": 2, "name": "bob"}
+            ])),
+            exit_code: None,
+        };
+        let envelope = output::Envelope::new(vec![outcome], false, "raw");
+        let views = human_views(&envelope);
+        assert_eq!(views.len(), 1);
+        match &views[0].1 {
+            HumanView::Table(headers, rows) => {
+                assert_eq!(headers, &vec!["id".to_string(), "name".to_string()]);
+                assert_eq!(rows.len(), 2);
+            }
+            other => panic!("array-of-objects payload should render as a table: {other:?}"),
         }
     }
 
