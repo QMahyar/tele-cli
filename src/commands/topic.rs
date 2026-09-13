@@ -464,9 +464,11 @@ where
         }
         let page = fetch(cursor, remaining.min(100)).await?;
         let page_len = page.topics.len();
-        cursor = next_cursor(cursor, &page.topics);
+        let next = next_cursor(cursor, &page.topics);
+        let stalled = page_len > 0 && next == cursor;
+        cursor = next;
         topics.extend(page.topics);
-        if page_len == 0 {
+        if page_len == 0 || stalled {
             break;
         }
     }
@@ -1653,6 +1655,30 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn collect_forum_topics_terminates_on_deleted_only_page() {
+        let mut calls = Vec::new();
+        let topics = collect_forum_topics(5, |cursor, page_limit| {
+            calls.push((cursor, page_limit));
+            async move {
+                Ok(ForumTopicsPage {
+                    topics: vec![tl::enums::ForumTopic::Deleted(
+                        tl::types::ForumTopicDeleted { id: 9 },
+                    )],
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.len(), 1, "stalled page must not be refetched");
+        assert_eq!(calls[0], (ForumCursor::default(), 5));
+        assert_eq!(topics.len(), 1);
+        assert!(matches!(
+            topics[0],
+            tl::enums::ForumTopic::Deleted(tl::types::ForumTopicDeleted { id: 9 })
+        ));
     }
 
     #[test]
