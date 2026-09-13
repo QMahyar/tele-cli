@@ -19,7 +19,7 @@ pub(crate) fn refuse_interactive_with_multiple_accounts(
     command: &str,
     flags: &GlobalFlags,
 ) -> TeleResult<()> {
-    let count = flags.account.len().max(flags.tag.len());
+    let count = crate::executor::select_accounts(flags)?.len();
     if count > 1 {
         return Err(TeleError::Usage(format!(
             "{command} with interactive prompts requires a single --account; \
