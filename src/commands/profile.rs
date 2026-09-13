@@ -170,12 +170,23 @@ fn validate_username_arg(raw: Option<&str>) -> TeleResult<()> {
     let Some(raw) = raw else {
         return Ok(());
     };
+    if is_username_clear_sentinel(raw) {
+        return Ok(());
+    }
     validate_username(strip_username_prefixes(raw.trim()))
 }
 
 fn strip_username_prefixes(raw: &str) -> &str {
     let s = crate::entities::strip_link_prefixes(raw);
     s.strip_prefix('@').unwrap_or(s)
+}
+
+fn is_username_clear_sentinel(raw: &str) -> bool {
+    strip_username_prefixes(raw.trim()).eq_ignore_ascii_case("remove")
+}
+
+fn username_clear_intent(username: Option<&str>, clear_flag: bool) -> bool {
+    clear_flag || username.is_some_and(is_username_clear_sentinel)
 }
 
 fn validate_username(username: &str) -> TeleResult<()> {
@@ -729,8 +740,13 @@ fn set_serve_dry_run(args: &SetArgs) -> TeleResult<serde_json::Value> {
     if args.photo.is_some() {
         fields.push("photo");
     }
+    let clearing = username_clear_intent(args.username.as_deref(), args.clear_username);
     if args.username.is_some() || args.clear_username {
-        fields.push("username");
+        fields.push(if clearing {
+            "username (clear)"
+        } else {
+            "username"
+        });
     }
     Ok(serde_json::json!({
         "dry_run": true,
@@ -847,9 +863,16 @@ pub(crate) async fn set_core(
     }
     let clear_username = params.clear_username;
     let mut applied_username: Option<String> = None;
+    let mut cleared_username = false;
     if let Some(raw) = &username_raw {
-        applied_username = Some(apply_username(shares, raw, false).await?);
+        if is_username_clear_sentinel(raw) {
+            cleared_username = true;
+            applied_username = Some(apply_username(shares, "", true).await?);
+        } else {
+            applied_username = Some(apply_username(shares, raw, false).await?);
+        }
     } else if clear_username {
+        cleared_username = true;
         applied_username = Some(apply_username(shares, "", true).await?);
     }
     if photo_path.is_some() || new_name.is_some() || new_bio.is_some() {
@@ -904,7 +927,7 @@ pub(crate) async fn set_core(
         "bio": new_bio,
         "photo": photo_path,
         "username": applied_username,
-        "cleared_username": clear_username,
+        "cleared_username": cleared_username,
     }))
 }
 
@@ -1252,6 +1275,124 @@ mod tests {
             clear_username: true,
         };
         assert!(matches!(validate_set(&both), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn validate_username_arg_accepts_clear_sentinel_in_any_case() {
+        for sentinel in [
+            "remove",
+            "REMOVE",
+            "Remove",
+            " remove ",
+            "@REMOVE",
+            "t.me/Remove",
+        ] {
+            assert!(
+                validate_username_arg(Some(sentinel)).is_ok(),
+                "{sentinel} must route to the clear path, not shape validation"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_set_accepts_username_sentinel_and_keeps_exclusion() {
+        let sentinel = SetArgs {
+            name: None,
+            bio: None,
+            photo: None,
+            username: Some("remove".to_string()),
+            clear_username: false,
+        };
+        assert!(validate_set(&sentinel).is_ok());
+        let both = SetArgs {
+            clear_username: true,
+            ..sentinel
+        };
+        assert!(matches!(validate_set(&both), Err(TeleError::Usage(_))));
+    }
+
+    #[test]
+    fn validate_set_still_rejects_invalid_non_sentinel_usernames() {
+        for bad in ["remo", "remove_", "remove x", "1remove"] {
+            let args = SetArgs {
+                name: None,
+                bio: None,
+                photo: None,
+                username: Some(bad.to_string()),
+                clear_username: false,
+            };
+            assert!(
+                matches!(validate_set(&args), Err(TeleError::Usage(_))),
+                "{bad} must still fail shape validation"
+            );
+        }
+    }
+
+    #[test]
+    fn set_dry_run_surfaces_username_clear_sentinel() {
+        let sentinel = SetArgs {
+            name: None,
+            bio: None,
+            photo: None,
+            username: Some("remove".to_string()),
+            clear_username: false,
+        };
+        let v = set_serve_dry_run(&sentinel).unwrap();
+        assert_eq!(
+            v["would"],
+            serde_json::json!("set profile username (clear)")
+        );
+        let upper = SetArgs {
+            username: Some("REMOVE".to_string()),
+            ..sentinel.clone()
+        };
+        let v = set_serve_dry_run(&upper).unwrap();
+        assert_eq!(
+            v["would"],
+            serde_json::json!("set profile username (clear)")
+        );
+        let flagged = SetArgs {
+            username: None,
+            clear_username: true,
+            ..sentinel.clone()
+        };
+        let v = set_serve_dry_run(&flagged).unwrap();
+        assert_eq!(
+            v["would"],
+            serde_json::json!("set profile username (clear)")
+        );
+        let regular = SetArgs {
+            username: Some("alice".to_string()),
+            clear_username: false,
+            ..sentinel
+        };
+        let v = set_serve_dry_run(&regular).unwrap();
+        assert_eq!(v["would"], serde_json::json!("set profile username"));
+        let mixed = SetArgs {
+            name: Some("Alice".to_string()),
+            bio: Some("hi".to_string()),
+            username: Some("Remove".to_string()),
+            clear_username: false,
+            photo: None,
+        };
+        let v = set_serve_dry_run(&mixed).unwrap();
+        assert_eq!(
+            v["would"],
+            serde_json::json!("set profile name, bio, username (clear)")
+        );
+    }
+
+    #[test]
+    fn username_clear_intent_covers_flag_and_sentinel() {
+        assert!(!username_clear_intent(Some("alice"), false));
+        assert!(!username_clear_intent(None, false));
+        assert!(username_clear_intent(None, true));
+        for sentinel in ["remove", "REMOVE", "Remove", " remove ", "@Remove"] {
+            assert!(
+                username_clear_intent(Some(sentinel), false),
+                "{sentinel} must resolve to clear"
+            );
+        }
     }
 
     #[test]
