@@ -86,50 +86,59 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 return Ok(start_dry_run_payload(contacts, messages, photos));
             }
             let dir = export_dir(&name);
-            ensure_no_active_takeout(&dir)?;
-            let cleared = clear_stale_export_artifacts(&dir);
-            if cleared > 0 {
-                crate::output::log_line(
-                    "info",
-                    &format!(
-                        "cleared {cleared} stale export file(s) left by a previous abandoned takeout"
-                    ),
-                );
-            }
-            let guard =
-                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
-            client::authorize(&guard.client).await?;
-            guard.rate_limiter.acquire().await;
-            let info: tl::enums::account::Takeout = guard
-                .client
-                .invoke(&tl::functions::account::InitTakeoutSession {
-                    contacts,
-                    message_users: messages,
-                    message_chats: messages,
-                    message_megagroups: messages,
-                    message_channels: messages,
-                    files: photos,
-                    file_max_size: Some(5_242_880_000),
-                })
-                .await
-                .map_err(tele_invocation)?;
-            let tl::enums::account::Takeout::Takeout(info) = info;
-            crate::fs_util::create_dir_private(&dir)?;
-            write_takeout_state(
-                &dir,
-                &TakeoutStateFile {
-                    takeout_id: info.id,
-                    checkpoints: HashMap::new(),
-                },
-            )?;
+            let init = async {
+                let guard =
+                    ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+                client::authorize(&guard.client).await?;
+                guard.rate_limiter.acquire().await;
+                let info: tl::enums::account::Takeout = guard
+                    .client
+                    .invoke(&tl::functions::account::InitTakeoutSession {
+                        contacts,
+                        message_users: messages,
+                        message_chats: messages,
+                        message_megagroups: messages,
+                        message_channels: messages,
+                        files: photos,
+                        file_max_size: Some(5_242_880_000),
+                    })
+                    .await
+                    .map_err(tele_invocation)?;
+                let tl::enums::account::Takeout::Takeout(info) = info;
+                Ok::<i64, TeleError>(info.id)
+            };
+            let (takeout_id, _cleared) = run_takeout_start_flow(&dir, init).await?;
             Ok(serde_json::json!({
-                "takeout_id": info.id,
+                "takeout_id": takeout_id,
                 "dir": dir.to_string_lossy(),
             }))
         })
     })
     .await?;
     crate::executor::finish(flags, &envelope)
+}
+
+async fn run_takeout_start_flow<Fut>(dir: &std::path::Path, init: Fut) -> TeleResult<(i64, usize)>
+where
+    Fut: std::future::Future<Output = TeleResult<i64>>,
+{
+    ensure_no_active_takeout(dir)?;
+    let takeout_id = init.await?;
+    let cleared = clear_stale_export_artifacts(dir);
+    if cleared > 0 {
+        crate::output::log_line(
+            "info",
+            &format!("cleared {cleared} stale export file(s) left by a previous abandoned takeout"),
+        );
+    }
+    write_takeout_state(
+        dir,
+        &TakeoutStateFile {
+            takeout_id,
+            checkpoints: HashMap::new(),
+        },
+    )?;
+    Ok((takeout_id, cleared))
 }
 
 fn validate_export(args: &ExportArgs) -> TeleResult<()> {
@@ -1246,6 +1255,77 @@ mod tests {
         assert_eq!(clear_stale_export_artifacts(&dir), 0);
         let missing = dir.join("does-not-exist");
         assert_eq!(clear_stale_export_artifacts(&missing), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_init_leaves_previous_export_artifacts_untouched() {
+        let dir = temp_dir("init-fail");
+        std::fs::write(dir.join("messages.jsonl"), b"old messages").unwrap();
+        std::fs::write(dir.join("contacts.json"), b"[]").unwrap();
+        std::fs::write(dir.join("dialogs.json"), b"[]").unwrap();
+        let flow = run_takeout_start_flow(&dir, async {
+            Err(TeleError::Other("simulated init failure".to_string()))
+        });
+        assert!(flow.await.is_err());
+        assert!(
+            dir.join("messages.jsonl").exists(),
+            "init failure must not destroy the previous export"
+        );
+        assert!(
+            dir.join("contacts.json").exists(),
+            "init failure must not destroy the previous export"
+        );
+        assert!(
+            dir.join("dialogs.json").exists(),
+            "init failure must not destroy the previous export"
+        );
+        assert!(
+            read_takeout_state(&dir).is_err(),
+            "no takeout state may be written when init fails"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn successful_init_clears_stale_artifacts_then_writes_state() {
+        let dir = temp_dir("init-ok");
+        std::fs::write(dir.join("messages.jsonl"), b"old messages").unwrap();
+        std::fs::write(dir.join("contacts.json"), b"[]").unwrap();
+        let (takeout_id, cleared) = run_takeout_start_flow(&dir, async { Ok(4242i64) })
+            .await
+            .unwrap();
+        assert_eq!(takeout_id, 4242);
+        assert_eq!(cleared, 2);
+        assert!(!dir.join("messages.jsonl").exists());
+        assert!(!dir.join("contacts.json").exists());
+        let state = read_takeout_state(&dir).unwrap();
+        assert_eq!(state.takeout_id, 4242);
+        assert!(state.checkpoints.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn active_takeout_blocks_start_before_init_runs() {
+        let dir = temp_dir("active-blocks-init");
+        write_takeout_state(
+            &dir,
+            &TakeoutStateFile {
+                takeout_id: 1,
+                checkpoints: HashMap::new(),
+            },
+        )
+        .unwrap();
+        let flow = run_takeout_start_flow(&dir, async { Ok(9i64) });
+        let err = flow.await.unwrap_err();
+        assert!(
+            err.message().contains("active takeout exists"),
+            "err: {err}"
+        );
+        assert!(
+            takeout_state_path(&dir).exists(),
+            "previous state must survive a blocked start"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

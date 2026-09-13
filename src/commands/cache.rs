@@ -200,13 +200,24 @@ pub(crate) async fn cache_search_core(
     Ok(serde_json::json!({ "query": params.query, "messages": messages }))
 }
 
+fn stats_dry_run_data(account: &str) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "account": account,
+        "would": format!("show local cache statistics for {account}")})
+}
+
 async fn stats(_args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::require_explicit_selection("cache stats", flags)?;
+    let dry_run = flags.dry_run;
     let json = flags.json;
     let jsonl = flags.jsonl;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let envelope = run_fanout(flags, move |name| {
         Box::pin(async move {
+            if dry_run {
+                return Ok(stats_dry_run_data(&name));
+            }
             let result = crate::cache_db::cache_stats(&name).await?;
             if !output::machine_mode(json, jsonl) {
                 output::print_account_table(
@@ -528,6 +539,29 @@ mod tests {
         let v = search_dry_run_data("deploy", 20);
         assert_eq!(v["dry_run"], true);
         assert_eq!(v["query"], "deploy");
+    }
+
+    #[test]
+    fn stats_dry_run_shape() {
+        let v = stats_dry_run_data("work");
+        assert_eq!(v["dry_run"], true);
+        assert_eq!(v["account"], "work");
+        assert!(
+            v["would"].as_str().unwrap().contains("statistics"),
+            "would: {v}"
+        );
+        assert!(
+            v.get("messages").is_none(),
+            "dry-run must not carry live stats"
+        );
+        assert!(
+            v.get("chats").is_none(),
+            "dry-run must not carry live stats"
+        );
+        assert!(
+            v.get("bytes").is_none(),
+            "dry-run must not carry live stats"
+        );
     }
 
     #[test]
