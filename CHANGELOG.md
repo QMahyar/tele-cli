@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`msg scheduled` dates are RFC 3339 strings** - the `date` field in scheduled-message rows was a raw Unix-epoch integer, the only machine-API date not using the shared `message_to_json` RFC 3339 format; it is now a string like every other date row. Type change (int → string) is breaking for parsers that expected an integer; documented in `docs/cli-contract.md` (`msg scheduled`) per ADR-003's change policy.
+
+### Fixed
+
+- 26 verified bugs from a 10-lens adversarial audit, each with an offline regression test: `msg export` joins the documented no-budget lanes and its scan is bounded (server cap without date filters, skip budget with them); `account delete/password` interactive guard counts resolved accounts instead of CLI flags; session hardening (IPv6-only Telethon imports rejected, export copies through a temp file so failures never destroy the destination, lock file unlinked only after guard drop); credentials overlay skips non-UTF-8 env vars and `--help` works without HOME/APPDATA; `msg send --split` applies `--reply`/`--schedule` to the first chunk only and `--thumbnail`/`--media-ttl` now take effect (grammers builder order); serve retries queue-full/hello/parse-error replies with a deadline, caps reconnects at the documented 5, and bounds all inline reply loops; `dialog list --folder` validates 0/1 on the CLI path and Folder-marker rows no longer break the GetDialogs cursor anchor; `msg export truncated` no longer false-positives at the cap; `listen --until` invalid values exit with usage instead of panicking; `parse_target`/`classify_target` agree on `+`-prefixed targets; completions normalize npm platform-suffixed binary names; serve/MCP `chat settings` applies `noforwards`, `chat stats` rejects user peers, `chat kick --ban` keeps the ban when `--rights` omits `view_messages`; forum-topic collection terminates on Deleted-only pages; `profile set --username remove` clears the username per contract; privacy merge emits explicit per-peer rules before categorical base rules; `messages.Search` filter rejects non-string JSON; `tele raw` human mode renders the payload; `takeout start` deletes previous export artifacts only after the new session is accepted; staged login persists pending state before the code request; `cache stats` honors `--dry-run`.
+
 ## [0.12.0] - 2026-09-08
 
 Full audit ship: six new capabilities, a release supply chain (SBOM + build provenance), and roughly forty fixes from the five-domain adversarial audit (kernel, commands, streams, security, release engineering). Every `done` capability row is contract-tested against the real CLI surface.
