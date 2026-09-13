@@ -1,5 +1,6 @@
 use clap::{Args, Subcommand};
 use grammers_client::tl;
+use grammers_session::types::PeerId;
 
 use crate::chat_target::ChatTarget;
 use crate::client::{self, ClientGuard};
@@ -179,7 +180,7 @@ pub async fn run(cmd: DialogCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    validate_limit(args.limit, 10_000, "limit")?;
+    validate_list(&args)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
@@ -289,7 +290,6 @@ async fn dialog_list_folder_core(
     folder: i32,
 ) -> TeleResult<serde_json::Value> {
     use grammers_client::peer::{Peer, User};
-    use grammers_session::types::PeerId;
     let mut rows = Vec::new();
     let mut offset_date = 0;
     let mut offset_id = 0;
@@ -370,85 +370,44 @@ async fn dialog_list_folder_core(
                 bundled.insert(pid, msg);
             }
         }
-        let mut last_peer_id: Option<PeerId> = None;
-        let mut last_msg_date: Option<i32> = None;
-        let mut last_msg_id: Option<i32> = None;
-        // Track the top message of the LAST dialog processed in this page;
-        // messages.GetDialogs requires offset_date/offset_id/offset_peer to
-        // describe the same dialog, or the next page re-serves this one.
-        let mut set_anchor = |msg_date: i32, msg_id: i32| {
-            last_msg_date = Some(msg_date);
-            last_msg_id = Some(msg_id);
-        };
+        // Track the peer and top message of the LAST row processed in this
+        // page; messages.GetDialogs requires offset_date/offset_id/offset_peer
+        // to describe the same dialog, or the next page re-serves this one.
+        let mut cursor = PageCursor::default();
         for dlg in &dialogs {
-            let dlg_peer_id: Option<PeerId> = match dlg {
-                tl::enums::Dialog::Dialog(d) => match &d.peer {
-                    tl::enums::Peer::User(u) => Some(PeerId::user_unchecked(u.user_id)),
-                    tl::enums::Peer::Chat(c) => Some(PeerId::chat_unchecked(c.chat_id)),
-                    tl::enums::Peer::Channel(c) => Some(PeerId::channel_unchecked(c.channel_id)),
-                },
-                tl::enums::Dialog::Folder(f) => match &f.peer {
-                    tl::enums::Peer::User(u) => Some(PeerId::user_unchecked(u.user_id)),
-                    tl::enums::Peer::Chat(c) => Some(PeerId::chat_unchecked(c.chat_id)),
-                    tl::enums::Peer::Channel(c) => Some(PeerId::channel_unchecked(c.channel_id)),
-                },
-            };
-            let Some(dlg_peer_id) = dlg_peer_id else {
-                continue;
-            };
+            let anchored = anchor_cursor_on_row(&mut cursor, dlg, &mut bundled);
             if !is_dialog_row(dlg) {
                 // Folder rows consume a slot in the server's ordering too —
-                // keep the offset peer moving past them.
-                last_peer_id = Some(dlg_peer_id);
+                // the cursor already anchored on this row's own top message.
                 continue;
             }
             let d = match dlg {
                 tl::enums::Dialog::Dialog(d) => d,
                 tl::enums::Dialog::Folder(_) => continue,
             };
-            let peer_id = dlg_peer_id;
+            let peer_id = PeerId::from(&d.peer);
             let Some(peer) = peers_map.get(&peer_id) else {
                 // Row skipped (peer absent from users/chats), but the dialog
-                // still consumes its slot in the server's ordering — anchor on
-                // its bundled top message (or top_message id) so pagination
-                // cannot stall or re-serve this window.
-                let anchor = match bundled.remove(&peer_id) {
-                    Some(tl::enums::Message::Message(m)) => (m.date, m.id),
-                    Some(tl::enums::Message::Service(m)) => (m.date, m.id),
-                    _ => (0, d.top_message),
-                };
-                last_peer_id = Some(peer_id);
-                set_anchor(anchor.0, anchor.1);
+                // still consumes its slot in the server's ordering — the
+                // cursor already anchored on it above.
                 continue;
             };
             let draft = match &d.draft {
                 Some(tl::enums::DraftMessage::Message(dm)) => dm.message.clone(),
                 _ => String::new(),
             };
-            let (last_text, last_date) = match bundled.remove(&peer_id) {
+            let (last_text, last_date) = match anchored {
                 Some(tl::enums::Message::Message(m)) => {
                     let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
                         .map(|d| d.to_rfc3339());
-                    let anchor = (m.date, m.id);
-                    last_peer_id = Some(peer_id);
-                    set_anchor(anchor.0, anchor.1);
                     (m.message.clone(), dt)
                 }
                 Some(tl::enums::Message::Service(m)) => {
                     let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(m.date as i64, 0)
                         .map(|d| d.to_rfc3339());
-                    let anchor = (m.date, m.id);
-                    last_peer_id = Some(peer_id);
-                    set_anchor(anchor.0, anchor.1);
                     (String::new(), dt)
                 }
-                _ => {
-                    // No bundled message for this dialog: anchor on its own
-                    // (top_message) id — still a valid offset key.
-                    last_peer_id = Some(peer_id);
-                    set_anchor(0, d.top_message);
-                    (String::new(), None)
-                }
+                _ => (String::new(), None),
             };
             rows.push(dialog_row(
                 d,
@@ -465,8 +424,8 @@ async fn dialog_list_folder_core(
             break;
         }
         exclude_pinned = true;
-        if let Some(pid) = last_peer_id {
-            if let (Some(date), Some(id)) = (last_msg_date, last_msg_id) {
+        if let Some(pid) = cursor.peer {
+            if let (Some(date), Some(id)) = (cursor.date, cursor.id) {
                 offset_date = date;
                 offset_id = id;
             }
@@ -495,6 +454,37 @@ async fn dialog_list_folder_core(
         }
     }
     Ok(serde_json::json!({"dialogs": rows}))
+}
+
+#[derive(Default)]
+struct PageCursor {
+    peer: Option<PeerId>,
+    date: Option<i32>,
+    id: Option<i32>,
+}
+
+fn anchor_cursor_on_row(
+    cursor: &mut PageCursor,
+    row: &tl::enums::Dialog,
+    bundled: &mut std::collections::HashMap<PeerId, tl::enums::Message>,
+) -> Option<tl::enums::Message> {
+    let (peer_id, top_message) = match row {
+        tl::enums::Dialog::Dialog(d) => (PeerId::from(&d.peer), d.top_message),
+        tl::enums::Dialog::Folder(f) => (PeerId::from(&f.peer), f.top_message),
+    };
+    let (date, id, anchored) = match bundled.remove(&peer_id) {
+        Some(tl::enums::Message::Message(m)) => {
+            (m.date, m.id, Some(tl::enums::Message::Message(m)))
+        }
+        Some(tl::enums::Message::Service(m)) => {
+            (m.date, m.id, Some(tl::enums::Message::Service(m)))
+        }
+        other => (0, top_message, other),
+    };
+    cursor.peer = Some(peer_id);
+    cursor.date = Some(date);
+    cursor.id = Some(id);
+    anchored
 }
 
 async fn drafts(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -2393,7 +2383,7 @@ mod tests {
         assert!(row["last_message_date"].is_null());
     }
 
-    fn phantom_dialog() -> tl::enums::Dialog {
+    fn folder_marker(user_id: i64, top_message: i32) -> tl::enums::Dialog {
         tl::enums::Dialog::Folder(tl::types::DialogFolder {
             pinned: false,
             folder: tl::enums::Folder::Folder(tl::types::Folder {
@@ -2404,13 +2394,78 @@ mod tests {
                 title: "archive".to_string(),
                 photo: None,
             }),
-            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id: 99 }),
-            top_message: 0,
+            peer: tl::enums::Peer::User(tl::types::PeerUser { user_id }),
+            top_message,
             unread_muted_peers_count: 0,
             unread_unmuted_peers_count: 0,
             unread_muted_messages_count: 0,
             unread_unmuted_messages_count: 0,
         })
+    }
+
+    fn phantom_dialog() -> tl::enums::Dialog {
+        folder_marker(99, 0)
+    }
+
+    fn bundled_message(
+        user_id: i64,
+        id: i32,
+        date: i32,
+    ) -> (grammers_session::types::PeerId, tl::enums::Message) {
+        (
+            grammers_session::types::PeerId::user_unchecked(user_id),
+            tl::enums::Message::Message(tl::types::Message {
+                out: false,
+                mentioned: false,
+                media_unread: false,
+                silent: false,
+                post: false,
+                from_scheduled: false,
+                legacy: false,
+                edit_hide: false,
+                pinned: false,
+                noforwards: false,
+                invert_media: false,
+                offline: false,
+                video_processing_pending: false,
+                paid_suggested_post_stars: false,
+                paid_suggested_post_ton: false,
+                id,
+                from_id: None,
+                from_boosts_applied: None,
+                from_rank: None,
+                peer_id: tl::enums::Peer::User(tl::types::PeerUser { user_id }),
+                saved_peer_id: None,
+                fwd_from: None,
+                via_bot_id: None,
+                via_business_bot_id: None,
+                guestchat_via_from: None,
+                reply_to: None,
+                date,
+                message: String::new(),
+                media: None,
+                reply_markup: None,
+                entities: None,
+                views: None,
+                forwards: None,
+                replies: None,
+                edit_date: None,
+                post_author: None,
+                grouped_id: None,
+                reactions: None,
+                restriction_reason: None,
+                ttl_period: None,
+                quick_reply_shortcut_id: None,
+                effect: None,
+                factcheck: None,
+                report_delivery_until_date: None,
+                paid_message_stars: None,
+                suggested_post: None,
+                schedule_repeat_period: None,
+                summary_from_language: None,
+                rich_message: None,
+            }),
+        )
     }
 
     #[test]
@@ -2434,6 +2489,54 @@ mod tests {
         assert!(!matches_folder(&raw_dialog(Some(0)), 1));
         assert!(!matches_folder(&raw_dialog(None), 1));
         assert!(!matches_folder(&phantom_dialog(), 1));
+    }
+
+    #[test]
+    fn folder_marker_row_anchors_cursor_on_its_own_top_message() {
+        let marker = folder_marker(99, 555);
+        let mut bundled = std::collections::HashMap::new();
+        let (pid, msg) = bundled_message(99, 555, 1_700_000_000);
+        bundled.insert(pid, msg);
+        let mut cursor = PageCursor::default();
+        anchor_cursor_on_row(&mut cursor, &marker, &mut bundled);
+        assert_eq!(
+            cursor.peer,
+            Some(grammers_session::types::PeerId::user_unchecked(99))
+        );
+        assert_eq!(cursor.date, Some(1_700_000_000));
+        assert_eq!(cursor.id, Some(555));
+    }
+
+    #[test]
+    fn folder_marker_row_without_bundled_message_falls_back_to_top_message() {
+        let marker = folder_marker(99, 555);
+        let mut bundled = std::collections::HashMap::new();
+        let mut cursor = PageCursor::default();
+        anchor_cursor_on_row(&mut cursor, &marker, &mut bundled);
+        assert_eq!(
+            cursor.peer,
+            Some(grammers_session::types::PeerId::user_unchecked(99))
+        );
+        assert_eq!(cursor.date, Some(0));
+        assert_eq!(cursor.id, Some(555));
+    }
+
+    #[test]
+    fn page_ending_in_folder_marker_anchors_cursor_on_the_marker() {
+        let page = [raw_dialog(Some(0)), folder_marker(99, 555)];
+        let mut bundled = std::collections::HashMap::new();
+        let (pid, msg) = bundled_message(99, 555, 1_700_000_000);
+        bundled.insert(pid, msg);
+        let mut cursor = PageCursor::default();
+        for row in &page {
+            anchor_cursor_on_row(&mut cursor, row, &mut bundled);
+        }
+        assert_eq!(
+            cursor.peer,
+            Some(grammers_session::types::PeerId::user_unchecked(99))
+        );
+        assert_eq!(cursor.date, Some(1_700_000_000));
+        assert_eq!(cursor.id, Some(555));
     }
 
     #[tokio::test]
@@ -2460,6 +2563,44 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("--folder"));
+    }
+
+    #[tokio::test]
+    async fn list_rejects_out_of_range_folder() {
+        let flags = GlobalFlags {
+            account: vec!["work".to_string()],
+            tag: Vec::new(),
+            parallel: None,
+            json: true,
+            jsonl: false,
+            dry_run: true,
+            quiet: false,
+            config_path: None,
+            command: "dialog list".to_string(),
+        };
+        let err = list(
+            ListArgs {
+                limit: 20,
+                folder: Some(2),
+            },
+            &flags,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("--folder must be 0 or 1"));
+    }
+
+    #[test]
+    fn validate_list_accepts_zero_one_and_unset_folder() {
+        for folder in [None, Some(0), Some(1)] {
+            assert!(validate_list(&ListArgs { limit: 20, folder }).is_ok());
+        }
+        assert!(validate_list(&ListArgs {
+            limit: 20,
+            folder: Some(2)
+        })
+        .is_err());
     }
 
     #[test]
