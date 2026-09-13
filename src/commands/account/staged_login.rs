@@ -874,7 +874,10 @@ mod tests {
         let previous = load_pending_under(&base, "work").unwrap();
         save_pending_under(&base, &pending_attempt("work", "+15551234567")).unwrap();
         assert_eq!(
-            load_pending_under(&base, "work").unwrap().unwrap().phone_code_hash,
+            load_pending_under(&base, "work")
+                .unwrap()
+                .unwrap()
+                .phone_code_hash,
             UNSENT_CODE_HASH
         );
         restore_previous_pending(&base, previous);
