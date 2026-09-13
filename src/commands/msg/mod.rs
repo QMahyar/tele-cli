@@ -1958,6 +1958,20 @@ fn scheduled_dry_run_data(chat: &str, limit: u32) -> serde_json::Value {
         "would": format!("list up to {limit} scheduled messages in chat {chat}")})
 }
 
+fn scheduled_rfc3339(ts: i32) -> String {
+    chrono::DateTime::from_timestamp(i64::from(ts), 0)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+fn scheduled_row(id: i32, date: i32, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "date": scheduled_rfc3339(date),
+        "message": message,
+    })
+}
+
 async fn scheduled(args: ScheduledArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let config_path = flags.config_path.clone();
@@ -2002,11 +2016,7 @@ pub(crate) async fn scheduled_core(
     };
     for msg in msgs.iter().take(params.limit as usize) {
         if let tl::enums::Message::Message(m) = msg {
-            out.push(serde_json::json!({
-                "id": m.id,
-                "date": m.date,
-                "message": m.message,
-            }));
+            out.push(scheduled_row(m.id, m.date, &m.message));
         }
     }
     let _ = (users, chats);
@@ -2342,6 +2352,33 @@ fn export_payload(rows: &[serde_json::Value], format: &str) -> String {
     body
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ExportScan {
+    Skip,
+    Stop,
+    CapReached,
+    Keep,
+}
+
+pub(crate) fn export_scan_decision(
+    served: usize,
+    limit: usize,
+    date_ts: i64,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> ExportScan {
+    if until.is_some_and(|u| date_ts > u) {
+        return ExportScan::Skip;
+    }
+    if since.is_some_and(|s| date_ts < s) {
+        return ExportScan::Stop;
+    }
+    if served >= limit {
+        return ExportScan::CapReached;
+    }
+    ExportScan::Keep
+}
+
 pub(crate) async fn export_core(
     shares: &crate::client::ServeShares,
     params: ExportParams,
@@ -2362,18 +2399,28 @@ pub(crate) async fn export_core(
     if let Some(offset) = params.offset_id {
         iter = iter.offset_id(offset);
     }
-    iter = iter.limit(params.limit as usize);
+    let since_ts = since.as_ref().map(|d| d.timestamp());
+    let until_ts = until.as_ref().map(|d| d.timestamp());
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut scanned = 0usize;
     let mut served = 0usize;
+    let mut truncated = false;
     while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
         scanned += 1;
-        let date = msg.date();
-        if until.is_some_and(|u| date.timestamp() > u.timestamp()) {
-            continue;
-        }
-        if since.is_some_and(|s| date.timestamp() < s.timestamp()) {
-            break;
+        match export_scan_decision(
+            served,
+            params.limit as usize,
+            msg.date().timestamp(),
+            since_ts,
+            until_ts,
+        ) {
+            ExportScan::Skip => continue,
+            ExportScan::Stop => break,
+            ExportScan::CapReached => {
+                truncated = true;
+                break;
+            }
+            ExportScan::Keep => {}
         }
         served += 1;
         shares.rate_limiter.acquire_for_items(served).await;
@@ -2384,7 +2431,6 @@ pub(crate) async fn export_core(
         }
         rows.push(row);
     }
-    let truncated = scanned >= params.limit as usize;
     match &params.out {
         Some(out) => {
             let body = export_payload(&rows, &params.format);
@@ -2459,6 +2505,115 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 #[allow(clippy::await_holding_lock)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod msg_mod_tests {
+    use super::*;
+
+    #[test]
+    fn export_scan_decision_returns_keep_for_exactly_limit_messages() {
+        let limit = 3usize;
+        let mut served = 0usize;
+        for ts in [1_100i64, 1_200, 1_300] {
+            assert_eq!(
+                export_scan_decision(served, limit, ts, None, None),
+                ExportScan::Keep
+            );
+            served += 1;
+        }
+        assert_eq!(served, limit);
+    }
+
+    #[test]
+    fn export_scan_decision_reports_truncation_only_when_extra_message_exists() {
+        let limit = 3usize;
+        let mut served = 0usize;
+        for ts in [1_100i64, 1_200, 1_300] {
+            assert_eq!(
+                export_scan_decision(served, limit, ts, None, None),
+                ExportScan::Keep
+            );
+            served += 1;
+        }
+        assert_eq!(
+            export_scan_decision(served, limit, 1_400, None, None),
+            ExportScan::CapReached
+        );
+    }
+
+    #[test]
+    fn export_scan_decision_orders_until_skip_and_since_stop_before_cap() {
+        let limit = 1usize;
+        assert_eq!(
+            export_scan_decision(1, limit, 2_000, None, Some(1_000)),
+            ExportScan::Skip
+        );
+        assert_eq!(
+            export_scan_decision(1, limit, 500, Some(1_000), None),
+            ExportScan::Stop
+        );
+        assert_eq!(
+            export_scan_decision(1, limit, 1_500, None, None),
+            ExportScan::CapReached
+        );
+    }
+
+    #[test]
+    fn export_scan_decision_until_skips_do_not_consume_row_budget_or_report_truncation() {
+        let until = Some(1_000i64);
+        let msgs = [1_400i64, 1_300, 1_200, 1_100, 1_050, 990, 980, 970];
+        let mut served = 0usize;
+        let mut rows = 0usize;
+        let mut truncated = false;
+        for ts in msgs {
+            match export_scan_decision(served, 4, ts, None, until) {
+                ExportScan::Skip => continue,
+                ExportScan::Stop => break,
+                ExportScan::CapReached => {
+                    truncated = true;
+                    break;
+                }
+                ExportScan::Keep => {}
+            }
+            served += 1;
+            rows += 1;
+        }
+        assert_eq!(rows, 3);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn scheduled_row_formats_date_as_rfc3339() {
+        let row = scheduled_row(42, 1_700_000_000, "hello");
+        let date = row["date"].as_str().expect("date must be a string");
+        let parsed = chrono::DateTime::parse_from_rfc3339(date)
+            .expect("scheduled date must parse as RFC3339");
+        assert_eq!(parsed.timestamp(), 1_700_000_000);
+        let expected = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(date, expected);
+    }
+
+    #[test]
+    fn scheduled_row_formats_epoch_zero_date_instead_of_raw_int() {
+        let row = scheduled_row(7, 0, "hello");
+        let date = row["date"].as_str().expect("date must be a string");
+        assert_eq!(date, "1970-01-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn scheduled_row_keeps_existing_contract_fields() {
+        let row = scheduled_row(11, 1_700_000_000, "body");
+        assert_eq!(row["id"].as_i64(), Some(11));
+        assert_eq!(row["message"].as_str(), Some("body"));
+        assert_eq!(
+            row.as_object().map(|o| o.len()),
+            Some(3),
+            "row shape stays id/date/message only"
+        );
+    }
+}
 
 pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
     use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
