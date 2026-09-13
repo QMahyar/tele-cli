@@ -543,6 +543,7 @@ pub(crate) async fn staged_resend_flow(
     flags: &GlobalFlags,
 ) -> TeleResult<i32> {
     guard.rate_limiter.acquire().await;
+    ensure_code_requested(pending)?;
     let request = grammers_client::tl::functions::auth::ResendCode {
         phone_number: pending.phone.clone(),
         phone_code_hash: pending.phone_code_hash.clone(),
@@ -663,6 +664,7 @@ pub(crate) async fn staged_cancel_code_flow(
     pending: &PendingLogin,
 ) -> TeleResult<serde_json::Value> {
     guard.rate_limiter.acquire().await;
+    ensure_code_requested(pending)?;
     let request = grammers_client::tl::functions::auth::CancelCode {
         phone_number: pending.phone.clone(),
         phone_code_hash: pending.phone_code_hash.clone(),

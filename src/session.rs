@@ -145,7 +145,7 @@ fn sweep_session_artifacts(name: &str, include_lock: bool) -> anyhow::Result<()>
         targets.push(sidecar_path(name, suffix));
     }
     let tmp_prefix = format!("{name}.session.tmp-");
-    let export_tmp_prefix = format!(".{name}.session.export.tmp-");
+    let export_tmp_prefix = export_temp_prefix(&default_export_dest(name));
     if let Ok(entries) = std::fs::read_dir(session_dir()) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().to_string();
@@ -273,17 +273,34 @@ pub struct ImportedSession {
     pub bytes: u64,
 }
 
-fn export_temp_path(dest: &Path) -> anyhow::Result<PathBuf> {
+fn default_export_dest(name: &str) -> PathBuf {
+    session_dir().join(format!("{name}.session.export"))
+}
+
+fn export_temp_prefix(dest: &Path) -> String {
     let stem = dest
         .file_name()
-        .ok_or_else(|| anyhow::anyhow!("cannot export to {}: not a file path", dest.display()))?
-        .to_string_lossy()
-        .to_string();
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    format!(".{stem}.tmp-")
+}
+
+fn export_temp_path(dest: &Path) -> anyhow::Result<PathBuf> {
+    if dest.file_name().is_none() {
+        return Err(anyhow::anyhow!(
+            "cannot export to {}: not a file path",
+            dest.display()
+        ));
+    }
     let rand: u16 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u16)
         .unwrap_or(0);
-    Ok(dest.with_file_name(format!(".{stem}.tmp-{}-{rand}", std::process::id())))
+    Ok(dest.with_file_name(format!(
+        "{}{}-{rand}",
+        export_temp_prefix(dest),
+        std::process::id()
+    )))
 }
 
 #[cfg(test)]
@@ -306,7 +323,7 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
         None => {
             crate::config::ensure_app_data_dir()?;
             crate::fs_util::create_dir_private(&session_dir())?;
-            session_dir().join(format!("{name}.session.export"))
+            default_export_dest(name)
         }
     };
     if let Ok(meta) = std::fs::symlink_metadata(&dest) {
@@ -971,6 +988,28 @@ pub fn sha256_hex(data: &[u8]) -> String {
 mod tests {
     use super::*;
     use grammers_session::Session;
+
+    #[test]
+    fn export_temp_naming_matches_sweep_prefix() {
+        let name = "work";
+        let dest = default_export_dest(name);
+        let prefix = export_temp_prefix(&dest);
+        assert_eq!(prefix, format!(".{name}.session.export.tmp-"));
+        let temp = export_temp_path(&dest).unwrap();
+        assert!(temp
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&prefix));
+        let custom = Path::new("E:/backup/tele-backup.session");
+        let custom_temp = export_temp_path(custom).unwrap();
+        assert_eq!(custom_temp.parent(), custom.parent());
+        assert!(custom_temp
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&export_temp_prefix(custom)));
+    }
 
     #[test]
     fn validate_name_accepts_plain_names() {
