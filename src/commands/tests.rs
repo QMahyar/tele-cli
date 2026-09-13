@@ -2575,3 +2575,27 @@ fn per_event_serialization_error_does_not_kill_stream() {
     assert!(!err.is_broken_pipe());
     assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
 }
+
+#[test]
+fn until_instant_none_yields_no_deadline() {
+    assert_eq!(until_instant(None).unwrap(), None);
+}
+
+#[test]
+fn until_instant_invalid_value_maps_to_usage() {
+    let err = until_instant(Some("garbage")).expect_err("invalid --until must be rejected");
+    assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+    assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+    assert!(err.message().contains("--until"), "err: {err}");
+    assert!(err.message().contains("garbage"), "err: {err}");
+}
+
+#[test]
+fn until_instant_accepts_timestamp_relative_date_and_rfc3339() {
+    assert!(until_instant(Some("4102444800")).unwrap().is_some());
+    assert!(until_instant(Some("+90s")).unwrap().is_some());
+    assert!(until_instant(Some("2100-01-01")).unwrap().is_some());
+    assert!(until_instant(Some("2100-01-01T00:00:00Z"))
+        .unwrap()
+        .is_some());
+}

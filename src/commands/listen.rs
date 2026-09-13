@@ -598,6 +598,18 @@ fn dedupe_key(
 #[cfg(test)]
 use super::serve::pts_from_state;
 
+fn until_instant(value: Option<&str>) -> TeleResult<Option<std::time::Instant>> {
+    match value {
+        None => Ok(None),
+        Some(v) => {
+            let dt = crate::commands::msg::download::parse_download_date("--until", v)?;
+            Ok(Some(
+                std::time::Instant::now() + (dt - chrono::Utc::now()).to_std().unwrap_or_default(),
+            ))
+        }
+    }
+}
+
 pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     use grammers_client::update::Update;
@@ -633,17 +645,8 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         output::log_line("info", "listen streams JSONL events on stdout");
     }
     let timeout_secs = args.timeout_secs;
-    let stopper = Arc::new(StreamStopper::new(
-        args.count,
-        args.until.as_deref().map(|v| {
-            crate::commands::msg::download::parse_download_date("--until", v)
-                .map(|dt| {
-                    std::time::Instant::now()
-                        + (dt - chrono::Utc::now()).to_std().unwrap_or_default()
-                })
-                .unwrap_or_else(|e| panic!("invalid --until: {}", e.message()))
-        }),
-    ));
+    let until = until_instant(args.until.as_deref())?;
+    let stopper = Arc::new(StreamStopper::new(args.count, until));
     let direction = if args.out {
         Some(Direction::Out)
     } else if args.r#in {
