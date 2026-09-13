@@ -475,7 +475,7 @@ async fn dispatch(
                 }
                 None => None,
             };
-            let filter = search_filter(&str_field(p, "filter")?)?;
+            let filter = search_filter_field(p)?;
             let r: tl::enums::messages::Messages = client
                 .invoke(&tl::functions::messages::Search {
                     peer,
@@ -1005,17 +1005,18 @@ fn long_field(p: &serde_json::Value, key: &str) -> i64 {
     p.get(key).and_then(|v| v.as_i64()).unwrap_or(0)
 }
 
+const SEARCH_FILTER_NAMES: &[&str] = &[
+    "empty",
+    "photos",
+    "video",
+    "gif",
+    "documents",
+    "urls",
+    "audio",
+    "voice",
+];
+
 fn search_filter(name: &str) -> TeleResult<tl::enums::MessagesFilter> {
-    let valid = [
-        "empty",
-        "photos",
-        "video",
-        "gif",
-        "documents",
-        "urls",
-        "audio",
-        "voice",
-    ];
     let lowered = name.trim().to_ascii_lowercase();
     match lowered.as_str() {
         "" | "empty" => Ok(tl::enums::MessagesFilter::InputMessagesFilterEmpty),
@@ -1027,7 +1028,17 @@ fn search_filter(name: &str) -> TeleResult<tl::enums::MessagesFilter> {
         "audio" | "music" => Ok(tl::enums::MessagesFilter::InputMessagesFilterMusic),
         "voice" | "voicenotes" => Ok(tl::enums::MessagesFilter::InputMessagesFilterVoice),
         other => Err(TeleError::Usage(format!(
-            "--args field \"filter\": unknown filter {other:?} (valid names: {valid:?})"
+            "--args field \"filter\": unknown filter {other:?} (valid names: {SEARCH_FILTER_NAMES:?})"
+        ))),
+    }
+}
+
+fn search_filter_field(p: &serde_json::Value) -> TeleResult<tl::enums::MessagesFilter> {
+    match p.get("filter") {
+        None | Some(serde_json::Value::Null) => search_filter(""),
+        Some(serde_json::Value::String(s)) => search_filter(s),
+        Some(_) => Err(TeleError::Usage(format!(
+            "--args field \"filter\" must be a string (valid names: {SEARCH_FILTER_NAMES:?})"
         ))),
     }
 }
@@ -1591,6 +1602,39 @@ mod tests {
         let err = search_filter("stickers").unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("valid names"));
+    }
+
+    #[test]
+    fn search_filter_field_rejects_non_string_filter() {
+        assert!(matches!(
+            search_filter_field(&serde_json::json!({})).unwrap(),
+            tl::enums::MessagesFilter::InputMessagesFilterEmpty
+        ));
+        assert!(matches!(
+            search_filter_field(&serde_json::json!({"filter": null})).unwrap(),
+            tl::enums::MessagesFilter::InputMessagesFilterEmpty
+        ));
+        assert!(matches!(
+            search_filter_field(&serde_json::json!({"filter": ""})).unwrap(),
+            tl::enums::MessagesFilter::InputMessagesFilterEmpty
+        ));
+        assert!(matches!(
+            search_filter_field(&serde_json::json!({"filter": " photos "})).unwrap(),
+            tl::enums::MessagesFilter::InputMessagesFilterPhotos
+        ));
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!(["photos"]),
+            serde_json::json!({"name": "photos"}),
+        ] {
+            let err = search_filter_field(&serde_json::json!({ "filter": bad })).unwrap_err();
+            assert!(
+                matches!(err, TeleError::Usage(_)),
+                "non-string filter must be a usage error: {err}"
+            );
+            assert!(err.message().contains("valid names"), "err: {err}");
+        }
     }
 
     #[test]
