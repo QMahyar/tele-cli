@@ -572,20 +572,71 @@ pub(crate) fn send_serve_dry_run(args: &SendArgs) -> TeleResult<serde_json::Valu
     Ok(send_dry_run_payload(args, schedule))
 }
 
-fn voice_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessage {
+pub(crate) fn file_message(
+    uploaded: grammers_client::media::Uploaded,
+    thumbnail: Option<grammers_client::media::Uploaded>,
+    is_image: bool,
+    media_ttl: Option<i32>,
+    format: &str,
+    caption: Option<String>,
+) -> InputMessage {
+    let caption = caption.unwrap_or_default();
+    let mut msg = match format {
+        "markdown" => InputMessage::new().markdown(caption),
+        _ => InputMessage::new().text(caption),
+    };
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    if is_image {
+        msg.photo(uploaded)
+    } else {
+        let msg = msg.document(uploaded);
+        match thumbnail {
+            Some(thumb) => msg.thumbnail(thumb),
+            None => msg,
+        }
+    }
+}
+
+pub(crate) fn url_message(url: &str, is_document: bool, media_ttl: Option<i32>) -> InputMessage {
+    let mut msg = InputMessage::new();
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    if is_document {
+        msg.document_url(url)
+    } else {
+        msg.photo_url(url)
+    }
+}
+
+fn voice_note_message(
+    uploaded: grammers_client::media::Uploaded,
+    media_ttl: Option<i32>,
+) -> InputMessage {
     use std::time::Duration;
-    InputMessage::new()
-        .document(uploaded)
+    let mut msg = InputMessage::new();
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    msg.document(uploaded)
         .attribute(grammers_client::media::Attribute::Voice {
             duration: Duration::ZERO,
             waveform: None,
         })
 }
 
-fn video_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessage {
+fn video_note_message(
+    uploaded: grammers_client::media::Uploaded,
+    media_ttl: Option<i32>,
+) -> InputMessage {
     use std::time::Duration;
-    InputMessage::new()
-        .document(uploaded)
+    let mut msg = InputMessage::new();
+    if let Some(ttl) = media_ttl {
+        msg = msg.media_ttl(ttl);
+    }
+    msg.document(uploaded)
         .attribute(grammers_client::media::Attribute::Video {
             round_message: true,
             supports_streaming: false,
@@ -598,10 +649,11 @@ fn video_note_message(uploaded: grammers_client::media::Uploaded) -> InputMessag
 pub(crate) fn send_as_media_message(
     uploaded: grammers_client::media::Uploaded,
     as_media: &str,
+    media_ttl: Option<i32>,
 ) -> TeleResult<InputMessage> {
     match as_media {
-        "voice" => Ok(voice_note_message(uploaded)),
-        "video-note" => Ok(video_note_message(uploaded)),
+        "voice" => Ok(voice_note_message(uploaded, media_ttl)),
+        "video-note" => Ok(video_note_message(uploaded, media_ttl)),
         other => Err(TeleError::Usage(format!(
             "unknown --as {other:?} (valid: voice, video-note)"
         ))),
@@ -731,6 +783,29 @@ pub(crate) fn split_text_utf16(text: &str, cap: usize) -> Vec<String> {
     out
 }
 
+pub(crate) fn split_chunk_opts(
+    chunk: usize,
+    reply: Option<i32>,
+    schedule: Option<u64>,
+) -> (Option<i32>, Option<u64>) {
+    if chunk == 0 {
+        (reply, schedule)
+    } else {
+        (None, None)
+    }
+}
+
+fn apply_schedule(msg: InputMessage, schedule: Option<u64>) -> InputMessage {
+    match schedule {
+        None => msg,
+        Some(0) => msg.schedule_once_online(),
+        Some(s) => {
+            let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
+            msg.schedule_date(Some(ts))
+        }
+    }
+}
+
 pub(crate) async fn send_core(
     shares: &crate::client::ServeShares,
     params: SendParams,
@@ -781,16 +856,13 @@ pub(crate) async fn send_core(
         crate::serialize::upgrade_peer_identity(&mut row, &chat);
         return Ok(row);
     }
-    let apply_common = |msg: InputMessage| -> InputMessage {
+    let apply_common = |msg: InputMessage, reply: Option<i32>| -> InputMessage {
         let mut msg = msg.reply_to(reply);
         if silent {
             msg = msg.silent(true);
         }
         if background {
             msg = msg.background(true);
-        }
-        if let Some(ttl) = media_ttl {
-            msg = msg.media_ttl(ttl);
         }
         msg
     };
@@ -823,7 +895,7 @@ pub(crate) async fn send_core(
         let base = base.link_preview(preview);
         let sent = shares
             .client
-            .send_message(chat_ref, apply_common(base))
+            .send_message(chat_ref, apply_common(base, reply))
             .await
             .map_err(tele_invocation)?;
         let mut row = crate::serialize::message_to_json(&sent)?;
@@ -831,10 +903,7 @@ pub(crate) async fn send_core(
         return Ok(row);
     }
     if let Some(link) = &url {
-        let base = match kind.as_deref() {
-            Some("document") => InputMessage::new().document_url(link),
-            _ => InputMessage::new().photo_url(link),
-        };
+        let base = url_message(link, kind.as_deref() == Some("document"), media_ttl);
         let base = if let Some(cap) = &caption {
             match format.as_str() {
                 "markdown" => base.markdown(cap.clone()),
@@ -846,7 +915,7 @@ pub(crate) async fn send_core(
         let base = base.link_preview(preview);
         let sent = shares
             .client
-            .send_message(chat_ref, apply_common(base))
+            .send_message(chat_ref, apply_common(base, reply))
             .await
             .map_err(tele_invocation)?;
         let mut row = crate::serialize::message_to_json(&sent)?;
@@ -911,25 +980,26 @@ pub(crate) async fn send_core(
                 .map_err(upload_error)?
         };
         if let Some(as_media) = &as_media {
-            send_as_media_message(uploaded, as_media)?
+            send_as_media_message(uploaded, as_media, media_ttl)?
         } else {
-            let mut base = match format.as_str() {
-                "markdown" => InputMessage::new().markdown(caption.unwrap_or_default()),
-                _ => InputMessage::new().text(caption.unwrap_or_default()),
+            let thumb = match &thumbnail {
+                Some(thumb_path) => Some(
+                    shares
+                        .client
+                        .upload_file(thumb_path)
+                        .await
+                        .map_err(upload_error)?,
+                ),
+                None => None,
             };
-            if let Some(thumb_path) = &thumbnail {
-                let thumb_uploaded = shares
-                    .client
-                    .upload_file(thumb_path)
-                    .await
-                    .map_err(upload_error)?;
-                base = base.thumbnail(thumb_uploaded);
-            }
-            if looks_like_image(path) {
-                base.photo(uploaded)
-            } else {
-                base.document(uploaded)
-            }
+            file_message(
+                uploaded,
+                thumb,
+                looks_like_image(path),
+                media_ttl,
+                format.as_str(),
+                caption,
+            )
         }
     } else {
         let text_owned = text.clone().unwrap_or_default();
@@ -946,19 +1016,9 @@ pub(crate) async fn send_core(
                     _ => InputMessage::new().text(chunk),
                 };
                 let base = base.link_preview(preview);
-                let base = if i == 0 { base.reply_to(reply) } else { base };
-                let msg = apply_common(base);
-                let msg = if let Some(s) = schedule {
-                    if s == 0 {
-                        msg.schedule_once_online()
-                    } else {
-                        let ts =
-                            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
-                        msg.schedule_date(Some(ts))
-                    }
-                } else {
-                    msg
-                };
+                let (chunk_reply, chunk_schedule) = split_chunk_opts(i, reply, schedule);
+                let msg = apply_common(base, chunk_reply);
+                let msg = apply_schedule(msg, chunk_schedule);
                 let sent = shares
                     .client
                     .send_message(chat_ref, msg)
@@ -999,15 +1059,8 @@ pub(crate) async fn send_core(
         };
         base.link_preview(preview)
     };
-    if let Some(s) = schedule {
-        if s == 0 {
-            msg = msg.schedule_once_online();
-        } else {
-            let ts = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s);
-            msg = msg.schedule_date(Some(ts));
-        }
-    }
-    msg = apply_common(msg);
+    msg = apply_schedule(msg, schedule);
+    msg = apply_common(msg, reply);
     let sent = shares
         .client
         .send_message(chat_ref, msg)
