@@ -51,15 +51,20 @@ tele completions fish > ~/.config/fish/completions/tele.fish
 ```bash
 mkdir -p ~/.config/tele
 echo 'TELE_API_ID=1234567' > ~/.config/tele/.env
-echo 'TELE_API_HASH=0123456789abcdef0123456789abcdef' >> ~/.config/tele/.env
+echo 'TELE_API_HASH=YOUR_API_HASH_HERE' >> ~/.config/tele/.env
+chmod 600 ~/.config/tele/.env
 ```
+
+`tele` tightens `.env` to owner-only on every credentials load, but set `0600` yourself too, and never commit the file. Use your real values from [my.telegram.org](https://my.telegram.org); the placeholders above are not valid.
 
 **2. Add and log in an account.** `account login` prompts for the login code, or use `--method qr`:
 
 ```bash
 tele account add --name work
-tele account login --name work --method code --phone +1XXXXXXXXXX
+TELE_PHONE=+15551234567 tele account login --name work --method code
 ```
+
+Pass the phone number through `TELE_PHONE` (or the interactive prompt): `--phone` works but lands in shell history and process listings, so scripts must prefer the environment variable.
 
 **3. Use it.**
 

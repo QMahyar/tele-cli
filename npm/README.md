@@ -26,7 +26,7 @@ tele --version
 ## First run
 
 ```sh
-tele account login --name main --phone +15551234567
+TELE_PHONE=+15551234567 tele account login --name main --method code
 tele msg send --chat me --text "hello from telecli"
 tele mcp --account main   # MCP stdio server for Claude/Cursor/agents
 ```

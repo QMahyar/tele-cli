@@ -48,12 +48,15 @@ Create the config directory and add your API credentials:
 # Linux/macOS
 mkdir -p ~/.config/tele
 echo 'TELE_API_ID=1234567' > ~/.config/tele/.env
-echo 'TELE_API_HASH=0123456789abcdef0123456789abcdef' >> ~/.config/tele/.env
+echo 'TELE_API_HASH=YOUR_API_HASH_HERE' >> ~/.config/tele/.env
+chmod 600 ~/.config/tele/.env
 
 # Windows (PowerShell)
 mkdir -p "$env:APPDATA\tele"
-Set-Content "$env:APPDATA\tele\.env" "TELE_API_ID=1234567`nTELE_API_HASH=0123456789abcdef0123456789abcdef"
+Set-Content "$env:APPDATA\tele\.env" "TELE_API_ID=1234567`nTELE_API_HASH=YOUR_API_HASH_HERE"
 ```
+
+`tele` tightens `.env` to owner-only on every credentials load, but set `0600` yourself too, and never commit the file. The placeholders above are not valid values; copy the real ones from your app page.
 
 ## Step 4: Add an account
 
@@ -64,8 +67,9 @@ tele account add --name work
 This registers the account entry in config.toml (no prompt). Then login, which prompts for the phone number:
 
 ```bash
-# Code login (SMS)
-tele account login --name work --method code --phone +1XXXXXXXXXX
+# Code login (SMS); prefer TELE_PHONE over --phone so the number stays
+# out of shell history and process listings
+TELE_PHONE=+15551234567 tele account login --name work --method code
 
 # QR login
 tele account login --name work --method qr

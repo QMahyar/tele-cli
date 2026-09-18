@@ -65,6 +65,7 @@ This model holds when the app directory stays at its default `%APPDATA%` locatio
 - Upload basenames that Windows would alias are rejected up front: trailing dot or space, colon, and reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`)
 - 2FA passwords are never accepted on argv; read from stdin only, with terminal echo disabled
 - `--limit` caps at 10000 rows and `--message-limit` at 1000000 messages; larger values fail with a usage error
+- `tele raw --args` JSON is capped at 1 MiB; larger payloads fail with a usage error before dispatch
 - Invite URLs are parsed locally. The CLI speaks Telegram MTProto only and fetches no other HTTP endpoint
 - Live tests run against the designated chat only
 - `tele raw` evaluates nothing. It dispatches compiled typed arms from the Rust registry in `src/commands/raw.rs`, with no dynamic dispatch
