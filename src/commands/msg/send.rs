@@ -935,8 +935,7 @@ pub(crate) async fn send_core(
         return Ok(row);
     }
     if files.len() > 1 {
-        let mut medias: Vec<grammers_client::media::InputMedia> =
-            Vec::with_capacity(files.len());
+        let mut medias: Vec<grammers_client::media::InputMedia> = Vec::with_capacity(files.len());
         for (idx, path) in files.iter().enumerate() {
             let uploaded = shares
                 .client

@@ -1800,10 +1800,7 @@ mod tests {
     fn parse_raw_args_rejects_oversized_payload() {
         assert!(parse_raw_args("{}").is_ok());
         let big = format!("{{\"q\":\"{}\"}}", "x".repeat(MAX_RAW_ARGS_BYTES));
-        assert!(matches!(
-            parse_raw_args(&big),
-            Err(TeleError::Usage(_))
-        ));
+        assert!(matches!(parse_raw_args(&big), Err(TeleError::Usage(_))));
     }
 
     #[test]

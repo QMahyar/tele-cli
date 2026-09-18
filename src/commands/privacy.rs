@@ -1837,11 +1837,9 @@ mod tests {
     #[ignore]
     fn timing_merge_large_rule_lists() {
         let base = vec![
-            tl::enums::PrivacyRule::PrivacyValueAllowUsers(
-                tl::types::PrivacyValueAllowUsers {
-                    users: (0..500).collect(),
-                },
-            ),
+            tl::enums::PrivacyRule::PrivacyValueAllowUsers(tl::types::PrivacyValueAllowUsers {
+                users: (0..500).collect(),
+            }),
             tl::enums::PrivacyRule::PrivacyValueDisallowUsers(
                 tl::types::PrivacyValueDisallowUsers {
                     users: (1000..1500).collect(),

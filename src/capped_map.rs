@@ -241,6 +241,8 @@ mod tests {
             }
         }
         let elapsed = start.elapsed();
-        println!("capped_map redelivery storm: 50k checks at cap 10k took {elapsed:?} ({dups} dups)");
+        println!(
+            "capped_map redelivery storm: 50k checks at cap 10k took {elapsed:?} ({dups} dups)"
+        );
     }
 }

@@ -2288,7 +2288,10 @@ fn timing_split_text_utf16_large() {
         let chunks = split_text_utf16(&text, 4096);
         let elapsed = start.elapsed();
         assert_eq!(chunks.concat(), text);
-        println!("split_text_utf16: {size} chars -> {} chunks took {elapsed:?}", chunks.len());
+        println!(
+            "split_text_utf16: {size} chars -> {} chunks took {elapsed:?}",
+            chunks.len()
+        );
     }
 }
 

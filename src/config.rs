@@ -1389,7 +1389,10 @@ mod tests {
         };
         let rendered = format!("{creds:?}");
         assert!(rendered.contains("123"), "rendered: {rendered}");
-        assert!(!rendered.contains("abcdef0123456789secret"), "rendered: {rendered}");
+        assert!(
+            !rendered.contains("abcdef0123456789secret"),
+            "rendered: {rendered}"
+        );
         assert!(rendered.contains("[REDACTED]"), "rendered: {rendered}");
     }
 
@@ -1455,8 +1458,7 @@ mod tests {
         for key in APP_DIR_ENV_KEYS {
             std::env::remove_var(key);
         }
-        let creds_err =
-            credentials().expect_err("missing app dir must fail credentials()");
+        let creds_err = credentials().expect_err("missing app dir must fail credentials()");
         let cfg_err = load_config(None).expect_err("missing app dir must fail load_config(None)");
         let creds_typed = creds_err
             .downcast_ref::<TeleError>()
