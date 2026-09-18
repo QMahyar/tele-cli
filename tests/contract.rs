@@ -2638,6 +2638,92 @@ fn skill_install_refuses_overwrite_without_force() {
 }
 
 #[test]
+fn skill_print_json_emits_single_envelope_with_skill() {
+    let (code, out, err) = run_isolated("skilljson", &["skill", "print", "--json"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("skill print"));
+    assert_eq!(v["results"][0]["account"], serde_json::json!("local"));
+    let skill = v["results"][0]["data"]["skill"]
+        .as_str()
+        .expect("data.skill must be a string");
+    assert!(skill.starts_with("---\nname: tele"), "skill head: {skill}");
+    assert!(err.is_empty(), "stderr must stay empty: {err}");
+}
+
+#[test]
+fn completions_bash_json_emits_envelope_with_script() {
+    let (code, out, err) = run_isolated("compbashjson", &["completions", "bash", "--json"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("completions bash"));
+    assert_eq!(v["results"][0]["data"]["shell"], serde_json::json!("bash"));
+    let script = v["results"][0]["data"]["script"]
+        .as_str()
+        .expect("data.script must be a string");
+    assert!(
+        script.contains("complete -F") || script.contains("_telecli"),
+        "bash marker missing"
+    );
+}
+
+#[test]
+fn skill_install_dir_dry_run_writes_nothing() {
+    let dir = isolated_appdir("skilldry");
+    let fresh = dir.join("fresh");
+    let (code, _out, err) = run_in(
+        &dir,
+        &[
+            "skill",
+            "install",
+            "--dir",
+            fresh.to_str().unwrap(),
+            "--dry-run",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(
+        !fresh.join("tele").join("SKILL.md").exists(),
+        "dry-run must not write"
+    );
+}
+
+#[test]
+fn skill_install_dir_dry_run_json_contract() {
+    let dir = isolated_appdir("skilldryjson");
+    let fresh = dir.join("fresh");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "skill",
+            "install",
+            "--dir",
+            fresh.to_str().unwrap(),
+            "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["dry_run"], serde_json::json!(true));
+    let data = &v["results"][0]["data"];
+    assert_eq!(data["dry_run"], serde_json::json!(true));
+    assert!(
+        data["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("SKILL.md"),
+        "would: {data}"
+    );
+    assert!(
+        !fresh.join("tele").join("SKILL.md").exists(),
+        "dry-run must not write"
+    );
+}
+
+#[test]
 fn versions_are_in_sync_across_cargo_npm_and_changelog() {
     let cargo = std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("Cargo.toml")).unwrap();
     let cargo_version = cargo
