@@ -2903,3 +2903,169 @@ fn fields_flag_skipped_in_command_hint() {
     let v = parse_json(&out);
     assert_eq!(v["command"], serde_json::json!("msg send"));
 }
+
+#[test]
+fn no_input_fails_code_login_before_any_prompt() {
+    let (code, _out, err) = run_isolated(
+        "noinput-login",
+        &[
+            "account",
+            "login",
+            "--name",
+            "work",
+            "--method",
+            "code",
+            "--phone",
+            "+15550001111",
+            "--no-input",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--no-input fails closed"), "stderr: {err}");
+}
+
+#[test]
+fn no_input_fails_password_modes_that_prompt() {
+    for mode in ["--set", "--change", "--remove", "--decline-reset"] {
+        let (code, _out, err) = run_isolated(
+            "noinput-pw",
+            &[
+                "account",
+                "password",
+                mode,
+                "--account",
+                "work",
+                "--no-input",
+            ],
+        );
+        assert_eq!(code, 1, "mode {mode}: stderr: {err}");
+        assert!(
+            err.contains("--no-input fails closed"),
+            "mode {mode}: {err}"
+        );
+    }
+}
+
+#[test]
+fn no_input_passes_password_modes_without_prompts() {
+    let (code, _out, err) = run_isolated(
+        "noinput-pwstatus",
+        &[
+            "account",
+            "password",
+            "--status",
+            "--account",
+            "work",
+            "--no-input",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(
+        !err.contains("--no-input fails closed"),
+        "status reads no stdin, gate must not fire: {err}"
+    );
+}
+
+#[test]
+fn no_input_fails_account_delete_that_may_prompt() {
+    let (code, _out, err) = run_isolated(
+        "noinput-del",
+        &[
+            "account",
+            "delete",
+            "--reason",
+            "test",
+            "--yes",
+            "--account",
+            "work",
+            "--no-input",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--no-input fails closed"), "stderr: {err}");
+}
+
+#[test]
+fn no_input_allows_staged_status_without_prompts() {
+    let (code, _out, err) = run_isolated(
+        "noinput-stage",
+        &[
+            "account",
+            "login",
+            "--name",
+            "work",
+            "--method",
+            "code",
+            "--phone",
+            "+15550001111",
+            "--stage",
+            "status",
+            "--no-input",
+        ],
+    );
+    assert!(
+        !err.contains("--no-input fails closed"),
+        "status reads no stdin, gate must not fire (code {code}): {err}"
+    );
+}
+
+#[test]
+fn no_input_never_blocks_dry_run() {
+    let (code, _out, err) = run_isolated(
+        "noinput-dry",
+        &[
+            "account",
+            "login",
+            "--name",
+            "work",
+            "--method",
+            "code",
+            "--phone",
+            "+15550001111",
+            "--dry-run",
+            "--no-input",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+}
+
+#[test]
+fn no_input_passes_through_commands_without_prompts() {
+    let (code, _out, err) = run_isolated(
+        "noinput-msg",
+        &["msg", "send", "--chat", "me", "--text", "hi", "--no-input"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(
+        !err.contains("--no-input fails closed"),
+        "msg send reads no stdin, gate must not fire: {err}"
+    );
+}
+
+#[test]
+fn no_input_violation_emits_machine_envelope() {
+    let (code, out, err) = run_isolated(
+        "noinput-json",
+        &[
+            "account",
+            "password",
+            "--set",
+            "--account",
+            "work",
+            "--no-input",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["command"], serde_json::json!("account password"));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("--no-input"),
+        "stdout: {out}"
+    );
+}

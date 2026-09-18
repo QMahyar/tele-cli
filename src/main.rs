@@ -66,6 +66,12 @@ struct Cli {
         help = "project machine-output rows to comma-separated dotted fields (requires --json/--jsonl; unknown fields are usage errors)"
     )]
     fields: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        help = "fail closed instead of prompting for interactive input"
+    )]
+    no_input: bool,
     #[arg(long, global = true, help = "validate without touching Telegram")]
     dry_run: bool,
     #[arg(
@@ -229,6 +235,21 @@ fn main() -> std::process::ExitCode {
             ) as u8);
         }
     }
+    if cli.no_input && !cli.dry_run {
+        if let Some(detail) = no_input_violation(&cli.command, &matches) {
+            let message = format!(
+                "{detail}; --no-input fails closed (re-run without --no-input or add --dry-run to preview)"
+            );
+            return std::process::ExitCode::from(emit_usage_error(
+                UsageCtx {
+                    machine: output::machine_mode(cli.json, cli.jsonl),
+                    dry_run: false,
+                },
+                &flags.command,
+                &message,
+            ) as u8);
+        }
+    }
     if config::app_data_dir_checked().is_err() {
         let message = "cannot determine app data directory; set TELE_APP_DIR to choose a location";
         output::log_line("error", message);
@@ -361,10 +382,54 @@ fn invoked_path(matches: &clap::ArgMatches) -> String {
     parts.join(" ")
 }
 
+fn flag_is_set(matches: &clap::ArgMatches, id: &str) -> bool {
+    matches
+        .try_get_one::<bool>(id)
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false)
+}
+
+fn password_requests_prompt(matches: &clap::ArgMatches) -> bool {
+    let Some(("account", selected)) = matches.subcommand() else {
+        return false;
+    };
+    let Some(("password", password)) = selected.subcommand() else {
+        return false;
+    };
+    flag_is_set(password, "set")
+        || flag_is_set(password, "change")
+        || flag_is_set(password, "remove")
+        || flag_is_set(password, "decline_reset")
+}
+
+fn login_may_prompt(args: &account::LoginArgs) -> bool {
+    if let Some(stage) = args.stage.as_deref() {
+        return stage == "code";
+    }
+    args.method != "qr"
+}
+
+fn no_input_violation(command: &Command, matches: &clap::ArgMatches) -> Option<String> {
+    match command {
+        Command::Account(account::AccountCmd::Login(args)) if login_may_prompt(args) => {
+            Some("account login would prompt for the login code or 2FA password".to_string())
+        }
+        Command::Account(account::AccountCmd::Password(_)) if password_requests_prompt(matches) => {
+            Some("account password would prompt for the cloud password".to_string())
+        }
+        Command::Account(account::AccountCmd::Delete(_)) => {
+            Some("account delete may prompt for the cloud password".to_string())
+        }
+        _ => None,
+    }
+}
+
 fn argv_command_hint() -> Option<String> {
     const GLOBAL_VALUE_FLAGS: [&str; 5] =
         ["--account", "--tag", "--parallel", "--config", "--fields"];
-    const GLOBAL_BOOL_FLAGS: [&str; 7] = [
+    const GLOBAL_BOOL_FLAGS: [&str; 8] = [
         "--json",
         "--jsonl",
         "--dry-run",
@@ -372,6 +437,7 @@ fn argv_command_hint() -> Option<String> {
         "-q",
         "--verbose",
         "-v",
+        "--no-input",
     ];
     let mut parts: Vec<String> = Vec::new();
     let mut skip_value = false;
@@ -452,6 +518,18 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
 mod tests {
     use super::clamp_exit_code;
     use crate::output::strip_ansi;
+    use clap::CommandFactory;
+
+    fn login_args(method: &str, stage: Option<&str>) -> crate::commands::account::LoginArgs {
+        crate::commands::account::LoginArgs {
+            name: "work".to_string(),
+            method: method.to_string(),
+            phone: None,
+            show_token: false,
+            qr_timeout_secs: 300,
+            stage: stage.map(str::to_string),
+        }
+    }
 
     #[test]
     fn strip_ansi_leaves_plain_text_unchanged() {
@@ -500,5 +578,63 @@ mod tests {
         assert_eq!(256_i32.clamp(0, 255), 255);
         assert_eq!(1000_i32.clamp(0, 255), 255);
         assert_eq!((-1_i32).clamp(0, 255), 0);
+    }
+
+    #[test]
+    fn login_may_prompt_covers_code_flows_only() {
+        assert!(super::login_may_prompt(&login_args("code", None)));
+        assert!(!super::login_may_prompt(&login_args("qr", None)));
+        assert!(super::login_may_prompt(&login_args("code", Some("code"))));
+        for stage in ["begin", "status", "cancel", "resend", "cancel-code"] {
+            assert!(
+                !super::login_may_prompt(&login_args("code", Some(stage))),
+                "stage {stage} reads no stdin"
+            );
+        }
+    }
+
+    #[test]
+    fn password_requests_prompt_covers_password_modes_only() {
+        for mode in ["--set", "--change", "--remove", "--decline-reset"] {
+            let matches = super::Cli::command()
+                .try_get_matches_from(["tele", "account", "password", mode])
+                .unwrap();
+            assert!(
+                super::password_requests_prompt(&matches),
+                "mode {mode} must count as prompting"
+            );
+        }
+        for mode in [
+            "--status",
+            "--resend-email",
+            "--cancel-email",
+            "--reset-start",
+        ] {
+            let matches = super::Cli::command()
+                .try_get_matches_from(["tele", "account", "password", mode])
+                .unwrap();
+            assert!(
+                !super::password_requests_prompt(&matches),
+                "mode {mode} reads no stdin"
+            );
+        }
+        let matches = super::Cli::command()
+            .try_get_matches_from(["tele", "msg", "send", "--chat", "me", "--text", "hi"])
+            .unwrap();
+        assert!(!super::password_requests_prompt(&matches));
+    }
+
+    #[test]
+    fn no_input_violation_names_prompting_commands() {
+        use clap::FromArgMatches;
+        let parsed = |argv: &[&str]| {
+            let m = super::Cli::command().try_get_matches_from(argv).unwrap();
+            let cli = super::Cli::from_arg_matches(&m).unwrap();
+            (cli.command, m)
+        };
+        let (command, m) = parsed(&["tele", "account", "delete", "--reason", "x", "--yes"]);
+        assert!(super::no_input_violation(&command, &m).is_some());
+        let (command, m) = parsed(&["tele", "msg", "send", "--chat", "me", "--text", "hi"]);
+        assert!(super::no_input_violation(&command, &m).is_none());
     }
 }
