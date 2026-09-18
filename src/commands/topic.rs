@@ -29,7 +29,7 @@ pub struct CreateArgs {
     title: String,
     #[arg(
         long,
-        help = "single-codepoint emoji for topic icon (optional; custom-emoji document IDs not supported)"
+        help = "topic icon: single-codepoint emoji (resolved to a custom-emoji document id via emoji search) or a custom-emoji document id directly"
     )]
     emoji: Option<String>,
 }
@@ -147,7 +147,16 @@ pub(crate) async fn topic_create_core(
     shares: &crate::client::ServeShares,
     params: CreateParams,
 ) -> TeleResult<serde_json::Value> {
-    let icon_emoji_id = validate_emoji(params.emoji.as_deref())?;
+    let icon_emoji_id = match params.emoji.as_deref() {
+        None => None,
+        Some(raw) => match parse_emoji_document_id(raw) {
+            Some(id) => Some(id),
+            None => {
+                validate_emoji(Some(raw))?;
+                Some(lookup_custom_emoji_id(shares, raw).await?)
+            }
+        },
+    };
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -479,9 +488,12 @@ fn validate_emoji(emoji: Option<&str>) -> Result<Option<i64>, TeleError> {
     let Some(emoji) = emoji else {
         return Ok(None);
     };
+    if let Some(id) = parse_emoji_document_id(emoji) {
+        return Ok(Some(id));
+    }
     if emoji.is_empty() {
         return Err(TeleError::Usage(
-            "--emoji cannot be empty; only a single-codepoint emoji (4 UTF-8 bytes) is accepted; custom-emoji document IDs are not supported"
+            "--emoji cannot be empty; pass a single-codepoint emoji or a custom-emoji document id"
                 .to_string(),
         ));
     }
@@ -490,14 +502,14 @@ fn validate_emoji(emoji: Option<&str>) -> Result<Option<i64>, TeleError> {
 
     if grapheme_count != 1 {
         return Err(TeleError::Usage(format!(
-            "--emoji \"{emoji}\" must be a single codepoint; multi-codepoint emoji (e.g. family emoji, skin tones) are not supported; custom-emoji document IDs are not supported (got {grapheme_count} codepoints)",
+            "--emoji \"{emoji}\" must be a single codepoint or a custom-emoji document id (got {grapheme_count} codepoints)",
         )));
     }
 
     let bytes = emoji.as_bytes();
     if bytes.len() != 4 {
         return Err(TeleError::Usage(format!(
-            "--emoji \"{emoji}\" must be exactly 4 UTF-8 bytes; multi-codepoint emoji are not supported; custom-emoji document IDs are not supported (got {} bytes)",
+            "--emoji \"{emoji}\" must be exactly 4 UTF-8 bytes or a custom-emoji document id (got {} bytes)",
             bytes.len(),
         )));
     }
@@ -505,12 +517,47 @@ fn validate_emoji(emoji: Option<&str>) -> Result<Option<i64>, TeleError> {
     let c = emoji.chars().next().unwrap();
     if !is_emoji_codepoint(c) {
         return Err(TeleError::Usage(format!(
-            "--emoji \"{emoji}\" is not a recognized emoji; only single-codepoint emoji are accepted; custom-emoji document IDs are not supported"
+            "--emoji \"{emoji}\" is not a recognized emoji; pass a single-codepoint emoji or a custom-emoji document id"
         )));
     }
     Ok(Some(i64::from_be_bytes([
         0, 0, 0, 0, bytes[0], bytes[1], bytes[2], bytes[3],
     ])))
+}
+
+fn parse_emoji_document_id(raw: &str) -> Option<i64> {
+    raw.trim().parse::<i64>().ok().filter(|id| *id > 0)
+}
+
+pub(crate) async fn lookup_custom_emoji_id(
+    shares: &crate::client::ServeShares,
+    emoticon: &str,
+) -> TeleResult<i64> {
+    shares.rate_limiter.acquire().await;
+    let found: tl::enums::EmojiList = shares
+        .client
+        .invoke(&tl::functions::messages::SearchCustomEmoji {
+            emoticon: emoticon.to_string(),
+            hash: 0,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    match found {
+        tl::enums::EmojiList::List(list) => {
+            list.document_id.first().copied().ok_or_else(|| {
+                TeleError::Invocation(
+                    format!(
+                        "no custom emoji found for {emoticon:?}; pass a custom-emoji document id directly via --emoji"
+                    ),
+                    None,
+                )
+            })
+        }
+        tl::enums::EmojiList::NotModified => Err(TeleError::Invocation(
+            "custom emoji lookup returned not-modified; retry the request".to_string(),
+            None,
+        )),
+    }
 }
 
 fn is_emoji_codepoint(c: char) -> bool {
@@ -1071,7 +1118,7 @@ mod tests {
             .unwrap_err(),
         );
         assert!(
-            msg.contains("custom-emoji document IDs are not supported"),
+            msg.contains("custom-emoji document id"),
             "{msg}"
         );
 
@@ -1394,7 +1441,7 @@ mod tests {
         assert_eq!(err.exit_code(), EXIT_USAGE);
         assert!(err
             .message()
-            .contains("custom-emoji document IDs are not supported"));
+            .contains("custom-emoji document id"));
     }
 
     #[test]
@@ -1404,7 +1451,7 @@ mod tests {
             assert!(matches!(err, TeleError::Usage(_)), "for {bad}");
             assert!(
                 err.message()
-                    .contains("custom-emoji document IDs are not supported"),
+                    .contains("custom-emoji document id"),
                 "for {bad}"
             );
         }
@@ -1424,9 +1471,21 @@ mod tests {
             assert!(matches!(err, TeleError::Usage(_)), "for {bad}");
             assert!(
                 err.message()
-                    .contains("custom-emoji document IDs are not supported"),
+                    .contains("custom-emoji document id"),
                 "for {bad}"
             );
+        }
+    }
+
+    #[test]
+    fn numeric_emoji_is_accepted_as_document_id() {
+        assert_eq!(
+            validate_emoji(Some("531234567890123456")).unwrap(),
+            Some(531234567890123456)
+        );
+        assert_eq!(parse_emoji_document_id(" 42 "), Some(42));
+        for bad in ["0", "-1", "", "  ", "abc", "12x", "99999999999999999999999"] {
+            assert_eq!(parse_emoji_document_id(bad), None, "for {bad}");
         }
     }
 

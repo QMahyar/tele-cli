@@ -3620,3 +3620,29 @@ fn msg_transcribe_and_rate_dry_runs() {
     let d = parse_json(&out)["results"][0]["data"].clone();
     assert_eq!(d["rating"], serde_json::json!("good"));
 }
+
+#[test]
+fn topic_create_emoji_accepts_document_id_and_rejects_garbage() {
+    let dir = isolated_appdir("topicemoji-dry");
+    write_session(&dir, "work");
+    let (code, _out, err) = run_in(
+        &dir,
+        &[
+            "topic", "create", "--chat", "me", "--title", "T", "--emoji", "ab", "--account",
+            "work",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("single codepoint"), "stderr: {err}");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "topic", "create", "--chat", "me", "--title", "T", "--emoji",
+            "531234567890123456", "--account", "work", "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["emoji"], serde_json::json!("531234567890123456"));
+}
