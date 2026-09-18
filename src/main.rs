@@ -23,11 +23,7 @@ use executor::GlobalFlags;
 const MAIN_RUNTIME_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Parser)]
-#[command(
-    name = "tele",
-    version,
-    about = "Telegram user-account CLI"
-)]
+#[command(name = "tele", version, about = "Telegram user-account CLI")]
 struct Cli {
     #[arg(
         long,
@@ -63,6 +59,13 @@ struct Cli {
         help = "machine output: JSON lines (one-shot commands emit a single envelope line)"
     )]
     jsonl: bool,
+    #[arg(
+        long,
+        global = true,
+        value_name = "FIELDS",
+        help = "project machine-output rows to comma-separated dotted fields (requires --json/--jsonl; unknown fields are usage errors)"
+    )]
+    fields: Option<String>,
     #[arg(long, global = true, help = "validate without touching Telegram")]
     dry_run: bool,
     #[arg(
@@ -203,6 +206,29 @@ fn main() -> std::process::ExitCode {
             message,
         ) as u8);
     }
+    if let Some(spec) = cli.fields.as_deref() {
+        if !cli.json && !cli.jsonl {
+            return std::process::ExitCode::from(emit_usage_error(
+                UsageCtx {
+                    machine: false,
+                    dry_run: flags.dry_run,
+                },
+                &flags.command,
+                "--fields requires --json or --jsonl",
+            ) as u8);
+        }
+        if let Err(e) = output::set_output_fields(spec) {
+            let message = e.message();
+            return std::process::ExitCode::from(emit_usage_error(
+                UsageCtx {
+                    machine: true,
+                    dry_run: flags.dry_run,
+                },
+                &flags.command,
+                &message,
+            ) as u8);
+        }
+    }
     if config::app_data_dir_checked().is_err() {
         let message = "cannot determine app data directory; set TELE_APP_DIR to choose a location";
         output::log_line("error", message);
@@ -336,7 +362,8 @@ fn invoked_path(matches: &clap::ArgMatches) -> String {
 }
 
 fn argv_command_hint() -> Option<String> {
-    const GLOBAL_VALUE_FLAGS: [&str; 4] = ["--account", "--tag", "--parallel", "--config"];
+    const GLOBAL_VALUE_FLAGS: [&str; 5] =
+        ["--account", "--tag", "--parallel", "--config", "--fields"];
     const GLOBAL_BOOL_FLAGS: [&str; 7] = [
         "--json",
         "--jsonl",

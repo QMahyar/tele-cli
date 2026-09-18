@@ -1,5 +1,145 @@
 use comfy_table::{Cell, ContentArrangement, Table};
 use std::io::Write;
+use std::sync::Mutex;
+
+static OUTPUT_FIELDS: Mutex<Option<Vec<Vec<String>>>> = Mutex::new(None);
+
+pub fn set_output_fields(spec: &str) -> crate::error::TeleResult<()> {
+    let parsed = parse_field_paths(spec)?;
+    *OUTPUT_FIELDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(parsed);
+    Ok(())
+}
+
+fn output_fields() -> Option<Vec<Vec<String>>> {
+    OUTPUT_FIELDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+#[cfg(test)]
+pub(crate) fn clear_output_fields() {
+    *OUTPUT_FIELDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+pub fn parse_field_paths(spec: &str) -> crate::error::TeleResult<Vec<Vec<String>>> {
+    let mut paths = Vec::new();
+    for raw in spec.split(',') {
+        let segment = raw.trim();
+        let mut path = Vec::new();
+        for part in segment.split('.') {
+            if part.is_empty()
+                || !part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Err(crate::error::TeleError::Usage(format!(
+                    "invalid --fields path {segment:?}: use comma-separated dotted names"
+                )));
+            }
+            path.push(part.to_string());
+        }
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    if paths.is_empty() {
+        return Err(crate::error::TeleError::Usage(
+            "invalid --fields value: use comma-separated dotted names".to_string(),
+        ));
+    }
+    Ok(paths)
+}
+
+fn insert_field_path(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    path: &[String],
+    value: serde_json::Value,
+) {
+    let mut current = root;
+    for part in &path[..path.len().saturating_sub(1)] {
+        let next = current
+            .entry(part.clone())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !next.is_object() {
+            *next = serde_json::Value::Object(serde_json::Map::new());
+        }
+        current = next.as_object_mut().unwrap_or_else(|| unreachable!());
+    }
+    if let Some(last) = path.last() {
+        current.insert(last.clone(), value);
+    }
+}
+
+fn project_object(
+    data: &serde_json::Value,
+    paths: &[Vec<String>],
+    matched: &mut [bool],
+) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for (index, path) in paths.iter().enumerate() {
+        let mut current = data;
+        let mut found = true;
+        for part in path {
+            match current.get(part) {
+                Some(next) => current = next,
+                None => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if found {
+            matched[index] = true;
+            insert_field_path(&mut out, path, current.clone());
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+pub fn apply_output_fields(
+    value: &serde_json::Value,
+) -> crate::error::TeleResult<serde_json::Value> {
+    let Some(paths) = output_fields() else {
+        return Ok(value.clone());
+    };
+    let mut projected = value.clone();
+    let mut matched = vec![false; paths.len()];
+    let mut saw_object = false;
+    if let Some(results) = projected.get_mut("results").and_then(|v| v.as_array_mut()) {
+        for outcome in results.iter_mut() {
+            if outcome.get("data").is_some_and(|d| d.is_object()) {
+                saw_object = true;
+                let next = project_object(&outcome["data"], &paths, &mut matched);
+                outcome["data"] = next;
+            }
+        }
+    }
+    if let Some(rows) = projected.get_mut("accounts").and_then(|v| v.as_array_mut()) {
+        for row in rows.iter_mut() {
+            if row.is_object() {
+                saw_object = true;
+                let next = project_object(row, &paths, &mut matched);
+                *row = next;
+            }
+        }
+    }
+    if saw_object {
+        for (index, path) in paths.iter().enumerate() {
+            if !matched[index] {
+                return Err(crate::error::TeleError::Usage(format!(
+                    "unknown --fields {:?}: no result carries that field",
+                    path.join(".")
+                )));
+            }
+        }
+    }
+    Ok(projected)
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Envelope {
@@ -112,7 +252,8 @@ pub fn print_json_to(
     w: &mut impl std::io::Write,
     value: &serde_json::Value,
 ) -> crate::error::TeleResult<()> {
-    let line = serde_json::to_string(value)?;
+    let projected = apply_output_fields(value)?;
+    let line = serde_json::to_string(&projected)?;
     writeln!(w, "{line}")?;
     w.flush()?;
     Ok(())
@@ -494,6 +635,32 @@ mod tests {
         vec![vec!["x".to_string(), "y".to_string()]]
     }
 
+    static FIELDS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct FieldsGuard;
+
+    impl FieldsGuard {
+        fn set(spec: &str) -> Self {
+            set_output_fields(spec).unwrap();
+            FieldsGuard
+        }
+    }
+
+    impl Drop for FieldsGuard {
+        fn drop(&mut self) {
+            clear_output_fields();
+        }
+    }
+
+    fn envelope_with_data(data: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "ok": true,
+            "command": "msg send",
+            "dry_run": true,
+            "results": [{"account": "work", "ok": true, "error": null, "data": data}],
+        })
+    }
+
     #[test]
     fn account_table_multi_prints_header_before_table() {
         let mut buf: Vec<u8> = Vec::new();
@@ -528,5 +695,179 @@ mod tests {
         print_account_table_to(&mut buf, "work", true, &["a", "b"], &sample_rows()).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains('x') && out.contains('y'), "stdout: {out}");
+    }
+
+    #[test]
+    fn parse_field_paths_accepts_simple_and_dotted() {
+        assert_eq!(
+            parse_field_paths("would").unwrap(),
+            vec![vec!["would".to_string()]]
+        );
+        assert_eq!(
+            parse_field_paths("id, peer.id ,message").unwrap(),
+            vec![
+                vec!["id".to_string()],
+                vec!["peer".to_string(), "id".to_string()],
+                vec!["message".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_field_paths_dedupes_repeats() {
+        assert_eq!(
+            parse_field_paths("id,id").unwrap(),
+            vec![vec!["id".to_string()]]
+        );
+    }
+
+    #[test]
+    fn parse_field_paths_rejects_empty_and_bad_chars() {
+        for bad in [
+            "", "   ", "id,,date", "id..date", ".id", "id.", "a b", "a/b", "a*",
+        ] {
+            let err = parse_field_paths(bad).unwrap_err();
+            assert!(
+                matches!(err, crate::error::TeleError::Usage(_)),
+                "{bad:?}: {err}"
+            );
+            assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+        }
+    }
+
+    #[test]
+    fn apply_output_fields_without_setting_passes_through() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_output_fields();
+        let value = envelope_with_data(serde_json::json!({"a": 1}));
+        assert_eq!(apply_output_fields(&value).unwrap(), value);
+    }
+
+    #[test]
+    fn apply_output_fields_projects_results_data() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("would");
+        let value = envelope_with_data(
+            serde_json::json!({"would": "send message to chat me", "chat": "me", "dry_run": true}),
+        );
+        let projected = apply_output_fields(&value).unwrap();
+        assert_eq!(
+            projected["results"][0]["data"],
+            serde_json::json!({"would": "send message to chat me"})
+        );
+        assert_eq!(projected["ok"], serde_json::json!(true));
+        assert_eq!(projected["command"], serde_json::json!("msg send"));
+    }
+
+    #[test]
+    fn apply_output_fields_supports_dotted_paths() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("peer.id,message");
+        let value = envelope_with_data(
+            serde_json::json!({"peer": {"id": 7, "kind": "user"}, "message": "hi", "date": "x"}),
+        );
+        let projected = apply_output_fields(&value).unwrap();
+        assert_eq!(
+            projected["results"][0]["data"],
+            serde_json::json!({"peer": {"id": 7}, "message": "hi"})
+        );
+    }
+
+    #[test]
+    fn apply_output_fields_merges_overlapping_paths() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("peer,peer.id");
+        let value = envelope_with_data(serde_json::json!({"peer": {"id": 7, "kind": "user"}}));
+        let projected = apply_output_fields(&value).unwrap();
+        assert_eq!(
+            projected["results"][0]["data"],
+            serde_json::json!({"peer": {"id": 7, "kind": "user"}})
+        );
+    }
+
+    #[test]
+    fn apply_output_fields_unknown_field_is_usage() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("would,nosuchfield");
+        let value = envelope_with_data(serde_json::json!({"would": "send message to chat me"}));
+        let err = apply_output_fields(&value).unwrap_err();
+        assert!(
+            matches!(err, crate::error::TeleError::Usage(_)),
+            "err: {err}"
+        );
+        assert!(err.message().contains("nosuchfield"), "err: {err}");
+    }
+
+    #[test]
+    fn apply_output_fields_ignores_non_envelope_values() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("would");
+        let row = serde_json::json!({"event": "NewMessage", "would": "stream"});
+        assert_eq!(apply_output_fields(&row).unwrap(), row);
+    }
+
+    #[test]
+    fn apply_output_fields_empty_results_pass_through() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("would");
+        let value = serde_json::json!({"ok": false, "results": []});
+        assert_eq!(apply_output_fields(&value).unwrap(), value);
+    }
+
+    #[test]
+    fn apply_output_fields_projects_accounts_array() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("name");
+        let value = serde_json::json!({
+            "ok": true,
+            "results": [{"account": "work", "ok": true, "error": null, "data": {"name": "work", "tags": ""}}],
+            "accounts": [{"name": "work", "tags": "", "session": "present"}],
+        });
+        let projected = apply_output_fields(&value).unwrap();
+        assert_eq!(
+            projected["results"][0]["data"],
+            serde_json::json!({"name": "work"})
+        );
+        assert_eq!(
+            projected["accounts"][0],
+            serde_json::json!({"name": "work"})
+        );
+    }
+
+    #[test]
+    fn print_json_to_applies_configured_fields() {
+        let _lock = FIELDS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = FieldsGuard::set("would");
+        let mut buf: Vec<u8> = Vec::new();
+        print_json_to(
+            &mut buf,
+            &envelope_with_data(
+                serde_json::json!({"would": "send message to chat me", "chat": "me"}),
+            ),
+        )
+        .unwrap();
+        let back: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(
+            back["results"][0]["data"],
+            serde_json::json!({"would": "send message to chat me"})
+        );
     }
 }

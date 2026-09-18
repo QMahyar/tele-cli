@@ -2800,3 +2800,106 @@ fn skill_compatibility_matches_crate_version() {
         "skill.md compatibility stamp is stale: expected {stamp} in frontmatter",
     );
 }
+
+#[test]
+fn fields_projection_trims_machine_data() {
+    let dir = isolated_appdir("fields");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg",
+            "send",
+            "--account",
+            "work",
+            "--chat",
+            "me",
+            "--text",
+            "hi",
+            "--dry-run",
+            "--json",
+            "--fields",
+            "would",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("msg send"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(
+        data,
+        &serde_json::json!({"would": "send message to chat me"}),
+        "data: {data}"
+    );
+}
+
+#[test]
+fn fields_unknown_name_is_usage_error() {
+    let dir = isolated_appdir("fieldsbad");
+    write_session(&dir, "work");
+    let args = [
+        "msg",
+        "send",
+        "--account",
+        "work",
+        "--chat",
+        "me",
+        "--text",
+        "hi",
+        "--dry-run",
+        "--json",
+        "--fields",
+        "would,nosuchfield",
+    ];
+    let (code, out, err) = run_in(&dir, &args);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("nosuchfield"), "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["error"]["type"], serde_json::json!("UsageError"));
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nosuchfield"),
+        "stdout: {out}"
+    );
+}
+
+#[test]
+fn fields_requires_machine_mode() {
+    let (code, _out, err) = run_isolated("fieldsplain", &["account", "list", "--fields", "name"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--fields requires --json"), "stderr: {err}");
+}
+
+#[test]
+fn fields_project_account_list_rows_and_accounts() {
+    let dir = isolated_appdir("fieldsacct");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(&dir, &["account", "list", "--json", "--fields", "name"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(
+        v["results"][0]["data"],
+        serde_json::json!({"name": "work"}),
+        "stdout: {out}"
+    );
+    assert_eq!(
+        v["accounts"][0],
+        serde_json::json!({"name": "work"}),
+        "stdout: {out}"
+    );
+}
+
+#[test]
+fn fields_flag_skipped_in_command_hint() {
+    let (code, out, err) = run_isolated(
+        "fieldshint",
+        &["--json", "--fields", "would", "msg", "send"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["command"], serde_json::json!("msg send"));
+}
