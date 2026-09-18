@@ -135,6 +135,22 @@ pub struct ProxyConfig {
     pub port: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyType {
+    Unset,
+    Socks5,
+}
+
+impl ProxyType {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "" => Some(ProxyType::Unset),
+            "socks5" => Some(ProxyType::Socks5),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AccountConfig {
     #[serde(default)]
@@ -458,7 +474,9 @@ fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
 }
 
 fn proxy_is_unset(p: &ProxyConfig) -> bool {
-    p.r#type.is_empty() && p.host.is_empty() && p.port == 0
+    matches!(ProxyType::parse(&p.r#type), Some(ProxyType::Unset))
+        && p.host.is_empty()
+        && p.port == 0
 }
 
 pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<String>> {
@@ -471,7 +489,10 @@ pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<Strin
     let Some(p) = p else {
         return Ok(None);
     };
-    if !p.r#type.is_empty() && p.r#type != "socks5" {
+    if !matches!(
+        ProxyType::parse(&p.r#type),
+        Some(ProxyType::Unset) | Some(ProxyType::Socks5)
+    ) {
         return Err(anyhow::anyhow!(
             "proxy type {} unsupported (grammers supports socks5 only)",
             p.r#type
@@ -629,6 +650,14 @@ mod tests {
         key: &str,
     ) -> Option<&'a str> {
         map.get(key).map(String::as_str)
+    }
+
+    #[test]
+    fn proxy_type_parses_known_values() {
+        assert_eq!(ProxyType::parse(""), Some(ProxyType::Unset));
+        assert_eq!(ProxyType::parse("socks5"), Some(ProxyType::Socks5));
+        assert_eq!(ProxyType::parse("http"), None);
+        assert_eq!(ProxyType::parse("SOCKS5"), None);
     }
 
     #[test]
