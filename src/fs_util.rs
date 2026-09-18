@@ -199,6 +199,15 @@ fn set_user_only_dacl(path: &Path, inheritable: bool) -> std::io::Result<()> {
     use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+    // SAFETY: `token` comes from OpenProcessToken and is closed on every
+    // return path; `buffer` is sized from the API's own size query and its
+    // pointer plus length are passed together so GetTokenInformation cannot
+    // overrun it; `read_unaligned` reads a TOKEN_USER the API just wrote
+    // without assuming buffer alignment; `user_sid` borrows `buffer`, which
+    // outlives its use in SetEntriesInAclW; `new_acl` allocated by
+    // SetEntriesInAclW is freed exactly once via LocalFree when non-null;
+    // `path_wide` is NUL-terminated and alive for the SetNamedSecurityInfoW
+    // call.
     unsafe {
         let mut token = HANDLE::default();
         if let Err(e) = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) {
@@ -387,6 +396,9 @@ fn strip_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
     let prefix = br"\\?\";
     if bytes.starts_with(prefix) {
         let stripped = &bytes[prefix.len()..];
+        // SAFETY: the split is at `prefix.len()` (4), an ASCII boundary of
+        // the original OS bytes, so the remainder is still valid platform
+        // encoding and reconstructs the same path minus the verbatim prefix.
         std::path::PathBuf::from(unsafe {
             std::ffi::OsString::from_encoded_bytes_unchecked(stripped.to_vec())
         })

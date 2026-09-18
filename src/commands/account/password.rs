@@ -574,6 +574,9 @@ pub(crate) fn disable_stdin_echo() -> bool {
     use windows::Win32::System::Console::{
         GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
     };
+    // SAFETY: console syscalls operate on the process stdin handle with a
+    // stack-allocated mode value; no raw-pointer dereference of external
+    // data, and every failure path returns `false` without touching state.
     unsafe {
         let Ok(handle) = GetStdHandle(STD_INPUT_HANDLE) else {
             return false;
@@ -594,6 +597,8 @@ pub(crate) fn restore_stdin_echo(disabled: bool) {
     if !disabled {
         return;
     }
+    // SAFETY: same console-handle reasoning as `disable_stdin_echo`; the
+    // restore only re-enables echo on a handle this process owns.
     unsafe {
         let Ok(handle) = GetStdHandle(STD_INPUT_HANDLE) else {
             return;
@@ -608,13 +613,19 @@ pub(crate) fn restore_stdin_echo(disabled: bool) {
 
 #[cfg(not(windows))]
 pub(crate) fn disable_stdin_echo() -> bool {
+    use std::mem::MaybeUninit;
     use std::os::unix::io::AsRawFd;
     let fd = std::io::stdin().lock().as_raw_fd();
+    // SAFETY: `termios` is stack memory written only via `as_mut_ptr` by
+    // tcgetattr, which fully initializes it on success; `assume_init` runs
+    // only after the zero return is checked, and `tcsetattr` only reads the
+    // value while the stdin fd is valid for this process.
     unsafe {
-        let mut termios: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut termios) != 0 {
+        let mut uninit: MaybeUninit<libc::termios> = MaybeUninit::zeroed();
+        if libc::tcgetattr(fd, uninit.as_mut_ptr()) != 0 {
             return false;
         }
+        let mut termios = uninit.assume_init();
         let orig = termios;
         termios.c_lflag &= !libc::ECHO;
         if libc::tcsetattr(fd, libc::TCSANOW, &termios) != 0 {
@@ -633,6 +644,10 @@ pub(crate) fn restore_stdin_echo(disabled: bool) {
     }
     use std::os::unix::io::AsRawFd;
     let fd = std::io::stdin().lock().as_raw_fd();
+    // SAFETY: `orig` was captured from this same stdin fd by
+    // `disable_stdin_echo` via tcgetattr, so it is a valid termios value for
+    // this fd; tcsetattr only reads it and its return is intentionally
+    // ignored during best-effort restore.
     unsafe {
         if let Some(orig) = ORIG_TERMIOS.lock().unwrap().take() {
             let _ = libc::tcsetattr(fd, libc::TCSANOW, &orig);
