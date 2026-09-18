@@ -51,10 +51,20 @@ pub const REGISTERED: &[&str] = &[
     "users.GetUsers",
 ];
 
+pub const MAX_RAW_ARGS_BYTES: usize = 1024 * 1024;
+
+fn parse_raw_args(raw: &str) -> TeleResult<serde_json::Value> {
+    if raw.len() > MAX_RAW_ARGS_BYTES {
+        return Err(TeleError::Usage(format!(
+            "--args JSON exceeds {MAX_RAW_ARGS_BYTES} bytes; split the call or narrow the params"
+        )));
+    }
+    serde_json::from_str(raw).map_err(|e| TeleError::Usage(format!("invalid --args JSON: {e}")))
+}
+
 pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
-    let params: serde_json::Value = serde_json::from_str(&args.args)
-        .map_err(|e| TeleError::Usage(format!("invalid --args JSON: {e}")))?;
+    let params: serde_json::Value = parse_raw_args(&args.args)?;
     let name = args.name.clone();
     validate_raw(&RawCall {
         method: name.clone(),
@@ -1784,6 +1794,16 @@ mod tests {
         assert!(peer_targets(&serde_json::json!({"id": [true]}), "id").is_err());
         assert_eq!(long_field(&serde_json::json!({"hash": 7}), "hash"), 7);
         assert_eq!(long_field(&serde_json::json!({}), "hash"), 0);
+    }
+
+    #[test]
+    fn parse_raw_args_rejects_oversized_payload() {
+        assert!(parse_raw_args("{}").is_ok());
+        let big = format!("{{\"q\":\"{}\"}}", "x".repeat(MAX_RAW_ARGS_BYTES));
+        assert!(matches!(
+            parse_raw_args(&big),
+            Err(TeleError::Usage(_))
+        ));
     }
 
     #[test]
