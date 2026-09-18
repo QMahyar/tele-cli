@@ -75,28 +75,68 @@ fn looks_like_target_triple(rest: &str) -> bool {
     ARCHES.iter().any(|a| segments[0].starts_with(a))
 }
 
-pub async fn run(shell: Shell, _flags: &GlobalFlags) -> TeleResult<i32> {
-    let bin = completion_bin_name();
+fn shell_name(shell: &Shell) -> &'static str {
+    match shell {
+        Shell::Bash => "bash",
+        Shell::Zsh => "zsh",
+        Shell::Fish => "fish",
+        Shell::Powershell => "powershell",
+    }
+}
+
+fn script_for(shell: &Shell, bin: &str) -> Vec<u8> {
     let mut cmd = crate::command_for_completions();
     let mut buf = Vec::new();
     match shell {
         Shell::Bash => {
-            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, bin.clone(), &mut buf);
+            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, bin, &mut buf);
         }
         Shell::Zsh => {
-            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, bin.clone(), &mut buf);
+            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, bin, &mut buf);
         }
         Shell::Fish => {
-            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, bin.clone(), &mut buf);
+            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, bin, &mut buf);
         }
         Shell::Powershell => {
-            clap_complete::generate(
-                clap_complete::Shell::PowerShell,
-                &mut cmd,
-                bin.clone(),
-                &mut buf,
-            );
+            clap_complete::generate(clap_complete::Shell::PowerShell, &mut cmd, bin, &mut buf);
         }
+    }
+    buf
+}
+
+fn completions_data(shell: &str, script: &str, dry_run: bool) -> serde_json::Value {
+    if dry_run {
+        serde_json::json!({
+            "dry_run": true,
+            "shell": shell,
+            "script": script,
+            "would": format!("generate {shell} completions"),
+        })
+    } else {
+        serde_json::json!({"shell": shell, "script": script})
+    }
+}
+
+pub async fn run(shell: Shell, flags: &GlobalFlags) -> TeleResult<i32> {
+    let bin = completion_bin_name();
+    let buf = script_for(&shell, &bin);
+    if crate::output::machine_mode(flags.json, flags.jsonl) {
+        let script = String::from_utf8(buf).map_err(|e| {
+            TeleError::Other(format!("generated completions are not valid UTF-8: {e}"))
+        })?;
+        let name = shell_name(&shell);
+        let envelope = crate::output::Envelope::new(
+            vec![crate::output::AccountOutcome {
+                account: "local".to_string(),
+                ok: true,
+                error: None,
+                data: Some(completions_data(name, &script, flags.dry_run)),
+                exit_code: None,
+            }],
+            flags.dry_run,
+            &flags.command,
+        );
+        return crate::executor::finish(flags, &envelope);
     }
     let mut out = std::io::stdout();
     match out.write_all(&buf) {
@@ -211,5 +251,40 @@ mod tests {
         let err: crate::error::TeleError = io_err.into();
         assert!(err.is_broken_pipe());
         assert_eq!(err.exit_code(), crate::error::EXIT_OK);
+    }
+
+    #[test]
+    fn shell_name_matches_cli_subcommand() {
+        assert_eq!(super::shell_name(&super::Shell::Bash), "bash");
+        assert_eq!(super::shell_name(&super::Shell::Zsh), "zsh");
+        assert_eq!(super::shell_name(&super::Shell::Fish), "fish");
+        assert_eq!(super::shell_name(&super::Shell::Powershell), "powershell");
+    }
+
+    #[test]
+    fn completions_data_human_carries_shell_and_script() {
+        let value = super::completions_data("bash", "complete -F _tele", false);
+        assert_eq!(value["shell"], serde_json::json!("bash"));
+        assert_eq!(value["script"], serde_json::json!("complete -F _tele"));
+        assert!(value.get("dry_run").is_none());
+    }
+
+    #[test]
+    fn completions_data_dry_run_carries_would() {
+        let value = super::completions_data("zsh", "#compdef tele", true);
+        assert_eq!(value["dry_run"], serde_json::json!(true));
+        assert_eq!(value["shell"], serde_json::json!("zsh"));
+        assert!(
+            value["would"].as_str().unwrap_or_default().contains("zsh"),
+            "would: {value}"
+        );
+    }
+
+    #[test]
+    fn script_for_keeps_shell_markers() {
+        let bash = String::from_utf8(super::script_for(&super::Shell::Bash, "tele")).unwrap();
+        assert!(bash.contains("complete -F") || bash.contains("_telecli"));
+        let zsh = String::from_utf8(super::script_for(&super::Shell::Zsh, "tele")).unwrap();
+        assert!(zsh.contains("#compdef tele"));
     }
 }
