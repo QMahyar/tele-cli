@@ -11,10 +11,18 @@ use crate::output;
 
 pub mod download;
 pub mod params;
+pub mod poll;
 pub mod send;
 pub mod validate;
 
 use download::{download, download_core, download_serve_dry_run, validate_download};
+use poll::{
+    poll_close_core, poll_results_core, poll_unread_core, poll_votes_core,
+    poll_close_serve_dry_run, poll_results_serve_dry_run, poll_unread_serve_dry_run,
+    poll_votes_serve_dry_run, validate_poll_close, validate_poll_results, validate_poll_unread,
+    validate_poll_votes, PollCloseArgs, PollCloseParams, PollResultsArgs, PollResultsParams,
+    PollUnreadArgs, PollUnreadParams, PollVotesArgs, PollVotesParams,
+};
 use send::{send, send_core, send_serve_dry_run};
 
 pub use params::{
@@ -43,6 +51,14 @@ pub enum MsgCmd {
     Search(SearchArgs),
     Download(DownloadArgs),
     Vote(VoteArgs),
+    #[command(about = "close a poll so no more votes are accepted")]
+    PollClose(PollCloseArgs),
+    #[command(about = "fetch fresh poll results for a message")]
+    PollResults(PollResultsArgs),
+    #[command(about = "list voters for a poll option")]
+    PollVotes(PollVotesArgs),
+    #[command(about = "list messages with unread poll votes")]
+    PollUnread(PollUnreadArgs),
     Typing(TypingArgs),
     Click(ClickArgs),
     #[command(about = "list scheduled messages for a chat")]
@@ -68,6 +84,10 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         MsgCmd::Search(a) => search(a, flags).await,
         MsgCmd::Download(a) => download(a, flags).await,
         MsgCmd::Vote(a) => vote(a, flags).await,
+        MsgCmd::PollClose(a) => poll_close(a, flags).await,
+        MsgCmd::PollResults(a) => poll_results(a, flags).await,
+        MsgCmd::PollVotes(a) => poll_votes(a, flags).await,
+        MsgCmd::PollUnread(a) => poll_unread(a, flags).await,
         MsgCmd::Typing(a) => typing(a, flags).await,
         MsgCmd::Click(a) => click(a, flags).await,
         MsgCmd::Scheduled(a) => scheduled(a, flags).await,
@@ -1317,6 +1337,131 @@ pub(crate) async fn vote_core(
         "id": id,
         "voted": true,
         "options": option_indexes}))
+}
+
+async fn poll_close(args: PollCloseArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_poll_close(&args)?;
+    crate::executor::require_explicit_selection("msg poll-close", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return poll_close_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            poll_close_core(&guard.shares(), PollCloseParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn poll_results(args: PollResultsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_poll_results(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return poll_results_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            let result =
+                poll_results_core(&guard.shares(), PollResultsParams::from(&args)).await?;
+            if !output::machine_mode(json, jsonl) {
+                let line = format!("poll {} closed={}", result["id"], result["poll"]["closed"]);
+                let line = if multi {
+                    format!("{name}: {line}")
+                } else {
+                    line
+                };
+                output::print_line(&line)?;
+            }
+            Ok(result)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn poll_votes(args: PollVotesArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_poll_votes(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return poll_votes_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            let result = poll_votes_core(&guard.shares(), PollVotesParams::from(&args)).await?;
+            if !output::machine_mode(json, jsonl) {
+                let line = format!("poll {} voters={}", result["id"], result["count"]);
+                let line = if multi {
+                    format!("{name}: {line}")
+                } else {
+                    line
+                };
+                output::print_line(&line)?;
+            }
+            Ok(result)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn poll_unread(args: PollUnreadArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_poll_unread(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return poll_unread_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            let result = poll_unread_core(&guard.shares(), PollUnreadParams::from(&args)).await?;
+            if !output::machine_mode(json, jsonl) {
+                let line = format!("unread poll votes: {}", result["count"]);
+                let line = if multi {
+                    format!("{name}: {line}")
+                } else {
+                    line
+                };
+                output::print_line(&line)?;
+            }
+            Ok(result)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2895,6 +3040,66 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             run_scheduled_send,
             crate::commands::serve::params_schema::<ScheduledSendParams>
         ),
+        crate::serve_route!(
+            "msg poll-close",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "close a poll so no more votes are accepted",
+            PollCloseParams,
+            PollCloseArgs,
+            validate_poll_close,
+            poll_close_serve_dry_run,
+            run_poll_close,
+            crate::commands::serve::params_schema::<PollCloseParams>
+        ),
+        crate::serve_route!(
+            "msg poll-results",
+            Lane::Read,
+            Some(OP_TIMEOUT_SIMPLE),
+            true,
+            false,
+            true,
+            "fetch fresh poll results for a message",
+            PollResultsParams,
+            PollResultsArgs,
+            validate_poll_results,
+            poll_results_serve_dry_run,
+            run_poll_results,
+            crate::commands::serve::params_schema::<PollResultsParams>
+        ),
+        crate::serve_route!(
+            "msg poll-votes",
+            Lane::Read,
+            Some(OP_TIMEOUT_SIMPLE),
+            true,
+            false,
+            true,
+            "list voters for a poll option",
+            PollVotesParams,
+            PollVotesArgs,
+            validate_poll_votes,
+            poll_votes_serve_dry_run,
+            run_poll_votes,
+            crate::commands::serve::params_schema::<PollVotesParams>
+        ),
+        crate::serve_route!(
+            "msg poll-unread",
+            Lane::Read,
+            Some(OP_TIMEOUT_SIMPLE),
+            true,
+            false,
+            true,
+            "list messages with unread poll votes",
+            PollUnreadParams,
+            PollUnreadArgs,
+            validate_poll_unread,
+            poll_unread_serve_dry_run,
+            run_poll_unread,
+            crate::commands::serve::params_schema::<PollUnreadParams>
+        ),
     ]
 }
 
@@ -2919,6 +3124,10 @@ crate::serve_runner!(
     ScheduledDeleteParams
 );
 crate::serve_runner!(run_scheduled_send, scheduled_send_core, ScheduledSendParams);
+crate::serve_runner!(run_poll_close, poll_close_core, PollCloseParams);
+crate::serve_runner!(run_poll_results, poll_results_core, PollResultsParams);
+crate::serve_runner!(run_poll_votes, poll_votes_core, PollVotesParams);
+crate::serve_runner!(run_poll_unread, poll_unread_core, PollUnreadParams);
 
 pub(crate) fn validate_scheduled(args: &ScheduledArgs) -> TeleResult<()> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;

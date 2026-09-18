@@ -3324,3 +3324,99 @@ fn wizard_has_root_help_surface() {
         "tele wizard missing from root --help"
     );
 }
+
+#[test]
+fn msg_poll_close_validates_before_connect() {
+    let (code, _out, err) = run_isolated("pollclose-id", &["msg", "poll-close", "--chat", "me"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    let (code, _out, err) =
+        run_isolated("pollclose-bad", &["msg", "poll-close", "--chat", "me", "--id", "0"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--id must be a positive"), "stderr: {err}");
+}
+
+#[test]
+fn msg_poll_close_dry_run_json_reports_would() {
+    let dir = isolated_appdir("pollclose-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "poll-close", "--chat", "me", "--id", "9", "--account", "work", "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["id"], serde_json::json!(9));
+    assert!(
+        d["would"].as_str().unwrap_or_default().contains("close poll"),
+        "data: {d}"
+    );
+}
+
+#[test]
+fn msg_poll_results_dry_run_json_reports_would() {
+    let dir = isolated_appdir("pollresults-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "poll-results", "--chat", "me", "--id", "9", "--account", "work", "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert!(
+        d["would"].as_str().unwrap_or_default().contains("results"),
+        "data: {d}"
+    );
+}
+
+#[test]
+fn msg_poll_votes_validates_and_dry_runs() {
+    let (code, _out, err) = run_isolated(
+        "pollvotes-opt",
+        &["msg", "poll-votes", "--chat", "me", "--id", "9", "--option", "0"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--option"), "stderr: {err}");
+    let dir = isolated_appdir("pollvotes-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "poll-votes", "--chat", "me", "--id", "9", "--option", "1", "--account",
+            "work", "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["option"], serde_json::json!(1));
+}
+
+#[test]
+fn msg_poll_unread_dry_run_json_reports_would() {
+    let dir = isolated_appdir("pollunread-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "poll-unread", "--chat", "me", "--account", "work", "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert!(
+        d["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unread poll votes"),
+        "data: {d}"
+    );
+}
