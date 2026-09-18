@@ -13,6 +13,7 @@ use crate::commands::credentials::creds_api_id;
 use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::{require_explicit_selection, run_fanout, GlobalFlags};
 use crate::output;
+use crate::output::LogLevel;
 
 #[derive(Subcommand)]
 pub enum TakeoutCmd {
@@ -126,8 +127,8 @@ where
     let takeout_id = init.await?;
     let cleared = clear_stale_export_artifacts(dir);
     if cleared > 0 {
-        crate::output::log_line(
-            "info",
+        crate::output::log_level(
+            LogLevel::Info,
             &format!("cleared {cleared} stale export file(s) left by a previous abandoned takeout"),
         );
     }
@@ -289,13 +290,13 @@ fn persist_checkpoints(
     )
 }
 
-fn progress_enabled(machine_mode: bool) -> bool {
-    !machine_mode
+fn progress_enabled(machine_mode: bool, stderr_is_tty: bool) -> bool {
+    !machine_mode && stderr_is_tty
 }
 
 fn report_progress(human: bool, message: &str) {
     if human {
-        crate::output::log_line("info", message);
+        crate::output::log_level(LogLevel::Info, message);
     }
 }
 
@@ -319,7 +320,10 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.message_limit, 1_000_000, "message-limit")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
-    let human = progress_enabled(output::machine_mode(flags.json, flags.jsonl));
+    let human = progress_enabled(
+        output::machine_mode(flags.json, flags.jsonl),
+        std::io::IsTerminal::is_terminal(&std::io::stderr()),
+    );
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let limit = args.message_limit;
@@ -1007,9 +1011,11 @@ mod tests {
     }
 
     #[test]
-    fn progress_only_enabled_in_human_mode() {
-        assert!(progress_enabled(false));
-        assert!(!progress_enabled(true), "machine mode stays silent");
+    fn progress_only_enabled_in_human_tty_mode() {
+        assert!(progress_enabled(false, true));
+        assert!(!progress_enabled(true, true), "machine mode stays silent");
+        assert!(!progress_enabled(false, false), "piped stderr stays silent");
+        assert!(!progress_enabled(true, false));
     }
 
     #[test]
