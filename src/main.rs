@@ -16,6 +16,7 @@ mod serialize;
 mod session;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use std::io::Write as _;
 
 use commands::*;
 use executor::GlobalFlags;
@@ -23,7 +24,12 @@ use executor::GlobalFlags;
 const MAIN_RUNTIME_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Parser)]
-#[command(name = "tele", version, about = "Telegram user-account CLI")]
+#[command(
+    name = "tele",
+    version,
+    about = "Telegram user-account CLI",
+    long_about = "Telegram user-account CLI\n\nReport bugs at: https://github.com/QMahyar/tele-cli/issues"
+)]
 struct Cli {
     #[arg(
         long,
@@ -253,6 +259,7 @@ fn main() -> std::process::ExitCode {
     if config::app_data_dir_checked().is_err() {
         let message = "cannot determine app data directory; set TELE_APP_DIR to choose a location";
         output::log_line("error", message);
+        bug_report_footer();
         if output::machine_mode(flags.json, flags.jsonl) {
             let error_json = crate::error::TeleError::Config(message.to_string()).as_json();
             let envelope = output::Envelope::failed(flags.dry_run, &flags.command, error_json);
@@ -328,6 +335,12 @@ struct UsageCtx {
     dry_run: bool,
 }
 
+pub(crate) const ISSUE_URL: &str = "https://github.com/QMahyar/tele-cli/issues";
+
+fn bug_report_footer() {
+    let _ = writeln!(std::io::stderr(), "report bugs at {ISSUE_URL}",);
+}
+
 fn clap_error_exit(e: clap::Error) -> std::process::ExitCode {
     let code = if e.use_stderr() {
         error::EXIT_USAGE
@@ -335,6 +348,9 @@ fn clap_error_exit(e: clap::Error) -> std::process::ExitCode {
         error::EXIT_OK
     };
     let _ = e.print();
+    if e.use_stderr() {
+        bug_report_footer();
+    }
     if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
         let hint = argv_command_hint().unwrap_or_default();
         emit_usage_error(
@@ -358,6 +374,7 @@ fn clamp_exit_code(code: i32) -> u8 {
 
 fn emit_usage_error(ctx: UsageCtx, command: &str, message: &str) -> i32 {
     output::log_line("error", message);
+    bug_report_footer();
     if ctx.machine {
         let error_json = serde_json::json!({"type": "UsageError", "message": message});
         let envelope = output::Envelope::failed(ctx.dry_run, command, error_json);
@@ -503,6 +520,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
                 return error::EXIT_OK;
             }
             output::log_line("error", &e.message());
+            bug_report_footer();
             if output::machine_mode(flags.json, flags.jsonl) {
                 let envelope = output::Envelope::failed(flags.dry_run, &flags.command, e.as_json());
                 if let Ok(value) = serde_json::to_value(&envelope) {
@@ -622,6 +640,13 @@ mod tests {
             .try_get_matches_from(["tele", "msg", "send", "--chat", "me", "--text", "hi"])
             .unwrap();
         assert!(!super::password_requests_prompt(&matches));
+    }
+
+    #[test]
+    fn issue_url_points_at_tracker() {
+        assert!(super::ISSUE_URL.starts_with("https://"));
+        assert!(super::ISSUE_URL.contains("/issues"));
+        assert!(!super::ISSUE_URL.contains(' '));
     }
 
     #[test]

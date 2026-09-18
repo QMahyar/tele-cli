@@ -3069,3 +3069,38 @@ fn no_input_violation_emits_machine_envelope() {
         "stdout: {out}"
     );
 }
+
+const ISSUE_URL: &str = "https://github.com/QMahyar/tele-cli/issues";
+
+#[test]
+fn long_help_advertises_issue_url() {
+    let text = help(&[]);
+    assert!(
+        text.contains(ISSUE_URL),
+        "root --help must link the issue tracker"
+    );
+}
+
+#[test]
+fn unknown_command_footer_links_issue_url() {
+    let (code, _out, err) = run_isolated("bugurl", &["bogus-group"]);
+    assert_eq!(code, 1);
+    assert!(err.contains(ISSUE_URL), "stderr: {err}");
+}
+
+#[test]
+fn usage_error_footer_links_issue_url() {
+    let (code, _out, err) = run_isolated("bugurl2", &["msg", "send"]);
+    assert_eq!(code, 1);
+    assert!(err.contains(ISSUE_URL), "stderr: {err}");
+}
+
+#[test]
+fn machine_envelope_carries_no_issue_url() {
+    let (code, out, _err) = run_isolated("bugurl3", &["--json", "foobar"]);
+    assert_eq!(code, 1);
+    assert!(
+        !out.contains("github.com"),
+        "machine envelope must stay text-free: {out}"
+    );
+}
