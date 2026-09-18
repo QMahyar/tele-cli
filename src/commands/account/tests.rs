@@ -9,6 +9,7 @@ use crate::commands::account::phone::*;
 use crate::commands::account::staged_login::*;
 use crate::commands::serve::{Lane, Plan};
 use grammers_session::storages::SqliteSession;
+use zeroize::{Zeroize, Zeroizing};
 
 fn login_args(method: &str, phone: Option<&str>) -> LoginArgs {
     LoginArgs {
@@ -1558,11 +1559,11 @@ fn ph2_deterministic_vector_matches_reference() {
 
 #[test]
 fn zeroize_wipes_key_material() {
-    let mut buf = [0xABu8; 64];
-    zeroize(&mut buf);
+    let mut buf = Zeroizing::new([0xABu8; 64]);
+    buf.zeroize();
     assert!(buf.iter().all(|&b| b == 0));
-    let mut empty: [u8; 0] = [];
-    zeroize(&mut empty);
+    let mut empty = Zeroizing::new([0u8; 0]);
+    empty.zeroize();
 }
 
 #[test]
