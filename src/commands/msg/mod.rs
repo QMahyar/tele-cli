@@ -115,6 +115,11 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 
 pub(crate) fn validate_edit(args: &EditArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
+    if args.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive message ID".to_string(),
+        ));
+    }
     match args.format.as_str() {
         "plain" | "markdown" => Ok(()),
         other => Err(TeleError::Usage(format!(
@@ -208,6 +213,7 @@ pub(crate) async fn edit_core(
     shares: &crate::client::ServeShares,
     params: EditParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_edit(&EditArgs::from(&params))?;
     match params.format.as_str() {
         "plain" | "markdown" => Ok(()),
         other => Err(TeleError::Usage(format!(
@@ -277,6 +283,11 @@ pub(crate) fn validate_delete(args: &DeleteArgs) -> TeleResult<()> {
             "--ids required unless --all is used".to_string(),
         ));
     }
+    if args.ids.iter().any(|&i| i <= 0) {
+        return Err(TeleError::Usage(
+            "--ids must be positive message ids".to_string(),
+        ));
+    }
     if args.all && args.self_only {
         return Err(TeleError::Usage(
             "--all and --self-only are mutually exclusive".to_string(),
@@ -336,6 +347,7 @@ pub(crate) async fn delete_core(
     shares: &crate::client::ServeShares,
     params: DeleteParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_delete(&DeleteArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let all = params.all;
     let ids = params.ids;
@@ -426,6 +438,11 @@ pub(crate) fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(args.to.as_str(), "to")?;
     if args.ids.is_empty() {
         return Err(TeleError::Usage("--ids required".to_string()));
+    }
+    if args.ids.iter().any(|&i| i <= 0) {
+        return Err(TeleError::Usage(
+            "--ids must be positive message ids".to_string(),
+        ));
     }
     Ok(())
 }
@@ -551,6 +568,7 @@ pub(crate) async fn forward_core(
     shares: &crate::client::ServeShares,
     params: ForwardParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_forward(&ForwardArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let ids = params.ids;
     let from =
@@ -590,7 +608,7 @@ pub(crate) async fn forward_core(
                     .map_err(tele_invocation)?;
                 for ((original, _), msg) in pairs.iter().zip(fetched) {
                     match msg {
-                        Some(m) => forwarded.push(crate::serialize::message_to_json(&m)?),
+                        Some(m) => forwarded.push(forward_row(&m, &to)?),
                         None => dropped.push(*original),
                     }
                 }
@@ -616,6 +634,16 @@ pub(crate) async fn forward_core(
 
 fn batches(ids: &[i32]) -> Vec<&[i32]> {
     ids.chunks(100).collect()
+}
+
+pub(crate) fn forward_row(
+    msg: &grammers_client::message::Message,
+    dest: &grammers_client::peer::Peer,
+) -> TeleResult<serde_json::Value> {
+    let mut row = crate::serialize::message_to_json(msg)?;
+    crate::serialize::enrich_message_row(&mut row, msg);
+    crate::serialize::upgrade_peer_identity(&mut row, dest);
+    Ok(row)
 }
 
 fn forward_report(
@@ -687,6 +715,7 @@ pub(crate) async fn pin_core(
     shares: &crate::client::ServeShares,
     params: PinParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_pin(&PinArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -739,15 +768,28 @@ pub(crate) async fn pin_core(
 
 pub(crate) fn validate_pin(args: &PinArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
+    if args.show && args.id.is_some() {
+        return Err(TeleError::Usage(
+            "--show and --id are mutually exclusive".to_string(),
+        ));
+    }
+    if args.all && args.id.is_some() {
+        return Err(TeleError::Usage(
+            "--all and --id are mutually exclusive".to_string(),
+        ));
+    }
     if args.show || args.all {
         return Ok(());
     }
-    if args.id.is_none() {
-        return Err(TeleError::Usage(
+    match args.id {
+        None => Err(TeleError::Usage(
             "--id required (or use --show / --all)".to_string(),
-        ));
+        )),
+        Some(id) if id <= 0 => Err(TeleError::Usage(
+            "--id must be a positive message ID".to_string(),
+        )),
+        Some(_) => Ok(()),
     }
-    Ok(())
 }
 
 pub(crate) fn validate_get(args: &GetArgs) -> TeleResult<()> {
@@ -1714,6 +1756,9 @@ pub(crate) fn validate_typing(args: &TypingArgs) -> TeleResult<()> {
 }
 
 pub(crate) fn validate_search(args: &SearchArgs) -> TeleResult<()> {
+    if args.query.trim().is_empty() {
+        return Err(TeleError::Usage("--query must not be empty".to_string()));
+    }
     if args.global && !args.chat.trim().is_empty() {
         return Err(TeleError::Usage(
             "--global and --chat are mutually exclusive".to_string(),
@@ -1989,7 +2034,9 @@ fn locate_button(
         ButtonSelector::Data(data) => buttons
             .iter()
             .copied()
-            .filter(|(_, b)| button_data_str(b) == Some(data.as_str()))
+            .filter(|(_, b)| {
+                b.get("callback_data").is_some() && button_data_str(b) == Some(data.as_str())
+            })
             .collect(),
     };
     match matches.len() {
@@ -2018,7 +2065,7 @@ fn locate_button(
             ButtonSelector::Data(data) => {
                 let available = format_available(&all_buttons);
                 format!(
-                    "no button with callback data {data:?} in this message's inline keyboard. Available: {available}"
+                    "no button with callback data {data:?} in this message's inline keyboard (--button-data matches only callback buttons). Available: {available}"
                 )
             }
         })),
@@ -2364,11 +2411,7 @@ fn scheduled_delete_dry_run_data(chat: &str, ids: &[i32]) -> serde_json::Value {
 }
 
 async fn scheduled_delete(args: ScheduledDeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    if args.ids.is_empty() {
-        return Err(TeleError::Usage(
-            "--ids must list at least one message id".to_string(),
-        ));
-    }
+    validate_scheduled_delete(&args)?;
     crate::executor::require_explicit_selection("msg scheduled-delete", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -2394,6 +2437,7 @@ pub(crate) async fn scheduled_delete_core(
     params: ScheduledDeleteParams,
 ) -> TeleResult<serde_json::Value> {
     use grammers_client::tl;
+    validate_scheduled_delete(&ScheduledDeleteArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -2418,11 +2462,7 @@ fn scheduled_send_dry_run_data(chat: &str, ids: &[i32]) -> serde_json::Value {
 }
 
 async fn scheduled_send(args: ScheduledSendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
-    if args.ids.is_empty() {
-        return Err(TeleError::Usage(
-            "--ids must list at least one message id".to_string(),
-        ));
-    }
+    validate_scheduled_send(&args)?;
     crate::executor::require_explicit_selection("msg scheduled-send", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -2448,6 +2488,7 @@ pub(crate) async fn scheduled_send_core(
     params: ScheduledSendParams,
 ) -> TeleResult<serde_json::Value> {
     use grammers_client::tl;
+    validate_scheduled_send(&ScheduledSendArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -2516,6 +2557,7 @@ pub(crate) async fn search_core(
     shares: &crate::client::ServeShares,
     params: SearchParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_search(&SearchArgs::from(&params))?;
     let filter = parse_search_kind(params.kind.as_deref())?;
     let since = parse_search_date("--since", params.since.as_deref())?;
     let until = parse_search_date("--until", params.until.as_deref())?;
@@ -3383,6 +3425,11 @@ pub(crate) fn validate_scheduled_delete(args: &ScheduledDeleteArgs) -> TeleResul
             "--ids must list at least one message id".to_string(),
         ));
     }
+    if args.ids.iter().any(|&i| i <= 0) {
+        return Err(TeleError::Usage(
+            "--ids must be positive message ids".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -3396,6 +3443,11 @@ pub(crate) fn validate_scheduled_send(args: &ScheduledSendArgs) -> TeleResult<()
     if args.ids.is_empty() {
         return Err(TeleError::Usage(
             "--ids must list at least one message id".to_string(),
+        ));
+    }
+    if args.ids.iter().any(|&i| i <= 0) {
+        return Err(TeleError::Usage(
+            "--ids must be positive message ids".to_string(),
         ));
     }
     Ok(())

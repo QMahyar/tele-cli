@@ -8,9 +8,9 @@ use crate::commands::msg::download::{
 };
 use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
-    file_message, message_random_id, parse_as_media, parse_effect, parse_poll_mode, parse_schedule,
-    send_as_media_message, send_dry_run_payload, send_poll_message, split_chunk_opts,
-    split_text_utf16, url_message,
+    album_row, file_message, message_random_id, parse_as_media, parse_effect, parse_poll_mode,
+    parse_schedule, send_as_media_message, send_dry_run_payload, send_poll_message,
+    split_chunk_opts, split_text_utf16, url_message,
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
@@ -3466,6 +3466,21 @@ fn locate_button_finds_callback_by_data_str() {
 }
 
 #[test]
+fn locate_button_data_matches_only_callback_buttons() {
+    let err = locate_button(
+        &two_row_inline_markup(),
+        &ButtonSelector::Data("https://example.com".into()),
+    )
+    .unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+    assert!(
+        err.message().contains("no button with callback data"),
+        "{}",
+        err.message()
+    );
+}
+
+#[test]
 fn locate_button_finds_by_index_across_rows() {
     let found = locate_button(&two_row_inline_markup(), &ButtonSelector::Index(1)).unwrap();
     assert_eq!(found.position, 1);
@@ -5094,4 +5109,366 @@ fn resume_should_skip_covers_both_bounds_inclusively() {
         !download::resume_should_skip(500, &inverted),
         "an inverted checkpoint window can never silently skip the gap"
     );
+}
+
+#[test]
+fn validate_edit_rejects_nonpositive_id() {
+    let base = EditArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        id: 5,
+        text: Some("hello".to_string()),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
+    };
+    assert!(validate_edit(&base).is_ok());
+    for bad in [0, -1] {
+        let mut args = base.clone();
+        args.id = bad;
+        assert!(
+            matches!(validate_edit(&args), Err(TeleError::Usage(m)) if m.contains("--id")),
+            "id {bad} must fail as usage"
+        );
+    }
+    let params = EditParams {
+        chat: "me".to_string(),
+        id: 0,
+        text: Some("hello".to_string()),
+        file: None,
+        caption: None,
+        format: "plain".to_string(),
+        no_preview: false,
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_edit(&EditArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_delete_rejects_nonpositive_ids() {
+    let base = DeleteArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        ids: vec![3],
+        all: false,
+        self_only: false,
+    };
+    assert!(validate_delete(&base).is_ok());
+    for bad in [vec![0], vec![-4], vec![3, 0]] {
+        let mut args = base.clone();
+        args.ids = bad.clone();
+        assert!(
+            matches!(validate_delete(&args), Err(TeleError::Usage(m)) if m.contains("--ids")),
+            "ids {bad:?} must fail as usage"
+        );
+    }
+    let params = DeleteParams {
+        chat: "me".to_string(),
+        ids: vec![-1],
+        all: false,
+        self_only: false,
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_delete(&DeleteArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_forward_rejects_nonpositive_ids() {
+    let base = ForwardArgs {
+        from: crate::chat_target::ChatTarget::new_unchecked("a".to_string()),
+        ids: vec![3],
+        to: crate::chat_target::ChatTarget::new_unchecked("b".to_string()),
+    };
+    assert!(validate_forward(&base).is_ok());
+    for bad in [vec![0], vec![-2]] {
+        let mut args = base.clone();
+        args.ids = bad.clone();
+        assert!(
+            matches!(validate_forward(&args), Err(TeleError::Usage(m)) if m.contains("--ids")),
+            "ids {bad:?} must fail as usage"
+        );
+    }
+    let params = ForwardParams {
+        from: "a".to_string(),
+        ids: vec![0],
+        to: "b".to_string(),
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_forward(&ForwardArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_pin_rejects_show_or_all_with_id() {
+    let base = PinArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        id: Some(7),
+        unpin: false,
+        notify: false,
+        show: false,
+        all: false,
+    };
+    assert!(validate_pin(&base).is_ok());
+    let mut show_with_id = base.clone();
+    show_with_id.show = true;
+    assert!(
+        matches!(validate_pin(&show_with_id), Err(TeleError::Usage(m)) if m.contains("--show") && m.contains("--id"))
+    );
+    let mut all_with_id = base.clone();
+    all_with_id.all = true;
+    assert!(
+        matches!(validate_pin(&all_with_id), Err(TeleError::Usage(m)) if m.contains("--all") && m.contains("--id"))
+    );
+    let params = PinParams {
+        chat: "me".to_string(),
+        id: Some(7),
+        unpin: false,
+        notify: false,
+        show: true,
+        all: false,
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_pin(&PinArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_pin_rejects_nonpositive_id() {
+    let base = PinArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        id: Some(7),
+        unpin: false,
+        notify: false,
+        show: false,
+        all: false,
+    };
+    for bad in [Some(0), Some(-9)] {
+        let mut args = base.clone();
+        args.id = bad;
+        assert!(
+            matches!(validate_pin(&args), Err(TeleError::Usage(m)) if m.contains("--id")),
+            "id {bad:?} must fail as usage"
+        );
+    }
+}
+
+#[test]
+fn validate_search_rejects_empty_query() {
+    let base = SearchArgs {
+        chat: "me".to_string(),
+        query: "hello".to_string(),
+        limit: 10,
+        global: false,
+        from: None,
+        kind: None,
+        since: None,
+        until: None,
+    };
+    assert!(validate_search(&base).is_ok());
+    for bad in ["", "   "] {
+        let mut args = base.clone();
+        args.query = bad.to_string();
+        assert!(
+            matches!(validate_search(&args), Err(TeleError::Usage(m)) if m.contains("--query")),
+            "query {bad:?} must fail as usage"
+        );
+    }
+    let params = SearchParams {
+        chat: "me".to_string(),
+        query: String::new(),
+        limit: 10,
+        global: false,
+        from: None,
+        kind: None,
+        since: None,
+        until: None,
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_search(&SearchArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_download_rejects_nonpositive_id() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.id = Some(0);
+    assert!(
+        matches!(validate_download(&args), Err(TeleError::Usage(m)) if m.contains("--id")),
+        "id 0 must fail as usage"
+    );
+    args.id = Some(-3);
+    assert!(matches!(validate_download(&args), Err(TeleError::Usage(_))));
+    args.id = Some(4);
+    assert!(validate_download(&args).is_ok());
+    let params = DownloadParams {
+        chat: "me".to_string(),
+        id: Some(0),
+        dir: dir.to_string_lossy().into_owned(),
+        force: false,
+        chunk_size_kb: None,
+        all: false,
+        since: None,
+        until: None,
+        album: false,
+        limit: None,
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_download(&DownloadArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_scheduled_delete_rejects_nonpositive_ids() {
+    let base = ScheduledDeleteArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        ids: vec![2],
+    };
+    assert!(validate_scheduled_delete(&base).is_ok());
+    for bad in [vec![0], vec![-5]] {
+        let mut args = base.clone();
+        args.ids = bad.clone();
+        assert!(
+            matches!(validate_scheduled_delete(&args), Err(TeleError::Usage(m)) if m.contains("--ids")),
+            "ids {bad:?} must fail as usage"
+        );
+    }
+    let params = ScheduledDeleteParams {
+        chat: "me".to_string(),
+        ids: vec![0],
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_scheduled_delete(&ScheduledDeleteArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_scheduled_send_rejects_nonpositive_ids() {
+    let base = ScheduledSendArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        ids: vec![2],
+    };
+    assert!(validate_scheduled_send(&base).is_ok());
+    for bad in [vec![0], vec![-5]] {
+        let mut args = base.clone();
+        args.ids = bad.clone();
+        assert!(
+            matches!(validate_scheduled_send(&args), Err(TeleError::Usage(m)) if m.contains("--ids")),
+            "ids {bad:?} must fail as usage"
+        );
+    }
+    let params = ScheduledSendParams {
+        chat: "me".to_string(),
+        ids: vec![-1],
+        dry_run: false,
+    };
+    assert!(matches!(
+        validate_scheduled_send(&ScheduledSendArgs::from(&params)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+fn offline_msg_client() -> grammers_client::Client {
+    let session = std::sync::Arc::new(grammers_session::storages::MemorySession::default());
+    let pool = grammers_client::sender::SenderPool::new(session, 12345);
+    grammers_client::Client::new(pool.handle)
+}
+
+fn offline_msg(client: &grammers_client::Client, id: i32) -> grammers_client::message::Message {
+    grammers_client::message::Message::from_raw_short_updates(
+        client,
+        tl::types::UpdateShortSentMessage {
+            out: true,
+            id,
+            pts: 0,
+            pts_count: 0,
+            date: 1700000000,
+            media: None,
+            entities: None,
+            ttl_period: None,
+        },
+        grammers_client::message::InputMessage::new().text("hello"),
+        grammers_session::types::PeerId::user(42)
+            .unwrap()
+            .to_ambient_ref(),
+    )
+}
+
+fn offline_group_peer(client: &grammers_client::Client) -> grammers_client::peer::Peer {
+    grammers_client::peer::Peer::Group(grammers_client::peer::Group::from_raw(
+        client,
+        tl::enums::Chat::Empty(tl::types::ChatEmpty { id: 7 }),
+    ))
+}
+
+#[test]
+fn forward_row_matches_read_path_shape_with_identity() {
+    let client = offline_msg_client();
+    let mut msg = offline_msg(&client, 7);
+    if let tl::enums::Message::Message(m) = &mut msg.raw {
+        m.grouped_id = Some(9001);
+    }
+    let peer = offline_group_peer(&client);
+    let row = forward_row(&msg, &peer).unwrap();
+    let mut read_rows = Vec::new();
+    push_message_row(&mut read_rows, &msg).unwrap();
+    let mut row_keys: Vec<&str> = row
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let mut read_keys: Vec<&str> = read_rows[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    row_keys.sort_unstable();
+    read_keys.sort_unstable();
+    assert_eq!(row_keys, read_keys);
+    assert_eq!(row["grouped_id"], 9001);
+    assert!(
+        row["peer"].get("username").is_some(),
+        "forward rows carry resolved peer identity: {row}"
+    );
+}
+
+#[test]
+fn album_row_carries_identity_and_grouping_context() {
+    let client = offline_msg_client();
+    let mut msg = offline_msg(&client, 9);
+    if let tl::enums::Message::Message(m) = &mut msg.raw {
+        m.grouped_id = Some(4242);
+    }
+    let peer = offline_group_peer(&client);
+    let row = album_row(&msg, &peer).unwrap();
+    assert_eq!(row["grouped_id"], 4242);
+    assert!(
+        row["peer"].get("username").is_some(),
+        "album rows carry resolved peer identity: {row}"
+    );
+    let mut read_rows = Vec::new();
+    push_message_row(&mut read_rows, &msg).unwrap();
+    for (key, value) in read_rows[0].as_object().unwrap() {
+        if key == "peer" || key == "sender" {
+            continue;
+        }
+        assert_eq!(row.get(key), Some(value), "album row diverges on {key}");
+    }
 }

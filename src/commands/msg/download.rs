@@ -59,6 +59,13 @@ pub(crate) fn validate_download(args: &DownloadArgs) -> TeleResult<()> {
             "--id required unless --all is used".to_string(),
         ));
     }
+    if let Some(id) = args.id {
+        if id <= 0 {
+            return Err(TeleError::Usage(
+                "--id must be a positive message ID".to_string(),
+            ));
+        }
+    }
     let since = match &args.since {
         Some(v) => Some(parse_download_date("--since", v)?),
         None => None,
@@ -131,6 +138,7 @@ pub(crate) async fn download_core(
     shares: &crate::client::ServeShares,
     params: DownloadParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_download(&DownloadArgs::from(&params))?;
     if params.all {
         return download_bulk_core(shares, params).await;
     }

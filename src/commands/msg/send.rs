@@ -1035,6 +1035,16 @@ fn apply_schedule(msg: InputMessage, schedule: Option<u64>) -> InputMessage {
     }
 }
 
+pub(crate) fn album_row(
+    msg: &grammers_client::message::Message,
+    chat: &grammers_client::peer::Peer,
+) -> TeleResult<serde_json::Value> {
+    let mut row = crate::serialize::message_to_json(msg)?;
+    crate::serialize::enrich_message_row(&mut row, msg);
+    crate::serialize::upgrade_peer_identity(&mut row, chat);
+    Ok(row)
+}
+
 pub(crate) async fn send_core(
     shares: &crate::client::ServeShares,
     params: SendParams,
@@ -1298,7 +1308,7 @@ pub(crate) async fn send_core(
             .map_err(tele_invocation)?;
         let mut rows = Vec::new();
         for m in sent_album.into_iter().flatten() {
-            rows.push(crate::serialize::message_to_json(&m)?);
+            rows.push(album_row(&m, &chat)?);
         }
         return Ok(serde_json::json!({"album": rows}));
     }
