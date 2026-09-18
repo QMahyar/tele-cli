@@ -41,14 +41,14 @@ F6 is docs/notes only; no code change.
 
 ### T4 — Docs: JSON envelope + jq + binary tip
 **Acceptance:**
-- `docs/cli-contract.md` gains a "Bot QA recipe" section: `msg send → msg get → msg click --button-index` loop with `jq` and `python -m json.tool` examples, and the `target\debug\telecli.exe` tip for repeated calls.
+- `docs/cli-contract.md` gains a "Bot QA recipe" section: `msg send → msg get → msg click --button-index` loop with `jq` and `python -m json.tool` examples, and the `target\debug\tele.exe` tip for repeated calls.
 - `docs/examples.md` gains a "Bot buttons" example: `tele msg click --chat @bot --id 123 --button-index 1` and `--button-contains`.
-- `AGENTS.md` Commands section notes `cargo run` overhead and `target\debug\telecli.exe` for hot loops.
+- `AGENTS.md` Commands section notes `cargo run` overhead and `target\debug\tele.exe` for hot loops.
 
 ### T5 — Windows UTF-8
 **Acceptance:**
 - `src/output.rs` and `src/serialize.rs` already emit UTF-8 JSON. Fix is docs + one code guard: `main.rs` on Windows calls `SetConsoleOutputCP(CP_UTF8)` at startup so `cargo run` + `python -c` piping preserves Persian. Verified by `msg get` on a Persian bot message rendering correctly in pwsh without `chcp 65001`.
-- `docs/cli-contract.md` notes that stdout is UTF-8 and pwsh users should prefer `target\debug\telecli.exe` or set `chcp 65001` / `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`.
+- `docs/cli-contract.md` notes that stdout is UTF-8 and pwsh users should prefer `target\debug\tele.exe` or set `chcp 65001` / `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`.
 
 ### T6 — Spec drift (docs only)
 **Acceptance:**

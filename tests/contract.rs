@@ -1307,6 +1307,9 @@ fn done_rows_have_cli_surface() {
                         {
                             continue;
                         }
+                        if word == "help" {
+                            continue;
+                        }
                         let shelp = help(&[group, word]);
                         assert!(
                             !shelp.is_empty(),

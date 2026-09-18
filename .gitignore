@@ -15,6 +15,7 @@ dist/
 .opencode/
 
 # Local tool caches
+.scratch/
 .ruff_cache/
 .superpowers/
 .claude/

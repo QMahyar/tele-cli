@@ -15,10 +15,6 @@ readme = "README.md"
 name = "tele"
 path = "src/main.rs"
 
-[[bin]]
-name = "telecli"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
