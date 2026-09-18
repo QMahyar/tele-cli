@@ -89,6 +89,10 @@ fn send_args(format: &str) -> SendArgs {
         poll_mode: None,
         poll_quiz_option: None,
         effect: None,
+        todo: None,
+        todo_item: Vec::new(),
+        todo_others_can_append: false,
+        todo_others_can_complete: false,
     }
 }
 
@@ -2440,6 +2444,10 @@ fn validate_send_url_requires_kind_and_conflicts_with_text() {
         poll_mode: None,
         poll_quiz_option: None,
         effect: None,
+        todo: None,
+        todo_item: Vec::new(),
+        todo_others_can_append: false,
+        todo_others_can_complete: false,
     };
     assert!(matches!(validate_send(&url_only), Err(TeleError::Usage(_))));
     let with_kind = SendArgs {
@@ -2727,8 +2735,7 @@ fn validate_send_rejects_effect_with_poll_url_copy_as_and_albums() {
 }
 
 #[test]
-fn send_dry_run_payload_carries_effect() {
-    let mut args = send_args("plain");
+fn send_dry_run_payload_carries_effect() {    let mut args = send_args("plain");
     args.effect = Some(42);
     let payload = send_dry_run_payload(&args, None);
     assert_eq!(payload["effect"], 42);
@@ -2736,6 +2743,97 @@ fn send_dry_run_payload_carries_effect() {
     assert_eq!(params.effect, Some(42));
     let back = SendArgs::from(&params);
     assert_eq!(back.effect, Some(42));
+}
+
+fn todo_args() -> SendArgs {
+    let mut args = clone_without_text_for_tests(&send_args("plain"));
+    args.todo = Some("Groceries".to_string());
+    args.todo_item = vec!["Milk".to_string(), "Eggs".to_string()];
+    args
+}
+
+#[test]
+fn validate_send_accepts_checklist_with_items() {
+    assert!(validate_send(&todo_args()).is_ok());
+    let mut flags = todo_args();
+    flags.todo_others_can_append = true;
+    flags.todo_others_can_complete = true;
+    flags.reply = Some(3);
+    assert!(validate_send(&flags).is_ok());
+}
+
+#[test]
+fn validate_send_rejects_checklist_problems() {
+    let mut no_items = clone_without_text_for_tests(&send_args("plain"));
+    no_items.todo = Some("Groceries".to_string());
+    assert!(matches!(validate_send(&no_items), Err(TeleError::Usage(_))));
+    let mut blank_title = todo_args();
+    blank_title.todo = Some("  ".to_string());
+    assert!(matches!(
+        validate_send(&blank_title),
+        Err(TeleError::Usage(_))
+    ));
+    let mut blank_item = todo_args();
+    blank_item.todo_item = vec!["Milk".to_string(), " ".to_string()];
+    assert!(matches!(
+        validate_send(&blank_item),
+        Err(TeleError::Usage(_))
+    ));
+    let mut orphan = clone_without_text_for_tests(&send_args("plain"));
+    orphan.todo_item = vec!["Milk".to_string()];
+    assert!(matches!(validate_send(&orphan), Err(TeleError::Usage(_))));
+    let mut orphan_flag = clone_without_text_for_tests(&send_args("plain"));
+    orphan_flag.todo_others_can_append = true;
+    assert!(matches!(
+        validate_send(&orphan_flag),
+        Err(TeleError::Usage(_))
+    ));
+    for conflict in [
+        {
+            let mut a = todo_args();
+            a.text = Some("hi".to_string());
+            a
+        },
+        {
+            let mut a = todo_args();
+            a.poll = Some("Q?".to_string());
+            a.option = vec!["A".to_string(), "B".to_string()];
+            a
+        },
+        {
+            let mut a = todo_args();
+            a.caption = Some("cap".to_string());
+            a
+        },
+        {
+            let mut a = todo_args();
+            a.noforwards = true;
+            a
+        },
+    ] {
+        assert!(matches!(validate_send(&conflict), Err(TeleError::Usage(_))));
+    }
+}
+
+#[test]
+fn send_dry_run_payload_carries_checklist() {
+    let args = todo_args();
+    let payload = send_dry_run_payload(&args, None);
+    assert_eq!(payload["todo"], "Groceries");
+    assert_eq!(
+        payload["todo_items"],
+        serde_json::json!(["Milk", "Eggs"])
+    );
+    assert_eq!(
+        payload["would"],
+        serde_json::json!("create checklist in chat me")
+    );
+    let params = SendParams::from(&args);
+    assert_eq!(params.todo.as_deref(), Some("Groceries"));
+    assert_eq!(params.todo_item, vec!["Milk".to_string(), "Eggs".to_string()]);
+    let back = SendArgs::from(&params);
+    assert_eq!(back.todo.as_deref(), Some("Groceries"));
+    assert_eq!(back.todo_item, args.todo_item);
 }
 
 #[test]

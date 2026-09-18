@@ -273,6 +273,64 @@ pub(crate) fn enrich_message_row(
     if let Some(grammers_client::media::Media::Poll(poll)) = msg.media() {
         row["poll"] = poll_row(&poll);
     }
+    if let tl::enums::Message::Message(m) = &msg.raw {
+        if let Some(tl::enums::MessageMedia::ToDo(t)) = &m.media {
+            let rendered = todo_row(t);
+            row["todo"] = rendered.clone();
+            if row.get("media").is_none() {
+                let title = rendered
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                row["media"] = serde_json::json!(format!("todo:{title}"));
+                row["media_kind"] = serde_json::json!("todo");
+                row["media_label"] = serde_json::json!(title);
+            }
+        }
+    }
+}
+
+fn todo_text(t: &tl::enums::TextWithEntities) -> String {
+    match t {
+        tl::enums::TextWithEntities::Entities(t) => t.text.clone(),
+    }
+}
+
+pub(crate) fn todo_row(media: &tl::types::MessageMediaToDo) -> serde_json::Value {
+    let tl::enums::TodoList::List(todo) = &media.todo;
+    let completions = media.completions.as_ref();
+    let completed = |id: i32| {
+        completions.as_ref().and_then(|list| {
+            list.iter().find_map(|c| {
+                let tl::enums::TodoCompletion::Completion(c) = c;
+                (c.id == id).then_some(c)
+            })
+        })
+    };
+    let items: Vec<serde_json::Value> = todo
+        .list
+        .iter()
+        .map(|item| {
+            let tl::enums::TodoItem::Item(item) = item;
+            let mut entry = serde_json::Map::new();
+            entry.insert("id".into(), serde_json::json!(item.id));
+            entry.insert("title".into(), serde_json::json!(todo_text(&item.title)));
+            if let Some(done) = completed(item.id) {
+                entry.insert("completed".into(), serde_json::json!(true));
+                entry.insert(
+                    "completed_by".into(),
+                    serde_json::json!(crate::commands::helpers::peer_id(&done.completed_by)),
+                );
+                entry.insert("date".into(), serde_json::json!(done.date));
+            }
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+    serde_json::json!({
+        "title": todo_text(&todo.title),
+        "others_can_append": todo.others_can_append,
+        "others_can_complete": todo.others_can_complete,
+        "items": items})
 }
 
 pub(crate) fn poll_answers(poll: &grammers_client::media::Poll) -> Vec<(String, Vec<u8>)> {
@@ -1489,9 +1547,83 @@ mod tests {
         );
     }
 
+    fn todo_twe(text: &str) -> tl::enums::TextWithEntities {
+        tl::enums::TextWithEntities::Entities(tl::types::TextWithEntities {
+            text: text.into(),
+            entities: Vec::new(),
+        })
+    }
+
+    fn todo_media() -> tl::enums::MessageMedia {
+        tl::enums::MessageMedia::ToDo(tl::types::MessageMediaToDo {
+            todo: tl::enums::TodoList::List(tl::types::TodoList {
+                others_can_append: true,
+                others_can_complete: false,
+                title: todo_twe("Groceries"),
+                list: vec![
+                    tl::enums::TodoItem::Item(tl::types::TodoItem {
+                        id: 1,
+                        title: todo_twe("Milk"),
+                    }),
+                    tl::enums::TodoItem::Item(tl::types::TodoItem {
+                        id: 2,
+                        title: todo_twe("Eggs"),
+                    }),
+                ],
+            }),
+            completions: Some(vec![tl::enums::TodoCompletion::Completion(
+                tl::types::TodoCompletion {
+                    id: 1,
+                    completed_by: tl::enums::Peer::User(tl::types::PeerUser { user_id: 7 }),
+                    date: 1700000000,
+                },
+            )]),
+        })
+    }
+
     #[test]
-    fn peer_id_key_user_has_correct_kind_and_id() {
-        let peer_id = grammers_session::types::PeerId::user(8552872518).unwrap();
+    fn todo_row_shapes_title_items_and_completions() {
+        let tl::enums::MessageMedia::ToDo(media) = todo_media() else {
+            panic!("expected todo media");
+        };
+        let row = todo_row(&media);
+        assert_eq!(row["title"], "Groceries");
+        assert_eq!(row["others_can_append"], true);
+        assert_eq!(row["others_can_complete"], false);
+        let items = row["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], 1);
+        assert_eq!(items[0]["title"], "Milk");
+        assert_eq!(items[0]["completed"], true);
+        assert_eq!(items[0]["completed_by"], 7);
+        assert!(items[1].get("completed").is_none());
+    }
+
+    #[test]
+    fn enrich_message_row_attaches_todo_object_with_media_keys() {
+        let client = offline_client();
+        let with_todo = make_message(&client, 23, false, "", Some(todo_media()));
+        let mut row = message_to_json(&with_todo).unwrap();
+        assert!(
+            row.get("media").is_none(),
+            "grammers drops ToDo before enrich runs"
+        );
+        enrich_message_row(&mut row, &with_todo);
+        assert_eq!(row["todo"]["title"], "Groceries");
+        assert_eq!(row["media"], "todo:Groceries");
+        assert_eq!(row["media_kind"], "todo");
+        assert_eq!(row["media_label"], "Groceries");
+        let plain = make_message(&client, 24, false, "plain", None);
+        let mut bare = message_to_json(&plain).unwrap();
+        enrich_message_row(&mut bare, &plain);
+        assert!(
+            bare.get("todo").is_none(),
+            "non-todo media must not gain a todo key"
+        );
+    }
+
+    #[test]
+    fn peer_id_key_user_has_correct_kind_and_id() {        let peer_id = grammers_session::types::PeerId::user(8552872518).unwrap();
         let key = peer_id_key(peer_id);
         assert_eq!(key["id"], 8552872518_i64);
         assert_eq!(key["kind"], "user");

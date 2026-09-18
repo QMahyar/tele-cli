@@ -147,15 +147,64 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "--poll is mutually exclusive with --text/--file".to_string(),
         ));
     }
+    if args.todo.is_none()
+        && (!args.todo_item.is_empty()
+            || args.todo_others_can_append
+            || args.todo_others_can_complete)
+    {
+        return Err(TeleError::Usage(
+            "--todo-item/--todo-others-can-append/--todo-others-can-complete require --todo"
+                .to_string(),
+        ));
+    }
+    if let Some(title) = &args.todo {
+        if title.trim().is_empty() {
+            return Err(TeleError::Usage(
+                "--todo title must not be empty".to_string(),
+            ));
+        }
+        if args.todo_item.is_empty() {
+            return Err(TeleError::Usage(
+                "--todo requires at least one --todo-item".to_string(),
+            ));
+        }
+        if args.todo_item.iter().any(|t| t.trim().is_empty()) {
+            return Err(TeleError::Usage(
+                "--todo-item values must not be empty".to_string(),
+            ));
+        }
+        if args.text.is_some()
+            || !args.files.is_empty()
+            || args.url.is_some()
+            || args.copy_from.is_some()
+            || args.poll.is_some()
+        {
+            return Err(TeleError::Usage(
+                "--todo is mutually exclusive with --text/--file/--url/--copy-from/--poll"
+                    .to_string(),
+            ));
+        }
+        if args.caption.is_some()
+            || args.thumbnail.is_some()
+            || args.media_ttl.is_some()
+            || args.as_media.is_some()
+            || args.noforwards
+        {
+            return Err(TeleError::Usage(
+                "--todo supports only --chat, --todo-item, --todo-others-can-*, --reply/--topic, --schedule, --silent, --background, --format, and --effect"
+                    .to_string(),
+            ));
+        }
+    }
     match (
         &args.text,
         args.files.is_empty(),
         &args.url,
         &args.copy_from,
     ) {
-        (None, true, None, None) if args.poll.is_none() => {
+        (None, true, None, None) if args.poll.is_none() && args.todo.is_none() => {
             return Err(TeleError::Usage(
-                "msg send requires --text, --file, --url, or --copy-from".to_string(),
+                "msg send requires --text, --file, --url, --copy-from, --poll, or --todo".to_string(),
             ))
         }
         (Some(_), false, _, _) | (Some(_), _, Some(_), _) => {
@@ -693,6 +742,8 @@ async fn send_raw_media(
 pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> serde_json::Value {
     let would = if args.poll.is_some() {
         format!("create poll in chat {}", args.chat)
+    } else if args.todo.is_some() {
+        format!("create checklist in chat {}", args.chat)
     } else {
         format!("send message to chat {}", args.chat)
     };
@@ -725,6 +776,10 @@ pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> se
         "poll_mode": args.poll_mode,
         "poll_quiz_option": args.poll_quiz_option,
         "effect": args.effect,
+        "todo": args.todo,
+        "todo_items": args.todo_item,
+        "todo_others_can_append": args.todo_others_can_append,
+        "todo_others_can_complete": args.todo_others_can_complete,
         "would": would})
 }
 
@@ -1054,6 +1109,95 @@ pub(crate) async fn send_core(
             .map_err(tele_invocation)?;
         let mut row = crate::serialize::message_to_json(&sent)?;
         crate::serialize::upgrade_peer_identity(&mut row, &chat);
+        return Ok(row);
+    }
+    if let Some(title) = &params.todo {
+        if title.trim().is_empty() {
+            return Err(TeleError::Usage(
+                "--todo title must not be empty".to_string(),
+            ));
+        }
+        if params.todo_item.is_empty() {
+            return Err(TeleError::Usage(
+                "--todo requires at least one --todo-item".to_string(),
+            ));
+        }
+        let twe = |s: &str| -> grammers_client::tl::enums::TextWithEntities {
+            grammers_client::tl::types::TextWithEntities {
+                text: s.to_string(),
+                entities: Vec::new(),
+            }
+            .into()
+        };
+        let items: Vec<grammers_client::tl::enums::TodoItem> = params
+            .todo_item
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                grammers_client::tl::enums::TodoItem::Item(grammers_client::tl::types::TodoItem {
+                    id: i as i32 + 1,
+                    title: twe(text),
+                })
+            })
+            .collect();
+        let list = grammers_client::tl::types::TodoList {
+            others_can_append: params.todo_others_can_append,
+            others_can_complete: params.todo_others_can_complete,
+            title: twe(title),
+            list: items,
+        };
+        let media: grammers_client::tl::enums::InputMedia =
+            grammers_client::tl::types::InputMediaTodo {
+                todo: grammers_client::tl::enums::TodoList::List(list),
+            }
+            .into();
+        let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+        let schedule_date = schedule.map(|s| {
+            if s == 0 {
+                SCHEDULE_ONCE_ONLINE_RAW
+            } else {
+                s as i32
+            }
+        });
+        let updates: grammers_client::tl::enums::Updates = shares
+            .client
+            .invoke(&grammers_client::tl::functions::messages::SendMedia {
+                silent,
+                background,
+                clear_draft: false,
+                peer,
+                reply_to: reply.map(raw_input_reply_to),
+                media,
+                message: String::new(),
+                random_id: message_random_id(),
+                reply_markup: None,
+                entities: None,
+                schedule_date,
+                schedule_repeat_period: None,
+                send_as: None,
+                noforwards: false,
+                update_stickersets_order: false,
+                invert_media: false,
+                quick_reply_shortcut: None,
+                effect,
+                allow_paid_floodskip: false,
+                allow_paid_stars: None,
+                suggested_post: None,
+            })
+            .await
+            .map_err(tele_invocation)?;
+        let mut row = sent_updates_row(&updates, title);
+        if let Some(obj) = row.as_object_mut() {
+            obj.insert("peer".into(), crate::serialize::peer_key(&chat));
+            obj.insert(
+                "todo".into(),
+                serde_json::json!({
+                    "title": title,
+                    "others_can_append": params.todo_others_can_append,
+                    "others_can_complete": params.todo_others_can_complete,
+                    "items": params.todo_item.iter().enumerate().map(|(i, t)| serde_json::json!({"id": i as i32 + 1, "title": t})).collect::<Vec<_>>()}),
+            );
+        }
         return Ok(row);
     }
     let apply_common = |msg: InputMessage, reply: Option<i32>| -> InputMessage {

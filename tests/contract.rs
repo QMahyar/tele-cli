@@ -3520,3 +3520,35 @@ fn msg_send_effect_validates_and_dry_runs() {
         "data: {d}"
     );
 }
+
+#[test]
+fn msg_send_todo_validates_and_dry_runs() {
+    let (code, _out, err) = run_isolated(
+        "todo-noitems",
+        &["msg", "send", "--chat", "me", "--todo", "Groceries"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    let (code, _out, err) = run_isolated(
+        "todo-orphan",
+        &["msg", "send", "--chat", "me", "--text", "hi", "--todo-item", "Milk"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    let dir = isolated_appdir("todo-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "send", "--chat", "me", "--todo", "Groceries", "--todo-item", "Milk",
+            "--todo-item", "Eggs", "--account", "work", "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["todo"], serde_json::json!("Groceries"));
+    assert_eq!(d["todo_items"], serde_json::json!(["Milk", "Eggs"]));
+    assert_eq!(
+        d["would"],
+        serde_json::json!("create checklist in chat me"),
+        "data: {d}"
+    );
+}

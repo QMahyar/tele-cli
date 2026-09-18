@@ -148,9 +148,35 @@ pub struct SendArgs {
     #[arg(
         long,
         value_name = "ID",
-        help = "animated message effect id (see tele raw messages.GetAvailableEffects; text and single-file sends only; Premium/1-on-1 limits are server-enforced)"
+        help = "animated message effect id (see tele raw messages.GetAvailableEffects; text, single-file, and checklist sends only; Premium/1-on-1 limits are server-enforced)"
     )]
     pub(crate) effect: Option<i64>,
+    #[arg(
+        long,
+        value_name = "TITLE",
+        conflicts_with_all = &["text", "files", "url", "copy_from", "poll"],
+        help = "create a checklist with this title (requires --todo-item; mutually exclusive with --text/--file/--url/--copy-from/--poll)"
+    )]
+    pub(crate) todo: Option<String>,
+    #[arg(
+        long,
+        value_name = "TEXT",
+        requires = "todo",
+        help = "checklist item text (repeatable, at least one; requires --todo)"
+    )]
+    pub(crate) todo_item: Vec<String>,
+    #[arg(
+        long,
+        requires = "todo",
+        help = "let other members append items to the checklist (requires --todo)"
+    )]
+    pub(crate) todo_others_can_append: bool,
+    #[arg(
+        long,
+        requires = "todo",
+        help = "let other members complete items on the checklist (requires --todo)"
+    )]
+    pub(crate) todo_others_can_complete: bool,
 }
 
 #[derive(Args, Clone)]
@@ -555,6 +581,14 @@ pub(crate) struct SendParams {
     #[serde(default)]
     pub(crate) effect: Option<i64>,
     #[serde(default)]
+    pub(crate) todo: Option<String>,
+    #[serde(default)]
+    pub(crate) todo_item: Vec<String>,
+    #[serde(default)]
+    pub(crate) todo_others_can_append: bool,
+    #[serde(default)]
+    pub(crate) todo_others_can_complete: bool,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -589,6 +623,10 @@ impl From<&SendArgs> for SendParams {
             poll_mode: a.poll_mode.clone(),
             poll_quiz_option: a.poll_quiz_option,
             effect: a.effect,
+            todo: a.todo.clone(),
+            todo_item: a.todo_item.clone(),
+            todo_others_can_append: a.todo_others_can_append,
+            todo_others_can_complete: a.todo_others_can_complete,
             dry_run: false,
         }
     }
@@ -625,6 +663,10 @@ impl From<&SendParams> for SendArgs {
             poll_mode: p.poll_mode.clone(),
             poll_quiz_option: p.poll_quiz_option,
             effect: p.effect,
+            todo: p.todo.clone(),
+            todo_item: p.todo_item.clone(),
+            todo_others_can_append: p.todo_others_can_append,
+            todo_others_can_complete: p.todo_others_can_complete,
         }
     }
 }
