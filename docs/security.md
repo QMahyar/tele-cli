@@ -38,7 +38,7 @@ These behaviors are deliberate. Know them before you share output.
 - The QR login fallback prints the `tg://login?token=…` URI to stderr only when stderr is an interactive terminal or when you pass `--show-token`. Redirected stderr receives a warning line without the token. Treat all stderr during login as sensitive anyway.
 - The code-login prompt omits the phone number when stderr is not a terminal. Stderr redirected to a file therefore never records the number.
 - `--phone` places the number on the command line, where process listings and shell history can record it. For automation, prefer the stdin prompt or the `TELE_PHONE` environment variable.
-- Windows terminals take password input with echo disabled through `SetConsoleMode`. Other platforms cannot disable echo portably, so there the CLI warns that the typed password may be visible. On every platform, the CLI reads passwords from stdin only and rejects them on argv.
+- Password input disables terminal echo on Windows through `SetConsoleMode` and on Unix through `termios`. On every platform, the CLI reads passwords from stdin only and rejects them on argv.
 - `account password --set` and `account password --change` hash the new password locally with PH2. PH2 runs pbkdf2-hmac-sha512 over 100000 iterations on top of a 32-byte random salt extension. The implementation mirrors grammers-crypto 0.10 (`two_factor_auth.rs`, lines 134 to 154). The password never reaches a log, `--json` output, or the process title. With `--dry-run`, the command returns a `would` row with presence booleans for `hint` and `recovery_email`, and it prompts for no secrets.
 
 ## Windows permission model
@@ -63,7 +63,7 @@ This model holds when the app directory stays at its default `%APPDATA%` locatio
 - `--config` and `--file` must name real files. The CLI expands no `~` shortcut and rejects directories
 - Uploads refuse anything under the app data dir, plus sensitive basenames: `.env` prefixes, `*.session`, `*.session-journal`, `*.session-wal`, `*.session-shm`, `config.toml` prefixes, private-key names (`id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.kdbx`, `.netrc`, `.git-credentials`, and bare `credentials`
 - Upload basenames that Windows would alias are rejected up front: trailing dot or space, colon, and reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`)
-- 2FA passwords are never accepted on argv; read from stdin only, with echo disabled on Windows
+- 2FA passwords are never accepted on argv; read from stdin only, with terminal echo disabled
 - `--limit` caps at 10000 rows and `--message-limit` at 1000000 messages; larger values fail with a usage error
 - Invite URLs are parsed locally. The CLI speaks Telegram MTProto only and fetches no other HTTP endpoint
 - Live tests run against the designated chat only

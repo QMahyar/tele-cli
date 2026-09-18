@@ -36,7 +36,7 @@ When peer resolution fails, the error tells you to refresh the peer cache. It do
 
 - `[info]` freeform lines report lifecycle notices: what a dry run would do, login and logout and remove outcomes, listen start and timeout.
 - `[error]` freeform lines report failures: one line per failed account with the account name and error text, listen reconnect attempts, and top-level command errors.
-- When you set `TELE_LOG`, the `log` crate adds its own `[LEVEL] message` lines. At `trace`, these include grammers internals.
+- When you set `TELE_LOG`, the `log` crate adds its own `[LEVEL] message` lines. At `trace`, these include grammers internals, which bypass the secret scrubbing in the next rule: treat all stderr captured at `trace` as sensitive and never paste it into a ticket or a log.
 
 ## Alerting
 
