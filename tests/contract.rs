@@ -3144,10 +3144,7 @@ fn doctor_is_healthy_with_config_env_and_session() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for path in [
-            dir.join(".env"),
-            dir.join("sessions").join("work.session"),
-        ] {
+        for path in [dir.join(".env"), dir.join("sessions").join("work.session")] {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
     }
