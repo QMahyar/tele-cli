@@ -273,3 +273,17 @@ After a session, check:
 - [ ] The agent loaded only the needed spec slice and one prior example
 - [ ] New code references real files and APIs, not invented ones
 - [ ] `cargo test` and `cargo clippy` still pass
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. See `docs/agents/domain.md`.

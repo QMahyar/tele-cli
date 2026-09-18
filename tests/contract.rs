@@ -7,8 +7,16 @@ fn tele() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tele"))
 }
 
+static CONTRACT_APPDIR_SEQ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 fn isolated_appdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("telecli-contract-{tag}-{}", std::process::id()));
+    let n = CONTRACT_APPDIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "telecli-contract-{tag}-{}-{:?}-{n}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -156,6 +164,206 @@ fn raw_registry_names() -> Vec<String> {
         .step_by(2)
         .map(str::to_string)
         .collect()
+}
+
+fn help_has_flag(help: &str, flag: &str) -> bool {
+    if flag.is_empty() {
+        return false;
+    }
+    help.match_indices(flag).any(|(i, _)| {
+        let before_ok = i == 0
+            || !matches!(
+                help.as_bytes()[i - 1],
+                b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'-'
+            );
+        let after_ok = help
+            .as_bytes()
+            .get(i + flag.len())
+            .is_none_or(|c| !matches!(c, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'-'));
+        before_ok && after_ok
+    })
+}
+
+fn flag_parts(token: &str) -> Vec<String> {
+    token
+        .split(|c: char| c.is_whitespace() || matches!(c, '[' | ']' | '(' | ')' | ',' | '+'))
+        .filter(|p| p.starts_with("--"))
+        .flat_map(|f| f.split('/'))
+        .filter(|p| p.starts_with("--"))
+        .map(str::to_string)
+        .collect()
+}
+
+fn expand_registry_ref(token: &str) -> Vec<String> {
+    match token
+        .split_once('{')
+        .and_then(|(head, rest)| rest.split_once('}').map(|(inner, _)| (head, inner)))
+    {
+        Some((head, inner)) => inner.split(',').map(|alt| format!("{head}{alt}")).collect(),
+        None => vec![token.to_string()],
+    }
+}
+
+fn is_registry_shaped_ref(token: &str) -> bool {
+    expand_registry_ref(token)
+        .iter()
+        .all(|name| match name.split_once('.') {
+            Some((_, method)) => method
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase()),
+            None => false,
+        })
+}
+
+fn is_repo_path_ref(token: &str) -> bool {
+    !token.chars().any(|c| c.is_whitespace())
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+'))
+        && (token.contains('/')
+            || token.ends_with(".rs")
+            || token.ends_with(".tl")
+            || token.ends_with(".md")
+            || token.ends_with(".toml"))
+}
+
+fn group_subcommands(group: &str) -> Vec<String> {
+    let ghelp = help(&[group]);
+    let mut in_commands = false;
+    let mut out = Vec::new();
+    for line in ghelp.lines() {
+        if line.trim() == "Commands:" {
+            in_commands = true;
+            continue;
+        }
+        if !in_commands {
+            continue;
+        }
+        let word = line.split_whitespace().next().unwrap_or("");
+        if word.is_empty() || !word.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            continue;
+        }
+        if word == "help" {
+            continue;
+        }
+        out.push(word.to_string());
+    }
+    out
+}
+
+fn is_group_subcommand(lgroup: &str, word: &str) -> bool {
+    group_subcommands(lgroup).iter().any(|s| {
+        s == word || s.replace('-', "") == word.replace('-', "")
+    })
+}
+
+fn flag_ok_in_cell(lgroup: &str, lsub: &Option<String>, part: &str) -> bool {
+    if lgroup == "listen" {
+        return help_has_flag(&help(&["listen"]), part);
+    }
+    let lhelp = if let Some(sub) = lsub {
+        help(&[lgroup, sub])
+    } else {
+        help(&[lgroup])
+    };
+    if help_has_flag(&lhelp, part) {
+        return true;
+    }
+    if lsub.is_some() {
+        return false;
+    }
+    group_subcommands(lgroup)
+        .iter()
+        .any(|word| help_has_flag(&help(&[lgroup, word.as_str()]), part))
+}
+
+fn continuation_context(
+    cell_cmd: &Option<(String, Option<String>)>,
+    token: &str,
+) -> Option<(String, String)> {
+    match (cell_cmd, token.split_whitespace().next()) {
+        (Some((lgroup, Some(lsub))), Some(first))
+            if first.replace('-', "") == lsub.replace('-', "") =>
+        {
+            Some((lgroup.clone(), lsub.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn check_unclassified_token(
+    id: &str,
+    token: &str,
+    cell_cmd: &Option<(String, Option<String>)>,
+    registry: &[String],
+) {
+    if token.contains("://") {
+    } else if registry.iter().any(|r| r == token) {
+    } else if token.contains('.') && is_registry_shaped_ref(token) {
+        for name in expand_registry_ref(token) {
+            assert!(
+                registry.iter().any(|r| r == &name),
+                "row {id}: raw method {name} from `{token}` missing from src/commands/raw.rs REGISTERED"
+            );
+        }
+    } else if is_repo_path_ref(token) {
+        assert!(
+            PathBuf::from(MANIFEST_DIR).join(token).exists(),
+            "row {id}: path `{token}` does not exist"
+        );
+    } else {
+        let (lgroup, lsub): (String, Option<String>) =
+            cell_cmd.clone().unwrap_or(("listen".to_string(), None));
+        let cleaned = token.trim_matches(|c: char| {
+            matches!(c, '[' | ']' | '(' | ')' | ',' | '.' | ';' | ':')
+        });
+        let first = cleaned.split_whitespace().next().unwrap_or("");
+        let sub = if first == lgroup.as_str() {
+            token
+                .split_whitespace()
+                .nth(1)
+                .filter(|s| is_group_subcommand(&lgroup, *s))
+                .map(str::to_string)
+        } else if !first.is_empty()
+            && !first.starts_with("--")
+            && is_group_subcommand(&lgroup, first)
+        {
+            Some(first.to_string())
+        } else {
+            None
+        };
+        match sub {
+            Some(word) => {
+                for part in flag_parts(token) {
+                    assert!(
+                        flag_ok_in_cell(&lgroup, &Some(word.clone()), &part),
+                        "row {id}: flag {part} from `{token}` missing from `tele {lgroup} {word} --help`"
+                    );
+                }
+            }
+            None => {
+                for part in flag_parts(token) {
+                    assert!(
+                        flag_ok_in_cell(&lgroup, &lsub, &part),
+                        "row {id}: flag {part} from `{token}` missing from `tele {lgroup} {} --help`",
+                        lsub.clone().unwrap_or_default()
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn cargo_package_version() -> String {
+    let text = std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("Cargo.toml")).unwrap();
+    let table: toml::Value = toml::from_str(&text).expect("Cargo.toml must parse as TOML");
+    table
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .expect("Cargo.toml [package] version")
+        .to_string()
 }
 
 #[test]
@@ -1322,7 +1530,7 @@ fn done_rows_have_cli_surface() {
                     let lhelp = help(&[group]);
                     for flag in parts.iter().filter(|p| p.starts_with("--")) {
                         assert!(
-                            lhelp.contains(flag),
+                            help_has_flag(&lhelp, flag),
                             "row {id}: flag {flag} missing from `tele {group} --help`"
                         );
                     }
@@ -1341,7 +1549,7 @@ fn done_rows_have_cli_surface() {
                 let shelp = help(&[group, sub]);
                 for flag in parts.iter().filter(|p| p.starts_with("--")) {
                     assert!(
-                        shelp.contains(flag),
+                        help_has_flag(&shelp, flag),
                         "row {id}: flag {flag} missing from `tele {group} {sub} --help`"
                     );
                 }
@@ -1361,50 +1569,10 @@ fn done_rows_have_cli_surface() {
                 let (ref lgroup, ref lsub) =
                     cell_cmd.clone().unwrap_or(("listen".to_string(), None));
                 let is_listen = lgroup == "listen";
-                let lhelp = if is_listen {
-                    help(&["listen"])
-                } else if let Some(sub) = lsub {
-                    help(&[lgroup, sub])
-                } else {
-                    help(&[lgroup])
-                };
-                // Flags referenced from a group-wildcard cell may live on any
-                // subcommand of the group; validate against the group help and
-                // every subcommand help.
-                let flag_ok_in_group = |part: &str| -> bool {
-                    if lhelp.contains(part) {
-                        return true;
-                    }
-                    if lsub.is_some() {
-                        return false;
-                    }
-                    let ghelp = help(&[lgroup]);
-                    let mut in_commands = false;
-                    for line in ghelp.lines() {
-                        if line.trim() == "Commands:" {
-                            in_commands = true;
-                            continue;
-                        }
-                        if !in_commands {
-                            continue;
-                        }
-                        let word = line.split_whitespace().next().unwrap_or("");
-                        if word.is_empty()
-                            || !word.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-                        {
-                            continue;
-                        }
-                        if help(&[lgroup, word]).contains(part) {
-                            return true;
-                        }
-                    }
-                    false
-                };
                 for flag in token.split_whitespace().filter(|p| p.starts_with("--")) {
-                    // Combined spellings like `--since/--until` assert each part.
                     for part in flag.split('/').filter(|p| p.starts_with("--")) {
                         assert!(
-                            flag_ok_in_group(part),
+                            flag_ok_in_cell(lgroup, lsub, part),
                             "row {id}: flag {part} missing from `tele {} {} --help`",
                             lgroup,
                             lsub.clone().unwrap_or_default()
@@ -1428,44 +1596,16 @@ fn done_rows_have_cli_surface() {
                         );
                     }
                 }
-            } else if let (Some((ref lgroup, Some(ref lsub))), Some(first)) =
-                (cell_cmd.clone(), token.split_whitespace().next())
-            {
-                if first.replace('-', "") == lsub.replace('-', "") {
-                    // Continuation shorthand: `sessions --web` after
-                    // `tele account sessions [...]`. Validate the flags.
-                    let shelp = help(&[lgroup, lsub]);
-                    for flag in token.split_whitespace().filter(|p| p.starts_with("--")) {
-                        assert!(
-                            shelp.contains(flag),
-                            "row {id}: flag {flag} missing from `tele {lgroup} {lsub} --help`"
-                        );
-                    }
-                } else if token.contains("://") {
-                    // A URI reference, not a CLI surface.
+            } else if let Some((lgroup, lsub)) = continuation_context(&cell_cmd, token) {
+                let shelp = help(&[lgroup.as_str(), lsub.as_str()]);
+                for flag in token.split_whitespace().filter(|p| p.starts_with("--")) {
+                    assert!(
+                        help_has_flag(&shelp, flag),
+                        "row {id}: flag {flag} missing from `tele {lgroup} {lsub} --help`"
+                    );
                 }
-            } else if token.contains("://") {
-                // A URI reference (e.g. tg://login), not a CLI surface.
-            } else if registry.iter().any(|r| r == token) {
-                // raw registry entry — fine.
             } else {
-                // Not a `tele ...` command, flag span, or module path: treat
-                // as prose (e.g. `would`, `dry-run`) unless it looks like a
-                // deliberately broken CLI surface reference. Flag-looking
-                // spans were already handled above; anything left that names
-                // a nonexistent subcommand of the current cell's command is
-                // the case this gate exists to catch.
-                if let (Some((ref lgroup, _)), Some(first)) =
-                    (cell_cmd.clone(), token.split_whitespace().next())
-                {
-                    let ghelp = help(&[lgroup]);
-                    let word = first.replace('-', "");
-                    let claims_subcommand = ghelp.lines().any(|l| {
-                        let w = l.split_whitespace().next().unwrap_or("").replace('-', "");
-                        !w.is_empty() && w == word
-                    });
-                    let _ = claims_subcommand;
-                }
+                check_unclassified_token(&id, token, &cell_cmd, &registry);
             }
         }
     }
@@ -1609,7 +1749,11 @@ fn raw_registry_names_are_offline_usable() {
     let src =
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/raw.rs")).unwrap();
     let names = raw_registry_names();
-    assert!(names.len() >= 18, "registry should hold all raw arms");
+    assert_eq!(
+        names.len(),
+        25,
+        "registry must hold exactly 25 raw arms; bump this bound with src/commands/raw.rs REGISTERED"
+    );
     for name in &names {
         assert!(
             src.contains(&format!("\"{name}\" =>")),
@@ -2749,12 +2893,7 @@ fn skill_install_dir_dry_run_json_contract() {
 
 #[test]
 fn versions_are_in_sync_across_cargo_npm_and_changelog() {
-    let cargo = std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("Cargo.toml")).unwrap();
-    let cargo_version = cargo
-        .lines()
-        .find(|l| l.trim().starts_with("version"))
-        .and_then(|l| l.split('"').nth(1))
-        .expect("Cargo.toml version");
+    let cargo_version = cargo_package_version();
     let npm: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("npm/package.json")).unwrap(),
     )
@@ -2788,12 +2927,7 @@ fn versions_are_in_sync_across_cargo_npm_and_changelog() {
 fn skill_compatibility_matches_crate_version() {
     let skill =
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("src/commands/skill.md")).unwrap();
-    let cargo = std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("Cargo.toml")).unwrap();
-    let version = cargo
-        .lines()
-        .find(|l| l.trim().starts_with("version"))
-        .and_then(|l| l.split('"').nth(1))
-        .expect("Cargo.toml version");
+    let version = cargo_package_version();
     let stamp = format!("compatibility: tele {version}+");
     assert!(
         skill.contains(&stamp),
@@ -3838,4 +3972,84 @@ fn topic_create_emoji_accepts_document_id_and_rejects_garbage() {
     let d = parse_json(&out)["results"][0]["data"].clone();
     assert_eq!(d["dry_run"], serde_json::json!(true));
     assert_eq!(d["emoji"], serde_json::json!("531234567890123456"));
+}
+
+#[test]
+fn flag_matching_uses_token_boundaries() {
+    let help = "Options:\n      --ids <IDS>\n      --limit <N>\n      --no-preview\n";
+    assert!(help_has_flag(help, "--ids"));
+    assert!(!help_has_flag(help, "--id"));
+    assert!(help_has_flag(help, "--limit"));
+    assert!(!help_has_flag(help, "--lim"));
+    assert!(help_has_flag(help, "--no-preview"));
+    assert!(!help_has_flag(help, "--no"));
+    assert!(!help_has_flag(help, "--preview"));
+    assert!(!help_has_flag(help, ""));
+    assert!(!help_has_flag("", "--ids"));
+}
+
+#[test]
+fn registry_ref_expansion_covers_brace_lists() {
+    assert_eq!(
+        expand_registry_ref("messages.{GetHistory,Search}"),
+        vec![
+            "messages.GetHistory".to_string(),
+            "messages.Search".to_string()
+        ]
+    );
+    assert_eq!(
+        expand_registry_ref("users.GetUsers"),
+        vec!["users.GetUsers".to_string()]
+    );
+    assert!(is_registry_shaped_ref("messages.{GetHistory,Search}"));
+    assert!(is_registry_shaped_ref("users.GetUsers"));
+    assert!(!is_registry_shaped_ref("messages.toggleNoForwards"));
+    assert!(!is_registry_shaped_ref("messages.{getAllStickers,searchStickerSets}"));
+    assert!(!is_registry_shaped_ref("would"));
+    assert!(!is_registry_shaped_ref("t.me permalink for channels"));
+}
+
+#[test]
+fn repo_path_ref_matches_files_not_prose() {
+    assert!(is_repo_path_ref("tl/api.tl"));
+    assert!(is_repo_path_ref("build.rs"));
+    assert!(!is_repo_path_ref("messages.toggleNoForwards"));
+    assert!(!is_repo_path_ref("{status:{kind,label}}"));
+    assert!(!is_repo_path_ref("single-account only)"));
+    assert!(!is_repo_path_ref("would"));
+}
+
+#[test]
+fn package_version_parse_ignores_dependency_versions() {
+    let text = "version = \"9.9.9\"\n[package]\nname = \"x\"\nversion = \"0.14.0\"\n";
+    let naive = text
+        .lines()
+        .find(|l| l.trim().starts_with("version"))
+        .and_then(|l| l.split('\"').nth(1))
+        .unwrap();
+    assert_eq!(naive, "9.9.9");
+    let table: toml::Value = toml::from_str(text).unwrap();
+    let structural = table["package"]["version"].as_str().unwrap();
+    assert_eq!(structural, "0.14.0");
+    assert!(!cargo_package_version().is_empty());
+}
+
+#[test]
+fn appdirs_are_unique_across_threads() {
+    let handles: Vec<_> = (0..8)
+        .map(|_| std::thread::spawn(|| isolated_appdir("threadtag")))
+        .collect();
+    let mut dirs = Vec::new();
+    for h in handles {
+        dirs.push(h.join().unwrap());
+    }
+    for d in &dirs {
+        assert!(d.is_dir(), "appdir must exist: {}", d.display());
+    }
+    dirs.sort();
+    dirs.dedup();
+    assert_eq!(dirs.len(), 8, "parallel appdirs must not collide: {dirs:?}");
+    for d in &dirs {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
