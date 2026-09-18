@@ -587,7 +587,7 @@ const LISTEN_DEDUPE_CAP: usize = 10_000;
 
 type ListenDedupe = super::serve::CappedDedupe<(i64, i32, i32)>;
 
-fn dedupe_key(
+pub(crate) fn dedupe_key(
     chat_id: Option<i64>,
     msg_id: i32,
     raw: &tl::enums::Update,
@@ -1246,6 +1246,11 @@ impl StreamStopper {
         }
     }
 
+    fn is_exhausted(&self) -> bool {
+        let guard = self.remaining.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(*guard, Some(0))
+    }
+
     /// Returns true when this emit consumed the last allowed row.
     fn emitted(&self) -> bool {
         let mut guard = self.remaining.lock().unwrap_or_else(|e| e.into_inner());
@@ -1267,7 +1272,7 @@ async fn emit_row_or_stop(
     account: &str,
     value: serde_json::Value,
 ) -> TeleResult<bool> {
-    if stopper.time_up() {
+    if stopper.time_up() || stopper.is_exhausted() {
         return Ok(true);
     }
     match emit_row(value).await {
@@ -1879,3 +1884,40 @@ fn message_action_kind(action: &tl::enums::MessageAction) -> &'static str {
 #[allow(clippy::await_holding_lock)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod stopper_tests {
+    use super::StreamStopper;
+
+    #[test]
+    fn count_zero_is_exhausted_before_any_emit() {
+        assert!(StreamStopper::new(Some(0), None).is_exhausted());
+    }
+
+    #[test]
+    fn count_none_never_exhausts() {
+        let stopper = StreamStopper::new(None, None);
+        assert!(!stopper.is_exhausted());
+        assert!(!stopper.emitted());
+        assert!(!stopper.is_exhausted());
+    }
+
+    #[test]
+    fn count_n_exhausts_after_n_emits() {
+        let stopper = StreamStopper::new(Some(2), None);
+        assert!(!stopper.is_exhausted());
+        assert!(!stopper.emitted());
+        assert!(!stopper.is_exhausted());
+        assert!(stopper.emitted());
+        assert!(stopper.is_exhausted());
+    }
+
+    #[tokio::test]
+    async fn count_zero_emit_row_or_stop_emits_nothing() {
+        let stopper = StreamStopper::new(Some(0), None);
+        let row = serde_json::json!({"event": "NewMessage"});
+        assert!(super::emit_row_or_stop(&stopper, "work", row)
+            .await
+            .unwrap());
+    }
+}

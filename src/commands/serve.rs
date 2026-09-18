@@ -111,6 +111,67 @@ pub(crate) fn dedupe_key(
     (account.to_string(), chat_id.unwrap_or(0), msg_id, pts)
 }
 
+pub(crate) fn serve_dedupe_key(
+    account: &str,
+    chat_id: Option<i64>,
+    msg_id: i32,
+    raw: &tl::enums::Update,
+) -> Option<(String, i64, i32, i32)> {
+    let (_, _, pts) = crate::commands::listen::dedupe_key(chat_id, msg_id, raw)?;
+    Some(dedupe_key(account, chat_id, msg_id, pts))
+}
+
+pub(crate) const SERVE_MAX_FRAME_LEN: usize = 1024 * 1024;
+
+pub(crate) fn frame_size_error() -> serde_json::Value {
+    err_json(
+        "ServeError",
+        format!("stdin frame exceeds {SERVE_MAX_FRAME_LEN}-byte cap; send smaller requests"),
+    )
+}
+
+pub(crate) fn scan_serve_bytes(
+    chunk: &[u8],
+    line: &mut Vec<u8>,
+    overflowed: &mut bool,
+) -> Vec<Result<String, serde_json::Value>> {
+    let mut out = Vec::new();
+    for &b in chunk {
+        if b == b'\n' {
+            if std::mem::take(overflowed) {
+                line.clear();
+                out.push(Err(frame_size_error()));
+            } else {
+                let frame = String::from_utf8_lossy(line)
+                    .trim_end_matches('\r')
+                    .to_string();
+                line.clear();
+                out.push(Ok(frame));
+            }
+        } else if line.len() < SERVE_MAX_FRAME_LEN {
+            line.push(b);
+        } else {
+            *overflowed = true;
+        }
+    }
+    out
+}
+
+pub(crate) fn check_request_id(
+    seen: &mut std::collections::HashSet<u64>,
+    id: u64,
+) -> Result<(), serde_json::Value> {
+    if seen.insert(id) {
+        Ok(())
+    } else {
+        Err(err_json(
+            "ServeError",
+            format!("duplicate request id {id}; request ids must be unique per connection"),
+        ))
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn pts_from_state(state: &grammers_session::updates::State) -> i32 {
     match &state.message_box {
         Some(mb) => match mb {
@@ -1156,28 +1217,21 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let creds = crate::config::credentials().map_err(|e| TeleError::Config(e.to_string()))?;
     let writer = spawn_jsonl_writer();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(SERVE_INTAKE_CAPACITY);
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<Result<String, serde_json::Value>>(SERVE_INTAKE_CAPACITY);
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
-        const MAX_FRAME_LEN: usize = 1024 * 1024;
         let mut stdin = tokio::io::stdin();
         let mut line: Vec<u8> = Vec::with_capacity(4096);
+        let mut overflowed = false;
         let mut chunk = vec![0u8; 4096];
         loop {
             match stdin.read(&mut chunk).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    for &b in &chunk[..n] {
-                        if b == b'\n' {
-                            let frame = String::from_utf8_lossy(&line)
-                                .trim_end_matches('\r')
-                                .to_string();
-                            line.clear();
-                            if tx.send(frame).await.is_err() {
-                                return;
-                            }
-                        } else if line.len() < MAX_FRAME_LEN {
-                            line.push(b);
+                    for frame in scan_serve_bytes(&chunk[..n], &mut line, &mut overflowed) {
+                        if tx.send(frame).await.is_err() {
+                            return;
                         }
                     }
                 }
@@ -1259,6 +1313,7 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let mut identities: HashMap<String, Option<serde_json::Value>> = HashMap::new();
     let mut greeted = false;
     let mut seq: u64 = 0;
+    let mut seen_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let mut tick_open = true;
     let mut response_open = true;
     let hello_entries = |identities: &HashMap<String, Option<serde_json::Value>>| {
@@ -1273,13 +1328,15 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     loop {
         enum Tick {
             Line(String),
+            SizeError(serde_json::Value),
             Eof,
             Account(AccountTick),
             Response(serde_json::Value),
         }
         let tick = tokio::select! {
             line = rx.recv() => match line {
-                Some(l) => Tick::Line(l),
+                Some(Ok(l)) => Tick::Line(l),
+                Some(Err(error)) => Tick::SizeError(error),
                 None => Tick::Eof,
             },
             tick = tick_rx.recv(), if tick_open => match tick {
@@ -1330,6 +1387,18 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     }
                 }
                 Ok(ServeIn::Action { id, op, params }) => {
+                    if let Err(error) = check_request_id(&mut seen_ids, id) {
+                        let reply = response_err(Some(id), error);
+                        if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET)
+                            .await
+                        {
+                            output::log_line(
+                                "warn",
+                                &format!("serve: dropped duplicate-id reply for request {id}"),
+                            );
+                        }
+                        continue;
+                    }
                     match dispatch_tx.try_send((id, op, params)) {
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                             let reply = response_err(
@@ -1357,6 +1426,15 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     }
                 }
             },
+            Tick::SizeError(error) => {
+                let reply = response_err(None, error);
+                if !try_send_with_retry(&main_response_tx, reply, RESPONSE_RETRY_BUDGET).await {
+                    output::log_line(
+                        "warn",
+                        "serve: dropped frame-size reply: response channel stayed saturated",
+                    );
+                }
+            }
             Tick::Response(value) => match writer.emit(&value).await {
                 Ok(()) => {}
                 Err(e) if e.is_broken_pipe() => {
@@ -1667,10 +1745,11 @@ async fn account_task(
                     };
                     let peer = update_peer(update.raw());
                     let chat_id = peer.and_then(|p| p.bare_id());
-                    let pts = pts_from_state(update.state());
-                    let key = dedupe_key(&name, chat_id, message.id(), pts);
-                    if dedupe.check(key) {
-                        continue;
+                    if let Some(key) = serve_dedupe_key(&name, chat_id, message.id(), update.raw())
+                    {
+                        if dedupe.check(key) {
+                            continue;
+                        }
                     }
                     let row = match crate::serialize::message_to_json(message) {
                         Ok(mut r) => {
@@ -2495,6 +2574,162 @@ mod tests {
         let a = dedupe_key("alpha", Some(777), 5, 10);
         let b = dedupe_key("beta", Some(777), 5, 10);
         assert_ne!(a, b, "same chat/msg/pts on two accounts must not collide");
+    }
+
+    fn serve_raw_update(msg_id: i32, pts: i32) -> tl::enums::Update {
+        tl::enums::Update::NewMessage(tl::types::UpdateNewMessage {
+            message: tl::enums::Message::Message(tl::types::Message {
+                out: false,
+                mentioned: false,
+                media_unread: false,
+                silent: false,
+                post: false,
+                from_scheduled: false,
+                legacy: false,
+                edit_hide: false,
+                pinned: false,
+                noforwards: false,
+                invert_media: false,
+                offline: false,
+                video_processing_pending: false,
+                paid_suggested_post_stars: false,
+                paid_suggested_post_ton: false,
+                id: msg_id,
+                from_id: None,
+                from_boosts_applied: None,
+                from_rank: None,
+                peer_id: tl::enums::Peer::User(tl::types::PeerUser { user_id: 7 }),
+                saved_peer_id: None,
+                fwd_from: None,
+                via_bot_id: None,
+                via_business_bot_id: None,
+                guestchat_via_from: None,
+                reply_to: None,
+                date: 0,
+                message: String::new(),
+                media: None,
+                reply_markup: None,
+                entities: None,
+                views: None,
+                forwards: None,
+                replies: None,
+                edit_date: None,
+                post_author: None,
+                grouped_id: None,
+                reactions: None,
+                restriction_reason: None,
+                ttl_period: None,
+                quick_reply_shortcut_id: None,
+                effect: None,
+                factcheck: None,
+                report_delivery_until_date: None,
+                paid_message_stars: None,
+                suggested_post: None,
+                schedule_repeat_period: None,
+                summary_from_language: None,
+                rich_message: None,
+            }),
+            pts,
+            pts_count: 1,
+        })
+    }
+
+    #[test]
+    fn serve_dedupe_key_uses_raw_pts_not_post_sync_state() {
+        let raw = serve_raw_update(42, 10);
+        let a = serve_dedupe_key("work", Some(1), 42, &raw).unwrap();
+        assert_eq!(a, ("work".to_string(), 1, 42, 10));
+        let advanced = serve_raw_update(42, 11);
+        let b = serve_dedupe_key("work", Some(1), 42, &advanced).unwrap();
+        assert_ne!(a, b);
+        let mut d = ServeDedupe::new(SERVE_DEDUPE_CAP);
+        assert!(!d.check(a.clone()));
+        assert!(d.check(serve_dedupe_key("work", Some(1), 42, &raw).unwrap()));
+        assert!(!d.check(b));
+    }
+
+    #[test]
+    fn serve_dedupe_key_none_for_pts_less_update() {
+        assert!(serve_dedupe_key("work", Some(1), 1, &tl::enums::Update::PtsChanged).is_none());
+    }
+
+    #[test]
+    fn scan_serve_bytes_passes_complete_and_partial_lines() {
+        let mut line = Vec::new();
+        let mut overflowed = false;
+        let first = scan_serve_bytes(b"{\"a\":1}\n{\"b\":", &mut line, &mut overflowed);
+        assert_eq!(first, vec![Ok("{\"a\":1}".to_string())]);
+        let second = scan_serve_bytes(b"2}\n", &mut line, &mut overflowed);
+        assert_eq!(second, vec![Ok("{\"b\":2}".to_string())]);
+        assert!(!overflowed);
+    }
+
+    #[test]
+    fn scan_serve_bytes_strips_carriage_return() {
+        let mut line = Vec::new();
+        let mut overflowed = false;
+        assert_eq!(
+            scan_serve_bytes(b"hi\r\n", &mut line, &mut overflowed),
+            vec![Ok("hi".to_string())]
+        );
+    }
+
+    #[test]
+    fn scan_serve_bytes_rejects_oversized_frame_with_size_error() {
+        let mut line = Vec::new();
+        let mut overflowed = false;
+        let big = vec![b'x'; SERVE_MAX_FRAME_LEN + 16];
+        let mut frames = Vec::new();
+        for chunk in big.chunks(4096) {
+            frames.extend(scan_serve_bytes(chunk, &mut line, &mut overflowed));
+        }
+        assert!(frames.is_empty());
+        frames.extend(scan_serve_bytes(b"\n", &mut line, &mut overflowed));
+        assert_eq!(frames.len(), 1);
+        let err = frames.pop().unwrap().unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        assert!(
+            err["message"].as_str().unwrap().contains("byte cap"),
+            "err: {err}"
+        );
+        assert!(!overflowed);
+        assert_eq!(
+            scan_serve_bytes(b"{}\n", &mut line, &mut overflowed),
+            vec![Ok("{}".to_string())]
+        );
+    }
+
+    #[test]
+    fn frame_size_error_names_cap() {
+        let err = frame_size_error();
+        assert_eq!(err["type"], "ServeError");
+        assert!(
+            err["message"]
+                .as_str()
+                .unwrap()
+                .contains(&SERVE_MAX_FRAME_LEN.to_string()),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn check_request_id_accepts_novel_ids_in_any_order() {
+        let mut seen = std::collections::HashSet::new();
+        assert!(check_request_id(&mut seen, 5).is_ok());
+        assert!(check_request_id(&mut seen, 3).is_ok());
+        assert!(check_request_id(&mut seen, 9).is_ok());
+    }
+
+    #[test]
+    fn check_request_id_rejects_reused_id_with_serve_error() {
+        let mut seen = std::collections::HashSet::new();
+        assert!(check_request_id(&mut seen, 7).is_ok());
+        let err = check_request_id(&mut seen, 7).unwrap_err();
+        assert_eq!(err["type"], "ServeError");
+        let msg = err["message"].as_str().unwrap();
+        assert!(msg.contains("duplicate"), "msg: {msg}");
+        assert!(msg.contains('7'), "msg: {msg}");
+        assert!(msg.contains("unique"), "msg: {msg}");
     }
 
     #[test]

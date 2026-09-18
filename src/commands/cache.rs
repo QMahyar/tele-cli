@@ -105,7 +105,10 @@ pub(crate) async fn cache_sync_core(
     let mut iter = shares.client.iter_messages(chat_ref);
     iter = iter.limit(params.limit as usize);
     let mut cached = Vec::new();
+    let mut seen = 0usize;
     while let Some(msg) = iter.next().await.map_err(tele_invocation)? {
+        seen += 1;
+        shares.rate_limiter.acquire_for_items(seen).await;
         cached.push(crate::cache_db::CachedMessage {
             id: msg.id(),
             chat_id,

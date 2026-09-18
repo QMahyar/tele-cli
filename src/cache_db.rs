@@ -55,6 +55,32 @@ async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
     .await
     .map_err(|e| TeleError::Other(format!("cache dir task failed: {e}")))??;
     let path = cache_path(account)?;
+    let seed_path = path.clone();
+    tokio::task::spawn_blocking(move || -> TeleResult<()> {
+        match std::fs::symlink_metadata(&seed_path) {
+            Ok(meta) if meta.file_type().is_symlink() => Err(TeleError::Other(format!(
+                "refusing to open symlinked cache db at {}",
+                seed_path.display()
+            ))),
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                crate::fs_util::create_file_private(&seed_path)
+                    .map(|_| ())
+                    .map_err(|e| {
+                        TeleError::Other(format!(
+                            "cannot create cache db {}: {e}",
+                            seed_path.display()
+                        ))
+                    })
+            }
+            Err(e) => Err(TeleError::Other(format!(
+                "cannot stat cache db {}: {e}",
+                seed_path.display()
+            ))),
+        }
+    })
+    .await
+    .map_err(|e| TeleError::Other(format!("cache seed task failed: {e}")))??;
     let db = libsql::Builder::new_local(&path)
         .build()
         .await
@@ -95,9 +121,13 @@ pub async fn store_messages(account: &str, msgs: &[CachedMessage]) -> TeleResult
         return Ok(0);
     }
     let conn = open_db(account).await?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| TeleError::Other(format!("cache begin failed: {e}")))?;
     let mut stored = 0usize;
+    let mut failure: Option<TeleError> = None;
     for m in msgs {
-        let n = conn
+        match conn
             .execute(
                 "INSERT OR REPLACE INTO messages (id, chat_id, chat_name, sender_id, sender_name, date, text, media_kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 libsql::params![
@@ -112,10 +142,26 @@ pub async fn store_messages(account: &str, msgs: &[CachedMessage]) -> TeleResult
                 ],
             )
             .await
-            .map_err(|e| TeleError::Other(format!("cache insert failed: {e}")))?;
-        stored += n as usize;
+        {
+            Ok(n) => stored += n as usize,
+            Err(e) => {
+                failure = Some(TeleError::Other(format!("cache insert failed: {e}")));
+                break;
+            }
+        }
     }
-    Ok(stored)
+    match failure {
+        Some(e) => {
+            let _ = conn.execute_batch("ROLLBACK").await;
+            Err(e)
+        }
+        None => {
+            conn.execute_batch("COMMIT")
+                .await
+                .map_err(|e| TeleError::Other(format!("cache commit failed: {e}")))?;
+            Ok(stored)
+        }
+    }
 }
 
 pub async fn search_cache(
@@ -250,7 +296,10 @@ pub async fn cache_stats(account: &str) -> TeleResult<serde_json::Value> {
         (0, 0, 0, 0)
     };
     let path = cache_path(account)?;
-    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let bytes =
+        tokio::task::spawn_blocking(move || std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0))
+            .await
+            .unwrap_or(0);
     Ok(serde_json::json!({
         "account": account,
         "messages": total,
@@ -497,6 +546,108 @@ mod tests {
         std::env::set_var("TELE_APP_DIR", &dir);
         let stored = store_messages(&test_account("empty"), &[]).await.unwrap();
         assert_eq!(stored, 0);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn atomic_message(id: i32, text: &str) -> CachedMessage {
+        CachedMessage {
+            id,
+            chat_id: 100,
+            chat_name: "team".to_string(),
+            sender_id: Some(5),
+            sender_name: "alice".to_string(),
+            date: 1700000000 + i64::from(id),
+            text: text.to_string(),
+            media_kind: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn store_messages_batch_is_atomic() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-cache-atomic-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let account = test_account("atomic");
+        store_messages(&account, &[atomic_message(1, "baseline")])
+            .await
+            .unwrap();
+        let conn = open_db(&account).await.unwrap();
+        conn.execute_batch("CREATE TRIGGER cache_atomic_probe BEFORE INSERT ON messages WHEN NEW.text = 'CACHE_ATOMIC_BOOM' BEGIN SELECT RAISE(ABORT, 'cache atomicity probe'); END;")
+            .await
+            .unwrap();
+        let batch = vec![
+            atomic_message(2, "first of batch"),
+            atomic_message(3, "CACHE_ATOMIC_BOOM"),
+            atomic_message(4, "last of batch"),
+        ];
+        assert!(store_messages(&account, &batch).await.is_err());
+        let found = search_cache(&account, "", None, 10).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].text, "baseline");
+        conn.execute_batch("DROP TRIGGER IF EXISTS cache_atomic_probe;")
+            .await
+            .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_db_refuses_symlinked_file() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-cache-symlink-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let account = test_account("symlink");
+        let path = cache_path(&account).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let target = dir.join("real-cache.db");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(open_db(&account).await.is_err());
+        let _ = std::fs::remove_file(&path);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_db_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-cache-mode-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let account = test_account("mode");
+        store_messages(&account, &[atomic_message(1, "hello")])
+            .await
+            .unwrap();
+        let path = cache_path(&account).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }
