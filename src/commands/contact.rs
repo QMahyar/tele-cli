@@ -207,7 +207,11 @@ fn dry_run_payload(action: &str, user: Option<&str>) -> serde_json::Value {
     }
 }
 
-type ContactState = (bool, bool, String);
+struct ContactState {
+    contact: bool,
+    mutual: bool,
+    name: String,
+}
 
 fn returned_user_state(updates: &tl::enums::Updates) -> Option<ContactState> {
     let users: &[tl::enums::User] = match updates {
@@ -225,7 +229,11 @@ fn returned_user_state(updates: &tl::enums::Updates) -> Option<ContactState> {
             )
             .trim()
             .to_string();
-            Some((u.contact, u.mutual_contact, name))
+            Some(ContactState {
+                contact: u.contact,
+                mutual: u.mutual_contact,
+                name,
+            })
         }
         tl::enums::User::Empty(_) => None,
     }
@@ -466,19 +474,19 @@ pub(crate) async fn add_core(
         })
         .await
         .map_err(tele_invocation)?;
-    let Some((contact, mutual, server_name)) = returned_user_state(&updates) else {
+    let Some(state) = returned_user_state(&updates) else {
         return Err(TeleError::Other(format!(
             "contact not added: {user_target}'s privacy settings do not allow adding your number"
         )));
     };
-    if !contact {
+    if !state.contact {
         crate::output::log_line(
             "warn",
             "server echoed the user with contact:false (first-add min response); the contact request was accepted",
         );
     }
     let sent = sent_display_name(&f, &l);
-    if !sent.is_empty() && !server_name.is_empty() && server_name != sent {
+    if !sent.is_empty() && !state.name.is_empty() && state.name != sent {
         crate::output::log_line(
             "warn",
             "contact already existed; its display name was updated to the new values",
@@ -487,8 +495,8 @@ pub(crate) async fn add_core(
     Ok(serde_json::json!({
         "user": user_target,
         "added": true,
-        "contact": contact,
-        "mutual": mutual}))
+        "contact": state.contact,
+        "mutual": state.mutual}))
 }
 
 pub(crate) async fn remove_core(
@@ -718,17 +726,17 @@ mod tests {
     fn returned_user_state_reads_contact_flags() {
         let updates = contact_added_updates(true, true, "Jane", "Doe");
         let state = returned_user_state(&updates).expect("user present");
-        assert!(state.0);
-        assert!(state.1);
-        assert_eq!(state.2, "Jane Doe");
+        assert!(state.contact);
+        assert!(state.mutual);
+        assert_eq!(state.name, "Jane Doe");
     }
 
     #[test]
     fn returned_user_state_flags_blocked_add_as_not_contact() {
         let updates = contact_added_updates(false, false, "Jane", "Doe");
         let state = returned_user_state(&updates).expect("user present");
-        assert!(!state.0);
-        assert!(!state.1);
+        assert!(!state.contact);
+        assert!(!state.mutual);
     }
 
     #[test]
