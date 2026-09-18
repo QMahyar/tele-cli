@@ -8,9 +8,9 @@ use crate::commands::msg::download::{
 };
 use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
-    file_message, message_random_id, parse_as_media, parse_poll_mode, parse_schedule,
-    send_as_media_message, send_dry_run_payload, send_poll_message, split_chunk_opts,
-    split_text_utf16, url_message,
+    file_message, message_random_id, parse_as_media, parse_effect, parse_poll_mode,
+    parse_schedule, send_as_media_message, send_dry_run_payload, send_poll_message,
+    split_chunk_opts, split_text_utf16, url_message,
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
@@ -88,6 +88,7 @@ fn send_args(format: &str) -> SendArgs {
         option: vec![],
         poll_mode: None,
         poll_quiz_option: None,
+        effect: None,
     }
 }
 
@@ -2438,6 +2439,7 @@ fn validate_send_url_requires_kind_and_conflicts_with_text() {
         option: vec![],
         poll_mode: None,
         poll_quiz_option: None,
+        effect: None,
     };
     assert!(matches!(validate_send(&url_only), Err(TeleError::Usage(_))));
     let with_kind = SendArgs {
@@ -2664,6 +2666,79 @@ fn send_params_roundtrip_carries_poll_and_as_media() {
 }
 
 #[test]
+fn parse_effect_accepts_positive_ids_only() {
+    assert_eq!(parse_effect(None).unwrap(), None);
+    assert_eq!(parse_effect(Some(5104841845623145212)).unwrap(), Some(5104841845623145212));
+    assert!(matches!(
+        parse_effect(Some(0)),
+        Err(TeleError::Usage(_))
+    ));
+    assert!(matches!(
+        parse_effect(Some(-7)),
+        Err(TeleError::Usage(_))
+    ));
+}
+
+#[test]
+fn validate_send_accepts_effect_on_text_and_single_file() {
+    let mut args = send_args("plain");
+    args.effect = Some(42);
+    assert!(validate_send(&args).is_ok());
+    let dir = upload_fixture("effect-file", &["a.pdf"]);
+    let mut file_args = clone_without_text_for_tests(&send_args("plain"));
+    file_args.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
+    file_args.effect = Some(42);
+    assert!(validate_send(&file_args).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn validate_send_rejects_effect_with_poll_url_copy_as_and_albums() {
+    let mut poll = poll_args();
+    poll.effect = Some(42);
+    assert!(matches!(validate_send(&poll), Err(TeleError::Usage(_))));
+    let mut url = clone_without_text_for_tests(&send_args("plain"));
+    url.url = Some("https://example.com/cat.jpg".to_string());
+    url.kind = Some("photo".to_string());
+    url.effect = Some(42);
+    assert!(matches!(validate_send(&url), Err(TeleError::Usage(_))));
+    let mut copy = clone_without_text_for_tests(&send_args("plain"));
+    copy.copy_from = Some("@c".to_string());
+    copy.copy_id = Some(3);
+    copy.effect = Some(42);
+    assert!(matches!(validate_send(&copy), Err(TeleError::Usage(_))));
+    let dir = upload_fixture("effect-combos", &["a.pdf", "b.pdf"]);
+    let mut album = clone_without_text_for_tests(&send_args("plain"));
+    album.files = vec![
+        dir.join("a.pdf").to_string_lossy().into_owned(),
+        dir.join("b.pdf").to_string_lossy().into_owned(),
+    ];
+    album.effect = Some(42);
+    assert!(matches!(validate_send(&album), Err(TeleError::Usage(_))));
+    let mut as_media = clone_without_text_for_tests(&send_args("plain"));
+    as_media.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
+    as_media.as_media = Some("voice".to_string());
+    as_media.effect = Some(42);
+    assert!(matches!(
+        validate_send(&as_media),
+        Err(TeleError::Usage(_))
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn send_dry_run_payload_carries_effect() {
+    let mut args = send_args("plain");
+    args.effect = Some(42);
+    let payload = send_dry_run_payload(&args, None);
+    assert_eq!(payload["effect"], 42);
+    let params = SendParams::from(&args);
+    assert_eq!(params.effect, Some(42));
+    let back = SendArgs::from(&params);
+    assert_eq!(back.effect, Some(42));
+}
+
+#[test]
 fn send_poll_message_builds_quiz_media() {
     let msg = send_poll_message(
         "Best color?",
@@ -2690,8 +2765,7 @@ fn send_poll_message_builds_quiz_media() {
 }
 
 #[test]
-fn parse_as_media_and_poll_mode_helpers() {
-    assert_eq!(parse_as_media(None).unwrap(), None);
+fn parse_as_media_and_poll_mode_helpers() {    assert_eq!(parse_as_media(None).unwrap(), None);
     assert_eq!(parse_as_media(Some("voice")).unwrap(), Some("voice"));
     assert_eq!(
         parse_as_media(Some("VIDEO-NOTE")).unwrap(),

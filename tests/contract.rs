@@ -3422,8 +3422,7 @@ fn msg_poll_unread_dry_run_json_reports_would() {
 }
 
 #[test]
-fn story_edit_requires_a_change_before_connect() {
-    let (code, _out, err) =
+fn story_edit_requires_a_change_before_connect() {    let (code, _out, err) =
         run_isolated("storyedit-none", &["story", "edit", "--chat", "me", "--id", "3"]);
     assert_eq!(code, 1, "stderr: {err}");
     assert!(err.contains("nothing to change"), "stderr: {err}");
@@ -3482,6 +3481,42 @@ fn story_edit_views_reactions_link_dry_runs() {
     let d = parse_json(&out)["results"][0]["data"].clone();
     assert!(
         d["would"].as_str().unwrap_or_default().contains("export link"),
+        "data: {d}"
+    );
+}
+
+#[test]
+fn msg_send_effect_validates_and_dry_runs() {
+    let (code, _out, err) = run_isolated(
+        "effect-bad",
+        &["msg", "send", "--chat", "me", "--text", "hi", "--effect", "0"],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--effect must be a positive"), "stderr: {err}");
+    let (code, _out, err) = run_isolated(
+        "effect-poll",
+        &[
+            "msg", "send", "--chat", "me", "--poll", "Q?", "--option", "A", "--option",
+            "B", "--effect", "42",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("poll sends support only"), "stderr: {err}");
+    let dir = isolated_appdir("effect-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "send", "--chat", "me", "--text", "hi", "--effect", "42", "--account",
+            "work", "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["effect"], serde_json::json!(42));
+    assert_eq!(
+        d["would"],
+        serde_json::json!("send message to chat me"),
         "data: {d}"
     );
 }

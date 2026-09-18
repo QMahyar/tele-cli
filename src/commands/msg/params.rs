@@ -145,6 +145,12 @@ pub struct SendArgs {
         help = "1-based index of the correct quiz option (requires --poll-mode quiz)"
     )]
     pub(crate) poll_quiz_option: Option<usize>,
+    #[arg(
+        long,
+        value_name = "ID",
+        help = "animated message effect id (see tele raw messages.GetAvailableEffects; text and single-file sends only; Premium/1-on-1 limits are server-enforced)"
+    )]
+    pub(crate) effect: Option<i64>,
 }
 
 #[derive(Args, Clone)]
@@ -547,6 +553,8 @@ pub(crate) struct SendParams {
     #[serde(default)]
     pub(crate) poll_quiz_option: Option<usize>,
     #[serde(default)]
+    pub(crate) effect: Option<i64>,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -580,6 +588,7 @@ impl From<&SendArgs> for SendParams {
             option: a.option.clone(),
             poll_mode: a.poll_mode.clone(),
             poll_quiz_option: a.poll_quiz_option,
+            effect: a.effect,
             dry_run: false,
         }
     }
@@ -615,6 +624,7 @@ impl From<&SendParams> for SendArgs {
             option: p.option.clone(),
             poll_mode: p.poll_mode.clone(),
             poll_quiz_option: p.poll_quiz_option,
+            effect: p.effect,
         }
     }
 }

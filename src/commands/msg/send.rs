@@ -47,6 +47,16 @@ pub(crate) fn parse_poll_mode(value: Option<&str>) -> TeleResult<Option<&'static
     }
 }
 
+pub(crate) fn parse_effect(value: Option<i64>) -> TeleResult<Option<i64>> {
+    match value {
+        None => Ok(None),
+        Some(id) if id > 0 => Ok(Some(id)),
+        Some(id) => Err(TeleError::Usage(format!(
+            "--effect must be a positive effect id (got {id})"
+        ))),
+    }
+}
+
 pub(crate) fn parse_poll_options(options: &[String]) -> TeleResult<Vec<String>> {
     if options.len() < POLL_MIN_OPTIONS || options.len() > POLL_MAX_OPTIONS {
         return Err(TeleError::Usage(format!(
@@ -220,6 +230,27 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             "--background is not supported with albums".to_string(),
         ));
     }
+    parse_effect(args.effect)?;
+    if args.effect.is_some() && args.files.len() > 1 {
+        return Err(TeleError::Usage(
+            "--effect is not supported with albums".to_string(),
+        ));
+    }
+    if args.effect.is_some() && args.url.is_some() {
+        return Err(TeleError::Usage(
+            "--effect is not supported with --url".to_string(),
+        ));
+    }
+    if args.effect.is_some() && args.copy_from.is_some() {
+        return Err(TeleError::Usage(
+            "--effect is not supported with --copy-from".to_string(),
+        ));
+    }
+    if args.effect.is_some() && args.as_media.is_some() {
+        return Err(TeleError::Usage(
+            "--effect is not supported with --as voice|video-note".to_string(),
+        ));
+    }
     if args.silent && args.files.len() > 1 {
         return Err(TeleError::Usage(
             "--silent is not supported with albums".to_string(),
@@ -335,6 +366,7 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             || args.silent
             || args.background
             || args.noforwards
+            || args.effect.is_some()
             || !effective_preview(args)
         {
             return Err(TeleError::Usage(
@@ -460,11 +492,13 @@ struct RawTextSend<'a> {
     preview: bool,
     silent: bool,
     background: bool,
+    noforwards: bool,
+    effect: Option<i64>,
     reply: Option<i32>,
     schedule: Option<u64>,
 }
 
-async fn send_noforwards_text(
+async fn send_raw_text(
     client: &grammers_client::Client,
     chat: &grammers_client::peer::Peer,
     peer: grammers_client::tl::enums::InputPeer,
@@ -478,6 +512,8 @@ async fn send_noforwards_text(
         preview,
         silent,
         background,
+        noforwards,
+        effect,
         reply,
         schedule,
     } = spec;
@@ -511,15 +547,139 @@ async fn send_noforwards_text(
             schedule_date,
             schedule_repeat_period: None,
             send_as: None,
-            noforwards: true,
+            noforwards,
             update_stickersets_order: false,
             invert_media: false,
             quick_reply_shortcut: None,
-            effect: None,
+            effect,
             allow_paid_floodskip: false,
             allow_paid_stars: None,
             suggested_post: None,
             rich_message: None,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let mut row = sent_updates_row(&updates, &message);
+    if let Some(obj) = row.as_object_mut() {
+        obj.insert("peer".into(), crate::serialize::peer_key(chat));
+    }
+    Ok(row)
+}
+
+fn mime_type_for(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "mp4" | "mov" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "ogg" | "oga" => "audio/ogg",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+struct RawMediaSend {
+    caption: String,
+    format: String,
+    silent: bool,
+    background: bool,
+    effect: Option<i64>,
+    media_ttl: Option<i32>,
+    reply: Option<i32>,
+    schedule: Option<u64>,
+}
+
+async fn send_raw_media(
+    client: &grammers_client::Client,
+    chat: &grammers_client::peer::Peer,
+    peer: grammers_client::tl::enums::InputPeer,
+    path: &str,
+    uploaded: grammers_client::tl::enums::InputFile,
+    thumb: Option<grammers_client::tl::enums::InputFile>,
+    spec: RawMediaSend,
+) -> TeleResult<serde_json::Value> {
+    use grammers_client::parsers::parse_markdown_message;
+    use grammers_client::tl;
+    let RawMediaSend {
+        caption,
+        format,
+        silent,
+        background,
+        effect,
+        media_ttl,
+        reply,
+        schedule,
+    } = spec;
+    let (message, entities) = match format.as_str() {
+        "markdown" => parse_markdown_message(&caption),
+        _ => (caption.clone(), Vec::new()),
+    };
+    let media = if looks_like_image(path) {
+        tl::enums::InputMedia::UploadedPhoto(tl::types::InputMediaUploadedPhoto {
+            spoiler: false,
+            live_photo: false,
+            file: uploaded,
+            stickers: None,
+            ttl_seconds: media_ttl,
+            video: None,
+        })
+    } else {
+        tl::enums::InputMedia::UploadedDocument(tl::types::InputMediaUploadedDocument {
+            nosound_video: false,
+            force_file: false,
+            spoiler: false,
+            file: uploaded,
+            thumb,
+            mime_type: mime_type_for(path).to_string(),
+            attributes: Vec::new(),
+            stickers: None,
+            video_cover: None,
+            video_timestamp: None,
+            ttl_seconds: media_ttl,
+        })
+    };
+    let schedule_date = schedule.map(|s| {
+        if s == 0 {
+            SCHEDULE_ONCE_ONLINE_RAW
+        } else {
+            s as i32
+        }
+    });
+    let updates: tl::enums::Updates = client
+        .invoke(&tl::functions::messages::SendMedia {
+            silent,
+            background,
+            clear_draft: false,
+            peer,
+            reply_to: reply.map(raw_input_reply_to),
+            media,
+            message: message.clone(),
+            random_id: message_random_id(),
+            reply_markup: None,
+            entities: if entities.is_empty() {
+                None
+            } else {
+                Some(entities)
+            },
+            schedule_date,
+            schedule_repeat_period: None,
+            send_as: None,
+            noforwards: false,
+            update_stickersets_order: false,
+            invert_media: false,
+            quick_reply_shortcut: None,
+            effect,
+            allow_paid_floodskip: false,
+            allow_paid_stars: None,
+            suggested_post: None,
         })
         .await
         .map_err(tele_invocation)?;
@@ -564,6 +724,7 @@ pub(crate) fn send_dry_run_payload(args: &SendArgs, schedule: Option<u64>) -> se
         "options": args.option,
         "poll_mode": args.poll_mode,
         "poll_quiz_option": args.poll_quiz_option,
+        "effect": args.effect,
         "would": would})
 }
 
@@ -849,6 +1010,33 @@ pub(crate) async fn send_core(
     let copy_id = params.copy_id;
     let as_media = parse_as_media(params.as_media.as_deref())?.map(str::to_string);
     let poll = params.poll.clone();
+    let effect = parse_effect(params.effect)?;
+    if effect.is_some() && poll.is_some() {
+        return Err(TeleError::Usage(
+            "poll sends support only --chat, --poll, --option, --poll-mode, and --poll-quiz-option"
+                .to_string(),
+        ));
+    }
+    if effect.is_some() && url.is_some() {
+        return Err(TeleError::Usage(
+            "--effect is not supported with --url".to_string(),
+        ));
+    }
+    if effect.is_some() && copy_from.is_some() {
+        return Err(TeleError::Usage(
+            "--effect is not supported with --copy-from".to_string(),
+        ));
+    }
+    if effect.is_some() && as_media.is_some() {
+        return Err(TeleError::Usage(
+            "--effect is not supported with --as voice|video-note".to_string(),
+        ));
+    }
+    if effect.is_some() && files.len() > 1 {
+        return Err(TeleError::Usage(
+            "--effect is not supported with albums".to_string(),
+        ));
+    }
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &chat_target).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
@@ -993,6 +1181,38 @@ pub(crate) async fn send_core(
         };
         if let Some(as_media) = &as_media {
             send_as_media_message(uploaded, as_media, media_ttl)?
+        } else if effect.is_some() {
+            let thumb_raw = match &thumbnail {
+                Some(thumb_path) if !looks_like_image(path) => Some(
+                    shares
+                        .client
+                        .upload_file(thumb_path)
+                        .await
+                        .map_err(upload_error)?
+                        .raw,
+                ),
+                _ => None,
+            };
+            let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+            return send_raw_media(
+                &shares.client,
+                &chat,
+                peer,
+                path,
+                uploaded.raw,
+                thumb_raw,
+                RawMediaSend {
+                    caption: caption.clone().unwrap_or_default(),
+                    format: format.clone(),
+                    silent,
+                    background,
+                    effect,
+                    media_ttl,
+                    reply,
+                    schedule,
+                },
+            )
+            .await;
         } else {
             let thumb = match &thumbnail {
                 Some(thumb_path) => Some(
@@ -1018,10 +1238,34 @@ pub(crate) async fn send_core(
         if split.is_some() {
             let cap = split.unwrap_or(4096);
             let chunks = split_text_utf16(&text_owned, cap);
+            let raw_chunks = noforwards || effect.is_some();
             let mut rows: Vec<serde_json::Value> = Vec::with_capacity(chunks.len());
             for (i, chunk) in chunks.iter().enumerate() {
                 if i > 0 {
                     shares.rate_limiter.acquire().await;
+                }
+                if raw_chunks {
+                    let (chunk_reply, chunk_schedule) = split_chunk_opts(i, reply, schedule);
+                    let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
+                    let row = send_raw_text(
+                        &shares.client,
+                        &chat,
+                        peer,
+                        RawTextSend {
+                            text: chunk,
+                            format: format.as_str(),
+                            preview,
+                            silent,
+                            background,
+                            noforwards,
+                            effect: if i == 0 { effect } else { None },
+                            reply: chunk_reply,
+                            schedule: chunk_schedule,
+                        },
+                    )
+                    .await?;
+                    rows.push(row);
+                    continue;
                 }
                 let base = match format.as_str() {
                     "markdown" => InputMessage::new().markdown(chunk),
@@ -1047,9 +1291,9 @@ pub(crate) async fn send_core(
             });
         }
         let text = text_owned;
-        if noforwards {
+        if noforwards || effect.is_some() {
             let peer = entities::input_peer(&chat).await.map_err(tele_invocation)?;
-            return send_noforwards_text(
+            return send_raw_text(
                 &shares.client,
                 &chat,
                 peer,
@@ -1059,6 +1303,8 @@ pub(crate) async fn send_core(
                     preview,
                     silent,
                     background,
+                    noforwards,
+                    effect,
                     reply,
                     schedule,
                 },
