@@ -145,35 +145,11 @@ fn main() -> std::process::ExitCode {
     logging::init();
     let matches = match Cli::command().try_get_matches() {
         Ok(matches) => matches,
-        Err(e) => {
-            let code = if e.use_stderr() {
-                error::EXIT_USAGE
-            } else {
-                error::EXIT_OK
-            };
-            let _ = e.print();
-            if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
-                let hint = argv_command_hint().unwrap_or_default();
-                emit_usage_error(true, false, &hint, &output::strip_ansi(&e.to_string()));
-            }
-            std::process::exit(code);
-        }
+        Err(e) => return clap_error_exit(e),
     };
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
-        Err(e) => {
-            let code = if e.use_stderr() {
-                error::EXIT_USAGE
-            } else {
-                error::EXIT_OK
-            };
-            let _ = e.print();
-            if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
-                let hint = argv_command_hint().unwrap_or_default();
-                emit_usage_error(true, false, &hint, &output::strip_ansi(&e.to_string()));
-            }
-            std::process::exit(code);
-        }
+        Err(e) => return clap_error_exit(e),
     };
     let flags = GlobalFlags {
         account: cli.account,
@@ -190,12 +166,14 @@ fn main() -> std::process::ExitCode {
     if let Some(p) = flags.parallel {
         if !(1..=32).contains(&p) {
             let message = format!("--parallel {p} must be between 1 and 32");
-            std::process::exit(emit_usage_error(
-                output::machine_mode(flags.json, flags.jsonl),
-                flags.dry_run,
+            return std::process::ExitCode::from(emit_usage_error(
+                UsageCtx {
+                    machine: output::machine_mode(flags.json, flags.jsonl),
+                    dry_run: flags.dry_run,
+                },
                 &flags.command,
                 &message,
-            ));
+            ) as u8);
         }
     }
     if let Some(ref cfg_path) = flags.config_path {
@@ -204,17 +182,26 @@ fn main() -> std::process::ExitCode {
                 "config file not found: {}",
                 config::config_display_name(cfg_path)
             );
-            std::process::exit(emit_usage_error(
-                output::machine_mode(flags.json, flags.jsonl),
-                flags.dry_run,
+            return std::process::ExitCode::from(emit_usage_error(
+                UsageCtx {
+                    machine: output::machine_mode(flags.json, flags.jsonl),
+                    dry_run: flags.dry_run,
+                },
                 &flags.command,
                 &message,
-            ));
+            ) as u8);
         }
     }
     if flags.json && flags.jsonl {
         let message = "--json and --jsonl are mutually exclusive; pick one";
-        std::process::exit(emit_usage_error(true, false, &flags.command, message));
+        return std::process::ExitCode::from(emit_usage_error(
+            UsageCtx {
+                machine: true,
+                dry_run: false,
+            },
+            &flags.command,
+            message,
+        ) as u8);
     }
     if config::app_data_dir_checked().is_err() {
         let message = "cannot determine app data directory; set TELE_APP_DIR to choose a location";
@@ -226,7 +213,7 @@ fn main() -> std::process::ExitCode {
                 let _ = output::print_json(&v);
             }
         }
-        std::process::exit(error::EXIT_USAGE);
+        return std::process::ExitCode::from(error::EXIT_USAGE as u8);
     }
     config::migrate_app_data_dir();
     crate::session::sweep_tighten_session_files();
@@ -261,21 +248,22 @@ fn main() -> std::process::ExitCode {
     {
         Ok(code) => code,
         Err(payload) => {
-            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            let mut msg = if let Some(s) = payload.downcast_ref::<&str>() {
                 (*s).to_string()
             } else if let Some(s) = payload.downcast_ref::<String>() {
                 s.clone()
             } else {
                 "runtime thread panicked (non-string payload)".to_string()
             };
-            output::log_line(
-                "error",
-                &format!("runtime thread panicked: {}", error::scrub(msg.clone())),
+            let text = format!(
+                "runtime thread panicked: {}",
+                error::scrub(std::mem::take(&mut msg))
             );
+            output::log_line("error", &text);
             if machine_mode {
                 let error_json = serde_json::json!({
                     "type": "TaskPanicError",
-                    "message": error::scrub(format!("runtime thread panicked: {msg}")),
+                    "message": error::scrub(text),
                 });
                 let envelope = output::Envelope::failed(dry_run, &command_name, error_json);
                 if let Ok(v) = serde_json::to_value(&envelope) {
@@ -285,14 +273,47 @@ fn main() -> std::process::ExitCode {
             error::EXIT_ALL_FAILED
         }
     };
-    std::process::ExitCode::from(code.clamp(0, 255) as u8)
+    std::process::ExitCode::from(clamp_exit_code(code))
 }
 
-fn emit_usage_error(machine: bool, dry_run: bool, command: &str, message: &str) -> i32 {
+struct UsageCtx {
+    machine: bool,
+    dry_run: bool,
+}
+
+fn clap_error_exit(e: clap::Error) -> std::process::ExitCode {
+    let code = if e.use_stderr() {
+        error::EXIT_USAGE
+    } else {
+        error::EXIT_OK
+    };
+    let _ = e.print();
+    if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
+        let hint = argv_command_hint().unwrap_or_default();
+        emit_usage_error(
+            UsageCtx {
+                machine: true,
+                dry_run: false,
+            },
+            &hint,
+            &output::strip_ansi(&e.to_string()),
+        );
+    }
+    std::process::ExitCode::from(code as u8)
+}
+
+const EXIT_CODE_MIN: i32 = 0;
+const EXIT_CODE_MAX: i32 = 255;
+
+fn clamp_exit_code(code: i32) -> u8 {
+    code.clamp(EXIT_CODE_MIN, EXIT_CODE_MAX) as u8
+}
+
+fn emit_usage_error(ctx: UsageCtx, command: &str, message: &str) -> i32 {
     output::log_line("error", message);
-    if machine {
+    if ctx.machine {
         let error_json = serde_json::json!({"type": "UsageError", "message": message});
-        let envelope = output::Envelope::failed(dry_run, command, error_json);
+        let envelope = output::Envelope::failed(ctx.dry_run, command, error_json);
         if let Ok(v) = serde_json::to_value(&envelope) {
             let _ = output::print_json(&v);
         }
@@ -402,6 +423,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::clamp_exit_code;
     use crate::output::strip_ansi;
 
     #[test]
@@ -426,6 +448,17 @@ mod tests {
     fn strip_ansi_removes_escape_at_start_and_end() {
         assert_eq!(strip_ansi("\x1b[32mstart"), "start");
         assert_eq!(strip_ansi("end\x1b[0m"), "end");
+    }
+
+    #[test]
+    fn clamp_exit_code_maps_bounds() {
+        assert_eq!(clamp_exit_code(0), 0);
+        assert_eq!(clamp_exit_code(1), 1);
+        assert_eq!(clamp_exit_code(130), 130);
+        assert_eq!(clamp_exit_code(255), 255);
+        assert_eq!(clamp_exit_code(256), 255);
+        assert_eq!(clamp_exit_code(1000), 255);
+        assert_eq!(clamp_exit_code(-1), 0);
     }
 
     #[test]
