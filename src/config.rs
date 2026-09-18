@@ -191,6 +191,32 @@ pub struct Credentials {
     pub api_hash: String,
 }
 
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("api_id", &self.api_id)
+            .field("api_hash", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for Credentials {
+    fn drop(&mut self) {
+        zeroize_str(&mut self.api_hash);
+    }
+}
+
+pub(crate) fn zeroize_str(s: &mut str) {
+    // SAFETY: the bytes are uniquely borrowed from a live String and
+    // write_volatile keeps the wipe from being optimized away as a dead store.
+    unsafe {
+        for b in s.as_bytes_mut() {
+            std::ptr::write_volatile(b, 0);
+        }
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn load_env(path: &std::path::Path) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -1348,12 +1374,30 @@ mod tests {
         let dir = creds_env_dir("creds-empty-hash");
         std::fs::write(dir.join(".env"), "TELE_API_ID=1234567\nTELE_API_HASH=\n").unwrap();
         let err = credentials()
-            .err()
-            .expect("empty TELE_API_HASH must be rejected")
+            .expect_err("empty TELE_API_HASH must be rejected")
             .to_string();
         assert!(err.contains("TELE_API_HASH must be set"), "err: {err}");
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn credentials_debug_redacts_api_hash() {
+        let creds = Credentials {
+            api_id: 123,
+            api_hash: "abcdef0123456789secret".to_string(),
+        };
+        let rendered = format!("{creds:?}");
+        assert!(rendered.contains("123"), "rendered: {rendered}");
+        assert!(!rendered.contains("abcdef0123456789secret"), "rendered: {rendered}");
+        assert!(rendered.contains("[REDACTED]"), "rendered: {rendered}");
+    }
+
+    #[test]
+    fn zeroize_str_wipes_contents() {
+        let mut s = "supersecret".to_string();
+        zeroize_str(&mut s);
+        assert!(s.bytes().all(|b| b == 0));
     }
 
     #[test]
@@ -1364,8 +1408,7 @@ mod tests {
         let dir = creds_env_dir("creds-ws-hash");
         std::fs::write(dir.join(".env"), "TELE_API_ID=1234567\nTELE_API_HASH=   \n").unwrap();
         let err = credentials()
-            .err()
-            .expect("whitespace-only TELE_API_HASH must be rejected")
+            .expect_err("whitespace-only TELE_API_HASH must be rejected")
             .to_string();
         assert!(err.contains("TELE_API_HASH must be set"), "err: {err}");
         std::env::remove_var("TELE_APP_DIR");
@@ -1412,9 +1455,8 @@ mod tests {
         for key in APP_DIR_ENV_KEYS {
             std::env::remove_var(key);
         }
-        let creds_err = credentials()
-            .err()
-            .expect("missing app dir must fail credentials()");
+        let creds_err =
+            credentials().expect_err("missing app dir must fail credentials()");
         let cfg_err = load_config(None).expect_err("missing app dir must fail load_config(None)");
         let creds_typed = creds_err
             .downcast_ref::<TeleError>()

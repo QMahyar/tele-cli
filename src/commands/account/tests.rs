@@ -1557,6 +1557,15 @@ fn ph2_deterministic_vector_matches_reference() {
 }
 
 #[test]
+fn zeroize_wipes_key_material() {
+    let mut buf = [0xABu8; 64];
+    zeroize(&mut buf);
+    assert!(buf.iter().all(|&b| b == 0));
+    let mut empty: [u8; 0] = [];
+    zeroize(&mut empty);
+}
+
+#[test]
 fn sh_is_salt_wrapped_sha256() {
     use sha2::{Digest, Sha256};
     let data = b"data";

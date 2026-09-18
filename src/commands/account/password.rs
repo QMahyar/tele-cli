@@ -37,12 +37,26 @@ pub(crate) fn ph1(password: &[u8], salt1: &[u8], salt2: &[u8]) -> [u8; 32] {
     sh(&sh(password, salt1), salt2)
 }
 
+pub(crate) fn zeroize(buf: &mut [u8]) {
+    // SAFETY: the slice is uniquely borrowed and live; write_volatile keeps
+    // the wipe from being optimized away as a dead store.
+    unsafe {
+        for b in buf.iter_mut() {
+            std::ptr::write_volatile(b, 0);
+        }
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 pub(crate) fn ph2(password: &[u8], salt1: &[u8], salt2: &[u8]) -> [u8; 32] {
-    let hash1 = ph1(password, salt1, salt2);
+    let mut hash1 = ph1(password, salt1, salt2);
     let mut dk = [0u8; 64];
     pbkdf2::pbkdf2::<Hmac<Sha512>>(&hash1, salt1, 100000, &mut dk)
         .expect("pbkdf2 cannot fail for a 64-byte output");
-    sh(&dk, salt2)
+    let out = sh(&dk, salt2);
+    zeroize(&mut dk);
+    zeroize(&mut hash1);
+    out
 }
 
 pub(crate) fn compute_new_password_hash(
@@ -63,8 +77,9 @@ pub(crate) fn compute_new_password_hash(
             "invalid SRP prime parameters; cannot compute password hash".to_string(),
         ));
     }
-    let x = ph2(password.as_bytes(), salt1, salt2);
+    let mut x = ph2(password.as_bytes(), salt1, salt2);
     let big_x = BigUint::from_bytes_be(&x);
+    zeroize(&mut x);
     let big_p = BigUint::from_bytes_be(p);
     let big_g = BigUint::from(g as u32);
     let big_v = big_g.modpow(&big_x, &big_p);
