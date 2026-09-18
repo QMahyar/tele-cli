@@ -460,6 +460,93 @@ async fn forward(args: ForwardArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::finish(flags, &envelope)
 }
 
+pub(crate) fn build_forward_request(
+    from_peer: grammers_client::tl::enums::InputPeer,
+    ids: &[i32],
+    random_ids: &[i64],
+    to_peer: grammers_client::tl::enums::InputPeer,
+) -> grammers_client::tl::functions::messages::ForwardMessages {
+    grammers_client::tl::functions::messages::ForwardMessages {
+        silent: true,
+        background: false,
+        with_my_score: false,
+        drop_author: false,
+        drop_media_captions: false,
+        from_peer,
+        id: ids.to_vec(),
+        random_id: random_ids.to_vec(),
+        to_peer,
+        top_msg_id: None,
+        reply_to: None,
+        schedule_date: None,
+        schedule_repeat_period: None,
+        send_as: None,
+        noforwards: false,
+        quick_reply_shortcut: None,
+        allow_paid_floodskip: false,
+        effect: None,
+        video_timestamp: None,
+        allow_paid_stars: None,
+        suggested_post: None,
+    }
+}
+
+fn forward_update_message_id(update: &grammers_client::tl::enums::Update) -> Option<(i64, i32)> {
+    match update {
+        grammers_client::tl::enums::Update::MessageId(m) => Some((m.random_id, m.id)),
+        _ => None,
+    }
+}
+
+fn forward_produced_id(update: &grammers_client::tl::enums::Update) -> Option<i32> {
+    match update {
+        grammers_client::tl::enums::Update::NewMessage(n) => match &n.message {
+            grammers_client::tl::enums::Message::Message(m) => Some(m.id),
+            _ => None,
+        },
+        grammers_client::tl::enums::Update::NewChannelMessage(n) => match &n.message {
+            grammers_client::tl::enums::Message::Message(m) => Some(m.id),
+            _ => None,
+        },
+        grammers_client::tl::enums::Update::NewScheduledMessage(n) => match &n.message {
+            grammers_client::tl::enums::Message::Message(m) => Some(m.id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub(crate) fn forward_sent_ids(
+    updates: &grammers_client::tl::enums::Updates,
+    chunk: &[i32],
+    random_ids: &[i64],
+) -> Vec<(i32, i32)> {
+    use std::collections::HashMap;
+    let list = match updates {
+        grammers_client::tl::enums::Updates::Updates(u) => Some(&u.updates),
+        grammers_client::tl::enums::Updates::Combined(u) => Some(&u.updates),
+        _ => None,
+    };
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    let rnd_to_id: HashMap<i64, i32> = list.iter().filter_map(forward_update_message_id).collect();
+    let mut pairs: Vec<(i32, i32)> = chunk
+        .iter()
+        .zip(random_ids.iter())
+        .filter_map(|(original, rnd)| rnd_to_id.get(rnd).map(|new| (*original, *new)))
+        .collect();
+    if pairs.is_empty() {
+        let produced: Vec<i32> = list.iter().filter_map(forward_produced_id).collect();
+        if produced.len() == 1 {
+            if let Some(original) = chunk.first() {
+                pairs.push((*original, produced[0]));
+            }
+        }
+    }
+    pairs
+}
+
 pub(crate) async fn forward_core(
     shares: &crate::client::ServeShares,
     params: ForwardParams,
@@ -469,19 +556,48 @@ pub(crate) async fn forward_core(
     let from =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.from).await?;
     let to = entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.to).await?;
-    let from_ref = entities::peer_ref(&from).await.map_err(tele_invocation)?;
     let to_ref = entities::peer_ref(&to).await.map_err(tele_invocation)?;
+    let from_peer = entities::input_peer(&from).await.map_err(tele_invocation)?;
+    let to_peer = entities::input_peer(&to).await.map_err(tele_invocation)?;
     let mut forwarded: Vec<serde_json::Value> = Vec::new();
     let mut dropped: Vec<i32> = Vec::new();
     let mut failed: Vec<i32> = Vec::new();
     for chunk in batches(&ids) {
+        let random_ids: Vec<i64> = chunk
+            .iter()
+            .map(|_| send::message_random_id())
+            .collect();
         let sent = shares
             .client
-            .forward_messages(to_ref, chunk, from_ref)
+            .invoke(&build_forward_request(
+                from_peer.clone(),
+                chunk,
+                &random_ids,
+                to_peer.clone(),
+            ))
             .await
             .map_err(tele_invocation);
         match sent {
-            Ok(results) => push_forward_results(&mut forwarded, &mut dropped, chunk, results)?,
+            Ok(updates) => {
+                let pairs = forward_sent_ids(&updates, chunk, &random_ids);
+                if pairs.is_empty() {
+                    dropped.extend_from_slice(chunk);
+                    continue;
+                }
+                shares.rate_limiter.acquire().await;
+                let new_ids: Vec<i32> = pairs.iter().map(|(_, new)| *new).collect();
+                let fetched = shares
+                    .client
+                    .get_messages_by_id(to_ref, &new_ids)
+                    .await
+                    .map_err(tele_invocation)?;
+                for ((original, _), msg) in pairs.iter().zip(fetched) {
+                    match msg {
+                        Some(m) => forwarded.push(crate::serialize::message_to_json(&m)?),
+                        None => dropped.push(*original),
+                    }
+                }
+            }
             Err(e) => {
                 crate::output::log_line(
                     "warn",
@@ -503,25 +619,6 @@ pub(crate) async fn forward_core(
 
 fn batches(ids: &[i32]) -> Vec<&[i32]> {
     ids.chunks(100).collect()
-}
-
-fn push_forward_results(
-    forwarded: &mut Vec<serde_json::Value>,
-    dropped: &mut Vec<i32>,
-    chunk: &[i32],
-    results: Vec<Option<grammers_client::message::Message>>,
-) -> TeleResult<()> {
-    for (i, m) in results.into_iter().enumerate() {
-        match m {
-            Some(m) => forwarded.push(crate::serialize::message_to_json(&m)?),
-            None => {
-                if let Some(id) = chunk.get(i) {
-                    dropped.push(*id);
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn forward_report(

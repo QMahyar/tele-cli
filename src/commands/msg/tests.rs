@@ -490,14 +490,65 @@ fn delete_batches_ids_by_100() {
 }
 
 #[test]
-fn forward_batch_indexing_does_not_panic_on_short_chunk() {
-    let chunk: [i32; 3] = [1, 2, 3];
-    let mut forwarded: Vec<serde_json::Value> = Vec::new();
-    let mut dropped: Vec<i32> = Vec::new();
-    let results = vec![None; 5];
-    push_forward_results(&mut forwarded, &mut dropped, &chunk, results).unwrap();
-    assert_eq!(dropped, vec![1, 2, 3]);
-    assert!(forwarded.is_empty());
+fn forward_request_sets_silent_without_notifications() {
+    let req = build_forward_request(
+        tl::enums::InputPeer::Empty,
+        &[1, 2, 3],
+        &[11, 22, 33],
+        tl::enums::InputPeer::Empty,
+    );
+    assert!(req.silent);
+    assert!(!req.background);
+    assert_eq!(req.id, vec![1, 2, 3]);
+    assert_eq!(req.random_id, vec![11, 22, 33]);
+}
+
+fn forward_updates_with_id_map(pairs: &[(i64, i32)]) -> tl::enums::Updates {
+    tl::enums::Updates::Updates(tl::types::Updates {
+        updates: pairs
+            .iter()
+            .map(|(random_id, id)| {
+                tl::enums::Update::MessageId(tl::types::UpdateMessageId {
+                    random_id: *random_id,
+                    id: *id,
+                })
+            })
+            .collect(),
+        users: Vec::new(),
+        chats: Vec::new(),
+        date: 0,
+        seq: 0,
+    })
+}
+
+#[test]
+fn forward_sent_ids_maps_random_ids_to_new_ids_in_chunk_order() {
+    let chunk = [1, 2, 3];
+    let random_ids = [11, 22, 33];
+    let updates = forward_updates_with_id_map(&[(22, 200), (11, 100), (33, 300)]);
+    assert_eq!(
+        forward_sent_ids(&updates, &chunk, &random_ids),
+        vec![(1, 100), (2, 200), (3, 300)]
+    );
+}
+
+#[test]
+fn forward_sent_ids_skips_unmapped_and_empty_updates() {
+    let chunk = [1, 2, 3];
+    let updates = forward_updates_with_id_map(&[(11, 100)]);
+    assert_eq!(
+        forward_sent_ids(&updates, &chunk, &[11, 22, 33]),
+        vec![(1, 100)]
+    );
+    assert!(forward_sent_ids(&tl::enums::Updates::TooLong, &chunk, &[11, 22, 33]).is_empty());
+    let bare = tl::enums::Updates::Updates(tl::types::Updates {
+        updates: vec![tl::enums::Update::User(tl::types::UpdateUser { user_id: 5 })],
+        users: Vec::new(),
+        chats: Vec::new(),
+        date: 0,
+        seq: 0,
+    });
+    assert!(forward_sent_ids(&bare, &chunk, &[11, 22, 33]).is_empty());
 }
 
 #[test]
