@@ -3104,3 +3104,90 @@ fn machine_envelope_carries_no_issue_url() {
         "machine envelope must stay text-free: {out}"
     );
 }
+
+#[test]
+fn doctor_reports_findings_on_empty_profile() {
+    let dir = isolated_appdir("doctor-empty");
+    let (code, out, err) = run_no_creds(&dir, &["doctor", "--json"]);
+    assert_eq!(code, 3, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["command"], serde_json::json!("doctor"));
+    let data = &v["results"][0]["data"];
+    assert_eq!(v["results"][0]["account"], serde_json::json!("local"));
+    let checks = data["checks"].as_array().expect("checks array");
+    assert!(!checks.is_empty(), "stdout: {out}");
+    for check in checks {
+        assert!(check.get("check").is_some(), "row: {check}");
+        assert!(check["ok"].is_boolean(), "row: {check}");
+        assert!(check["detail"].is_string(), "row: {check}");
+    }
+    let names: Vec<&str> = checks
+        .iter()
+        .map(|c| c["check"].as_str().unwrap())
+        .collect();
+    for want in ["app_dir", "config", "credentials", "env_file"] {
+        assert!(names.contains(&want), "checks: {names:?}");
+    }
+    assert_eq!(data["failed"].as_u64().unwrap(), 1, "stdout: {out}");
+}
+
+#[test]
+fn doctor_is_healthy_with_config_env_and_session() {
+    let dir = isolated_appdir("doctor-ok");
+    write_session(&dir, "work");
+    std::fs::write(
+        dir.join(".env"),
+        "TELE_API_ID=1234567\nTELE_API_HASH=testhashvalue\n",
+    )
+    .unwrap();
+    let (code, out, err) = run_no_creds(&dir, &["doctor", "--json"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["results"][0]["data"]["failed"], serde_json::json!(0));
+    assert!(
+        !out.contains("testhashvalue") && !err.contains("testhashvalue"),
+        "credential values must never appear in output"
+    );
+}
+
+#[test]
+fn doctor_human_table_marks_failures() {
+    let dir = isolated_appdir("doctor-human");
+    let (code, out, _err) = run_no_creds(&dir, &["doctor"]);
+    assert_eq!(code, 3);
+    assert!(out.contains("credentials"), "stdout: {out}");
+    assert!(out.contains("FAIL"), "stdout: {out}");
+}
+
+#[test]
+fn doctor_unknown_account_is_usage_error() {
+    let (code, _out, err) =
+        run_isolated("doctor-ghost", &["doctor", "--account", "ghost", "--json"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("unknown account ghost"), "stderr: {err}");
+}
+
+#[test]
+fn doctor_dry_run_previews_without_checks() {
+    let (code, out, err) = run_isolated("doctor-dry", &["doctor", "--dry-run", "--json"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["results"][0]["data"]["dry_run"], serde_json::json!(true));
+    assert!(
+        v["results"][0]["data"]["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("health checks"),
+        "stdout: {out}"
+    );
+}
+
+#[test]
+fn doctor_has_root_help_surface() {
+    assert!(
+        help(&[]).contains(" doctor "),
+        "tele doctor missing from root --help"
+    );
+}

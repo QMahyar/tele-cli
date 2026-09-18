@@ -4,6 +4,7 @@ mod chat_target;
 mod client;
 mod commands;
 mod config;
+mod doctor;
 mod entities;
 mod error;
 mod executor;
@@ -149,6 +150,8 @@ enum Command {
     Mcp(mcp::McpArgs),
     /// Raw TL invocation (typed registry)
     Raw(raw::RawArgs),
+    /// Check local setup health (config, credentials, sessions; no network)
+    Doctor,
     /// Print (or install) the agent skill for driving tele
     Skill(skill::SkillCmd),
     /// Generate shell completions
@@ -510,6 +513,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Serve(c) => serve::run(&c, flags).await,
         Command::Mcp(c) => mcp::run(&c, flags).await,
         Command::Raw(c) => raw::run(&c, flags).await,
+        Command::Doctor => doctor::run(flags).await,
         Command::Skill(c) => skill::run(c, flags).await,
         Command::Completions(s) => completions::run(s, flags).await,
     };
