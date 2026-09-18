@@ -61,6 +61,103 @@ pub struct SetArgs {
     replace: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PrivacyKey {
+    Status,
+    ProfilePhoto,
+    PhoneNumber,
+    Calls,
+    Forwards,
+    ChatInvite,
+    AddedByPhone,
+    VoiceMessages,
+    About,
+    PhoneP2P,
+    Birthday,
+    StarGiftsAutoSave,
+    NoPaidMessages,
+    SavedMusic,
+}
+
+impl PrivacyKey {
+    pub(crate) const ALL: [PrivacyKey; 14] = [
+        PrivacyKey::Status,
+        PrivacyKey::ProfilePhoto,
+        PrivacyKey::PhoneNumber,
+        PrivacyKey::Calls,
+        PrivacyKey::Forwards,
+        PrivacyKey::ChatInvite,
+        PrivacyKey::AddedByPhone,
+        PrivacyKey::VoiceMessages,
+        PrivacyKey::About,
+        PrivacyKey::PhoneP2P,
+        PrivacyKey::Birthday,
+        PrivacyKey::StarGiftsAutoSave,
+        PrivacyKey::NoPaidMessages,
+        PrivacyKey::SavedMusic,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            PrivacyKey::Status => "status",
+            PrivacyKey::ProfilePhoto => "profile_photo",
+            PrivacyKey::PhoneNumber => "phone_number",
+            PrivacyKey::Calls => "calls",
+            PrivacyKey::Forwards => "forwards",
+            PrivacyKey::ChatInvite => "chat_invite",
+            PrivacyKey::AddedByPhone => "added_by_phone",
+            PrivacyKey::VoiceMessages => "voice_messages",
+            PrivacyKey::About => "about",
+            PrivacyKey::PhoneP2P => "phone_p2p",
+            PrivacyKey::Birthday => "birthday",
+            PrivacyKey::StarGiftsAutoSave => "star_gifts_auto_save",
+            PrivacyKey::NoPaidMessages => "no_paid_messages",
+            PrivacyKey::SavedMusic => "saved_music",
+        }
+    }
+
+    pub(crate) fn tl(self) -> tl::enums::InputPrivacyKey {
+        use tl::enums::InputPrivacyKey as K;
+        match self {
+            PrivacyKey::Status => K::StatusTimestamp,
+            PrivacyKey::ProfilePhoto => K::ProfilePhoto,
+            PrivacyKey::PhoneNumber => K::PhoneNumber,
+            PrivacyKey::Calls => K::PhoneCall,
+            PrivacyKey::Forwards => K::Forwards,
+            PrivacyKey::ChatInvite => K::ChatInvite,
+            PrivacyKey::AddedByPhone => K::AddedByPhone,
+            PrivacyKey::VoiceMessages => K::VoiceMessages,
+            PrivacyKey::About => K::About,
+            PrivacyKey::PhoneP2P => K::PhoneP2P,
+            PrivacyKey::Birthday => K::Birthday,
+            PrivacyKey::StarGiftsAutoSave => K::StarGiftsAutoSave,
+            PrivacyKey::NoPaidMessages => K::NoPaidMessages,
+            PrivacyKey::SavedMusic => K::SavedMusic,
+        }
+    }
+}
+
+impl std::str::FromStr for PrivacyKey {
+    type Err = TeleError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .iter()
+            .find(|k| k.as_str() == s)
+            .copied()
+            .ok_or_else(|| {
+                TeleError::Usage(format!(
+                    "unknown privacy key {s} (one of {})",
+                    Self::ALL
+                        .iter()
+                        .map(|k| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })
+    }
+}
+
 pub async fn run(cmd: PrivacyCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         PrivacyCmd::Get(a) => get(a, flags).await,
@@ -69,64 +166,22 @@ pub async fn run(cmd: PrivacyCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 fn keys() -> Vec<&'static str> {
-    vec![
-        "status",
-        "profile_photo",
-        "phone_number",
-        "calls",
-        "forwards",
-        "chat_invite",
-        "added_by_phone",
-        "voice_messages",
-        "about",
-        "phone_p2p",
-        "birthday",
-        "star_gifts_auto_save",
-        "no_paid_messages",
-        "saved_music",
-    ]
+    PrivacyKey::ALL.iter().map(|k| k.as_str()).collect()
 }
 
 fn key_to_tl(key: &str) -> Option<tl::enums::InputPrivacyKey> {
-    use tl::enums::InputPrivacyKey as K;
-    match key {
-        "status" => Some(K::StatusTimestamp),
-        "profile_photo" => Some(K::ProfilePhoto),
-        "phone_number" => Some(K::PhoneNumber),
-        "calls" => Some(K::PhoneCall),
-        "forwards" => Some(K::Forwards),
-        "chat_invite" => Some(K::ChatInvite),
-        "added_by_phone" => Some(K::AddedByPhone),
-        "voice_messages" => Some(K::VoiceMessages),
-        "about" => Some(K::About),
-        "phone_p2p" => Some(K::PhoneP2P),
-        "birthday" => Some(K::Birthday),
-        "star_gifts_auto_save" => Some(K::StarGiftsAutoSave),
-        "no_paid_messages" => Some(K::NoPaidMessages),
-        "saved_music" => Some(K::SavedMusic),
-        _ => None,
-    }
+    key.parse::<PrivacyKey>().ok().map(|k| k.tl())
 }
 
 fn validate_get(args: &GetArgs) -> TeleResult<()> {
     if let Some(key) = &args.key {
-        if !keys().contains(&key.as_str()) {
-            return Err(TeleError::Usage(format!(
-                "unknown privacy key {key} (one of {})",
-                keys().join(", ")
-            )));
-        }
+        key.parse::<PrivacyKey>().map(|_| ())?;
     }
     Ok(())
 }
 
 fn set_key(key: &str) -> TeleResult<tl::enums::InputPrivacyKey> {
-    key_to_tl(key).ok_or_else(|| {
-        TeleError::Usage(format!(
-            "unknown privacy key {key} (one of {})",
-            keys().join(", ")
-        ))
-    })
+    key.parse::<PrivacyKey>().map(|k| k.tl())
 }
 
 async fn get(args: GetArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1024,6 +1079,17 @@ crate::serve_runner!(run_set, set_core, SetParams);
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn privacy_key_all_round_trips() {
+        assert_eq!(PrivacyKey::ALL.len(), 14);
+        for key in PrivacyKey::ALL {
+            assert_eq!(key.as_str().parse::<PrivacyKey>(), Ok(key));
+        }
+        assert_eq!(keys().len(), 14);
+        assert!("shoe_size".parse::<PrivacyKey>().is_err());
+        assert!(set_key("calls").is_ok());
+    }
 
     #[test]
     fn get_rejects_unknown_key() {
