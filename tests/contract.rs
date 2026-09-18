@@ -3552,3 +3552,71 @@ fn msg_send_todo_validates_and_dry_runs() {
         "data: {d}"
     );
 }
+
+#[test]
+fn msg_translate_validates_and_dry_runs() {
+    let (code, _out, err) =
+        run_isolated("trx-none", &["msg", "translate", "--to-lang", "es"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("requires --chat"), "stderr: {err}");
+    let (code, _out, err) = run_isolated(
+        "trx-mix",
+        &[
+            "msg", "translate", "--chat", "me", "--ids", "3", "--text", "hi", "--to-lang",
+            "es",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("mutually exclusive"), "stderr: {err}");
+    let dir = isolated_appdir("trx-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "translate", "--text", "hello", "--to-lang", "es", "--account", "work",
+            "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert_eq!(d["to_lang"], serde_json::json!("es"));
+}
+
+#[test]
+fn msg_transcribe_and_rate_dry_runs() {
+    let dir = isolated_appdir("trs-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "transcribe", "--chat", "me", "--id", "9", "--account", "work", "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert!(
+        d["would"].as_str().unwrap_or_default().contains("transcribe message 9"),
+        "data: {d}"
+    );
+    let (code, _out, err) = run_isolated(
+        "trs-rate-both",
+        &[
+            "msg", "transcribe-rate", "--chat", "me", "--id", "9", "--transcription-id",
+            "123", "--good", "--bad",
+        ],
+    );
+    assert_eq!(code, 1, "stderr: {err}");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "msg", "transcribe-rate", "--chat", "me", "--id", "9", "--transcription-id",
+            "123", "--good", "--account", "work", "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["rating"], serde_json::json!("good"));
+}

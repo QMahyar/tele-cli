@@ -13,6 +13,7 @@ pub mod download;
 pub mod params;
 pub mod poll;
 pub mod send;
+pub mod translate;
 pub mod validate;
 
 use download::{download, download_core, download_serve_dry_run, validate_download};
@@ -24,6 +25,12 @@ use poll::{
     PollUnreadArgs, PollUnreadParams, PollVotesArgs, PollVotesParams,
 };
 use send::{send, send_core, send_serve_dry_run};
+use translate::{
+    transcribe_core, transcribe_rate_core, transcribe_rate_serve_dry_run,
+    transcribe_serve_dry_run, translate_core, translate_serve_dry_run, validate_transcribe,
+    validate_transcribe_rate, validate_translate, TranscribeArgs, TranscribeParams,
+    TranscribeRateArgs, TranscribeRateParams, TranslateArgs, TranslateParams,
+};
 
 pub use params::{
     ClickArgs, DeleteArgs, DownloadArgs, EditArgs, ExportArgs, ForwardArgs, GetArgs, PinArgs,
@@ -59,6 +66,12 @@ pub enum MsgCmd {
     PollVotes(PollVotesArgs),
     #[command(about = "list messages with unread poll votes")]
     PollUnread(PollUnreadArgs),
+    #[command(about = "translate message text or free text")]
+    Translate(TranslateArgs),
+    #[command(about = "transcribe a voice or video-note message")]
+    Transcribe(TranscribeArgs),
+    #[command(about = "rate a transcription")]
+    TranscribeRate(TranscribeRateArgs),
     Typing(TypingArgs),
     Click(ClickArgs),
     #[command(about = "list scheduled messages for a chat")]
@@ -88,6 +101,9 @@ pub async fn run(cmd: MsgCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         MsgCmd::PollResults(a) => poll_results(a, flags).await,
         MsgCmd::PollVotes(a) => poll_votes(a, flags).await,
         MsgCmd::PollUnread(a) => poll_unread(a, flags).await,
+        MsgCmd::Translate(a) => translate(a, flags).await,
+        MsgCmd::Transcribe(a) => transcribe(a, flags).await,
+        MsgCmd::TranscribeRate(a) => transcribe_rate(a, flags).await,
         MsgCmd::Typing(a) => typing(a, flags).await,
         MsgCmd::Click(a) => click(a, flags).await,
         MsgCmd::Scheduled(a) => scheduled(a, flags).await,
@@ -1458,6 +1474,84 @@ async fn poll_unread(args: PollUnreadArgs, flags: &GlobalFlags) -> TeleResult<i3
                 output::print_line(&line)?;
             }
             Ok(result)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn translate(args: TranslateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_translate(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return translate_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            let result = translate_core(&guard.shares(), TranslateParams::from(&args)).await?;
+            if !output::machine_mode(json, jsonl) {
+                let line = format!("translated {} string(s)", result["count"]);
+                let line = if multi {
+                    format!("{name}: {line}")
+                } else {
+                    line
+                };
+                output::print_line(&line)?;
+            }
+            Ok(result)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn transcribe(args: TranscribeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_transcribe(&args)?;
+    crate::executor::require_explicit_selection("msg transcribe", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return transcribe_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            transcribe_core(&guard.shares(), TranscribeParams::from(&args)).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn transcribe_rate(args: TranscribeRateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_transcribe_rate(&args)?;
+    crate::executor::require_explicit_selection("msg transcribe-rate", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let args = args.clone();
+        Box::pin(async move {
+            if dry_run {
+                return transcribe_rate_serve_dry_run(&args);
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            transcribe_rate_core(&guard.shares(), TranscribeRateParams::from(&args)).await
         })
     })
     .await?;
@@ -3100,6 +3194,51 @@ pub(crate) fn msg_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             run_poll_unread,
             crate::commands::serve::params_schema::<PollUnreadParams>
         ),
+        crate::serve_route!(
+            "msg translate",
+            Lane::Read,
+            Some(OP_TIMEOUT_SIMPLE),
+            true,
+            false,
+            true,
+            "translate message text or free text",
+            TranslateParams,
+            TranslateArgs,
+            validate_translate,
+            translate_serve_dry_run,
+            run_translate,
+            crate::commands::serve::params_schema::<TranslateParams>
+        ),
+        crate::serve_route!(
+            "msg transcribe",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "transcribe a voice or video-note message",
+            TranscribeParams,
+            TranscribeArgs,
+            validate_transcribe,
+            transcribe_serve_dry_run,
+            run_transcribe,
+            crate::commands::serve::params_schema::<TranscribeParams>
+        ),
+        crate::serve_route!(
+            "msg transcribe-rate",
+            Lane::Mutate,
+            Some(OP_TIMEOUT_SIMPLE),
+            false,
+            false,
+            true,
+            "rate a transcription",
+            TranscribeRateParams,
+            TranscribeRateArgs,
+            validate_transcribe_rate,
+            transcribe_rate_serve_dry_run,
+            run_transcribe_rate,
+            crate::commands::serve::params_schema::<TranscribeRateParams>
+        ),
     ]
 }
 
@@ -3128,6 +3267,13 @@ crate::serve_runner!(run_poll_close, poll_close_core, PollCloseParams);
 crate::serve_runner!(run_poll_results, poll_results_core, PollResultsParams);
 crate::serve_runner!(run_poll_votes, poll_votes_core, PollVotesParams);
 crate::serve_runner!(run_poll_unread, poll_unread_core, PollUnreadParams);
+crate::serve_runner!(run_translate, translate_core, TranslateParams);
+crate::serve_runner!(run_transcribe, transcribe_core, TranscribeParams);
+crate::serve_runner!(
+    run_transcribe_rate,
+    transcribe_rate_core,
+    TranscribeRateParams
+);
 
 pub(crate) fn validate_scheduled(args: &ScheduledArgs) -> TeleResult<()> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
