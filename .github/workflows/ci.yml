@@ -55,3 +55,29 @@ jobs:
         run: cargo install cargo-audit --locked || cargo audit --version
       - name: audit
         run: cargo audit
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: install cargo-deny
+        run: cargo install cargo-deny --locked || cargo deny --version
+      - name: deny
+        run: cargo deny check
+      - name: secret scan
+        run: |
+          set -eu
+          if git ls-files | grep -E '(^|/)\.env$|\.session(-journal|-wal|-shm)?$'; then
+            echo "tracked secret files (.env / sessions) must never be committed" >&2
+            exit 1
+          fi
+          if git ls-files | grep -E 'id_rsa|id_ed25519|\.pem$|\.key$|\.p12$|\.pfx$|\.kdbx$'; then
+            echo "tracked private-key material must never be committed" >&2
+            exit 1
+          fi
+          if git grep -nE 'TELE_API_HASH\s*=\s*"?[0-9a-fA-F]{16,}' -- . ':!Cargo.lock'; then
+            echo "hex-like TELE_API_HASH assignment in tracked files; use YOUR_API_HASH_HERE placeholders" >&2
+            exit 1
+          fi
