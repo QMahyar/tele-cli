@@ -16,6 +16,10 @@ name = "tele"
 path = "src/main.rs"
 
 [dependencies]
+# Features audit: default-features = false is pinned where the surface is
+# known-small (hmac, libsql, pbkdf2, rmcp, sha2). The rest keep defaults
+# because they need them (anyhow/std, clap/derive+std, chrono/serde,
+# serde/std); trimming further risks build breaks for no measured gain.
 anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
@@ -59,6 +63,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util", "
 lto = true
 strip = true
 codegen-units = 1
+# Decision: no opt-level="s" — lto+strip already target size and the default
+# opt-level keeps crypto/RPC throughput without a benchmark justifying "s".
+# No panic="abort" — release must keep the TaskPanicError envelope and the
+# runtime-thread panic handler in src/main.rs; abort would turn structured
+# failures into SIGABRT.
 
 [lints.rust]
 warnings = "deny"
