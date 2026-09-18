@@ -16,10 +16,28 @@ const ACCOUNT_TIMEOUT_SECS: u64 = 300;
 const UNBUDGETED_COMMANDS: &[&str] =
     &["msg download", "msg export", "story send", "takeout export"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BudgetLane {
+    Budgeted,
+    Unbudgeted,
+}
+
+fn budget_lane(command: &str) -> BudgetLane {
+    let unbudgeted = UNBUDGETED_COMMANDS.iter().any(|c| {
+        command == *c
+            || command
+                .strip_prefix(c)
+                .is_some_and(|rest| rest.starts_with(' '))
+    });
+    if unbudgeted {
+        BudgetLane::Unbudgeted
+    } else {
+        BudgetLane::Budgeted
+    }
+}
+
 fn command_is_unbudgeted(command: &str) -> bool {
-    UNBUDGETED_COMMANDS
-        .iter()
-        .any(|c| command == *c || command.starts_with(&format!("{c} ")))
+    budget_lane(command) == BudgetLane::Unbudgeted
 }
 
 #[derive(Clone, Debug)]
@@ -1045,17 +1063,17 @@ mod tests {
     #[test]
     fn unbudgeted_commands_cover_long_lanes() {
         for lane in ["msg download", "msg export", "story send", "takeout export"] {
-            assert!(
-                command_is_unbudgeted(lane),
-                "documented no-budget lane {lane} must run without the 300s budget"
-            );
-            assert!(
-                command_is_unbudgeted(&format!("{lane} --flag")),
+            assert_eq!(budget_lane(lane), BudgetLane::Unbudgeted);
+            assert_eq!(
+                budget_lane(&format!("{lane} --flag")),
+                BudgetLane::Unbudgeted,
                 "subforms of {lane} stay unbudgeted"
             );
         }
-        assert!(!command_is_unbudgeted("msg send"));
-        assert!(!command_is_unbudgeted("listen"));
+        assert_eq!(budget_lane("msg send"), BudgetLane::Budgeted);
+        assert_eq!(budget_lane("listen"), BudgetLane::Budgeted);
+        assert_eq!(budget_lane("msg downloadx"), BudgetLane::Budgeted);
+        assert_eq!(budget_lane("msg download2 --flag"), BudgetLane::Budgeted);
     }
 
     #[tokio::test]
