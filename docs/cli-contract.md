@@ -23,6 +23,17 @@ Per-account runtime budget (CLI fan-out): each account task gets a 300s deadline
 
 An empty account selection (no `--account`, no `--tag`) is a usage error for mutating commands, `tele listen`, and takeout — they call `require_explicit_selection` and exit 1. Read-only commands (`msg get`, `msg search`, `profile get`, `account status`, and the list/read-back commands under dialog/contact/chat/sticker/story, `privacy get`, and `raw`) instead fan out across every session by default. `tele serve` with no selection serves every account, validated to 1..=32. Exceptions that never require a selection: `tele account list` and `tele account add`.
 
+## Configuration precedence
+
+Sources resolve in the order `argv > env > file > default`:
+
+- `argv`: `--config PATH` selects the config file; `--parallel N` overrides `parallel_max`; `--account`/`--tag` select sessions; `-v`/`-q`/`--json` override logging and output selection.
+- `env`: `TELE_APP_DIR` overrides the default app-data directory; `TELE_API_ID`/`TELE_API_HASH` override the `.env` file values; `TELE_PHONE` supplies the login phone when `--phone` is absent; `TELE_LOG` selects the log level when neither `-v` nor `-q` is given. Empty or whitespace-only values are ignored (the next lower source wins).
+- `file`: `config.toml` supplies `parallel_max` (clamped to 1..=32), accounts, tags, and proxy defaults; the app-data `.env` file supplies `TELE_API_ID`/`TELE_API_HASH` when the process environment does not.
+- `default`: `parallel_max` 1, flood sleep threshold 60s, logging off (freeform `[info]`/`[warn]`/`[error]` lines still print subject to the `-q` floor).
+
+Level flags resolve `-q` > `-v`/`-vv` > `TELE_LOG` > off: `-q` forces the error floor even when `TELE_LOG=debug` is set, and `-v` forces info even when `TELE_LOG` says otherwise.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -979,7 +990,7 @@ tele takeout finish [--abandon]
 
 All three subcommands require explicit account selection. Per-account export artifacts live under `<app data>/export/<account>/`: `contacts.json`, `messages.jsonl`, `dialogs.json`, and the state file `takeout.json`.
 
-**Progress (human mode):** without `--json`/`--jsonl`, export reports each dialogs page (`dialogs page 2: +100 dialogs`) and each history page (`dialog 3/57 Alice msgs=120`, style `dialog i/N <name> msgs=<n>`) on stderr through the standard log line channel. Stdout stays empty until the final envelope. Machine mode emits no progress lines.
+**Progress (human TTY mode):** without `--json`/`--jsonl` and with stderr attached to a terminal, export reports each dialogs page (`dialogs page 2: +100 dialogs`) and each history page (`dialog 3/57 Alice msgs=120`, style `dialog i/N <name> msgs=<n>`) on stderr through the standard log line channel. Stdout stays empty until the final envelope. Machine mode emits no progress lines, and neither does a non-terminal stderr (piped or redirected CI logs stay silent); `-q` silences progress through the usual `[error]`-only floor.
 
 **Cursor resume:** `takeout.json` carries per-dialog checkpoints
 (`{"takeout_id":1,"checkpoints":{"-1001234":4567,"42":-1}}`). A checkpoint value is the oldest message id written for that dialog; `-1` marks a completed dialog. On a re-run, `export` appends to `messages.jsonl` instead of truncating: completed dialogs are skipped, partially exported dialogs continue from their checkpoint cursor, and pages are flushed and synced to disk before their checkpoint is saved. A crash between a page write and a checkpoint save can duplicate at most one page of one dialog on resume; it never loses data. Checkpoints assume the same `--message-limit`; delete the export dir to redo an export with different settings. The failure message for partial exports points at this automatic resume.
@@ -1038,6 +1049,8 @@ tele completions bash|zsh|fish|powershell
 
 Prints a shell completion script for the `tele` binary to stdout and exits 0. No account selection or network is involved.
 
+With `--json`/`--jsonl`, stdout carries the standard one-shot envelope instead of the raw script: one `local`-account row whose `data` holds `{"shell": "<bash|zsh|fish|powershell>", "script": "<script text>"}`. A `--dry-run` machine row adds `dry_run: true` and `would: "generate <shell> completions"` alongside the same keys.
+
 ## `tele skill`
 
 ```
@@ -1046,9 +1059,11 @@ tele skill print
 tele skill install [--dir PATH] [--force]
 ```
 
-`tele skill` (and `tele skill print`) writes the embedded agent skill — an `SKILL.md` following the [Agent Skills](https://agentskills.io) spec (YAML frontmatter `name`/`description`/`license`/`compatibility`, markdown body) — to stdout and exits 0. The body carries the usage rules for driving tele: JSON-only parsing, exit codes, account/chat targeting, the 17 command groups (completions, the 18th command, is intentionally out of scope), the output envelope, and recipes. No account selection or network is involved. Stdout carries the skill; stderr stays empty on success.
+`tele skill` (and `tele skill print`) writes the embedded agent skill — an `SKILL.md` following the [Agent Skills](https://agentskills.io) spec (YAML frontmatter `name`/`description`/`license`/`compatibility`, markdown body) — to stdout and exits 0. The body carries the usage rules for driving tele: JSON-only parsing, exit codes, account/chat targeting, the 17 command groups (completions, the 18th command, is intentionally out of scope), the output envelope, and recipes. No account selection or network is involved. Stdout carries the skill bytes exactly (no added trailing newline); stderr stays empty on success. A broken stdout pipe maps to exit 0.
 
-`tele skill install` writes the same `SKILL.md` to `tele/SKILL.md` under each detected agent skill directory (any of `$HOME/.claude/skills`, `$HOME/.config/opencode/skills`, `$HOME/.cursor/skills` that exists). With `--dir PATH` it writes to `PATH/tele/SKILL.md` instead and skips detection. Existing files are refused without `--force`. Progress lines go to stderr; exit is 0 on success, non-zero when nothing was written and no `--dir` was given.
+With `--json`/`--jsonl`, stdout carries the standard one-shot envelope instead of the raw markdown: one `local`-account row whose `data` holds `{"skill": "<SKILL.md text>"}`. A `--dry-run` machine row adds `dry_run: true` and `would: "print agent skill to stdout"` alongside the same keys.
+
+`tele skill install` writes the same `SKILL.md` to `tele/SKILL.md` under each detected agent skill directory (any of `$HOME/.claude/skills`, `$HOME/.config/opencode/skills`, `$HOME/.cursor/skills` that exists). With `--dir PATH` it writes to `PATH/tele/SKILL.md` instead and skips detection. Existing files are refused without `--force`. Progress lines go to stderr; exit is 0 on success, non-zero when nothing was written and no `--dir` was given. With `--dry-run`, nothing is written: human mode logs `would install skill to <path>` per target on stderr, and machine mode emits the one-shot envelope with one `local`-account row carrying `{"dry_run": true, "force": <bool>, "targets": ["<path>", ...], "would": "install skill to <path>, ..."}`. Machine mode without `--dry-run` emits the envelope with `{"installed": ["<path>", ...], "force": <bool>}`.
 
 ## Stability
 
