@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.14.0] - 2026-09-18
+
+The glow-up release: output/UX upgrades, the full rival-library ship list, perf and security hardening, and approved new dependencies. All machine-API changes are additive (new commands, flags, and JSON keys only); no renamed keys, removed commands, or exit-code changes, so the CLI contract is intact and this ships as MINOR per the Stability rule.
+
+### Added
+
+- **Output and UX upgrades** - global `--fields` projection for machine output (comma-separated dotted fields, requires `--json`/`--jsonl`, unknown fields are usage errors); global `--no-input` failing closed on any prompt; bug-report path (issue URL in help text, error output, and a stderr footer); local-only `doctor` health check; credential `wizard` over the config and env writers; `completions man` roff man pages rendered with `clap_mangen`.
+- **Poll coverage** - `msg poll-close` plus `msg poll-results` with voters and unread readers.
+- **Story coverage** - `story edit` plus `views`, `viewers`, `reactions`, and `link` export.
+- **`msg send --effect`** - animated message-effect id on text, single-file, and checklist sends.
+- **Checklist create** - `msg send --todo` with repeatable `--todo-item` (plus `--todo-others-can-append` / `--todo-others-can-complete`), with `todo` row rendering (`media_kind: "todo"`).
+- **Translate and transcribe wraps** - `msg translate` (by `--text` or `--chat` with `--ids`), `msg transcribe` for voice/video-note messages, and `msg transcribe-rate` for rating a transcription.
+- **Silent forward** - forward messages silently via raw `ForwardMessages`.
+- **Topic icons** - topic `--emoji` accepts a single-codepoint emoji (resolved to a custom-emoji document id via emoji search) or a custom-emoji document id directly.
+- New ops are routed through serve/MCP with dry-run `would` payloads like the rest of the surface.
+
+### Changed
+
+- **Perf wins** - O(1) replay dedupe (`CappedMap` sequence numbers, was an O(10k) scan); single-pass UTF-16 text split (14.6x); `HashSet`-based privacy merge and deletion dedupe (4x); incremental takeout peer map with a sized line buffer.
+- **Hardening** - `tele raw --args` JSON bounded at 1 MiB; std-only secret hygiene for credentials and SRP key material; `cargo-deny` policy plus secret-scan CI.
+- **Approved dependencies** - `secrecy` 0.10 `SecretString` credential wrap, `zeroize` 1.9 SRP transient wipe, `clap_mangen` 0.3 man pages.
+- **Typing and startup** - `ProxyType`/`BudgetLane`/`PrivacyKey`/`ContactState`/`UsageCtx` boundary types; `main` returns `ExitCode` with a shared clap-error path; typed `LogLevel` plus a raw stdout printer; machine `--json` envelopes for `skill` and `completions`, `--dry-run` for `skill install`; takeout progress gated on TTY stderr as well as human mode.
+
+### Fixed
+
+- Exact `--count` stop, retained `--until` deadline, and parked closed serve channels; `SAFETY` notes on all unsafe blocks and `MaybeUninit` for termios; shared error-message markers plus an `InvocationError` extension trait and `source()` wiring; `app_data_dir_checked` propagation through owned call sites; language-nit batch (poll-mode usage errors, graceful envelopes, derives, `must_use`, param shapes, stack consts, phone-nonce invariant); envelope/TTY/color/precedence contract docs.
+
 ## [0.13.0] - 2026-09-13
 
 ### Changed
