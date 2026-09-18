@@ -15,6 +15,8 @@ pub enum Shell {
     Fish,
     /// Generate completions for PowerShell
     Powershell,
+    /// Generate a man page (roff)
+    Man,
 }
 
 fn completion_bin_name() -> String {
@@ -81,10 +83,11 @@ fn shell_name(shell: &Shell) -> &'static str {
         Shell::Zsh => "zsh",
         Shell::Fish => "fish",
         Shell::Powershell => "powershell",
+        Shell::Man => "man",
     }
 }
 
-fn script_for(shell: &Shell, bin: &str) -> Vec<u8> {
+fn script_for(shell: &Shell, bin: &str) -> TeleResult<Vec<u8>> {
     let mut cmd = crate::command_for_completions();
     let mut buf = Vec::new();
     match shell {
@@ -100,8 +103,13 @@ fn script_for(shell: &Shell, bin: &str) -> Vec<u8> {
         Shell::Powershell => {
             clap_complete::generate(clap_complete::Shell::PowerShell, &mut cmd, bin, &mut buf);
         }
+        Shell::Man => {
+            clap_mangen::Man::new(cmd.bin_name(bin.to_string()))
+                .render(&mut buf)
+                .map_err(|e| TeleError::Other(format!("failed to render man page: {e}")))?;
+        }
     }
-    buf
+    Ok(buf)
 }
 
 fn completions_data(shell: &str, script: &str, dry_run: bool) -> serde_json::Value {
@@ -119,7 +127,7 @@ fn completions_data(shell: &str, script: &str, dry_run: bool) -> serde_json::Val
 
 pub async fn run(shell: Shell, flags: &GlobalFlags) -> TeleResult<i32> {
     let bin = completion_bin_name();
-    let buf = script_for(&shell, &bin);
+    let buf = script_for(&shell, &bin)?;
     if crate::output::machine_mode(flags.json, flags.jsonl) {
         let script = String::from_utf8(buf).map_err(|e| {
             TeleError::Other(format!("generated completions are not valid UTF-8: {e}"))
@@ -259,6 +267,7 @@ mod tests {
         assert_eq!(super::shell_name(&super::Shell::Zsh), "zsh");
         assert_eq!(super::shell_name(&super::Shell::Fish), "fish");
         assert_eq!(super::shell_name(&super::Shell::Powershell), "powershell");
+        assert_eq!(super::shell_name(&super::Shell::Man), "man");
     }
 
     #[test]
@@ -282,9 +291,19 @@ mod tests {
 
     #[test]
     fn script_for_keeps_shell_markers() {
-        let bash = String::from_utf8(super::script_for(&super::Shell::Bash, "tele")).unwrap();
+        let bash =
+            String::from_utf8(super::script_for(&super::Shell::Bash, "tele").unwrap()).unwrap();
         assert!(bash.contains("complete -F") || bash.contains("_telecli"));
-        let zsh = String::from_utf8(super::script_for(&super::Shell::Zsh, "tele")).unwrap();
+        let zsh =
+            String::from_utf8(super::script_for(&super::Shell::Zsh, "tele").unwrap()).unwrap();
         assert!(zsh.contains("#compdef tele"));
+    }
+
+    #[test]
+    fn man_page_renders_roff_for_real_bin() {
+        let page =
+            String::from_utf8(super::script_for(&super::Shell::Man, "tele").unwrap()).unwrap();
+        assert!(page.contains(".TH"), "roff title missing: {page}");
+        assert!(page.contains("tele"), "bin name missing: {page}");
     }
 }

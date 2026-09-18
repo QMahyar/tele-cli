@@ -2398,6 +2398,14 @@ fn completions_shell_output_markers_contract() {
     }
 }
 #[test]
+fn completions_man_renders_roff_contract() {
+    let (code, out, err) = run_isolated("compman", &["completions", "man"]);
+    assert_eq!(code, 0, "completions man failed: stderr: {err}");
+    assert!(out.contains(".TH"), "roff title missing: {out}");
+    assert!(out.contains("tele"), "bin name missing in man page");
+    assert!(err.is_empty(), "stderr must stay empty: {err}");
+}
+#[test]
 fn msg_get_dry_run_json_contract() {
     let dir = isolated_appdir("msggetdry");
     write_session(&dir, "work");
@@ -2667,6 +2675,22 @@ fn completions_bash_json_emits_envelope_with_script() {
         script.contains("complete -F") || script.contains("_telecli"),
         "bash marker missing"
     );
+}
+
+#[test]
+fn completions_man_json_emits_envelope_with_script() {
+    let (code, out, err) = run_isolated("compmanjson", &["completions", "man", "--json"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["command"], serde_json::json!("completions man"));
+    assert_eq!(v["results"][0]["data"]["shell"], serde_json::json!("man"));
+    let script = v["results"][0]["data"]["script"]
+        .as_str()
+        .expect("data.script must be a string");
+    assert!(script.contains(".TH"), "roff title missing");
+    assert!(script.contains("tele"), "bin name missing in man page");
+    assert!(err.is_empty(), "stderr must stay empty: {err}");
 }
 
 #[test]
