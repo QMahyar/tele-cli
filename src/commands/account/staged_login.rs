@@ -98,7 +98,7 @@ fn ensure_code_requested(pending: &PendingLogin) -> TeleResult<()> {
 }
 
 pub(crate) fn save_pending(pending: &PendingLogin) -> TeleResult<()> {
-    save_pending_under(&config::app_data_dir(), pending)
+    save_pending_under(&config::app_data_dir_checked()?, pending)
 }
 
 pub(crate) fn save_pending_under(base: &std::path::Path, pending: &PendingLogin) -> TeleResult<()> {
@@ -106,7 +106,7 @@ pub(crate) fn save_pending_under(base: &std::path::Path, pending: &PendingLogin)
 }
 
 pub(crate) fn load_pending(name: &str) -> TeleResult<Option<PendingLogin>> {
-    load_pending_under(&config::app_data_dir(), name)
+    load_pending_under(&config::app_data_dir_checked()?, name)
 }
 
 pub(crate) fn load_pending_under(
@@ -121,7 +121,7 @@ pub(crate) fn load_pending_under(
 }
 
 pub(crate) fn require_pending(name: &str) -> TeleResult<PendingLogin> {
-    require_pending_under(&config::app_data_dir(), name)
+    require_pending_under(&config::app_data_dir_checked()?, name)
 }
 
 pub(crate) fn require_pending_under(
@@ -136,7 +136,7 @@ pub(crate) fn require_pending_under(
 }
 
 pub(crate) fn remove_pending(name: &str) -> TeleResult<bool> {
-    remove_pending_under(&config::app_data_dir(), name)
+    remove_pending_under(&config::app_data_dir_checked()?, name)
 }
 
 pub(crate) fn remove_pending_under(base: &std::path::Path, name: &str) -> TeleResult<bool> {
@@ -287,7 +287,7 @@ pub(crate) async fn staged_begin_flow(
     {
         Ok(sent) => sent,
         Err(e) => {
-            restore_previous_pending(&config::app_data_dir(), previous);
+            restore_previous_pending(&config::app_data_dir_checked()?, previous);
             return Err(e);
         }
     };

@@ -383,12 +383,17 @@ pub(crate) fn status_device_summary(data: Option<&serde_json::Value>) -> String 
         parts.join("/")
     }
 }
+pub(crate) fn default_config_path(
+    config_path: &Option<std::path::PathBuf>,
+) -> TeleResult<std::path::PathBuf> {
+    match config_path.clone() {
+        Some(path) => Ok(path),
+        None => Ok(config::app_data_dir_checked()?.join("config.toml")),
+    }
+}
 async fn add(args: &AddArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     session::validate_name(&args.name).map_err(TeleError::Usage)?;
-    let path = flags
-        .config_path
-        .clone()
-        .unwrap_or_else(|| config::app_data_dir().join("config.toml"));
+    let path = default_config_path(&flags.config_path)?;
     if flags.dry_run {
         log_line(
             "info",
@@ -492,10 +497,7 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     session::remove_session(&args.name).await?;
     let mut cfg = config::load_config(flags.config_path.as_deref())?;
     cfg.accounts.remove(&args.name);
-    let path = flags
-        .config_path
-        .clone()
-        .unwrap_or_else(|| config::app_data_dir().join("config.toml"));
+    let path = default_config_path(&flags.config_path)?;
     config::write_config(&path, &cfg)?;
     log_line("info", &format!("account {} removed", args.name));
     let data = serde_json::json!({
@@ -844,14 +846,25 @@ async fn delete(args: &DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     match crate::config::load_config(config_path.as_deref()) {
                         Ok(mut cfg) => {
                             if cfg.accounts.remove(&name).is_some() {
-                                let path = config_path.clone().unwrap_or_else(|| {
-                                    crate::config::app_data_dir().join("config.toml")
-                                });
-                                if let Err(e) = crate::config::write_config(&path, &cfg) {
-                                    log_line(
-                                        "warn",
-                                        &format!("could not update config.toml: {e:#}"),
-                                    );
+                                match default_config_path(&config_path) {
+                                    Ok(path) => {
+                                        if let Err(e) =
+                                            crate::config::write_config(&path, &cfg)
+                                        {
+                                            log_line(
+                                                "warn",
+                                                &format!(
+                                                    "could not update config.toml: {e:#}"
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log_line(
+                                            "warn",
+                                            &format!("could not update config.toml: {e:#}"),
+                                        );
+                                    }
                                 }
                             }
                         }

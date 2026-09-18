@@ -564,9 +564,10 @@ pub(crate) fn ensure_account_config_entry(
     cfg.accounts
         .entry(name.to_string())
         .or_insert_with(config::AccountConfig::default);
-    let path = config_path
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| config::app_data_dir().join("config.toml"));
+    let path = match config_path {
+        Some(p) => p.to_path_buf(),
+        None => config::app_data_dir_checked()?.join("config.toml"),
+    };
     config::write_config(&path, &cfg)
         .map_err(|e| TeleError::Config(format!("failed to write config: {e:#}")))?;
     log_line(

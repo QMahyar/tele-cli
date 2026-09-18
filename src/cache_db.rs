@@ -2,12 +2,12 @@ use std::path::PathBuf;
 
 use crate::error::{TeleError, TeleResult};
 
-pub fn cache_dir() -> PathBuf {
-    crate::config::app_data_dir().join("cache")
+pub fn cache_dir() -> TeleResult<PathBuf> {
+    crate::config::app_data_dir_checked().map(|d| d.join("cache"))
 }
 
-pub fn cache_path(account: &str) -> PathBuf {
-    cache_dir().join(format!("{account}.cache.db"))
+pub fn cache_path(account: &str) -> TeleResult<PathBuf> {
+    cache_dir().map(|d| d.join(format!("{account}.cache.db")))
 }
 
 const SCHEMA: &str = "
@@ -39,7 +39,7 @@ END;
 ";
 
 async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
-    let dir = cache_dir();
+    let dir = cache_dir()?;
     // Directory creation and permission hardening are blocking FS calls; run
     // them off the async worker threads (create_dir_private walks metadata
     // and chmods on unix).
@@ -54,7 +54,7 @@ async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
     })
     .await
     .map_err(|e| TeleError::Other(format!("cache dir task failed: {e}")))??;
-    let path = cache_path(account);
+    let path = cache_path(account)?;
     let db = libsql::Builder::new_local(&path)
         .build()
         .await
@@ -249,7 +249,7 @@ pub async fn cache_stats(account: &str) -> TeleResult<serde_json::Value> {
     } else {
         (0, 0, 0, 0)
     };
-    let path = cache_path(account);
+    let path = cache_path(account)?;
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok(serde_json::json!({
         "account": account,

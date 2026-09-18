@@ -38,7 +38,7 @@ pub struct PhoneArgs {
 pub(crate) use crate::commands::account::PendingPhone;
 
 pub(crate) fn save_pending_phone(pending: &PendingPhone) -> TeleResult<()> {
-    save_pending_phone_under(&config::app_data_dir(), pending)
+    save_pending_phone_under(&config::app_data_dir_checked()?, pending)
 }
 
 pub(crate) fn save_pending_phone_under(
@@ -60,7 +60,7 @@ pub(crate) fn load_pending_phone_under(
 }
 
 pub(crate) fn require_pending_phone(name: &str) -> TeleResult<PendingPhone> {
-    require_pending_phone_under(&config::app_data_dir(), name)
+    require_pending_phone_under(&config::app_data_dir_checked()?, name)
 }
 
 pub(crate) fn require_pending_phone_under(
@@ -75,7 +75,7 @@ pub(crate) fn require_pending_phone_under(
 }
 
 pub(crate) fn remove_pending_phone(name: &str) -> TeleResult<bool> {
-    remove_pending_phone_under(&config::app_data_dir(), name)
+    remove_pending_phone_under(&config::app_data_dir_checked()?, name)
 }
 
 pub(crate) fn remove_pending_phone_under(base: &std::path::Path, name: &str) -> TeleResult<bool> {
