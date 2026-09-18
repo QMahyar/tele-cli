@@ -848,14 +848,10 @@ async fn delete(args: &DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             if cfg.accounts.remove(&name).is_some() {
                                 match default_config_path(&config_path) {
                                     Ok(path) => {
-                                        if let Err(e) =
-                                            crate::config::write_config(&path, &cfg)
-                                        {
+                                        if let Err(e) = crate::config::write_config(&path, &cfg) {
                                             log_line(
                                                 "warn",
-                                                &format!(
-                                                    "could not update config.toml: {e:#}"
-                                                ),
+                                                &format!("could not update config.toml: {e:#}"),
                                             );
                                         }
                                     }
