@@ -513,7 +513,7 @@ Inline ops handled by the serve loop itself (no route entry):
 `{"op","summary","group","read_only","destructive","retry_safe"}` where
 `group` is the leading word of a spaced op (`account`, `cache`, `chat`, `dialog`,
 `msg`, `privacy`, `profile`, `raw`, `sticker`, `story`, `topic`,
-`contact`) or `transport` for the three inline ops. The list covers all 78 routed ops plus the 3 inline ops, so it holds 81 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
+`contact`) or `transport` for the three inline ops. The list covers all 90 routed ops plus the 3 inline ops, so it holds 93 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
 
 ### Two-lane execution and timeouts
 
@@ -552,7 +552,7 @@ Any routed op accepts `"dry_run":true` in its params. The request is validated a
 
 Intake is bounded end to end: a 64-line stdin queue and 64-job op queues. A slow consumer stalls the pipeline instead of growing memory without bound. Read stdout continuously.
 
-### Op table (78 routes)
+### Op table (90 routes)
 
 Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints column lists only non-default flags: `read_only` performs no state change, `destructive` sits behind the confirm gate, and `retry_unsafe` means a blind retry can duplicate an effect. An absent hint means mutating, non-destructive, or retry-safe respectively. Recount the routes with `rg -c 'serve_route!\(' src/`.
 
@@ -601,6 +601,10 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | `msg forward` | forward messages between chats | mutate | 30s | retry_unsafe |
 | `msg get` | fetch messages from a chat by recency or id | read | 120s | read_only |
 | `msg pin` | pin or unpin a message in a chat | mutate | 30s | |
+| `msg poll-close` | close a poll so no more votes are accepted | mutate | 30s | |
+| `msg poll-results` | fetch fresh poll results for a message | read | 30s | read_only |
+| `msg poll-unread` | list messages with unread poll votes | read | 30s | read_only |
+| `msg poll-votes` | list voters for a poll option | read | 30s | read_only |
 | `msg react` | add or remove a reaction on a message | mutate | 30s | |
 | `msg read` | mark a chat read up to a message | mutate | 30s | |
 | `msg scheduled` | list scheduled messages for a chat | read | 120s | read_only |
@@ -608,6 +612,9 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | `msg scheduled-send` | send scheduled messages now by id | mutate | 30s | |
 | `msg search` | search messages in a chat or globally | read | 120s | read_only |
 | `msg send` | send a text message to a chat | mutate | 30s | retry_unsafe |
+| `msg transcribe` | transcribe a voice or video-note message | mutate | 30s | |
+| `msg transcribe-rate` | rate a transcription | mutate | 30s | |
+| `msg translate` | translate message text or free text | read | 30s | read_only |
 | `msg typing` | send a chat action such as typing | mutate | 30s | |
 | `msg vote` | vote in a poll attached to a message | mutate | 30s | retry_unsafe |
 
@@ -648,11 +655,16 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | op | summary | lane | timeout | hints |
 |---|---|---|---|---|
 | `story delete` | delete one of my stories | mutate | 30s | destructive |
+| `story edit` | edit one of my stories | mutate | 600s | |
+| `story link` | export a deep link for a story | read | 30s | read_only |
 | `story list` | list stories for peers | read | 120s | read_only |
 | `story pin` | pin one of my stories | mutate | 30s | |
+| `story reactions` | list reactions on a story | read | 120s | read_only |
 | `story read` | mark a peer's stories as read | mutate | 30s | |
 | `story send` | post a new story | mutate | 600s | |
 | `story unpin` | unpin one of my stories | mutate | 30s | |
+| `story viewers` | list viewers of a story | read | 120s | read_only |
+| `story views` | fetch story view counts | read | 30s | read_only |
 
 `topic` group:
 
@@ -794,9 +806,9 @@ to preview anything first. MCP applies the same lane timeouts as the serve wire 
 
 `tele serve`'s three inline transport ops are serve-loop concepts, not MCP tools: `ping` (MCP has its own protocol-level ping), `ops.list` (replaced by `tools/list`), and `stream.resync` (no event streaming over MCP yet). They appear in neither the tool table nor `tools/list`.
 
-### Tool table (78)
+### Tool table (90)
 
-Same hints notation as the serve table: listed values mark non-defaults, and an absent hints cell means mutating, non-destructive, or retry-safe. All 78 tools are discoverable in full mode; the 24 rows carrying `read_only` survive `--read-only`.
+Same hints notation as the serve table: listed values mark non-defaults, and an absent hints cell means mutating, non-destructive, or retry-safe. All 90 tools are discoverable in full mode; the 32 rows carrying `read_only` survive `--read-only`.
 
 `account` group (5):
 
@@ -860,7 +872,7 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `dialog_list` | list recent dialogs | read_only |
 | `dialog_pin` | pin or unpin a dialog in the chat list | |
 
-`msg` group (16):
+`msg` group (23):
 
 | tool | summary | hints |
 |---|---|---|
@@ -871,6 +883,10 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `msg_forward` | forward messages between chats | retry_unsafe |
 | `msg_get` | fetch messages from a chat by recency or id | read_only |
 | `msg_pin` | pin or unpin a message in a chat | |
+| `msg_poll-close` | close a poll so no more votes are accepted | |
+| `msg_poll-results` | fetch fresh poll results for a message | read_only |
+| `msg_poll-unread` | list messages with unread poll votes | read_only |
+| `msg_poll-votes` | list voters for a poll option | read_only |
 | `msg_react` | add or remove a reaction on a message | |
 | `msg_read` | mark a chat read up to a message | |
 | `msg_scheduled` | list scheduled messages for a chat | read_only |
@@ -878,6 +894,9 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `msg_scheduled-send` | send scheduled messages now by id | |
 | `msg_search` | search messages in a chat or globally | read_only |
 | `msg_send` | send a text message to a chat | retry_unsafe |
+| `msg_transcribe` | transcribe a voice or video-note message | |
+| `msg_transcribe-rate` | rate a transcription | |
+| `msg_translate` | translate message text or free text | read_only |
 | `msg_typing` | send a chat action such as typing | |
 | `msg_vote` | vote in a poll attached to a message | retry_unsafe |
 
@@ -913,16 +932,21 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `sticker_search` | search sticker sets by keyword | read_only |
 | `sticker_show` | list stickers in an installed set | read_only |
 
-`story` group (6):
+`story` group (11):
 
 | tool | summary | hints |
 |---|---|---|
 | `story_delete` | delete one of my stories | destructive |
+| `story_edit` | edit one of my stories | |
+| `story_link` | export a deep link for a story | read_only |
 | `story_list` | list stories for peers | read_only |
 | `story_pin` | pin one of my stories | |
+| `story_reactions` | list reactions on a story | read_only |
 | `story_read` | mark a peer's stories as read | |
 | `story_send` | post a new story | |
 | `story_unpin` | unpin one of my stories | |
+| `story_viewers` | list viewers of a story | read_only |
+| `story_views` | fetch story view counts | read_only |
 
 `topic` group (7):
 
