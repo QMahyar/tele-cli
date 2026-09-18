@@ -65,7 +65,7 @@ pub struct EditArgs {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ActionKind {
+pub(crate) enum ActionKind {
     Close,
     Reopen,
     Delete,
@@ -106,6 +106,7 @@ pub async fn run(cmd: TopicCmd, flags: &GlobalFlags) -> TeleResult<i32> {
 async fn create(args: CreateArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::executor::require_explicit_selection("topic create", flags)?;
     ChatTarget::parse_flag(&args.chat, "chat")?;
+    validate_create_title(&args.title)?;
     validate_emoji(args.emoji.as_deref())?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -147,6 +148,8 @@ pub(crate) async fn topic_create_core(
     shares: &crate::client::ServeShares,
     params: CreateParams,
 ) -> TeleResult<serde_json::Value> {
+    ChatTarget::parse_flag(&params.chat, "chat")?;
+    validate_create_title(&params.title)?;
     let icon_emoji_id = match params.emoji.as_deref() {
         None => None,
         Some(raw) => match parse_emoji_document_id(raw) {
@@ -188,6 +191,7 @@ async fn simple_action(
 ) -> TeleResult<i32> {
     crate::executor::require_explicit_selection(kind.selection_label(), flags)?;
     ChatTarget::parse_flag(&args.chat, "chat")?;
+    validate_lifecycle_for_kind(&args, kind)?;
     parse_topic_id(&args.topic)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -241,6 +245,8 @@ async fn topic_action_core(
     params: LifecycleParams,
     kind: ActionKind,
 ) -> TeleResult<serde_json::Value> {
+    let args = LifecycleArgs::from(&params);
+    validate_lifecycle_for_kind(&args, kind)?;
     let topic_id = parse_topic_id(&params.topic)?;
     shares.rate_limiter.acquire().await;
     let chat =
@@ -340,6 +346,7 @@ pub(crate) async fn topic_edit_core(
 
 async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
     let json = flags.json;
@@ -390,6 +397,8 @@ pub(crate) async fn topic_list_core(
     shares: &crate::client::ServeShares,
     params: ListParams,
 ) -> TeleResult<serde_json::Value> {
+    crate::commands::validate_limit(params.limit, 10_000, "limit")?;
+    ChatTarget::parse_flag(&params.chat, "chat")?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -838,20 +847,66 @@ pub(crate) fn validate_topic_id(id: i32) -> TeleResult<()> {
     Ok(())
 }
 
+pub(crate) fn validate_create_title(title: &str) -> TeleResult<()> {
+    if title.trim().is_empty() {
+        return Err(TeleError::Usage("--title must not be empty".to_string()));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_lifecycle_for_kind(
+    args: &LifecycleArgs,
+    kind: ActionKind,
+) -> TeleResult<()> {
+    if args.unpin && kind != ActionKind::Pin {
+        return Err(TeleError::Usage(format!(
+            "--unpin applies to topic {} only",
+            ActionKind::Pin.name()
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_create(args: &CreateArgs) -> TeleResult<()> {
     ChatTarget::parse_flag(&args.chat, "chat")?;
+    validate_create_title(&args.title)?;
     validate_emoji(args.emoji.as_deref())?;
     Ok(())
 }
 
 pub(crate) fn validate_list(args: &ListArgs) -> TeleResult<()> {
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
+    ChatTarget::parse_flag(&args.chat, "chat")?;
     Ok(())
 }
 
 pub(crate) fn validate_lifecycle(args: &LifecycleArgs) -> TeleResult<()> {
     ChatTarget::parse_flag(&args.chat, "chat")?;
     validate_topic_id(parse_topic_id(&args.topic)?)?;
+    Ok(())
+}
+
+pub(crate) fn validate_close(args: &LifecycleArgs) -> TeleResult<()> {
+    validate_lifecycle(args)?;
+    validate_lifecycle_for_kind(args, ActionKind::Close)?;
+    Ok(())
+}
+
+pub(crate) fn validate_reopen(args: &LifecycleArgs) -> TeleResult<()> {
+    validate_lifecycle(args)?;
+    validate_lifecycle_for_kind(args, ActionKind::Reopen)?;
+    Ok(())
+}
+
+pub(crate) fn validate_delete(args: &LifecycleArgs) -> TeleResult<()> {
+    validate_lifecycle(args)?;
+    validate_lifecycle_for_kind(args, ActionKind::Delete)?;
+    Ok(())
+}
+
+pub(crate) fn validate_pin(args: &LifecycleArgs) -> TeleResult<()> {
+    validate_lifecycle(args)?;
+    validate_lifecycle_for_kind(args, ActionKind::Pin)?;
     Ok(())
 }
 
@@ -923,7 +978,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "close a forum topic",
             LifecycleParams,
             LifecycleArgs,
-            validate_lifecycle,
+            validate_close,
             close_serve_dry_run,
             run_close,
             crate::commands::serve::params_schema::<LifecycleParams>
@@ -953,7 +1008,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "delete a forum topic",
             LifecycleParams,
             LifecycleArgs,
-            validate_lifecycle,
+            validate_delete,
             delete_serve_dry_run,
             run_delete,
             crate::commands::serve::params_schema::<LifecycleParams>
@@ -998,7 +1053,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "pin or unpin a forum topic",
             LifecycleParams,
             LifecycleArgs,
-            validate_lifecycle,
+            validate_pin,
             pin_serve_dry_run,
             run_pin,
             crate::commands::serve::params_schema::<LifecycleParams>
@@ -1013,7 +1068,7 @@ pub(crate) fn topic_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             "reopen a closed forum topic",
             LifecycleParams,
             LifecycleArgs,
-            validate_lifecycle,
+            validate_reopen,
             reopen_serve_dry_run,
             run_reopen,
             crate::commands::serve::params_schema::<LifecycleParams>
@@ -1746,5 +1801,120 @@ mod tests {
         }
         let lifecycle = crate::commands::serve::params_schema::<LifecycleParams>();
         assert!(lifecycle["properties"]["topic"].is_object());
+    }
+
+    fn create_args_with(chat: &str, title: &str) -> CreateArgs {
+        CreateArgs {
+            chat: chat.to_string(),
+            title: title.to_string(),
+            emoji: None,
+        }
+    }
+
+    #[test]
+    fn create_rejects_empty_title() {
+        for bad in ["", "   "] {
+            let err = validate_create(&create_args_with("work", bad)).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {bad:?}");
+            assert_eq!(err.exit_code(), EXIT_USAGE);
+            assert!(err.message().contains("--title"), "for {bad:?}");
+        }
+        assert!(validate_create(&create_args_with("work", "Launch")).is_ok());
+    }
+
+    #[test]
+    fn serve_topic_create_rejects_empty_title() {
+        let msg = usage_error_message(
+            plan_topic_op(
+                "topic create",
+                serde_json::json!({"chat": "work", "title": "  "}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--title"), "{msg}");
+    }
+
+    #[test]
+    fn list_rejects_bad_chat_targets() {
+        let bad_list = |chat: &str| ListArgs {
+            chat: chat.to_string(),
+            limit: 20,
+        };
+        for bad in ["", "   ", "https://t.me/durov/42"] {
+            let err = validate_list(&bad_list(bad)).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {bad}");
+            assert_eq!(err.exit_code(), EXIT_USAGE);
+        }
+        assert!(validate_list(&bad_list("work")).is_ok());
+    }
+
+    #[test]
+    fn serve_topic_list_rejects_bad_chat_targets() {
+        let msg = usage_error_message(
+            plan_topic_op("topic list", serde_json::json!({"chat": ""})).unwrap_err(),
+        );
+        assert!(msg.contains("--chat"), "{msg}");
+        let msg = usage_error_message(
+            plan_topic_op(
+                "topic list",
+                serde_json::json!({"chat": "https://t.me/durov/42"}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("deep-link"), "{msg}");
+    }
+
+    fn lifecycle_args_with_unpin(action_chat: &str, unpin: bool) -> LifecycleArgs {
+        LifecycleArgs {
+            chat: action_chat.to_string(),
+            topic: "5".to_string(),
+            unpin,
+        }
+    }
+
+    #[test]
+    fn lifecycle_rejects_unpin_except_pin() {
+        for (validate, name) in [
+            (
+                validate_close as fn(&LifecycleArgs) -> TeleResult<()>,
+                "close",
+            ),
+            (
+                validate_reopen as fn(&LifecycleArgs) -> TeleResult<()>,
+                "reopen",
+            ),
+            (
+                validate_delete as fn(&LifecycleArgs) -> TeleResult<()>,
+                "delete",
+            ),
+        ] {
+            let err = validate(&lifecycle_args_with_unpin("work", true)).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {name}");
+            assert!(err.message().contains("--unpin"), "for {name}");
+            assert!(validate(&lifecycle_args_with_unpin("work", false)).is_ok());
+        }
+        assert!(validate_pin(&lifecycle_args_with_unpin("work", true)).is_ok());
+        assert!(validate_pin(&lifecycle_args_with_unpin("work", false)).is_ok());
+    }
+
+    #[test]
+    fn serve_topic_delete_rejects_unpin() {
+        let msg = usage_error_message(
+            plan_topic_op(
+                "topic delete",
+                serde_json::json!({"chat": "work", "topic": "5", "unpin": true}),
+            )
+            .unwrap_err(),
+        );
+        assert!(msg.contains("--unpin"), "{msg}");
+        let plan = plan_topic_op(
+            "topic pin",
+            serde_json::json!({"chat": "work", "topic": "5", "unpin": true, "dry_run": true}),
+        )
+        .unwrap();
+        match plan {
+            Plan::DryRun(data) => assert_eq!(data["topic"], serde_json::json!(5)),
+            other => panic!("expected dry run plan, got {other:?}"),
+        }
     }
 }

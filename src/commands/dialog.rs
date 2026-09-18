@@ -745,7 +745,7 @@ enum DeleteRoute {
 
 fn delete_route(peer: &tl::enums::InputPeer) -> DeleteRoute {
     match peer {
-        tl::enums::InputPeer::User(_) => DeleteRoute::HistoryClear,
+        tl::enums::InputPeer::User(_) | tl::enums::InputPeer::PeerSelf => DeleteRoute::HistoryClear,
         _ => DeleteRoute::Leave,
     }
 }
@@ -2710,9 +2710,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_route_clears_history_for_users_only() {
+    fn delete_route_clears_history_for_users_and_self() {
         assert!(matches!(
             delete_route(&peer_user(7)),
+            DeleteRoute::HistoryClear
+        ));
+        assert!(matches!(
+            delete_route(&tl::enums::InputPeer::PeerSelf),
             DeleteRoute::HistoryClear
         ));
         assert!(matches!(delete_route(&peer_chat(9)), DeleteRoute::Leave));

@@ -154,6 +154,20 @@ fn fake_event(id: i64) -> tl::enums::ChannelAdminLogEvent {
     })
 }
 
+fn fake_event_at(id: i64, date: i32) -> tl::enums::ChannelAdminLogEvent {
+    tl::enums::ChannelAdminLogEvent::Event(tl::types::ChannelAdminLogEvent {
+        id,
+        date,
+        user_id: 0,
+        action: tl::enums::ChannelAdminLogEventAction::ParticipantJoin,
+    })
+}
+
+fn event_id(e: &tl::enums::ChannelAdminLogEvent) -> i64 {
+    let tl::enums::ChannelAdminLogEvent::Event(e) = e;
+    e.id
+}
+
 #[test]
 fn event_rows_carry_actor_names_from_response_users() {
     let client = offline_client();
@@ -598,6 +612,121 @@ async fn collect_admin_log_stops_when_limit_reached_exactly() {
     .unwrap();
     assert_eq!(collected.events.len(), 3);
     assert_eq!(calls, vec![(0, 3)]);
+}
+
+#[tokio::test]
+async fn collect_admin_log_until_skips_newer_events_before_counting() {
+    let until = 150i32;
+    let mut calls = Vec::new();
+    let collected = collect_admin_log(2, None, Some(until), |max_id, page_limit| {
+        let page_index = calls.len();
+        calls.push((max_id, page_limit));
+        async move {
+            if page_index == 0 {
+                Ok(AdminLogPage {
+                    events: vec![fake_event_at(10, 300), fake_event_at(9, 250)],
+                    users: Vec::new(),
+                    max_id: 9,
+                })
+            } else {
+                Ok(AdminLogPage {
+                    events: vec![fake_event_at(8, 100), fake_event_at(7, 90)],
+                    users: Vec::new(),
+                    max_id: 7,
+                })
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        calls.len(),
+        2,
+        "newer-than-until pages must not burn the limit"
+    );
+    assert_eq!(
+        collected.events.iter().map(event_id).collect::<Vec<_>>(),
+        vec![8, 7]
+    );
+}
+
+#[tokio::test]
+async fn collect_admin_log_until_only_returns_nothing_newer_without_extra_fetch() {
+    let until = 150i32;
+    let mut calls = Vec::new();
+    let collected = collect_admin_log(5, None, Some(until), |max_id, page_limit| {
+        calls.push((max_id, page_limit));
+        async move {
+            Ok(AdminLogPage {
+                events: vec![fake_event_at(8, 100)],
+                users: Vec::new(),
+                max_id: 8,
+            })
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(collected.events.len(), 1);
+    assert_eq!(calls.len(), 2);
+}
+
+#[tokio::test]
+async fn collect_admin_log_dedups_repeated_event_ids() {
+    let mut calls = Vec::new();
+    let collected = collect_admin_log(5, None, None, |max_id, page_limit| {
+        let page_index = calls.len();
+        calls.push((max_id, page_limit));
+        async move {
+            if page_index == 0 {
+                Ok(AdminLogPage {
+                    events: vec![fake_event(10), fake_event(9)],
+                    users: Vec::new(),
+                    max_id: 9,
+                })
+            } else if page_index == 1 {
+                Ok(AdminLogPage {
+                    events: vec![fake_event(9), fake_event(8)],
+                    users: Vec::new(),
+                    max_id: 8,
+                })
+            } else {
+                Ok(AdminLogPage {
+                    events: Vec::new(),
+                    users: Vec::new(),
+                    max_id: 8,
+                })
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        collected.events.iter().map(event_id).collect::<Vec<_>>(),
+        vec![10, 9, 8]
+    );
+}
+
+#[tokio::test]
+async fn collect_admin_log_stops_when_cursor_stalls() {
+    let mut calls = Vec::new();
+    let collected = collect_admin_log(5, None, None, |max_id, page_limit| {
+        calls.push((max_id, page_limit));
+        async move {
+            Ok(AdminLogPage {
+                events: vec![fake_event(10)],
+                users: Vec::new(),
+                max_id: 10,
+            })
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(collected.events.len(), 1);
+    assert_eq!(
+        calls.len(),
+        2,
+        "stalled cursor stops after one repeated page"
+    );
 }
 
 #[tokio::test]
@@ -1665,7 +1794,12 @@ fn grants_nothing(rights: &AdminRights) -> bool {
         || rights.manage_call
         || rights.anonymous
         || rights.other
-        || rights.manage_topics)
+        || rights.manage_topics
+        || rights.post_stories
+        || rights.edit_stories
+        || rights.delete_stories
+        || rights.manage_direct_messages
+        || rights.manage_ranks)
 }
 
 #[test]
@@ -1780,6 +1914,228 @@ fn ban_default_view_messages_applies_only_without_explicit_view_messages() {
 
     let mixed = parse_banned_rights_csv("send_stickers:false,view_messages:true").unwrap();
     assert!(!ban_defaults_view_messages(true, &mixed));
+}
+
+#[test]
+fn banned_rights_csv_accepts_granular_server_rights() {
+    for name in [
+        "manage_topics",
+        "send_photos",
+        "send_videos",
+        "send_roundvideos",
+        "send_audios",
+        "send_voices",
+        "send_docs",
+        "send_plain",
+        "edit_rank",
+        "send_reactions",
+    ] {
+        let entries = parse_banned_rights_csv(&format!("{name}:false")).unwrap();
+        assert_eq!(entries, vec![(name.to_string(), false)], "for {name}");
+        assert!(needs_raw_ban(&entries), "for {name}");
+    }
+    let builder_only = parse_banned_rights_csv("send_stickers:false").unwrap();
+    assert!(!needs_raw_ban(&builder_only));
+    assert!(!needs_raw_ban(&[]));
+}
+
+#[test]
+fn raw_banned_rights_honor_ban_default_unless_overridden() {
+    let rights = build_raw_banned_rights(true, &[], None);
+    assert!(rights.view_messages);
+    assert!(!rights.send_messages);
+    assert_eq!(rights.until_date, 0);
+
+    let explicit = parse_banned_rights_csv("send_photos:false").unwrap();
+    let rights = build_raw_banned_rights(true, &explicit, None);
+    assert!(
+        rights.view_messages,
+        "ban default survives alongside granular rights"
+    );
+    assert!(rights.send_photos);
+
+    let overridden = parse_banned_rights_csv("view_messages:true,send_photos:false").unwrap();
+    let rights = build_raw_banned_rights(true, &overridden, None);
+    assert!(
+        !rights.view_messages,
+        "explicit view_messages:true wins over --ban"
+    );
+    assert!(rights.send_photos);
+
+    let plain = parse_banned_rights_csv("send_voices:false").unwrap();
+    let rights = build_raw_banned_rights(false, &plain, None);
+    assert!(!rights.view_messages);
+    assert!(rights.send_voices);
+}
+
+#[test]
+fn ban_result_shapes_kicked_banned_and_restricted() {
+    let v = ban_result("@c", "@u", true, None, &[]);
+    assert_eq!(v["kicked"], serde_json::json!(true));
+    assert_eq!(v["banned"], serde_json::json!(true));
+    assert!(v.get("until").is_none());
+    assert!(v.get("restricted").is_none());
+
+    let entries = parse_banned_rights_csv("send_photos:false,send_messages:true").unwrap();
+    let v = ban_result("@c", "@u", true, Some(60), &entries);
+    assert_eq!(v["restricted"], serde_json::json!(["send_photos"]));
+    assert!(v["until"].as_i64().unwrap() > 0);
+}
+
+#[test]
+fn kick_rejects_empty_user() {
+    let base = |user: &str| KickArgs {
+        chat: "@c".to_string(),
+        user: user.to_string(),
+        ban: false,
+        duration: None,
+        rights: None,
+    };
+    for bad in ["", "   "] {
+        assert!(
+            matches!(validate_kick(&base(bad)), Err(TeleError::Usage(_))),
+            "user {bad:?} should be rejected"
+        );
+    }
+    assert!(validate_kick(&base("@u")).is_ok());
+}
+
+#[test]
+fn admin_rejects_empty_user() {
+    let base = |user: &str| AdminArgs {
+        chat: "c".to_string(),
+        user: user.to_string(),
+        promote: true,
+        demote: false,
+        title: None,
+        preset: None,
+        rights: None,
+    };
+    for bad in ["", "   "] {
+        assert!(
+            matches!(validate_admin(&base(bad)), Err(TeleError::Usage(_))),
+            "user {bad:?} should be rejected"
+        );
+    }
+    assert!(validate_admin(&base("@u")).is_ok());
+}
+
+#[test]
+fn admin_rights_accept_story_and_rank_rights_through_raw() {
+    let rights = AdminRights::from_string(
+        "post_stories,edit_stories,delete_stories,manage_direct_messages,manage_ranks",
+    )
+    .unwrap();
+    assert!(rights.post_stories);
+    assert!(rights.edit_stories);
+    assert!(rights.delete_stories);
+    assert!(rights.manage_direct_messages);
+    assert!(rights.manage_ranks);
+    assert!(rights.needs_raw_edit_admin());
+    let tl::enums::ChatAdminRights::Rights(raw) = rights.to_raw();
+    assert!(raw.post_stories);
+    assert!(raw.edit_stories);
+    assert!(raw.delete_stories);
+    assert!(raw.manage_direct_messages);
+    assert!(raw.manage_ranks);
+    assert!(!raw.anonymous);
+}
+
+#[test]
+fn admin_all_preset_grants_story_and_rank_rights_without_anonymous() {
+    let admin = AdminRights::all();
+    assert!(admin.post_stories && admin.edit_stories && admin.delete_stories);
+    assert!(admin.manage_direct_messages && admin.manage_ranks);
+    assert!(!admin.anonymous);
+    assert!(admin.needs_raw_edit_admin());
+}
+
+#[test]
+fn importer_offset_carries_real_access_hash() {
+    let mut user = test_user(11, "alice");
+    let tl::enums::User::User(ref mut inner) = user else {
+        panic!("expected real user");
+    };
+    inner.access_hash = Some(777);
+    let imp = tl::types::ChatInviteImporter {
+        requested: false,
+        via_chatlist: false,
+        user_id: 11,
+        date: 1_700_000_000,
+        about: None,
+        approved_by: None,
+    };
+    let (date, offset) = importer_offset_for(std::slice::from_ref(&user), &imp);
+    assert_eq!(date, 1_700_000_000);
+    match &offset {
+        tl::enums::InputUser::User(u) => {
+            assert_eq!(u.user_id, 11);
+            assert_eq!(u.access_hash, 777);
+        }
+        other => panic!("expected InputUser::User, got {other:?}"),
+    }
+    assert_eq!(input_user_cursor_id(&offset), Some(11));
+    let empty: tl::enums::InputUser = tl::types::InputUserEmpty {}.into();
+    assert_eq!(input_user_cursor_id(&empty), None);
+}
+
+#[test]
+fn importer_offset_falls_back_to_zero_hash_for_unknown_users() {
+    let imp = tl::types::ChatInviteImporter {
+        requested: true,
+        via_chatlist: false,
+        user_id: 99,
+        date: 42,
+        about: None,
+        approved_by: None,
+    };
+    let (date, offset) = importer_offset_for(&[], &imp);
+    assert_eq!(date, 42);
+    match offset {
+        tl::enums::InputUser::User(u) => assert_eq!(u.access_hash, 0),
+        other => panic!("expected InputUser::User, got {other:?}"),
+    }
+}
+
+#[test]
+fn dedup_rows_keep_first_occurrence_by_id_and_link() {
+    let mut rows = vec![
+        serde_json::json!({"id": 11, "name": "a"}),
+        serde_json::json!({"id": 11, "name": "a-again"}),
+        serde_json::json!({"id": 12, "name": "b"}),
+    ];
+    dedup_rows_by_id(&mut rows);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["name"], "a");
+    assert_eq!(rows[1]["id"], 12);
+
+    let mut rows = vec![
+        serde_json::json!({"link": "https://t.me/+x"}),
+        serde_json::json!({"link": "https://t.me/+x"}),
+        serde_json::json!({"link": "https://t.me/+y"}),
+        serde_json::json!({"public_join_requests": true}),
+    ];
+    dedup_rows_by_link(&mut rows);
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn reject_basic_group_for_stats_usage() {
+    let client = offline_client();
+    let group_peer = grammers_client::peer::Peer::Group(grammers_client::peer::Group::from_raw(
+        &client,
+        tl::enums::Chat::Empty(tl::types::ChatEmpty { id: 1 }),
+    ));
+    let err = reject_basic_group(&group_peer, "chat stats").unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)));
+    assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+    assert!(err.message().contains("basic groups"));
+
+    let channel_peer = grammers_client::peer::Peer::from_raw(
+        &client,
+        tl::enums::Chat::Channel(preview_channel(42, "News")),
+    );
+    assert!(reject_basic_group(&channel_peer, "chat stats").is_ok());
 }
 
 #[test]

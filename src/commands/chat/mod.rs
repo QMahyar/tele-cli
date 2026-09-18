@@ -237,7 +237,7 @@ pub struct KickArgs {
     #[arg(
         long,
         value_name = "CSV",
-        help = "comma-separated right:value pairs, e.g. send_stickers:false (right: view_messages,send_messages,send_media,send_stickers,send_gifs,send_games,send_inline,embed_links,send_polls,change_info,invite_users,pin_messages)"
+        help = "comma-separated right:value pairs, e.g. send_stickers:false (right: view_messages,send_messages,send_media,send_stickers,send_gifs,send_games,send_inline,embed_links,send_polls,change_info,invite_users,pin_messages,manage_topics,send_photos,send_videos,send_roundvideos,send_audios,send_voices,send_docs,send_plain,edit_rank,send_reactions)"
     )]
     rights: Option<String>,
 }
@@ -278,7 +278,7 @@ pub struct AdminArgs {
         long,
         conflicts_with = "preset",
         value_name = "CSV",
-        help = "comma-separated rights: change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call,anonymous,other,manage_topics (mutually exclusive with --preset)"
+        help = "comma-separated rights: change_info,post,edit,delete,ban,invite,pin,add_admins,manage_call,anonymous,other,manage_topics,post_stories,edit_stories,delete_stories,manage_direct_messages,manage_ranks (mutually exclusive with --preset)"
     )]
     rights: Option<String>,
 }
@@ -610,11 +610,16 @@ async fn requests(args: RequestsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     let mut offset_date = 0i32;
                     let mut offset_user: tl::enums::InputUser = tl::types::InputUserEmpty {}.into();
                     let limit = plan.limit as i32;
+                    let mut pages = 0usize;
                     loop {
+                        if pages >= INVITE_LIST_PAGE_CAP {
+                            break;
+                        }
                         let remaining = limit - rows.len() as i32;
                         if remaining <= 0 {
                             break;
                         }
+                        let prev_cursor = (offset_date, input_user_cursor_id(&offset_user));
                         guard.rate_limiter.acquire().await;
                         let r: tl::enums::messages::ChatInviteImporters = guard
                             .client
@@ -630,22 +635,22 @@ async fn requests(args: RequestsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                             })
                             .await
                             .map_err(tele_invocation)?;
+                        pages += 1;
                         let tl::enums::messages::ChatInviteImporters::Importers(ref list) = r;
                         let page_len = list.importers.len();
                         if page_len > 0 {
                             if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
                                 list.importers.last()
                             {
-                                offset_date = imp.date;
-                                offset_user = tl::types::InputUser {
-                                    user_id: imp.user_id,
-                                    access_hash: 0,
-                                }
-                                .into();
+                                (offset_date, offset_user) = importer_offset_for(&list.users, imp);
                             }
                         }
                         rows.extend(join_request_rows(&guard.client, &r, plan.link.as_deref()));
+                        dedup_rows_by_id(&mut rows);
                         if page_len == 0 {
+                            break;
+                        }
+                        if (offset_date, input_user_cursor_id(&offset_user)) == prev_cursor {
                             break;
                         }
                     }
@@ -838,6 +843,7 @@ async fn stats(args: StatsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             let chat =
                 entities::resolve_peer(&guard.client, guard.session.as_ref(), &target).await?;
             ensure_chat_peer(&chat, "chat")?;
+            reject_basic_group(&chat, "chat stats")?;
             let channel = entities::input_channel(&chat)
                 .await
                 .map_err(tele_invocation)?;
@@ -1050,6 +1056,18 @@ pub(crate) fn ensure_chat_peer(peer: &grammers_client::peer::Peer, action: &str)
     if matches!(peer, grammers_client::peer::Peer::User(_)) {
         return Err(TeleError::Usage(format!(
             "{action} requires a chat, got a user"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn reject_basic_group(
+    peer: &grammers_client::peer::Peer,
+    action: &str,
+) -> TeleResult<()> {
+    if matches!(peer, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(peer) {
+        return Err(TeleError::Usage(format!(
+            "{action} is not supported for basic groups; these stats apply to channels and supergroups only"
         )));
     }
     Ok(())
@@ -2300,6 +2318,8 @@ pub(crate) async fn chat_kick_core(
         Some(csv) => parse_banned_rights_csv(csv)?,
         None => Vec::new(),
     };
+    crate::chat_target::ChatTarget::parse_flag(&params.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(&params.user, "user")?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -2317,6 +2337,34 @@ pub(crate) async fn chat_kick_core(
             .await
             .map_err(tele_invocation)?;
         return Ok(serde_json::json!({"chat": params.chat, "user": params.user, "kicked": true}));
+    }
+    if needs_raw_ban(&rights_entries) {
+        if matches!(&chat, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(&chat) {
+            return Err(TeleError::Usage(
+                "granular restrictions (manage_topics, send_photos, send_videos, send_roundvideos, send_audios, send_voices, send_docs, send_plain, edit_rank, send_reactions) require a channel or supergroup; basic groups support view_messages bans only".to_string(),
+            ));
+        }
+        let rights = build_raw_banned_rights(ban, &rights_entries, until_secs);
+        shares
+            .client
+            .invoke(&tl::functions::channels::EditBanned {
+                channel: entities::input_channel(&chat)
+                    .await
+                    .map_err(tele_invocation)?,
+                participant: entities::input_peer(&user_peer)
+                    .await
+                    .map_err(tele_invocation)?,
+                banned_rights: tl::enums::ChatBannedRights::Rights(rights),
+            })
+            .await
+            .map_err(tele_invocation)?;
+        return Ok(ban_result(
+            &params.chat,
+            &params.user,
+            ban,
+            until_secs,
+            &rights_entries,
+        ));
     }
     let mut call = shares.client.set_banned_rights(chat_ref, user_ref);
     for (right, allowed) in &rights_entries {
@@ -2336,36 +2384,23 @@ pub(crate) async fn chat_kick_core(
             _ => call,
         };
     }
-    // --ban forces view_messages=false only without an explicit --rights CSV
-    // (an explicit view_messages value must win over the --ban default).
-    if ban && rights_entries.is_empty() {
+    // --ban forces view_messages=false only when the --rights CSV
+    // does not set view_messages explicitly (an explicit view_messages
+    // value must win over the --ban default).
+    if ban_defaults_view_messages(ban, &rights_entries) {
         call = call.view_messages(false);
     }
     if let Some(secs) = until_secs {
         call = call.duration(std::time::Duration::from_secs(u64::from(secs)));
     }
     call.await.map_err(tele_invocation)?;
-    let mut data = serde_json::json!({
-        "chat": params.chat,
-        "user": params.user,
-        "kicked": true,
-        "banned": ban});
-    if let Some(secs) = until_secs {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or_default();
-        data["until"] = serde_json::json!(i64::from(secs) + now as i64);
-    }
-    if !rights_entries.is_empty() {
-        let denied: Vec<&str> = rights_entries
-            .iter()
-            .filter(|(_, allowed)| !allowed)
-            .map(|(right, _)| right.as_str())
-            .collect();
-        data["restricted"] = serde_json::json!(denied);
-    }
-    Ok(data)
+    Ok(ban_result(
+        &params.chat,
+        &params.user,
+        ban,
+        until_secs,
+        &rights_entries,
+    ))
 }
 
 pub(crate) async fn chat_admin_core(
@@ -2373,6 +2408,7 @@ pub(crate) async fn chat_admin_core(
     params: AdminServeParams,
 ) -> TeleResult<serde_json::Value> {
     let args = AdminArgs::from(&params);
+    validate_admin(&args)?;
     let rights = resolve_admin_rights(&args)?;
     shares.rate_limiter.acquire().await;
     let chat =
@@ -2381,6 +2417,11 @@ pub(crate) async fn chat_admin_core(
     let user_peer =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.user).await?;
     if rights.needs_raw_edit_admin() {
+        if matches!(&chat, grammers_client::peer::Peer::Group(_)) && !entities::is_channel(&chat) {
+            return Err(TeleError::Usage(
+                "admin rights other, manage_topics, post_stories, edit_stories, delete_stories, manage_direct_messages, and manage_ranks require a channel or supergroup".to_string(),
+            ));
+        }
         shares
             .client
             .invoke(&tl::functions::channels::EditAdmin {
@@ -2545,6 +2586,7 @@ pub(crate) async fn chat_stats_core(
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
     ensure_chat_peer(&chat, "chat stats")?;
+    reject_basic_group(&chat, "chat stats")?;
     let channel = entities::input_channel(&chat)
         .await
         .map_err(tele_invocation)?;
@@ -2703,11 +2745,16 @@ pub(crate) async fn chat_invite_core(
                     let mut rows = Vec::new();
                     let mut offset_date = 0i32;
                     let mut offset_user: tl::enums::InputUser = tl::types::InputUserEmpty {}.into();
+                    let mut pages = 0usize;
                     loop {
+                        if pages >= INVITE_LIST_PAGE_CAP {
+                            break;
+                        }
                         let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
                         if remaining <= 0 {
                             break;
                         }
+                        let prev_cursor = (offset_date, input_user_cursor_id(&offset_user));
                         shares.rate_limiter.acquire().await;
                         let r: tl::enums::messages::ChatInviteImporters = shares
                             .client
@@ -2723,22 +2770,22 @@ pub(crate) async fn chat_invite_core(
                             })
                             .await
                             .map_err(tele_invocation)?;
+                        pages += 1;
                         let tl::enums::messages::ChatInviteImporters::Importers(ref list) = r;
                         let page_len = list.importers.len();
                         if page_len > 0 {
                             if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
                                 list.importers.last()
                             {
-                                offset_date = imp.date;
-                                offset_user = tl::types::InputUser {
-                                    user_id: imp.user_id,
-                                    access_hash: 0,
-                                }
-                                .into();
+                                (offset_date, offset_user) = importer_offset_for(&list.users, imp);
                             }
                         }
                         rows.extend(chat_invite_importers_rows(&shares.client, &r));
+                        dedup_rows_by_id(&mut rows);
                         if page_len == 0 {
+                            break;
+                        }
+                        if (offset_date, input_user_cursor_id(&offset_user)) == prev_cursor {
                             break;
                         }
                     }
@@ -2748,11 +2795,16 @@ pub(crate) async fn chat_invite_core(
                     let mut rows = Vec::new();
                     let mut offset_date: Option<i32> = None;
                     let mut offset_link: Option<String> = None;
+                    let mut pages = 0usize;
                     loop {
+                        if pages >= INVITE_LIST_PAGE_CAP {
+                            break;
+                        }
                         let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
                         if remaining <= 0 {
                             break;
                         }
+                        let prev_cursor = (offset_date, offset_link.clone());
                         shares.rate_limiter.acquire().await;
                         let r: tl::enums::messages::ExportedChatInvites = shares
                             .client
@@ -2766,6 +2818,7 @@ pub(crate) async fn chat_invite_core(
                             })
                             .await
                             .map_err(tele_invocation)?;
+                        pages += 1;
                         let tl::enums::messages::ExportedChatInvites::Invites(ref list) = r;
                         let page_len = list.invites.len();
                         if page_len > 0 {
@@ -2777,7 +2830,11 @@ pub(crate) async fn chat_invite_core(
                             }
                         }
                         rows.extend(exported_chat_invites_rows(&r));
+                        dedup_rows_by_link(&mut rows);
                         if page_len == 0 {
+                            break;
+                        }
+                        if (offset_date, offset_link.clone()) == prev_cursor {
                             break;
                         }
                     }
@@ -2831,11 +2888,16 @@ pub(crate) async fn chat_requests_core(
             let mut offset_date = 0i32;
             let mut offset_user: tl::enums::InputUser = tl::types::InputUserEmpty {}.into();
             let limit = plan.limit as i32;
+            let mut pages = 0usize;
             loop {
+                if pages >= INVITE_LIST_PAGE_CAP {
+                    break;
+                }
                 let remaining = limit - rows.len() as i32;
                 if remaining <= 0 {
                     break;
                 }
+                let prev_cursor = (offset_date, input_user_cursor_id(&offset_user));
                 shares.rate_limiter.acquire().await;
                 let r: tl::enums::messages::ChatInviteImporters = shares
                     .client
@@ -2851,22 +2913,22 @@ pub(crate) async fn chat_requests_core(
                     })
                     .await
                     .map_err(tele_invocation)?;
+                pages += 1;
                 let tl::enums::messages::ChatInviteImporters::Importers(ref list) = r;
                 let page_len = list.importers.len();
                 if page_len > 0 {
                     if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
                         list.importers.last()
                     {
-                        offset_date = imp.date;
-                        offset_user = tl::types::InputUser {
-                            user_id: imp.user_id,
-                            access_hash: 0,
-                        }
-                        .into();
+                        (offset_date, offset_user) = importer_offset_for(&list.users, imp);
                     }
                 }
                 rows.extend(join_request_rows(&shares.client, &r, plan.link.as_deref()));
+                dedup_rows_by_id(&mut rows);
                 if page_len == 0 {
+                    break;
+                }
+                if (offset_date, input_user_cursor_id(&offset_user)) == prev_cursor {
                     break;
                 }
             }

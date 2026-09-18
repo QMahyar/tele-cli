@@ -243,6 +243,78 @@ fn sent_display_name(first: &str, last: &str) -> String {
     format!("{first} {last}").trim().to_string()
 }
 
+fn imported_user_state(user: &tl::enums::User) -> Option<ContactState> {
+    match user {
+        tl::enums::User::User(u) => {
+            let name = format!(
+                "{} {}",
+                u.first_name.as_deref().unwrap_or_default(),
+                u.last_name.as_deref().unwrap_or_default()
+            )
+            .trim()
+            .to_string();
+            Some(ContactState {
+                contact: u.contact,
+                mutual: u.mutual_contact,
+                name,
+            })
+        }
+        tl::enums::User::Empty(_) => None,
+    }
+}
+
+async fn import_phone_contact(
+    shares: &crate::client::ServeShares,
+    user_target: &str,
+    phone: Option<&str>,
+    first: Option<String>,
+    last: Option<String>,
+) -> TeleResult<serde_json::Value> {
+    let digits: String = phone
+        .unwrap_or(user_target)
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    let client_id: i64 = digits.parse().map_err(|_| {
+        TeleError::Usage(format!(
+            "phone target {user_target:?} does not fit an international number"
+        ))
+    })?;
+    shares.rate_limiter.acquire().await;
+    let imported: tl::enums::contacts::ImportedContacts = shares
+        .client
+        .invoke(&tl::functions::contacts::ImportContacts {
+            contacts: vec![tl::enums::InputContact::InputPhoneContact(
+                tl::types::InputPhoneContact {
+                    client_id,
+                    phone: format!("+{digits}"),
+                    first_name: first.unwrap_or_default(),
+                    last_name: last.unwrap_or_default(),
+                    note: None,
+                },
+            )],
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::contacts::ImportedContacts::Contacts(imported) = imported;
+    let Some(user) = imported.users.first() else {
+        return Err(TeleError::Other(format!(
+            "contact not added: +{digits} was explicitly supplied but the server returned no user; it may be unregistered or hidden from phone-number search"
+        )));
+    };
+    let state = imported_user_state(user).ok_or_else(|| {
+        TeleError::Other(format!(
+            "contact not added: +{digits} was explicitly supplied but the server returned no user data"
+        ))
+    })?;
+    Ok(serde_json::json!({
+        "user": user_target,
+        "added": true,
+        "contact": state.contact,
+        "mutual": state.mutual,
+        "via": "import"}))
+}
+
 #[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
@@ -367,8 +439,39 @@ fn require_contact_user(op: &str, user: &str) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(user, &format!("contact {op} --user")).map(|_| ())
 }
 
+fn validate_contact_phone(phone: Option<&str>) -> TeleResult<Option<String>> {
+    let Some(phone) = phone else {
+        return Ok(None);
+    };
+    let trimmed = phone.trim();
+    if trimmed.is_empty() {
+        return Err(TeleError::Usage("--phone must not be empty".to_string()));
+    }
+    let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    if !trimmed.starts_with('+') || digits.len() < crate::entities::MIN_PHONE_DIGITS {
+        return Err(TeleError::Usage(format!(
+            "--phone {trimmed:?} must be a full international number with at least {} digits",
+            crate::entities::MIN_PHONE_DIGITS
+        )));
+    }
+    Ok(Some(format!("+{digits}")))
+}
+
+pub(crate) fn phone_explicitly_supplied(user_target: &str, phone_param: Option<&str>) -> bool {
+    if phone_param.is_some_and(|p| !p.trim().is_empty()) {
+        return true;
+    }
+    let trimmed = user_target.trim();
+    if let Some(rest) = trimmed.strip_prefix('+') {
+        let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+        return digits.len() >= crate::entities::MIN_PHONE_DIGITS;
+    }
+    false
+}
+
 fn validate_add(args: &AddArgs) -> TeleResult<()> {
-    require_contact_user("add", &args.user)
+    require_contact_user("add", &args.user)?;
+    validate_contact_phone(args.phone.as_deref()).map(|_| ())
 }
 
 fn validate_remove(args: &RemoveArgs) -> TeleResult<()> {
@@ -453,8 +556,22 @@ pub(crate) async fn add_core(
 ) -> TeleResult<serde_json::Value> {
     shares.rate_limiter.acquire().await;
     let user_target = params.user.clone();
+    let normalized_phone = validate_contact_phone(params.phone.as_deref())?;
     let peer =
-        entities::resolve_peer(&shares.client, shares.session.as_ref(), &user_target).await?;
+        match entities::resolve_peer(&shares.client, shares.session.as_ref(), &user_target).await {
+            Ok(peer) => peer,
+            Err(_) if phone_explicitly_supplied(&user_target, normalized_phone.as_deref()) => {
+                return import_phone_contact(
+                    shares,
+                    &user_target,
+                    normalized_phone.as_deref(),
+                    params.first.clone(),
+                    params.last.clone(),
+                )
+                .await;
+            }
+            Err(e) => return Err(e),
+        };
     let user_input = entities::input_user(&peer).await.map_err(tele_invocation)?;
     let peer_name = crate::serialize::peer_name(&peer);
     let mut split = peer_name.splitn(2, ' ');
@@ -469,7 +586,7 @@ pub(crate) async fn add_core(
             id: user_input,
             first_name: f.clone(),
             last_name: l.clone(),
-            phone: params.phone.unwrap_or_default(),
+            phone: normalized_phone.unwrap_or_default(),
             note: None,
         })
         .await
@@ -757,6 +874,44 @@ mod tests {
         assert_eq!(sent_display_name("Jane", "Doe"), "Jane Doe");
         assert_eq!(sent_display_name("Jane", ""), "Jane");
         assert_eq!(sent_display_name("", ""), "");
+    }
+
+    #[test]
+    fn validate_contact_phone_accepts_full_international_numbers() {
+        assert_eq!(
+            validate_contact_phone(Some("+989121234567")).unwrap(),
+            Some("+989121234567".to_string())
+        );
+        assert_eq!(validate_contact_phone(None).unwrap(), None);
+    }
+
+    #[test]
+    fn validate_contact_phone_rejects_empty_and_short_numbers() {
+        for bad in ["", "   ", "12345", "+12", "989121234567", "+abc"] {
+            let err = validate_contact_phone(Some(bad)).unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {bad:?}");
+            assert!(err.message().contains("--phone"), "for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn phone_explicitly_supplied_detects_phone_targets_and_params() {
+        assert!(phone_explicitly_supplied("+989121234567", None));
+        assert!(phone_explicitly_supplied("@alice", Some("+989121234567")));
+        assert!(!phone_explicitly_supplied("@alice", None));
+        assert!(!phone_explicitly_supplied("@alice", Some("  ")));
+        assert!(!phone_explicitly_supplied("4242", None));
+    }
+
+    #[test]
+    fn serve_add_with_bad_phone_is_a_usage_error() {
+        let err = plan_for(
+            "contact add",
+            serde_json::json!({"user": "@alice", "phone": "not-a-number"}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        assert!(err["message"].as_str().unwrap().contains("--phone"));
     }
 
     #[test]

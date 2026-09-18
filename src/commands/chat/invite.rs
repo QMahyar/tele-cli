@@ -217,11 +217,16 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                             let mut offset_date = 0i32;
                             let mut offset_user: tl::enums::InputUser =
                                 tl::types::InputUserEmpty {}.into();
+                            let mut pages = 0usize;
                             loop {
+                                if pages >= INVITE_LIST_PAGE_CAP {
+                                    break;
+                                }
                                 let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
                                 if remaining <= 0 {
                                     break;
                                 }
+                                let prev_cursor = (offset_date, input_user_cursor_id(&offset_user));
                                 guard.rate_limiter.acquire().await;
                                 let r: tl::enums::messages::ChatInviteImporters = guard
                                     .client
@@ -237,6 +242,7 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                                     })
                                     .await
                                     .map_err(tele_invocation)?;
+                                pages += 1;
                                 let tl::enums::messages::ChatInviteImporters::Importers(ref list) =
                                     r;
                                 let page_len = list.importers.len();
@@ -244,16 +250,17 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                                     if let Some(tl::enums::ChatInviteImporter::Importer(imp)) =
                                         list.importers.last()
                                     {
-                                        offset_date = imp.date;
-                                        offset_user = tl::types::InputUser {
-                                            user_id: imp.user_id,
-                                            access_hash: 0,
-                                        }
-                                        .into();
+                                        (offset_date, offset_user) =
+                                            importer_offset_for(&list.users, imp);
                                     }
                                 }
                                 rows.extend(chat_invite_importers_rows(&guard.client, &r));
+                                dedup_rows_by_id(&mut rows);
                                 if page_len == 0 {
+                                    break;
+                                }
+                                if (offset_date, input_user_cursor_id(&offset_user)) == prev_cursor
+                                {
                                     break;
                                 }
                             }
@@ -266,11 +273,16 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                             let mut rows = Vec::new();
                             let mut offset_date: Option<i32> = None;
                             let mut offset_link: Option<String> = None;
+                            let mut pages = 0usize;
                             loop {
+                                if pages >= INVITE_LIST_PAGE_CAP {
+                                    break;
+                                }
                                 let remaining = INVITE_LIST_LIMIT - rows.len() as i32;
                                 if remaining <= 0 {
                                     break;
                                 }
+                                let prev_cursor = (offset_date, offset_link.clone());
                                 guard.rate_limiter.acquire().await;
                                 let r: tl::enums::messages::ExportedChatInvites = guard
                                     .client
@@ -284,6 +296,7 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                                     })
                                     .await
                                     .map_err(tele_invocation)?;
+                                pages += 1;
                                 let tl::enums::messages::ExportedChatInvites::Invites(ref list) = r;
                                 let page_len = list.invites.len();
                                 if page_len > 0 {
@@ -296,7 +309,11 @@ pub(crate) async fn invite(args: InviteArgs, flags: &GlobalFlags) -> TeleResult<
                                     }
                                 }
                                 rows.extend(exported_chat_invites_rows(&r));
+                                dedup_rows_by_link(&mut rows);
                                 if page_len == 0 {
+                                    break;
+                                }
+                                if (offset_date, offset_link.clone()) == prev_cursor {
                                     break;
                                 }
                             }
@@ -880,4 +897,52 @@ pub(crate) fn print_importer_table(
         &["id", "name", "date", "requested", "approved_by"],
         &table_rows,
     )
+}
+
+pub(crate) const INVITE_LIST_PAGE_CAP: usize = 100;
+
+pub(crate) fn importer_offset_for(
+    users: &[tl::enums::User],
+    imp: &tl::types::ChatInviteImporter,
+) -> (i32, tl::enums::InputUser) {
+    let hash = users
+        .iter()
+        .find_map(|u| match u {
+            tl::enums::User::User(uu) if uu.id == imp.user_id => Some(uu.access_hash.unwrap_or(0)),
+            _ => None,
+        })
+        .unwrap_or(0);
+    (
+        imp.date,
+        tl::types::InputUser {
+            user_id: imp.user_id,
+            access_hash: hash,
+        }
+        .into(),
+    )
+}
+
+pub(crate) fn input_user_cursor_id(user: &tl::enums::InputUser) -> Option<i64> {
+    match user {
+        tl::enums::InputUser::User(u) => Some(u.user_id),
+        _ => None,
+    }
+}
+
+pub(crate) fn dedup_rows_by_id(rows: &mut Vec<serde_json::Value>) {
+    let mut seen = std::collections::HashSet::new();
+    rows.retain(|r| {
+        r.get("id")
+            .and_then(serde_json::Value::as_i64)
+            .is_none_or(|id| seen.insert(id))
+    });
+}
+
+pub(crate) fn dedup_rows_by_link(rows: &mut Vec<serde_json::Value>) {
+    let mut seen = std::collections::HashSet::new();
+    rows.retain(|r| {
+        r.get("link")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|link| seen.insert(link.to_string()))
+    });
 }
