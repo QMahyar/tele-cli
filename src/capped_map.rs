@@ -3,82 +3,130 @@ use std::hash::Hash;
 
 #[derive(Debug)]
 pub struct CappedMap<K, V> {
-    map: HashMap<K, V>,
-    order: VecDeque<K>,
+    entries: HashMap<K, Slot<V>>,
+    order: VecDeque<OrderEntry<K>>,
     cap: usize,
+    next_seq: u64,
+}
+
+#[derive(Debug)]
+struct Slot<V> {
+    value: V,
+    seq: u64,
+}
+
+#[derive(Debug)]
+struct OrderEntry<K> {
+    seq: u64,
+    key: K,
 }
 
 impl<K: Eq + Hash + Clone, V> CappedMap<K, V> {
     pub fn new(cap: usize) -> Self {
         Self {
-            map: HashMap::new(),
+            entries: HashMap::with_capacity(cap),
             order: VecDeque::new(),
             cap,
+            next_seq: 0,
         }
     }
 
     pub fn contains(&self, key: &K) -> bool {
-        self.map.contains_key(key)
+        self.entries.contains_key(key)
     }
 
     pub fn get(&self, key: &K) -> Option<&V> {
-        self.map.get(key)
+        self.entries.get(key).map(|slot| &slot.value)
     }
 
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        self.map.get_mut(key)
+        self.entries.get_mut(key).map(|slot| &mut slot.value)
     }
 
     pub fn insert(&mut self, key: K, value: V) {
-        if let Some(slot) = self.map.get_mut(&key) {
-            *slot = value;
-            // Refresh the eviction position: a redelivered/updated key is
-            // "seen again" and must not be the next evicted (a stale-FIFO
-            // here would re-emit redelivered updates as new once the original
-            // entry rotates out).
-            if let Some(pos) = self.order.iter().position(|k| k == &key) {
-                self.order.remove(pos);
-            }
-            self.order.push_back(key);
+        let seq = self.claim_seq();
+        if let Some(slot) = self.entries.get_mut(&key) {
+            slot.value = value;
+            slot.seq = seq;
         } else {
-            if self.map.len() >= self.cap {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.map.remove(&oldest);
-                }
+            if self.entries.len() >= self.cap {
+                self.evict_oldest();
             }
-            self.map.insert(key.clone(), value);
-            self.order.push_back(key);
+            self.entries.insert(key.clone(), Slot { value, seq });
         }
+        self.order.push_back(OrderEntry { seq, key });
+        self.compact_if_needed();
+    }
+
+    fn claim_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        seq
+    }
+
+    fn evict_oldest(&mut self) {
+        while let Some(entry) = self.order.pop_front() {
+            let live = self
+                .entries
+                .get(&entry.key)
+                .is_some_and(|slot| slot.seq == entry.seq);
+            if live {
+                self.entries.remove(&entry.key);
+                break;
+            }
+        }
+    }
+
+    fn compact_if_needed(&mut self) {
+        let bound = self.cap.saturating_mul(2).max(64);
+        if self.order.len() <= bound {
+            return;
+        }
+        let mut live: Vec<(u64, K)> = self
+            .entries
+            .iter()
+            .map(|(key, slot)| (slot.seq, key.clone()))
+            .collect();
+        live.sort_by_key(|(seq, _)| *seq);
+        self.order = live
+            .into_iter()
+            .map(|(seq, key)| OrderEntry { seq, key })
+            .collect();
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.entries.len()
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.entries.is_empty()
     }
 
     #[cfg(test)]
     pub fn is_full(&self) -> bool {
-        self.map.len() >= self.cap
+        self.entries.len() >= self.cap
     }
 }
 
 impl<K: Eq + Hash + Clone> CappedMap<K, ()> {
     pub fn check(&mut self, key: K) -> bool {
-        if self.contains(&key) {
-            // Re-observation refreshes the eviction position, mirroring
-            // insert's refresh semantics.
-            if let Some(pos) = self.order.iter().position(|k| k == &key) {
-                self.order.remove(pos);
-                self.order.push_back(key);
-            }
+        // Re-observation refreshes the eviction position, mirroring
+        // insert's refresh semantics.
+        let seq = self.claim_seq();
+        if let Some(slot) = self.entries.get_mut(&key) {
+            slot.seq = seq;
+            self.order.push_back(OrderEntry { seq, key });
+            self.compact_if_needed();
             return true;
         }
-        self.insert(key, ());
+        if self.entries.len() >= self.cap {
+            self.evict_oldest();
+        }
+        self.entries.insert(key.clone(), Slot { value: (), seq });
+        self.order.push_back(OrderEntry { seq, key });
+        self.compact_if_needed();
         false
     }
 }
@@ -173,5 +221,26 @@ mod tests {
             *v = 42;
         }
         assert_eq!(m.get(&1), Some(&42));
+    }
+
+    #[test]
+    #[ignore]
+    fn timing_redelivery_storm() {
+        let cap = 10_000usize;
+        let mut m: CappedMap<i32, ()> = CappedMap::new(cap);
+        for i in 0..cap as i32 {
+            m.check(i);
+        }
+        let start = std::time::Instant::now();
+        let mut dups = 0u32;
+        for round in 0..5 {
+            for i in 0..cap as i32 {
+                if m.check((i + round) % cap as i32) {
+                    dups += 1;
+                }
+            }
+        }
+        let elapsed = start.elapsed();
+        println!("capped_map redelivery storm: 50k checks at cap 10k took {elapsed:?} ({dups} dups)");
     }
 }
