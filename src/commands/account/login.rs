@@ -220,17 +220,24 @@ pub(crate) fn save_pending_document_under(
     file: &str,
     text: &str,
 ) -> TeleResult<()> {
+    use std::io::Write as _;
     let dir = pending_dir_under(base);
     crate::fs_util::create_dir_private(&dir)
         .map_err(|e| TeleError::Other(format!("failed to create pending dir {}: {e}", file)))?;
     let path = pending_dir_under(base).join(file);
+    static PENDING_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = PENDING_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    tmp_name.push(format!(".tmp-{}-{seq}", std::process::id()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
-    let result = std::fs::write(&tmp_path, "")
-        .and_then(|()| crate::fs_util::restrict_file_private(&tmp_path))
-        .and_then(|()| std::fs::write(&tmp_path, text))
-        .and_then(|()| std::fs::rename(&tmp_path, &path));
+    let result = (|| -> std::io::Result<()> {
+        let mut handle = crate::fs_util::create_file_private(&tmp_path)?;
+        handle.write_all(text.as_bytes())?;
+        handle.sync_all()?;
+        drop(handle);
+        crate::fs_util::restrict_file_private(&tmp_path)?;
+        std::fs::rename(&tmp_path, &path)
+    })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp_path);
     }
@@ -371,7 +378,7 @@ pub(crate) async fn sign_in_with_retries(
                 "no code entered (stdin closed)".to_string(),
             ));
         };
-        let code = code_line.trim().to_string();
+        let code = zeroize::Zeroizing::new(code_line.trim().to_string());
         match client.sign_in(token, &code).await {
             Ok(_user) => {
                 log_line(
@@ -437,7 +444,7 @@ pub(crate) async fn password_flow(
                 "2FA password required; stdin closed".to_string(),
             ));
         };
-        let password = strip_line_ending(&password_line).to_string();
+        let password = zeroize::Zeroizing::new(strip_line_ending(&password_line).to_string());
         match client.check_password(token, &password).await {
             Ok(_) => {
                 log_line("info", "2FA passed");

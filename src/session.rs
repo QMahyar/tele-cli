@@ -168,10 +168,28 @@ pub async fn remove_session(name: &str) -> anyhow::Result<()> {
     validate_name(name).map_err(anyhow::Error::msg)?;
     if session_path(name).try_exists()? {
         let lock = acquire_lock_file(name).await?;
-        let result = sweep_session_artifacts(name, false);
-        drop(lock);
-        result?;
-        let _ = std::fs::remove_file(lock_path(name));
+        let swept = sweep_session_artifacts(name, false);
+        #[cfg(unix)]
+        {
+            let lock_removed = match std::fs::remove_file(lock_path(name)) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            };
+            drop(lock);
+            swept?;
+            lock_removed?;
+        }
+        #[cfg(not(unix))]
+        {
+            drop(lock);
+            swept?;
+            match std::fs::remove_file(lock_path(name)) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            }?;
+        }
     } else {
         sweep_session_artifacts(name, true)?;
     }
@@ -292,20 +310,67 @@ fn export_temp_path(dest: &Path) -> anyhow::Result<PathBuf> {
             dest.display()
         ));
     }
-    let rand: u16 = std::time::SystemTime::now()
+    static EXPORT_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = EXPORT_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u16)
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     Ok(dest.with_file_name(format!(
-        "{}{}-{rand}",
+        "{}{}-{nanos}-{seq}",
         export_temp_prefix(dest),
         std::process::id()
     )))
 }
 
+fn create_export_tmp(tmp: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(tmp)
+    }
+    #[cfg(not(unix))]
+    {
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(tmp)?;
+        if let Err(e) = crate::fs_util::restrict_file_private(tmp) {
+            let _ = std::fs::remove_file(tmp);
+            return Err(e);
+        }
+        Ok(file)
+    }
+}
+
 #[cfg(test)]
 static TEST_FAIL_EXPORT_COPY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+async fn checkpoint_session_db(source: &Path) -> anyhow::Result<()> {
+    let db = libsql::Builder::new_local(source)
+        .build()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to open session for checkpoint: {e}"))?;
+    let conn = db
+        .connect()
+        .map_err(|e| anyhow::anyhow!("failed to connect session for checkpoint: {e}"))?;
+    let mut rows = conn
+        .query("PRAGMA wal_checkpoint(TRUNCATE);", ())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to checkpoint session: {e}"))?;
+    while rows
+        .next()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to checkpoint session: {e}"))?
+        .is_some()
+    {}
+    Ok(())
+}
 
 pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<ExportedSession> {
     validate_name(name).map_err(anyhow::Error::msg)?;
@@ -318,6 +383,7 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
     let _live_lock = acquire_lock_file(name).await?;
     let probe = SqliteSession::open(&source).await?;
     drop(probe);
+    checkpoint_session_db(&source).await?;
     let dest = match out {
         Some(path) => path.to_path_buf(),
         None => {
@@ -354,8 +420,8 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
         }
     }
     let dest_for_task = dest.clone();
+    let source_for_task = source.clone();
     let (size, sha) = tokio::task::spawn_blocking(move || -> anyhow::Result<(u64, String)> {
-        let tmp = export_temp_path(&dest_for_task)?;
         #[cfg(test)]
         if TEST_FAIL_EXPORT_COPY.swap(false, std::sync::atomic::Ordering::SeqCst) {
             anyhow::bail!(
@@ -363,20 +429,30 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
                 dest_for_task.display()
             );
         }
-        let copy_result = (|| -> std::io::Result<u64> {
-            let mut f = crate::fs_util::create_file_private(&tmp)?;
-            let mut src = std::fs::File::open(&source)?;
-            let size = std::io::copy(&mut src, &mut f)?;
-            f.sync_all()?;
-            Ok(size)
-        })();
-        let size = match copy_result {
-            Ok(size) => size,
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                anyhow::bail!("failed to copy session to {}: {e}", dest_for_task.display());
+        let mut last_err: Option<std::io::Error> = None;
+        let mut attempt = 0;
+        let (tmp, size) = loop {
+            let tmp = export_temp_path(&dest_for_task)?;
+            let copy_result = (|| -> std::io::Result<u64> {
+                let mut f = create_export_tmp(&tmp)?;
+                let mut src = std::fs::File::open(&source_for_task)?;
+                let size = std::io::copy(&mut src, &mut f)?;
+                f.sync_all()?;
+                Ok(size)
+            })();
+            match copy_result {
+                Ok(size) => break (tmp, size),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 8 => {
+                    attempt += 1;
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    anyhow::bail!("failed to copy session to {}: {e}", dest_for_task.display());
+                }
             }
         };
+        let _ = last_err;
         crate::fs_util::restrict_file_private(&tmp).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             anyhow::anyhow!(
@@ -433,15 +509,21 @@ fn same_file_identity(a: &Path, b: &Path) -> bool {
     }
     #[cfg(windows)]
     {
-        // No std file-index API: match on size + mtime as a conservative
-        // identity heuristic; the hard-link case with differing metadata is
-        // left to the write-time protection below.
-        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
-            (Ok(ma), Ok(mb)) => {
-                ma.len() == mb.len()
-                    && ma.modified().ok() == mb.modified().ok()
-                    && ma.modified().ok().is_some()
-            }
+        fn file_id(p: &Path) -> Option<(u32, u64)> {
+            use std::os::windows::io::AsRawHandle;
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::Storage::FileSystem::{
+                GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            };
+            let f = std::fs::File::open(p).ok()?;
+            let handle = HANDLE(f.as_raw_handle());
+            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+            unsafe { GetFileInformationByHandle(handle, &mut info) }.ok()?;
+            let index = ((info.nFileIndexHigh as u64) << 32) | u64::from(info.nFileIndexLow);
+            Some((info.dwVolumeSerialNumber, index))
+        }
+        match (file_id(a), file_id(b)) {
+            (Some(x), Some(y)) => x == y,
             _ => false,
         }
     }
@@ -550,6 +632,34 @@ pub async fn import_session(
     install_copied_session(&name, file, byte_len).await
 }
 
+fn copy_file_capped(source: &Path, tmp_path: &Path, cap: u64) -> anyhow::Result<u64> {
+    use std::io::{Read, Write};
+    let mut src = std::fs::File::open(source)?;
+    let mut dst = crate::fs_util::create_file_private(tmp_path)?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut copied: u64 = 0;
+    loop {
+        match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                copied = copied.saturating_add(n as u64);
+                if copied > cap {
+                    drop(dst);
+                    return Err(anyhow::anyhow!(
+                        "refusing to import {}: file exceeds the {cap}-byte session cap during copy",
+                        source.display()
+                    ));
+                }
+                dst.write_all(&buf[..n])?;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    dst.sync_all()?;
+    Ok(copied)
+}
+
 async fn install_copied_session(
     name: &str,
     source: &Path,
@@ -559,20 +669,9 @@ async fn install_copied_session(
     pre_restrict_sidecars(name)?;
     let tmp_path = tmp_session_path(name);
     let _ = std::fs::remove_file(&tmp_path);
-    {
-        use std::io::{Read, Write};
-        let mut src = std::fs::File::open(source)?;
-        let mut dst = crate::fs_util::create_file_private(&tmp_path)?;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            match src.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => dst.write_all(&buf[..n])?,
-                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        dst.sync_all()?;
+    if let Err(e) = copy_file_capped(source, &tmp_path, MAX_SESSION_FILE_BYTES) {
+        cleanup_partial_import(name);
+        return Err(e);
     }
     let probe_result = async {
         let probe = SqliteSession::open(&tmp_path).await?;
@@ -990,6 +1089,34 @@ mod tests {
     use grammers_session::Session;
 
     #[test]
+    fn export_temp_paths_are_unique_across_calls() {
+        let dest = default_export_dest("work");
+        let first = export_temp_path(&dest).unwrap();
+        let second = export_temp_path(&dest).unwrap();
+        assert_ne!(
+            first, second,
+            "concurrent exports must not share a temp path"
+        );
+    }
+
+    #[test]
+    fn copy_file_capped_enforces_cap_during_copy() {
+        let dir = test_dir("copy-cap");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.bin");
+        std::fs::write(&src, b"0123456789").unwrap();
+        let dst = dir.join("dst.bin");
+        assert_eq!(copy_file_capped(&src, &dst, 10).unwrap(), 10);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"0123456789");
+        let dst2 = dir.join("dst2.bin");
+        let err = copy_file_capped(&src, &dst2, 9).unwrap_err();
+        assert!(err.to_string().contains("session cap during copy"), "{err}");
+        assert!(!dst2.exists() || std::fs::read(&dst2).unwrap().len() <= 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn export_temp_naming_matches_sweep_prefix() {
         let name = "work";
         let dest = default_export_dest(name);
@@ -1289,7 +1416,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn export_refuses_hard_link_to_live_session() {
         let _guard = lock_env();
         let dir = test_dir("export-hardlink");

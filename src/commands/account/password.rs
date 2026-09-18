@@ -131,7 +131,7 @@ pub(crate) fn extract_new_algo(
     }
 }
 
-pub(crate) fn prompt_password_with_echo(prompt: &str) -> TeleResult<String> {
+pub(crate) fn prompt_password_with_echo(prompt: &str) -> TeleResult<Zeroizing<String>> {
     let mut stdin = std::io::stdin().lock();
     let mut stderr = std::io::stderr();
     let echo_disabled = disable_stdin_echo();
@@ -149,16 +149,16 @@ pub(crate) fn prompt_password_with_echo(prompt: &str) -> TeleResult<String> {
             "password required; stdin closed".to_string(),
         ));
     };
-    Ok(strip_line_ending(&line).to_string())
+    Ok(Zeroizing::new(strip_line_ending(&line).to_string()))
 }
 
-pub(crate) fn prompt_new_password_pair() -> TeleResult<String> {
+pub(crate) fn prompt_new_password_pair() -> TeleResult<Zeroizing<String>> {
     let first = prompt_password_with_echo("Enter new cloud password: ")?;
     if first.is_empty() {
         return Err(TeleError::Usage("password must not be empty".to_string()));
     }
     let second = prompt_password_with_echo("Confirm new cloud password: ")?;
-    if first != second {
+    if *first != *second {
         return Err(TeleError::Usage("passwords do not match".to_string()));
     }
     Ok(first)

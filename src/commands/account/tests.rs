@@ -1538,6 +1538,45 @@ async fn staged_status_via_login_needs_no_network() {
     .await;
 }
 
+#[test]
+pub(crate) fn redact_phone_short_numbers_stay_redacted() {
+    for short in ["911", "112", "123", "12345", "+12", "12"] {
+        let redacted = redact_phone(short);
+        assert!(
+            redacted.contains("***"),
+            "{short:?} must be redacted, got {redacted:?}"
+        );
+        assert!(
+            !redacted.contains(short.trim()),
+            "{short:?} leaked into {redacted:?}"
+        );
+    }
+    assert_eq!(redact_phone(""), "");
+    assert_eq!(redact_phone("   "), "");
+}
+
+#[test]
+pub(crate) fn redact_phone_uses_char_count_not_byte_count() {
+    let unicode_prefix = "\u{FF0B}1234567890123";
+    let redacted = redact_phone(unicode_prefix);
+    assert!(
+        redacted.contains("***"),
+        "unicode phone must redact: {redacted:?}"
+    );
+    assert!(!redacted.contains("7890123"), "suffix leaked: {redacted:?}");
+    assert_eq!(redact_phone("+15551234567"), "+1***567");
+    let short_unicode = "\u{FF0B}123";
+    let short_redacted = redact_phone(short_unicode);
+    assert!(
+        short_redacted.contains("***"),
+        "short unicode phone must redact, got {short_redacted:?}"
+    );
+    assert!(
+        !short_redacted.contains("123"),
+        "short unicode digits leaked: {short_redacted:?}"
+    );
+}
+
 fn hex_to_bytes(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
@@ -2704,4 +2743,44 @@ fn status_schema_is_empty_object_with_no_required_fields() {
     assert!(s
         .get("required")
         .is_none_or(|r| r.as_array().unwrap().is_empty()));
+}
+
+#[test]
+fn removal_failure_maps_to_other_error_not_false_success() {
+    let err = map_removal_error(anyhow::anyhow!("permission denied"));
+    assert!(matches!(err, TeleError::Other(_)), "{err}");
+    assert!(
+        err.message().contains("could not remove session files"),
+        "{err}"
+    );
+    assert_eq!(err.exit_code(), crate::error::EXIT_ALL_FAILED);
+}
+
+#[test]
+fn password_prompts_use_zeroizing_wrappers() {
+    fn assert_zeroizing<T: zeroize::ZeroizeOnDrop>() {}
+    assert_zeroizing::<zeroize::Zeroizing<String>>();
+    let prompt: fn(&str) -> TeleResult<zeroize::Zeroizing<String>> = prompt_password_with_echo;
+    let _ = prompt;
+    let pair: fn() -> TeleResult<zeroize::Zeroizing<String>> = prompt_new_password_pair;
+    let _ = pair;
+    let secret = zeroize::Zeroizing::new(String::from("s3cr3t-2fa"));
+    assert_eq!(&*secret, "s3cr3t-2fa");
+}
+
+#[test]
+fn pending_save_leaves_no_tmp_leftovers() {
+    let dir = staged_temp_dir();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    crate::commands::account::login::save_pending_document_under(&dir, "w.login.json", "{\"a\":1}")
+        .unwrap();
+    let leftovers: Vec<_> = std::fs::read_dir(dir.join("pending"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "tmp left behind: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

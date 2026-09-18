@@ -71,9 +71,14 @@ pub(crate) use crate::commands::account::PendingLogin;
 
 pub(crate) const UNSENT_CODE_HASH: &str = "code-request-unconfirmed";
 
-fn restore_previous_pending(base: &std::path::Path, previous: Option<PendingLogin>) {
-    if let Some(prev) = previous {
-        let _ = save_pending_under(base, &prev);
+fn restore_previous_pending(base: &std::path::Path, name: &str, previous: Option<PendingLogin>) {
+    match previous {
+        Some(prev) => {
+            let _ = save_pending_under(base, &prev);
+        }
+        None => {
+            let _ = remove_pending_under(base, name);
+        }
     }
 }
 
@@ -288,7 +293,9 @@ pub(crate) async fn staged_begin_flow(
     {
         Ok(sent) => sent,
         Err(e) => {
-            restore_previous_pending(&config::app_data_dir_checked()?, previous);
+            if let Ok(base) = config::app_data_dir_checked() {
+                restore_previous_pending(&base, name, previous);
+            }
             return Err(e);
         }
     };
@@ -434,7 +441,7 @@ pub(crate) async fn staged_code_flow(
                 "no code entered (stdin closed)".to_string(),
             ));
         };
-        let code = code_line.trim().to_string();
+        let code = zeroize::Zeroizing::new(code_line.trim().to_string());
         match raw_sign_in(&guard.client, &guard.session, pending, &code).await {
             StagedSignIn::SignedIn(auth) => {
                 *signed_in = true;
@@ -451,10 +458,10 @@ pub(crate) async fn staged_code_flow(
                 return code_envelope(flags, pending, true);
             }
             StagedSignIn::PasswordNeeded => {
-                // Piped stdin is fine here — same contract as the code step:
-                // prompt_line reads from the shared stdin lock either way.
                 let pw_token = refresh_password_token(&guard.client).await?;
                 password_flow(&guard.client, pw_token, &mut stdin, &mut stderr).await?;
+                *signed_in = true;
+                let _ = bootstrap_peer_cache(guard).await;
                 let _ = remove_pending(&pending.account);
                 log_line(
                     "info",
@@ -722,6 +729,32 @@ pub(crate) enum StagedSignIn {
     Failed(TeleError),
 }
 
+pub(crate) fn classify_phone_code_error(name: &str) -> StagedSignInKind {
+    if name == "PHONE_CODE_EXPIRED" {
+        StagedSignInKind::CodeExpired
+    } else if name.starts_with("PHONE_CODE_") {
+        StagedSignInKind::InvalidCode
+    } else {
+        StagedSignInKind::Other
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StagedSignInKind {
+    InvalidCode,
+    CodeExpired,
+    Other,
+}
+
+#[cfg(test)]
+fn staged_sign_in_from_kind(kind: StagedSignInKind) -> StagedSignIn {
+    match kind {
+        StagedSignInKind::CodeExpired => StagedSignIn::CodeExpired,
+        StagedSignInKind::InvalidCode => StagedSignIn::InvalidCode,
+        StagedSignInKind::Other => StagedSignIn::InvalidCode,
+    }
+}
+
 pub(crate) async fn raw_sign_in(
     client: &grammers_client::Client,
     storage: &Arc<grammers_client::session::storages::SqliteSession>,
@@ -773,6 +806,11 @@ pub(crate) async fn raw_sign_in(
                     if r.name == "SESSION_PASSWORD_NEEDED" =>
                 {
                     StagedSignIn::PasswordNeeded
+                }
+                Err(grammers_client::InvocationError::Rpc(r))
+                    if classify_phone_code_error(&r.name) == StagedSignInKind::CodeExpired =>
+                {
+                    StagedSignIn::CodeExpired
                 }
                 Err(grammers_client::InvocationError::Rpc(r))
                     if r.name.starts_with("PHONE_CODE_") =>
@@ -883,10 +921,23 @@ mod tests {
                 .phone_code_hash,
             UNSENT_CODE_HASH
         );
-        restore_previous_pending(&base, previous);
+        restore_previous_pending(&base, "work", previous);
         let restored = load_pending_under(&base, "work").unwrap().unwrap();
         assert_eq!(restored.phone_code_hash, "abc123hash");
         assert_eq!(restored.account, "work");
+    }
+
+    #[test]
+    fn begin_send_failure_without_previous_leaves_no_phantom() {
+        let base = temp_base("no-phantom");
+        assert!(load_pending_under(&base, "work").unwrap().is_none());
+        save_pending_under(&base, &pending_attempt("work", "+15551234567")).unwrap();
+        restore_previous_pending(&base, "work", None);
+        assert!(
+            load_pending_under(&base, "work").unwrap().is_none(),
+            "failed begin with no prior state must leave no pending file"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -907,5 +958,33 @@ mod tests {
         assert_eq!(loaded.phone_code_hash, "realhash");
         assert!(ensure_code_requested(&loaded).is_ok());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn phone_code_error_classification_keeps_expired_distinct() {
+        assert_eq!(
+            classify_phone_code_error("PHONE_CODE_EXPIRED"),
+            StagedSignInKind::CodeExpired
+        );
+        assert_eq!(
+            classify_phone_code_error("PHONE_CODE_INVALID"),
+            StagedSignInKind::InvalidCode
+        );
+        assert_eq!(
+            classify_phone_code_error("PHONE_CODE_EMPTY"),
+            StagedSignInKind::InvalidCode
+        );
+        assert_eq!(
+            classify_phone_code_error("SESSION_PASSWORD_NEEDED"),
+            StagedSignInKind::Other
+        );
+        assert!(matches!(
+            staged_sign_in_from_kind(StagedSignInKind::CodeExpired),
+            StagedSignIn::CodeExpired
+        ));
+        assert!(matches!(
+            staged_sign_in_from_kind(StagedSignInKind::InvalidCode),
+            StagedSignIn::InvalidCode
+        ));
     }
 }

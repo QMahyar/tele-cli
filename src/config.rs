@@ -70,6 +70,18 @@ fn app_data_dir_named(
     }
 }
 
+pub(crate) fn migration_failure_message(
+    old: &std::path::Path,
+    new: &std::path::Path,
+    err: impl std::fmt::Display,
+) -> String {
+    format!(
+        "could not migrate app data directory: {err}; continuing with {} (legacy {} left in place)",
+        new.display(),
+        old.display()
+    )
+}
+
 pub fn migrate_app_data_dir() {
     let mut get = |k: &str| std::env::var(k);
     if env_nonempty(&mut get, "TELE_APP_DIR").is_some() {
@@ -95,13 +107,7 @@ pub fn migrate_app_data_dir() {
             "info",
             &format!("migrated app data directory to {}", new.display()),
         ),
-        Err(e) => crate::output::log_line(
-            "warn",
-            &format!(
-                "could not migrate app data directory: {e}; using legacy {}",
-                old.display()
-            ),
-        ),
+        Err(e) => crate::output::log_line("warn", &migration_failure_message(&old, &new, e)),
     }
 }
 
@@ -275,11 +281,12 @@ fn strip_env_value(v: &str) -> String {
     value.to_string()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FileStamp {
     exists: bool,
     len: u64,
     modified: Option<std::time::SystemTime>,
+    content: Option<String>,
 }
 
 impl FileStamp {
@@ -289,14 +296,26 @@ impl FileStamp {
                 exists: true,
                 len: meta.len(),
                 modified: meta.modified().ok(),
+                content: content_identity(path),
             },
             Err(_) => Self {
                 exists: false,
                 len: 0,
                 modified: None,
+                content: None,
             },
         }
     }
+}
+
+fn content_identity(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > 1024 * 1024 {
+        return None;
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(&bytes);
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 type EnvOverlayKey = (Option<String>, Option<String>);
@@ -354,7 +373,7 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     let overlay = env_overlay_key();
     if let Some(creds) = CREDS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&(
         path.clone(),
-        stamp,
+        stamp.clone(),
         overlay.clone(),
     )) {
         return Ok(creds.clone());
@@ -497,7 +516,7 @@ pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<Strin
     }
     // IPv6 literals must be bracket-wrapped in a URL authority or the
     // parser reads `::1:9050` as host "" port garbage.
-    let host = if p.host.contains(':') {
+    let host = if p.host.contains(':') && !(p.host.starts_with('[') && p.host.ends_with(']')) {
         format!("[{}]", p.host)
     } else {
         p.host.clone()
@@ -1846,5 +1865,52 @@ mod tests {
     fn app_dir_new_name_differs_from_legacy() {
         assert_eq!(APP_DIR_NAME, "tele");
         assert_ne!(APP_DIR_NAME, LEGACY_APP_DIR_NAME);
+    }
+
+    #[test]
+    fn proxy_bracketed_ipv6_is_not_double_wrapped() {
+        let cfg = AppConfig {
+            proxy: Some(socks5("[::1]", 9050)),
+            ..Default::default()
+        };
+        assert_eq!(
+            proxy_url_for(&cfg, "work").unwrap(),
+            Some("socks5://[::1]:9050".to_string())
+        );
+        let cfg = AppConfig {
+            proxy: Some(socks5("::1", 9050)),
+            ..Default::default()
+        };
+        assert_eq!(
+            proxy_url_for(&cfg, "work").unwrap(),
+            Some("socks5://[::1]:9050".to_string())
+        );
+    }
+
+    #[test]
+    fn file_stamp_distinguishes_same_length_content() {
+        let dir = atomic_dir("stamp-content");
+        let path = dir.join(".env");
+        std::fs::write(&path, "TELE_API_ID=111\n").unwrap();
+        let first = FileStamp::of(&path);
+        std::fs::write(&path, "TELE_API_ID=222\n").unwrap();
+        let second = FileStamp::of(&path);
+        assert_ne!(
+            first, second,
+            "same-length rotation must invalidate the cache"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migration_failure_message_names_resolved_dir() {
+        let old = std::path::Path::new("/tmp/legacy-telecli");
+        let new = std::path::Path::new("/tmp/tele");
+        let msg = migration_failure_message(old, new, "busy");
+        assert!(msg.contains(&new.display().to_string()), "msg: {msg}");
+        assert!(
+            !msg.contains(&format!("using legacy {}", old.display())),
+            "msg: {msg}"
+        );
     }
 }

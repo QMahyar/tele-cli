@@ -31,13 +31,17 @@ pub(crate) fn refuse_interactive_with_multiple_accounts(
 
 pub(crate) fn redact_phone(phone: &str) -> String {
     let phone = phone.trim();
-    if phone.len() <= 6 {
-        return phone.to_string();
+    if phone.is_empty() {
+        return String::new();
     }
     let prefix_len = phone.chars().take_while(|c| !c.is_ascii_digit()).count();
     let digits: Vec<char> = phone.chars().skip(prefix_len).collect();
-    if digits.len() <= 6 {
-        return phone.to_string();
+    if digits.is_empty() {
+        return "***".to_string();
+    }
+    if phone.chars().count() <= 6 || digits.len() <= 6 {
+        let prefix: String = phone.chars().take(prefix_len).collect();
+        return format!("{prefix}***");
     }
     let prefix: String = phone.chars().take(prefix_len + 1).collect();
     let suffix: String = digits.iter().rev().take(3).rev().collect();
@@ -472,10 +476,10 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         }
     }
     purge_pending(&args.name);
-    drop(guard);
-    if let Err(e) = session::remove_session(&args.name).await {
-        log_line("warn", &format!("could not remove session files: {e:#}"));
-    }
+    guard.close().await;
+    session::remove_session(&args.name)
+        .await
+        .map_err(map_removal_error)?;
     log_line("info", &format!("account {} logged out", args.name));
     let data = serde_json::json!({"signed_out": true});
     crate::executor::finish(
@@ -508,6 +512,10 @@ async fn remove(args: &RemoveArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         flags,
         &action_envelope(&args.name, data, flags.dry_run, &flags.command),
     )
+}
+
+pub(crate) fn map_removal_error(e: anyhow::Error) -> TeleError {
+    TeleError::Other(format!("could not remove session files: {e:#}"))
 }
 
 pub(crate) fn export_row(exported: &session::ExportedSession) -> Vec<String> {
@@ -834,15 +842,13 @@ async fn delete(args: &DeleteArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 password: Some(proof),
             };
             let result = guard.client.invoke(&request).await;
-            drop(guard);
+            guard.close().await;
             match result {
                 Ok(true) => {
-                    // Server-side delete succeeded: purge local state so no
-                    // ghost session/pending secrets/config entry remain.
                     login::purge_pending(&name);
-                    if let Err(e) = session::remove_session(&name).await {
-                        log_line("warn", &format!("could not remove session files: {e:#}"));
-                    }
+                    session::remove_session(&name)
+                        .await
+                        .map_err(map_removal_error)?;
                     match crate::config::load_config(config_path.as_deref()) {
                         Ok(mut cfg) => {
                             if cfg.accounts.remove(&name).is_some() {
