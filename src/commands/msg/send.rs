@@ -374,14 +374,14 @@ const SCHEDULE_ONCE_ONLINE_RAW: i32 = 0x7fff_fffe;
 pub(crate) fn message_random_id() -> i64 {
     use std::sync::atomic::{AtomicI64, Ordering};
     static LAST_ID: AtomicI64 = AtomicI64::new(0);
-    if LAST_ID.load(Ordering::SeqCst) == 0 {
+    if LAST_ID.load(Ordering::Relaxed) == 0 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .map(|d| d.as_nanos() as i64)
             .unwrap_or(1);
-        LAST_ID.fetch_max(now.max(1), Ordering::SeqCst);
+        LAST_ID.fetch_max(now.max(1), Ordering::Relaxed);
     }
-    LAST_ID.fetch_add(1, Ordering::SeqCst)
+    LAST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 fn raw_input_reply_to(reply_to_msg_id: i32) -> grammers_client::tl::enums::InputReplyTo {
@@ -743,11 +743,18 @@ pub(crate) fn send_poll_message(
 /// message-text budget), preferring a paragraph break in the last quarter of
 /// each chunk and falling back to a hard character cut.
 pub(crate) fn split_text_utf16(text: &str, cap: usize) -> Vec<String> {
-    let mut out = Vec::new();
+    let total_utf16: usize = text.chars().map(char::len_utf16).sum();
+    if total_utf16 <= cap {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        return vec![text.to_string()];
+    }
+    let mut out = Vec::with_capacity(text.len() / cap.max(1) + 1);
     let mut rest = text;
+    let mut remaining = total_utf16;
     loop {
-        let total_utf16: usize = rest.chars().map(char::len_utf16).sum();
-        if total_utf16 <= cap {
+        if remaining <= cap {
             if !rest.is_empty() {
                 out.push(rest.to_string());
             }
@@ -778,6 +785,7 @@ pub(crate) fn split_text_utf16(text: &str, cap: usize) -> Vec<String> {
             Some(nl) if nl * 4 >= cut => nl,
             _ => cut,
         };
+        remaining -= rest[..split_at].chars().map(char::len_utf16).sum::<usize>();
         out.push(rest[..split_at].to_string());
         rest = &rest[split_at..];
     }
@@ -927,7 +935,8 @@ pub(crate) async fn send_core(
         return Ok(row);
     }
     if files.len() > 1 {
-        let mut medias: Vec<grammers_client::media::InputMedia> = Vec::new();
+        let mut medias: Vec<grammers_client::media::InputMedia> =
+            Vec::with_capacity(files.len());
         for (idx, path) in files.iter().enumerate() {
             let uploaded = shares
                 .client
@@ -1010,7 +1019,7 @@ pub(crate) async fn send_core(
         if split.is_some() {
             let cap = split.unwrap_or(4096);
             let chunks = split_text_utf16(&text_owned, cap);
-            let mut rows: Vec<serde_json::Value> = Vec::new();
+            let mut rows: Vec<serde_json::Value> = Vec::with_capacity(chunks.len());
             for (i, chunk) in chunks.iter().enumerate() {
                 if i > 0 {
                     shares.rate_limiter.acquire().await;

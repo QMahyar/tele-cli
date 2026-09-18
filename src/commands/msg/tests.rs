@@ -2279,6 +2279,19 @@ fn split_text_utf16_respects_cap_and_prefers_paragraph_breaks() {
     assert_eq!(chunks.concat(), flat);
 }
 
+#[test]
+#[ignore]
+fn timing_split_text_utf16_large() {
+    for size in [40_000usize, 400_000usize] {
+        let text = "x".repeat(size);
+        let start = std::time::Instant::now();
+        let chunks = split_text_utf16(&text, 4096);
+        let elapsed = start.elapsed();
+        assert_eq!(chunks.concat(), text);
+        println!("split_text_utf16: {size} chars -> {} chunks took {elapsed:?}", chunks.len());
+    }
+}
+
 fn uploaded_fixture(id: i64, name: &str) -> grammers_client::media::Uploaded {
     grammers_client::media::Uploaded {
         raw: tl::enums::InputFile::Big(tl::types::InputFileBig {
