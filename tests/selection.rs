@@ -7,8 +7,15 @@ fn tele() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tele"))
 }
 
+static KERNEL_APPDIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn appdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("telecli-kernel-{tag}-{}", std::process::id()));
+    let n = KERNEL_APPDIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "telecli-kernel-{tag}-{}-{:?}-{n}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -117,26 +124,28 @@ fn dialog_delete_requires_explicit_account() {
 
 #[test]
 fn account_name_traversal_rejected() {
-    let dir = appdir("traversal");
-    write_session(&dir, "work");
-    let (code, _out, err) = run_in(
-        &dir,
-        &[
-            "msg",
-            "send",
-            "--account",
-            "..\\evil",
-            "--chat",
-            "me",
-            "--text",
-            "hi",
-            "--dry-run",
-        ],
-    );
-    assert_eq!(code, 1);
-    assert!(err.contains("unknown account"), "stderr: {err}");
-    assert_eq!(list_sessions(&dir), vec!["work.session"]);
-    assert!(!dir.join("evil.session").exists());
+    for sep in ["../evil", "..\\evil"] {
+        let dir = appdir("traversal");
+        write_session(&dir, "work");
+        let (code, _out, err) = run_in(
+            &dir,
+            &[
+                "msg",
+                "send",
+                "--account",
+                sep,
+                "--chat",
+                "me",
+                "--text",
+                "hi",
+                "--dry-run",
+            ],
+        );
+        assert_eq!(code, 1, "separator case {sep}");
+        assert!(err.contains("unknown account"), "case {sep}: stderr: {err}");
+        assert_eq!(list_sessions(&dir), vec!["work.session"]);
+        assert!(!dir.join("evil.session").exists());
+    }
 }
 
 #[test]
@@ -368,37 +377,40 @@ fn json_and_jsonl_are_mutually_exclusive() {
 
 #[test]
 fn login_rejects_unsafe_name_without_writing_files() {
-    let dir = appdir("loginbad");
-    let out = tele()
-        .args([
-            "account",
-            "login",
-            "--name",
-            "..\\evil",
-            "--phone",
-            "+10000000000",
-        ])
-        .env("TELE_APP_DIR", &dir)
-        .env("TELE_API_ID", "12345")
-        .env("TELE_API_HASH", "deadbeefdeadbeef")
-        .output()
-        .unwrap();
-    let code = out.status.code().unwrap_or(-1);
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(code, 1);
-    assert!(err.contains("invalid account name"), "stderr: {err}");
-    assert!(!dir.join("evil.session").exists());
-    assert!(!dir.join("..").join("evil.session").exists());
+    for sep in ["../evil", "..\\evil"] {
+        let dir = appdir("loginbad");
+        let out = tele()
+            .args(["account", "login", "--name", sep, "--phone", "+10000000000"])
+            .env("TELE_APP_DIR", &dir)
+            .env("TELE_API_ID", "12345")
+            .env("TELE_API_HASH", "deadbeefdeadbeef")
+            .output()
+            .unwrap();
+        let code = out.status.code().unwrap_or(-1);
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(code, 1, "separator case {sep}");
+        assert!(
+            err.contains("invalid account name"),
+            "case {sep}: stderr: {err}"
+        );
+        assert!(!dir.join("evil.session").exists());
+        assert!(!dir.join("..").join("evil.session").exists());
+    }
 }
 
 #[test]
 fn remove_rejects_unsafe_name() {
-    let dir = appdir("removebad");
-    write_session(&dir, "work");
-    let (code, _out, err) = run_in(&dir, &["account", "remove", "--name", "..\\evil"]);
-    assert_eq!(code, 1);
-    assert!(err.contains("invalid account name"), "stderr: {err}");
-    assert_eq!(list_sessions(&dir), vec!["work.session"]);
+    for sep in ["../evil", "..\\evil"] {
+        let dir = appdir("removebad");
+        write_session(&dir, "work");
+        let (code, _out, err) = run_in(&dir, &["account", "remove", "--name", sep]);
+        assert_eq!(code, 1, "separator case {sep}");
+        assert!(
+            err.contains("invalid account name"),
+            "case {sep}: stderr: {err}"
+        );
+        assert_eq!(list_sessions(&dir), vec!["work.session"]);
+    }
 }
 
 #[test]
@@ -550,4 +562,24 @@ fn manifest_contract_row_exists() {
         std::fs::read_to_string(PathBuf::from(MANIFEST_DIR).join("docs/cli-contract.md")).unwrap();
     assert!(md.contains("--account NAME     repeatable; NAME or all"));
     assert!(md.contains("--tag TAG          repeatable; union with --account"));
+}
+
+#[test]
+fn appdirs_are_unique_across_threads() {
+    let handles: Vec<_> = (0..8)
+        .map(|_| std::thread::spawn(|| appdir("threadtag")))
+        .collect();
+    let mut dirs = Vec::new();
+    for h in handles {
+        dirs.push(h.join().unwrap());
+    }
+    for d in &dirs {
+        assert!(d.is_dir(), "appdir must exist: {}", d.display());
+    }
+    dirs.sort();
+    dirs.dedup();
+    assert_eq!(dirs.len(), 8, "parallel appdirs must not collide: {dirs:?}");
+    for d in &dirs {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

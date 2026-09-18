@@ -7,8 +7,7 @@ fn tele() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tele"))
 }
 
-static CONTRACT_APPDIR_SEQ: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static CONTRACT_APPDIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn isolated_appdir(tag: &str) -> PathBuf {
     let n = CONTRACT_APPDIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -253,9 +252,9 @@ fn group_subcommands(group: &str) -> Vec<String> {
 }
 
 fn is_group_subcommand(lgroup: &str, word: &str) -> bool {
-    group_subcommands(lgroup).iter().any(|s| {
-        s == word || s.replace('-', "") == word.replace('-', "")
-    })
+    group_subcommands(lgroup)
+        .iter()
+        .any(|s| s == word || s.replace('-', "") == word.replace('-', ""))
 }
 
 fn flag_ok_in_cell(lgroup: &str, lsub: &Option<String>, part: &str) -> bool {
@@ -298,8 +297,7 @@ fn check_unclassified_token(
     cell_cmd: &Option<(String, Option<String>)>,
     registry: &[String],
 ) {
-    if token.contains("://") {
-    } else if registry.iter().any(|r| r == token) {
+    if token.contains("://") || registry.iter().any(|r| r == token) {
     } else if token.contains('.') && is_registry_shaped_ref(token) {
         for name in expand_registry_ref(token) {
             assert!(
@@ -315,15 +313,14 @@ fn check_unclassified_token(
     } else {
         let (lgroup, lsub): (String, Option<String>) =
             cell_cmd.clone().unwrap_or(("listen".to_string(), None));
-        let cleaned = token.trim_matches(|c: char| {
-            matches!(c, '[' | ']' | '(' | ')' | ',' | '.' | ';' | ':')
-        });
+        let cleaned = token
+            .trim_matches(|c: char| matches!(c, '[' | ']' | '(' | ')' | ',' | '.' | ';' | ':'));
         let first = cleaned.split_whitespace().next().unwrap_or("");
         let sub = if first == lgroup.as_str() {
             token
                 .split_whitespace()
                 .nth(1)
-                .filter(|s| is_group_subcommand(&lgroup, *s))
+                .filter(|s| is_group_subcommand(&lgroup, s))
                 .map(str::to_string)
         } else if !first.is_empty()
             && !first.starts_with("--")
@@ -4004,7 +4001,9 @@ fn registry_ref_expansion_covers_brace_lists() {
     assert!(is_registry_shaped_ref("messages.{GetHistory,Search}"));
     assert!(is_registry_shaped_ref("users.GetUsers"));
     assert!(!is_registry_shaped_ref("messages.toggleNoForwards"));
-    assert!(!is_registry_shaped_ref("messages.{getAllStickers,searchStickerSets}"));
+    assert!(!is_registry_shaped_ref(
+        "messages.{getAllStickers,searchStickerSets}"
+    ));
     assert!(!is_registry_shaped_ref("would"));
     assert!(!is_registry_shaped_ref("t.me permalink for channels"));
 }
