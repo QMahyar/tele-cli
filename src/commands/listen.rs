@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 
@@ -175,6 +175,7 @@ fn deletion_match_set(
         return Some(messages.to_vec());
     }
     let mut matched: Vec<i32> = Vec::new();
+    let mut seen: HashSet<i32> = HashSet::new();
     for target in targets {
         let hits: Vec<i32> = if target.kind() == PeerKind::Channel {
             if deleted_matches(channel_id, *target) {
@@ -186,7 +187,7 @@ fn deletion_match_set(
             observed_deletion_ids(messages, observed, *target)
         };
         for id in hits {
-            if !matched.contains(&id) {
+            if seen.insert(id) {
                 matched.push(id);
             }
         }

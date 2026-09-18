@@ -180,7 +180,7 @@ async fn fetch_privacy_rules(
 }
 
 fn build_user_map(users: &[tl::enums::User]) -> HashMap<i64, tl::enums::InputUser> {
-    let mut m = HashMap::new();
+    let mut m = HashMap::with_capacity(users.len());
     for u in users {
         match u {
             tl::enums::User::User(u) => {
@@ -249,8 +249,8 @@ async fn ensure_user_map_complete(
 }
 
 fn dedupe_input_users(users: Vec<tl::enums::InputUser>) -> Vec<tl::enums::InputUser> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
+    let mut seen = HashSet::with_capacity(users.len());
+    let mut out = Vec::with_capacity(users.len());
     for u in users {
         let uid = match &u {
             tl::enums::InputUser::User(x) => x.user_id,
@@ -548,36 +548,46 @@ fn merge_privacy_rules_with_map(
         // Merge mode must never send a target on both sides of the key —
         // the server would receive contradictory rules with undefined
         // precedence. Reject instead, pointing at --replace for revocation.
+        let base_allow_users: HashSet<i64> = base_allow_user_ids.iter().copied().collect();
+        let base_allow_chats: HashSet<i64> = base_allow_chat_ids.iter().copied().collect();
+        let base_disallow_users: HashSet<i64> = base_disallow_user_ids.iter().copied().collect();
+        let base_disallow_chats: HashSet<i64> = base_disallow_chat_ids.iter().copied().collect();
+        let new_disallow_users: HashSet<i64> = new_disallow_user_ids.iter().copied().collect();
+        let new_allow_users: HashSet<i64> = new_allow_user_ids.iter().copied().collect();
+        let new_disallow_chats: HashSet<i64> = targets.disallow_chats.iter().copied().collect();
+        let new_allow_chats: HashSet<i64> = targets.allow_chats.iter().copied().collect();
         let cross_allow = new_disallow_user_ids
             .iter()
-            .filter(|id| base_allow_user_ids.contains(id))
+            .filter(|id| base_allow_users.contains(id))
             .count()
             + targets
                 .disallow_chats
                 .iter()
-                .filter(|id| base_allow_chat_ids.contains(id))
+                .filter(|id| base_allow_chats.contains(id))
                 .count();
         let cross_deny = new_allow_user_ids
             .iter()
-            .filter(|id| base_disallow_user_ids.contains(id))
+            .filter(|id| base_disallow_users.contains(id))
             .count()
             + targets
                 .allow_chats
                 .iter()
-                .filter(|id| base_disallow_chat_ids.contains(id))
+                .filter(|id| base_disallow_chats.contains(id))
                 .count();
         if cross_allow > 0 || cross_deny > 0 {
-            base_allow_user_ids.retain(|id| !new_disallow_user_ids.contains(id));
-            base_allow_chat_ids.retain(|id| !targets.disallow_chats.contains(id));
-            base_disallow_user_ids.retain(|id| !new_allow_user_ids.contains(id));
-            base_disallow_chat_ids.retain(|id| !targets.allow_chats.contains(id));
+            base_allow_user_ids.retain(|id| !new_disallow_users.contains(id));
+            base_allow_chat_ids.retain(|id| !new_disallow_chats.contains(id));
+            base_disallow_user_ids.retain(|id| !new_allow_users.contains(id));
+            base_disallow_chat_ids.retain(|id| !new_allow_chats.contains(id));
         }
     }
+    let base_allow_user_set: HashSet<i64> = base_allow_user_ids.iter().copied().collect();
+    let base_disallow_user_set: HashSet<i64> = base_disallow_user_ids.iter().copied().collect();
     let deduped_allow_targets = dedupe_input_users(targets.allow_users.clone());
     let new_allow_users: Vec<tl::enums::InputUser> = deduped_allow_targets
         .into_iter()
         .filter(|u| match u {
-            tl::enums::InputUser::User(u) => !base_allow_user_ids.contains(&u.user_id),
+            tl::enums::InputUser::User(u) => !base_allow_user_set.contains(&u.user_id),
             _ => true,
         })
         .collect();
@@ -595,12 +605,12 @@ fn merge_privacy_rules_with_map(
         ));
     }
     let mut merged_allow_chats = base_allow_chat_ids;
+    let mut merged_allow_chat_set: HashSet<i64> = merged_allow_chats.iter().copied().collect();
     for id in dedupe_ids(targets.allow_chats.clone()) {
-        if !merged_allow_chats.contains(&id) {
+        if merged_allow_chat_set.insert(id) {
             merged_allow_chats.push(id);
         }
     }
-    merged_allow_chats = dedupe_ids(merged_allow_chats);
     if !merged_allow_chats.is_empty() {
         merged.push(
             tl::enums::InputPrivacyRule::InputPrivacyValueAllowChatParticipants(
@@ -614,7 +624,7 @@ fn merge_privacy_rules_with_map(
     let new_disallow_users: Vec<tl::enums::InputUser> = deduped_disallow_targets
         .into_iter()
         .filter(|u| match u {
-            tl::enums::InputUser::User(u) => !base_disallow_user_ids.contains(&u.user_id),
+            tl::enums::InputUser::User(u) => !base_disallow_user_set.contains(&u.user_id),
             _ => true,
         })
         .collect();
@@ -632,12 +642,13 @@ fn merge_privacy_rules_with_map(
         ));
     }
     let mut merged_disallow_chats = base_disallow_chat_ids;
+    let mut merged_disallow_chat_set: HashSet<i64> =
+        merged_disallow_chats.iter().copied().collect();
     for id in dedupe_ids(targets.disallow_chats.clone()) {
-        if !merged_disallow_chats.contains(&id) {
+        if merged_disallow_chat_set.insert(id) {
             merged_disallow_chats.push(id);
         }
     }
-    merged_disallow_chats = dedupe_ids(merged_disallow_chats);
     if !merged_disallow_chats.is_empty() {
         merged.push(
             tl::enums::InputPrivacyRule::InputPrivacyValueDisallowChatParticipants(
@@ -1820,6 +1831,33 @@ mod tests {
                 )
             ]
         );
+    }
+
+    #[test]
+    #[ignore]
+    fn timing_merge_large_rule_lists() {
+        let base = vec![
+            tl::enums::PrivacyRule::PrivacyValueAllowUsers(
+                tl::types::PrivacyValueAllowUsers {
+                    users: (0..500).collect(),
+                },
+            ),
+            tl::enums::PrivacyRule::PrivacyValueDisallowUsers(
+                tl::types::PrivacyValueDisallowUsers {
+                    users: (1000..1500).collect(),
+                },
+            ),
+        ];
+        let allow: Vec<tl::enums::InputUser> = (250..750).map(iu).collect();
+        let disallow: Vec<tl::enums::InputUser> = (1250..1750).map(iu).collect();
+        let t = targets(&allow, &disallow);
+        let start = std::time::Instant::now();
+        let mut total = 0usize;
+        for _ in 0..200 {
+            total += merge_privacy_rules(&base, &t).len();
+        }
+        let elapsed = start.elapsed();
+        println!("privacy merge: 200 merges at 500-rule lists took {elapsed:?} ({total} rules)");
     }
 
     #[test]
