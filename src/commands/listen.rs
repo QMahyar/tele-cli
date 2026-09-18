@@ -1238,7 +1238,8 @@ impl StreamStopper {
     }
 
     fn time_up(&self) -> bool {
-        match self.until.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        let guard = self.until.lock().unwrap_or_else(|e| e.into_inner());
+        match *guard {
             Some(deadline) => std::time::Instant::now() >= deadline,
             None => false,
         }
@@ -1248,10 +1249,12 @@ impl StreamStopper {
     fn emitted(&self) -> bool {
         let mut guard = self.remaining.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_mut() {
-            Some(0) => true,
             Some(n) => {
+                if *n == 0 {
+                    return true;
+                }
                 *n -= 1;
-                false
+                *n == 0
             }
             None => false,
         }

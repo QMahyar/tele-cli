@@ -1259,6 +1259,8 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let mut identities: HashMap<String, Option<serde_json::Value>> = HashMap::new();
     let mut greeted = false;
     let mut seq: u64 = 0;
+    let mut tick_open = true;
+    let mut response_open = true;
     let hello_entries = |identities: &HashMap<String, Option<serde_json::Value>>| {
         let mut entries: Vec<(String, Option<serde_json::Value>)> = pool
             .served()
@@ -1280,13 +1282,20 @@ pub async fn run(args: &ServeArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 Some(l) => Tick::Line(l),
                 None => Tick::Eof,
             },
-            tick = tick_rx.recv() => match tick {
+            tick = tick_rx.recv(), if tick_open => match tick {
                 Some(t) => Tick::Account(t),
-                None => continue,
+                None => {
+                    tick_open = false;
+                    output::log_line("warn", "serve: all account tasks exited; event stream idle");
+                    continue;
+                }
             },
-            response = response_rx.recv() => match response {
+            response = response_rx.recv(), if response_open => match response {
                 Some(value) => Tick::Response(value),
-                None => continue,
+                None => {
+                    response_open = false;
+                    continue;
+                }
             },
         };
         match tick {
