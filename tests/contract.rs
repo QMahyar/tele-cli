@@ -3191,3 +3191,136 @@ fn doctor_has_root_help_surface() {
         "tele doctor missing from root --help"
     );
 }
+
+fn run_with_stdin(dir: &Path, args: &[&str], input: &str) -> (i32, String, String) {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = tele()
+        .args(args)
+        .env("TELE_APP_DIR", dir)
+        .env_remove("TELE_API_ID")
+        .env_remove("TELE_API_HASH")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tele");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait tele");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn wizard_dry_run_previews_without_prompts() {
+    let (code, out, err) = run_isolated("wizard-dry", &["wizard", "--dry-run", "--json"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(
+        v["results"][0]["data"]["would"]
+            .as_str()
+            .unwrap_or_default(),
+        "guide credential setup for account personal (api_id/api_hash prompts, .env + config writes)"
+    );
+}
+
+#[test]
+fn wizard_no_input_fails_closed() {
+    let (code, _out, err) = run_isolated("wizard-noinput", &["wizard", "--no-input"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--no-input fails closed"), "stderr: {err}");
+}
+
+#[test]
+fn wizard_piped_run_writes_env_and_config() {
+    let dir = isolated_appdir("wizard-pipe");
+    let (code, out, err) = run_with_stdin(
+        &dir,
+        &["wizard", "--name", "work", "--json"],
+        "1234567\ntestwizardhash\n",
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(
+        v["results"][0]["data"]["account"],
+        serde_json::json!("work")
+    );
+    assert_eq!(
+        v["results"][0]["data"]["env_written"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        v["results"][0]["data"]["config_updated"],
+        serde_json::json!(true)
+    );
+    let env = std::fs::read_to_string(dir.join(".env")).unwrap();
+    assert!(env.contains("TELE_API_ID=1234567"), "env: {env}");
+    assert!(env.contains("TELE_API_HASH=testwizardhash"), "env: {env}");
+    let config = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(config.contains("[accounts.work]"), "config: {config}");
+    assert!(
+        !out.contains("testwizardhash") && !err.contains("testwizardhash"),
+        "credential values must never appear in output"
+    );
+}
+
+#[test]
+fn wizard_empty_input_keeps_existing_values() {
+    let dir = isolated_appdir("wizard-keep");
+    std::fs::write(
+        dir.join(".env"),
+        "TELE_API_ID=7654321\nTELE_API_HASH=keepmehash\n",
+    )
+    .unwrap();
+    let (code, out, err) = run_with_stdin(&dir, &["wizard", "--json"], "\n\n");
+    assert_eq!(code, 0, "stderr: {err}");
+    let v = parse_json(&out);
+    assert_eq!(
+        v["results"][0]["data"]["env_written"],
+        serde_json::json!(false)
+    );
+    let env = std::fs::read_to_string(dir.join(".env")).unwrap();
+    assert!(env.contains("TELE_API_ID=7654321"), "env: {env}");
+    assert!(env.contains("TELE_API_HASH=keepmehash"), "env: {env}");
+    assert!(
+        !out.contains("keepmehash") && !err.contains("keepmehash"),
+        "credential values must never appear in output"
+    );
+}
+
+#[test]
+fn wizard_rejects_bad_api_id_three_times() {
+    let dir = isolated_appdir("wizard-badid");
+    let (code, _out, err) = run_with_stdin(&dir, &["wizard"], "abc\nabc\nabc\n");
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("api_id"), "stderr: {err}");
+    assert!(
+        !dir.join(".env").exists(),
+        "failed wizard must not write credentials"
+    );
+}
+
+#[test]
+fn wizard_closed_stdin_fails_closed() {
+    let dir = isolated_appdir("wizard-eof");
+    let (code, _out, err) = run_with_stdin(&dir, &["wizard"], "");
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("stdin closed"), "stderr: {err}");
+}
+
+#[test]
+fn wizard_has_root_help_surface() {
+    assert!(
+        help(&[]).contains(" wizard "),
+        "tele wizard missing from root --help"
+    );
+}

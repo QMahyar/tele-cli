@@ -15,6 +15,7 @@ mod pagination;
 mod rate_limiter;
 mod serialize;
 mod session;
+mod wizard;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::io::Write as _;
@@ -152,6 +153,8 @@ enum Command {
     Raw(raw::RawArgs),
     /// Check local setup health (config, credentials, sessions; no network)
     Doctor,
+    /// Guided credential setup (api_id/api_hash prompts, .env + config writes; no network)
+    Wizard(wizard::WizardArgs),
     /// Print (or install) the agent skill for driving tele
     Skill(skill::SkillCmd),
     /// Generate shell completions
@@ -442,6 +445,9 @@ fn no_input_violation(command: &Command, matches: &clap::ArgMatches) -> Option<S
         Command::Account(account::AccountCmd::Delete(_)) => {
             Some("account delete may prompt for the cloud password".to_string())
         }
+        Command::Wizard(_) => {
+            Some("credential wizard would prompt for api_id/api_hash".to_string())
+        }
         _ => None,
     }
 }
@@ -514,6 +520,7 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
         Command::Mcp(c) => mcp::run(&c, flags).await,
         Command::Raw(c) => raw::run(&c, flags).await,
         Command::Doctor => doctor::run(flags).await,
+        Command::Wizard(c) => wizard::run(&c, flags).await,
         Command::Skill(c) => skill::run(c, flags).await,
         Command::Completions(s) => completions::run(s, flags).await,
     };
