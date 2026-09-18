@@ -1117,10 +1117,7 @@ mod tests {
             )
             .unwrap_err(),
         );
-        assert!(
-            msg.contains("custom-emoji document id"),
-            "{msg}"
-        );
+        assert!(msg.contains("custom-emoji document id"), "{msg}");
 
         let plan = plan_topic_op(
             "topic create",
@@ -1439,9 +1436,7 @@ mod tests {
         let err = validate_emoji(Some("")).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert_eq!(err.exit_code(), EXIT_USAGE);
-        assert!(err
-            .message()
-            .contains("custom-emoji document id"));
+        assert!(err.message().contains("custom-emoji document id"));
     }
 
     #[test]
@@ -1450,8 +1445,7 @@ mod tests {
             let err = validate_emoji(Some(bad)).unwrap_err();
             assert!(matches!(err, TeleError::Usage(_)), "for {bad}");
             assert!(
-                err.message()
-                    .contains("custom-emoji document id"),
+                err.message().contains("custom-emoji document id"),
                 "for {bad}"
             );
         }
@@ -1470,8 +1464,7 @@ mod tests {
             let err = validate_emoji(Some(bad)).unwrap_err();
             assert!(matches!(err, TeleError::Usage(_)), "for {bad}");
             assert!(
-                err.message()
-                    .contains("custom-emoji document id"),
+                err.message().contains("custom-emoji document id"),
                 "for {bad}"
             );
         }

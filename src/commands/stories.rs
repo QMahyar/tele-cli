@@ -116,7 +116,10 @@ pub struct EditArgs {
     file: Option<String>,
     #[arg(long, help = "replacement caption")]
     caption: Option<String>,
-    #[arg(long, help = "replacement audience: everyone | contacts | close-friends")]
+    #[arg(
+        long,
+        help = "replacement audience: everyone | contacts | close-friends"
+    )]
     privacy: Option<String>,
 }
 
@@ -124,7 +127,10 @@ pub struct EditArgs {
 pub struct ViewsArgs {
     #[arg(long, help = "target peer: @user, t.me link, numeric id, me, +phone")]
     chat: String,
-    #[arg(long, help = "comma-separated story ids to count views for, e.g. 1,2,3")]
+    #[arg(
+        long,
+        help = "comma-separated story ids to count views for, e.g. 1,2,3"
+    )]
     ids: String,
 }
 
@@ -136,7 +142,11 @@ pub struct ViewersArgs {
     id: i32,
     #[arg(long, default_value_t = 20, help = "max viewers to return (1-100)")]
     limit: u32,
-    #[arg(long, default_value = "", help = "paging offset returned by a previous call")]
+    #[arg(
+        long,
+        default_value = "",
+        help = "paging offset returned by a previous call"
+    )]
     offset: String,
 }
 
@@ -148,7 +158,11 @@ pub struct StoryReactionsArgs {
     id: i32,
     #[arg(long, default_value_t = 20, help = "max reactions to return (1-100)")]
     limit: u32,
-    #[arg(long, default_value = "", help = "paging offset returned by a previous call")]
+    #[arg(
+        long,
+        default_value = "",
+        help = "paging offset returned by a previous call"
+    )]
     offset: String,
 }
 
@@ -1085,7 +1099,11 @@ pub(crate) fn views_serve_dry_run(args: &ViewsArgs) -> TeleResult<serde_json::Va
 }
 
 pub(crate) fn viewers_serve_dry_run(args: &ViewersArgs) -> TeleResult<serde_json::Value> {
-    Ok(viewers_dry_run_payload(args.chat.trim(), args.id, args.limit))
+    Ok(viewers_dry_run_payload(
+        args.chat.trim(),
+        args.id,
+        args.limit,
+    ))
 }
 
 pub(crate) fn story_reactions_serve_dry_run(
@@ -1342,11 +1360,7 @@ pub(crate) async fn story_reactions_core(
         .await
         .map_err(tele_invocation)?;
     let tl::enums::stories::StoryReactionsList::List(list) = res;
-    let rows: Vec<serde_json::Value> = list
-        .reactions
-        .iter()
-        .map(story_reaction_row)
-        .collect();
+    let rows: Vec<serde_json::Value> = list.reactions.iter().map(story_reaction_row).collect();
     let mut out = serde_json::json!({
         "chat": chat_target,
         "id": params.id,
@@ -1506,7 +1520,10 @@ async fn link(args: LinkArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             client::authorize(&guard.client).await?;
             let result = link_core(&guard.shares(), params).await?;
             if !output::machine_mode(json, jsonl) {
-                let line = format!("story link: {}", result["link"].as_str().unwrap_or_default());
+                let line = format!(
+                    "story link: {}",
+                    result["link"].as_str().unwrap_or_default()
+                );
                 let line = if multi {
                     format!("{name}: {line}")
                 } else {

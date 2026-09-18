@@ -3329,8 +3329,10 @@ fn wizard_has_root_help_surface() {
 fn msg_poll_close_validates_before_connect() {
     let (code, _out, err) = run_isolated("pollclose-id", &["msg", "poll-close", "--chat", "me"]);
     assert_eq!(code, 1, "stderr: {err}");
-    let (code, _out, err) =
-        run_isolated("pollclose-bad", &["msg", "poll-close", "--chat", "me", "--id", "0"]);
+    let (code, _out, err) = run_isolated(
+        "pollclose-bad",
+        &["msg", "poll-close", "--chat", "me", "--id", "0"],
+    );
     assert_eq!(code, 1, "stderr: {err}");
     assert!(err.contains("--id must be a positive"), "stderr: {err}");
 }
@@ -3342,7 +3344,15 @@ fn msg_poll_close_dry_run_json_reports_would() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "poll-close", "--chat", "me", "--id", "9", "--account", "work", "--dry-run",
+            "msg",
+            "poll-close",
+            "--chat",
+            "me",
+            "--id",
+            "9",
+            "--account",
+            "work",
+            "--dry-run",
             "--json",
         ],
     );
@@ -3351,7 +3361,10 @@ fn msg_poll_close_dry_run_json_reports_would() {
     assert_eq!(d["dry_run"], serde_json::json!(true));
     assert_eq!(d["id"], serde_json::json!(9));
     assert!(
-        d["would"].as_str().unwrap_or_default().contains("close poll"),
+        d["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("close poll"),
         "data: {d}"
     );
 }
@@ -3363,7 +3376,15 @@ fn msg_poll_results_dry_run_json_reports_would() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "poll-results", "--chat", "me", "--id", "9", "--account", "work", "--dry-run",
+            "msg",
+            "poll-results",
+            "--chat",
+            "me",
+            "--id",
+            "9",
+            "--account",
+            "work",
+            "--dry-run",
             "--json",
         ],
     );
@@ -3380,7 +3401,16 @@ fn msg_poll_results_dry_run_json_reports_would() {
 fn msg_poll_votes_validates_and_dry_runs() {
     let (code, _out, err) = run_isolated(
         "pollvotes-opt",
-        &["msg", "poll-votes", "--chat", "me", "--id", "9", "--option", "0"],
+        &[
+            "msg",
+            "poll-votes",
+            "--chat",
+            "me",
+            "--id",
+            "9",
+            "--option",
+            "0",
+        ],
     );
     assert_eq!(code, 1, "stderr: {err}");
     assert!(err.contains("--option"), "stderr: {err}");
@@ -3389,8 +3419,18 @@ fn msg_poll_votes_validates_and_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "poll-votes", "--chat", "me", "--id", "9", "--option", "1", "--account",
-            "work", "--dry-run", "--json",
+            "msg",
+            "poll-votes",
+            "--chat",
+            "me",
+            "--id",
+            "9",
+            "--option",
+            "1",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
@@ -3406,7 +3446,14 @@ fn msg_poll_unread_dry_run_json_reports_would() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "poll-unread", "--chat", "me", "--account", "work", "--dry-run", "--json",
+            "msg",
+            "poll-unread",
+            "--chat",
+            "me",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
@@ -3422,8 +3469,11 @@ fn msg_poll_unread_dry_run_json_reports_would() {
 }
 
 #[test]
-fn story_edit_requires_a_change_before_connect() {    let (code, _out, err) =
-        run_isolated("storyedit-none", &["story", "edit", "--chat", "me", "--id", "3"]);
+fn story_edit_requires_a_change_before_connect() {
+    let (code, _out, err) = run_isolated(
+        "storyedit-none",
+        &["story", "edit", "--chat", "me", "--id", "3"],
+    );
     assert_eq!(code, 1, "stderr: {err}");
     assert!(err.contains("nothing to change"), "stderr: {err}");
 }
@@ -3435,21 +3485,42 @@ fn story_edit_views_reactions_link_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "story", "edit", "--chat", "me", "--id", "3", "--caption", "new", "--account",
-            "work", "--dry-run", "--json",
+            "story",
+            "edit",
+            "--chat",
+            "me",
+            "--id",
+            "3",
+            "--caption",
+            "new",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
     let d = parse_json(&out)["results"][0]["data"].clone();
     assert_eq!(d["dry_run"], serde_json::json!(true));
     assert!(
-        d["would"].as_str().unwrap_or_default().contains("edit story 3"),
+        d["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("edit story 3"),
         "data: {d}"
     );
     let (code, out, err) = run_in(
         &dir,
         &[
-            "story", "views", "--chat", "me", "--ids", "1,2", "--account", "work", "--dry-run",
+            "story",
+            "views",
+            "--chat",
+            "me",
+            "--ids",
+            "1,2",
+            "--account",
+            "work",
+            "--dry-run",
             "--json",
         ],
     );
@@ -3461,8 +3532,16 @@ fn story_edit_views_reactions_link_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "story", "reactions", "--chat", "me", "--id", "5", "--account", "work",
-            "--dry-run", "--json",
+            "story",
+            "reactions",
+            "--chat",
+            "me",
+            "--id",
+            "5",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
@@ -3473,14 +3552,25 @@ fn story_edit_views_reactions_link_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "story", "link", "--chat", "me", "--id", "5", "--account", "work", "--dry-run",
+            "story",
+            "link",
+            "--chat",
+            "me",
+            "--id",
+            "5",
+            "--account",
+            "work",
+            "--dry-run",
             "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
     let d = parse_json(&out)["results"][0]["data"].clone();
     assert!(
-        d["would"].as_str().unwrap_or_default().contains("export link"),
+        d["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("export link"),
         "data: {d}"
     );
 }
@@ -3489,15 +3579,17 @@ fn story_edit_views_reactions_link_dry_runs() {
 fn msg_send_effect_validates_and_dry_runs() {
     let (code, _out, err) = run_isolated(
         "effect-bad",
-        &["msg", "send", "--chat", "me", "--text", "hi", "--effect", "0"],
+        &[
+            "msg", "send", "--chat", "me", "--text", "hi", "--effect", "0",
+        ],
     );
     assert_eq!(code, 1, "stderr: {err}");
     assert!(err.contains("--effect must be a positive"), "stderr: {err}");
     let (code, _out, err) = run_isolated(
         "effect-poll",
         &[
-            "msg", "send", "--chat", "me", "--poll", "Q?", "--option", "A", "--option",
-            "B", "--effect", "42",
+            "msg", "send", "--chat", "me", "--poll", "Q?", "--option", "A", "--option", "B",
+            "--effect", "42",
         ],
     );
     assert_eq!(code, 1, "stderr: {err}");
@@ -3507,8 +3599,18 @@ fn msg_send_effect_validates_and_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "send", "--chat", "me", "--text", "hi", "--effect", "42", "--account",
-            "work", "--dry-run", "--json",
+            "msg",
+            "send",
+            "--chat",
+            "me",
+            "--text",
+            "hi",
+            "--effect",
+            "42",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
@@ -3530,7 +3632,16 @@ fn msg_send_todo_validates_and_dry_runs() {
     assert_eq!(code, 1, "stderr: {err}");
     let (code, _out, err) = run_isolated(
         "todo-orphan",
-        &["msg", "send", "--chat", "me", "--text", "hi", "--todo-item", "Milk"],
+        &[
+            "msg",
+            "send",
+            "--chat",
+            "me",
+            "--text",
+            "hi",
+            "--todo-item",
+            "Milk",
+        ],
     );
     assert_eq!(code, 1, "stderr: {err}");
     let dir = isolated_appdir("todo-dry");
@@ -3538,8 +3649,20 @@ fn msg_send_todo_validates_and_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "send", "--chat", "me", "--todo", "Groceries", "--todo-item", "Milk",
-            "--todo-item", "Eggs", "--account", "work", "--dry-run", "--json",
+            "msg",
+            "send",
+            "--chat",
+            "me",
+            "--todo",
+            "Groceries",
+            "--todo-item",
+            "Milk",
+            "--todo-item",
+            "Eggs",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
@@ -3555,14 +3678,21 @@ fn msg_send_todo_validates_and_dry_runs() {
 
 #[test]
 fn msg_translate_validates_and_dry_runs() {
-    let (code, _out, err) =
-        run_isolated("trx-none", &["msg", "translate", "--to-lang", "es"]);
+    let (code, _out, err) = run_isolated("trx-none", &["msg", "translate", "--to-lang", "es"]);
     assert_eq!(code, 1, "stderr: {err}");
     assert!(err.contains("requires --chat"), "stderr: {err}");
     let (code, _out, err) = run_isolated(
         "trx-mix",
         &[
-            "msg", "translate", "--chat", "me", "--ids", "3", "--text", "hi", "--to-lang",
+            "msg",
+            "translate",
+            "--chat",
+            "me",
+            "--ids",
+            "3",
+            "--text",
+            "hi",
+            "--to-lang",
             "es",
         ],
     );
@@ -3573,8 +3703,16 @@ fn msg_translate_validates_and_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "translate", "--text", "hello", "--to-lang", "es", "--account", "work",
-            "--dry-run", "--json",
+            "msg",
+            "translate",
+            "--text",
+            "hello",
+            "--to-lang",
+            "es",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
@@ -3590,7 +3728,15 @@ fn msg_transcribe_and_rate_dry_runs() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "transcribe", "--chat", "me", "--id", "9", "--account", "work", "--dry-run",
+            "msg",
+            "transcribe",
+            "--chat",
+            "me",
+            "--id",
+            "9",
+            "--account",
+            "work",
+            "--dry-run",
             "--json",
         ],
     );
@@ -3598,22 +3744,44 @@ fn msg_transcribe_and_rate_dry_runs() {
     let d = parse_json(&out)["results"][0]["data"].clone();
     assert_eq!(d["dry_run"], serde_json::json!(true));
     assert!(
-        d["would"].as_str().unwrap_or_default().contains("transcribe message 9"),
+        d["would"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("transcribe message 9"),
         "data: {d}"
     );
     let (code, _out, err) = run_isolated(
         "trs-rate-both",
         &[
-            "msg", "transcribe-rate", "--chat", "me", "--id", "9", "--transcription-id",
-            "123", "--good", "--bad",
+            "msg",
+            "transcribe-rate",
+            "--chat",
+            "me",
+            "--id",
+            "9",
+            "--transcription-id",
+            "123",
+            "--good",
+            "--bad",
         ],
     );
     assert_eq!(code, 1, "stderr: {err}");
     let (code, out, err) = run_in(
         &dir,
         &[
-            "msg", "transcribe-rate", "--chat", "me", "--id", "9", "--transcription-id",
-            "123", "--good", "--account", "work", "--dry-run", "--json",
+            "msg",
+            "transcribe-rate",
+            "--chat",
+            "me",
+            "--id",
+            "9",
+            "--transcription-id",
+            "123",
+            "--good",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");
@@ -3628,7 +3796,15 @@ fn topic_create_emoji_accepts_document_id_and_rejects_garbage() {
     let (code, _out, err) = run_in(
         &dir,
         &[
-            "topic", "create", "--chat", "me", "--title", "T", "--emoji", "ab", "--account",
+            "topic",
+            "create",
+            "--chat",
+            "me",
+            "--title",
+            "T",
+            "--emoji",
+            "ab",
+            "--account",
             "work",
         ],
     );
@@ -3637,8 +3813,18 @@ fn topic_create_emoji_accepts_document_id_and_rejects_garbage() {
     let (code, out, err) = run_in(
         &dir,
         &[
-            "topic", "create", "--chat", "me", "--title", "T", "--emoji",
-            "531234567890123456", "--account", "work", "--dry-run", "--json",
+            "topic",
+            "create",
+            "--chat",
+            "me",
+            "--title",
+            "T",
+            "--emoji",
+            "531234567890123456",
+            "--account",
+            "work",
+            "--dry-run",
+            "--json",
         ],
     );
     assert_eq!(code, 0, "stderr: {err}");

@@ -31,7 +31,11 @@ pub struct PollVotesArgs {
     pub(crate) option: Option<usize>,
     #[arg(long, default_value_t = 20, help = "max voters to return (1-100)")]
     pub(crate) limit: u32,
-    #[arg(long, default_value = "", help = "paging offset returned by a previous call")]
+    #[arg(
+        long,
+        default_value = "",
+        help = "paging offset returned by a previous call"
+    )]
     pub(crate) offset: String,
 }
 
@@ -247,9 +251,7 @@ pub(crate) fn poll_close_serve_dry_run(args: &PollCloseArgs) -> TeleResult<serde
         "would": format!("close poll in message {} in chat {}", args.id, args.chat.as_str())}))
 }
 
-pub(crate) fn poll_results_serve_dry_run(
-    args: &PollResultsArgs,
-) -> TeleResult<serde_json::Value> {
+pub(crate) fn poll_results_serve_dry_run(args: &PollResultsArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
         "dry_run": true,
         "chat": args.chat.as_str(),
@@ -287,8 +289,7 @@ async fn fetch_poll(
     chat_target: &str,
     id: i32,
 ) -> TeleResult<(grammers_client::peer::Peer, grammers_client::media::Poll)> {
-    let chat =
-        entities::resolve_peer(&shares.client, shares.session.as_ref(), chat_target).await?;
+    let chat = entities::resolve_peer(&shares.client, shares.session.as_ref(), chat_target).await?;
     let chat_ref = entities::peer_ref(&chat).await.map_err(tele_invocation)?;
     let found = shares
         .client
@@ -567,9 +568,7 @@ pub(crate) async fn poll_unread_core(
         .await
         .map_err(tele_invocation)?;
     let (count, messages) = match res {
-        tl::enums::messages::Messages::Messages(m) => {
-            (m.messages.len() as i32, m.messages)
-        }
+        tl::enums::messages::Messages::Messages(m) => (m.messages.len() as i32, m.messages),
         tl::enums::messages::Messages::Slice(s) => (s.count, s.messages),
         tl::enums::messages::Messages::ChannelMessages(c) => (c.count, c.messages),
         tl::enums::messages::Messages::NotModified(_) => (0, Vec::new()),
@@ -847,14 +846,16 @@ mod tests {
             can_view_stats: false,
         };
         let updates = tl::enums::Updates::Updates(tl::types::Updates {
-            updates: vec![tl::enums::Update::MessagePoll(tl::types::UpdateMessagePoll {
-                poll_id: 3,
-                poll: Some(tl::enums::Poll::Poll(poll)),
-                results: tl::enums::PollResults::Results(Box::new(results)),
-                peer: None,
-                msg_id: None,
-                top_msg_id: None,
-            })],
+            updates: vec![tl::enums::Update::MessagePoll(
+                tl::types::UpdateMessagePoll {
+                    poll_id: 3,
+                    poll: Some(tl::enums::Poll::Poll(poll)),
+                    results: tl::enums::PollResults::Results(Box::new(results)),
+                    peer: None,
+                    msg_id: None,
+                    top_msg_id: None,
+                },
+            )],
             users: Vec::new(),
             chats: Vec::new(),
             date: 0,

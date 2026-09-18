@@ -18,7 +18,10 @@ pub struct TranslateArgs {
         help = "comma-separated message IDs to translate (requires --chat)"
     )]
     pub(crate) ids: Vec<i32>,
-    #[arg(long, help = "free text to translate (repeatable; mutually exclusive with --chat/--ids)")]
+    #[arg(
+        long,
+        help = "free text to translate (repeatable; mutually exclusive with --chat/--ids)"
+    )]
     pub(crate) text: Vec<String>,
     #[arg(long, help = "target language code, e.g. en, es, fa")]
     pub(crate) to_lang: String,
@@ -192,9 +195,7 @@ pub(crate) fn validate_translate(args: &TranslateArgs) -> TeleResult<()> {
         }
     }
     if !args.ids.is_empty() && args.chat.is_none() {
-        return Err(TeleError::Usage(
-            "--ids requires --chat".to_string(),
-        ));
+        return Err(TeleError::Usage("--ids requires --chat".to_string()));
     }
     if args.ids.iter().any(|&i| i <= 0) {
         return Err(TeleError::Usage(
@@ -527,7 +528,10 @@ mod tests {
             id: 9,
         })
         .unwrap();
-        assert!(v["would"].as_str().unwrap().contains("transcribe message 9"));
+        assert!(v["would"]
+            .as_str()
+            .unwrap()
+            .contains("transcribe message 9"));
         let v = transcribe_rate_serve_dry_run(&TranscribeRateArgs {
             chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
             id: 9,

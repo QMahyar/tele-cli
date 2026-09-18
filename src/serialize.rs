@@ -1623,7 +1623,8 @@ mod tests {
     }
 
     #[test]
-    fn peer_id_key_user_has_correct_kind_and_id() {        let peer_id = grammers_session::types::PeerId::user(8552872518).unwrap();
+    fn peer_id_key_user_has_correct_kind_and_id() {
+        let peer_id = grammers_session::types::PeerId::user(8552872518).unwrap();
         let key = peer_id_key(peer_id);
         assert_eq!(key["id"], 8552872518_i64);
         assert_eq!(key["kind"], "user");

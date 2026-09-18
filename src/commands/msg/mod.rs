@@ -18,18 +18,18 @@ pub mod validate;
 
 use download::{download, download_core, download_serve_dry_run, validate_download};
 use poll::{
-    poll_close_core, poll_results_core, poll_unread_core, poll_votes_core,
-    poll_close_serve_dry_run, poll_results_serve_dry_run, poll_unread_serve_dry_run,
-    poll_votes_serve_dry_run, validate_poll_close, validate_poll_results, validate_poll_unread,
-    validate_poll_votes, PollCloseArgs, PollCloseParams, PollResultsArgs, PollResultsParams,
-    PollUnreadArgs, PollUnreadParams, PollVotesArgs, PollVotesParams,
+    poll_close_core, poll_close_serve_dry_run, poll_results_core, poll_results_serve_dry_run,
+    poll_unread_core, poll_unread_serve_dry_run, poll_votes_core, poll_votes_serve_dry_run,
+    validate_poll_close, validate_poll_results, validate_poll_unread, validate_poll_votes,
+    PollCloseArgs, PollCloseParams, PollResultsArgs, PollResultsParams, PollUnreadArgs,
+    PollUnreadParams, PollVotesArgs, PollVotesParams,
 };
 use send::{send, send_core, send_serve_dry_run};
 use translate::{
-    transcribe_core, transcribe_rate_core, transcribe_rate_serve_dry_run,
-    transcribe_serve_dry_run, translate_core, translate_serve_dry_run, validate_transcribe,
-    validate_transcribe_rate, validate_translate, TranscribeArgs, TranscribeParams,
-    TranscribeRateArgs, TranscribeRateParams, TranslateArgs, TranslateParams,
+    transcribe_core, transcribe_rate_core, transcribe_rate_serve_dry_run, transcribe_serve_dry_run,
+    translate_core, translate_serve_dry_run, validate_transcribe, validate_transcribe_rate,
+    validate_translate, TranscribeArgs, TranscribeParams, TranscribeRateArgs, TranscribeRateParams,
+    TranslateArgs, TranslateParams,
 };
 
 pub use params::{
@@ -563,10 +563,7 @@ pub(crate) async fn forward_core(
     let mut dropped: Vec<i32> = Vec::new();
     let mut failed: Vec<i32> = Vec::new();
     for chunk in batches(&ids) {
-        let random_ids: Vec<i64> = chunk
-            .iter()
-            .map(|_| send::message_random_id())
-            .collect();
+        let random_ids: Vec<i64> = chunk.iter().map(|_| send::message_random_id()).collect();
         let sent = shares
             .client
             .invoke(&build_forward_request(
@@ -1491,8 +1488,7 @@ async fn poll_results(args: PollResultsArgs, flags: &GlobalFlags) -> TeleResult<
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
-            let result =
-                poll_results_core(&guard.shares(), PollResultsParams::from(&args)).await?;
+            let result = poll_results_core(&guard.shares(), PollResultsParams::from(&args)).await?;
             if !output::machine_mode(json, jsonl) {
                 let line = format!("poll {} closed={}", result["id"], result["poll"]["closed"]);
                 let line = if multi {

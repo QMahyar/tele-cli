@@ -204,7 +204,8 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
     ) {
         (None, true, None, None) if args.poll.is_none() && args.todo.is_none() => {
             return Err(TeleError::Usage(
-                "msg send requires --text, --file, --url, --copy-from, --poll, or --todo".to_string(),
+                "msg send requires --text, --file, --url, --copy-from, --poll, or --todo"
+                    .to_string(),
             ))
         }
         (Some(_), false, _, _) | (Some(_), _, Some(_), _) => {

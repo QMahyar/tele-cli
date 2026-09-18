@@ -8,9 +8,9 @@ use crate::commands::msg::download::{
 };
 use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
-    file_message, message_random_id, parse_as_media, parse_effect, parse_poll_mode,
-    parse_schedule, send_as_media_message, send_dry_run_payload, send_poll_message,
-    split_chunk_opts, split_text_utf16, url_message,
+    file_message, message_random_id, parse_as_media, parse_effect, parse_poll_mode, parse_schedule,
+    send_as_media_message, send_dry_run_payload, send_poll_message, split_chunk_opts,
+    split_text_utf16, url_message,
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
@@ -542,7 +542,9 @@ fn forward_sent_ids_skips_unmapped_and_empty_updates() {
     );
     assert!(forward_sent_ids(&tl::enums::Updates::TooLong, &chunk, &[11, 22, 33]).is_empty());
     let bare = tl::enums::Updates::Updates(tl::types::Updates {
-        updates: vec![tl::enums::Update::User(tl::types::UpdateUser { user_id: 5 })],
+        updates: vec![tl::enums::Update::User(tl::types::UpdateUser {
+            user_id: 5,
+        })],
         users: Vec::new(),
         chats: Vec::new(),
         date: 0,
@@ -2727,15 +2729,12 @@ fn send_params_roundtrip_carries_poll_and_as_media() {
 #[test]
 fn parse_effect_accepts_positive_ids_only() {
     assert_eq!(parse_effect(None).unwrap(), None);
-    assert_eq!(parse_effect(Some(5104841845623145212)).unwrap(), Some(5104841845623145212));
-    assert!(matches!(
-        parse_effect(Some(0)),
-        Err(TeleError::Usage(_))
-    ));
-    assert!(matches!(
-        parse_effect(Some(-7)),
-        Err(TeleError::Usage(_))
-    ));
+    assert_eq!(
+        parse_effect(Some(5104841845623145212)).unwrap(),
+        Some(5104841845623145212)
+    );
+    assert!(matches!(parse_effect(Some(0)), Err(TeleError::Usage(_))));
+    assert!(matches!(parse_effect(Some(-7)), Err(TeleError::Usage(_))));
 }
 
 #[test]
@@ -2778,15 +2777,13 @@ fn validate_send_rejects_effect_with_poll_url_copy_as_and_albums() {
     as_media.files = vec![dir.join("a.pdf").to_string_lossy().into_owned()];
     as_media.as_media = Some("voice".to_string());
     as_media.effect = Some(42);
-    assert!(matches!(
-        validate_send(&as_media),
-        Err(TeleError::Usage(_))
-    ));
+    assert!(matches!(validate_send(&as_media), Err(TeleError::Usage(_))));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn send_dry_run_payload_carries_effect() {    let mut args = send_args("plain");
+fn send_dry_run_payload_carries_effect() {
+    let mut args = send_args("plain");
     args.effect = Some(42);
     let payload = send_dry_run_payload(&args, None);
     assert_eq!(payload["effect"], 42);
@@ -2871,17 +2868,17 @@ fn send_dry_run_payload_carries_checklist() {
     let args = todo_args();
     let payload = send_dry_run_payload(&args, None);
     assert_eq!(payload["todo"], "Groceries");
-    assert_eq!(
-        payload["todo_items"],
-        serde_json::json!(["Milk", "Eggs"])
-    );
+    assert_eq!(payload["todo_items"], serde_json::json!(["Milk", "Eggs"]));
     assert_eq!(
         payload["would"],
         serde_json::json!("create checklist in chat me")
     );
     let params = SendParams::from(&args);
     assert_eq!(params.todo.as_deref(), Some("Groceries"));
-    assert_eq!(params.todo_item, vec!["Milk".to_string(), "Eggs".to_string()]);
+    assert_eq!(
+        params.todo_item,
+        vec!["Milk".to_string(), "Eggs".to_string()]
+    );
     let back = SendArgs::from(&params);
     assert_eq!(back.todo.as_deref(), Some("Groceries"));
     assert_eq!(back.todo_item, args.todo_item);
@@ -2914,7 +2911,8 @@ fn send_poll_message_builds_quiz_media() {
 }
 
 #[test]
-fn parse_as_media_and_poll_mode_helpers() {    assert_eq!(parse_as_media(None).unwrap(), None);
+fn parse_as_media_and_poll_mode_helpers() {
+    assert_eq!(parse_as_media(None).unwrap(), None);
     assert_eq!(parse_as_media(Some("voice")).unwrap(), Some("voice"));
     assert_eq!(
         parse_as_media(Some("VIDEO-NOTE")).unwrap(),
