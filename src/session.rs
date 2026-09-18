@@ -1301,7 +1301,7 @@ mod tests {
             drop(held);
         }
         let dest = dir.join("alias.session");
-        std::os::unix::fs::hard_link(session_path("work"), &dest)
+        std::fs::hard_link(session_path("work"), &dest)
             .expect("hard link must be creatable in the test env");
         let err = export_session("work", Some(&dest)).await.unwrap_err();
         assert!(
