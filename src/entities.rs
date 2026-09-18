@@ -42,7 +42,9 @@ pub async fn resolve_peer(
                 .invoke(&tl::functions::contacts::ImportContacts {
                     contacts: vec![tl::enums::InputContact::InputPhoneContact(
                         tl::types::InputPhoneContact {
-                            client_id: digits.parse::<i64>().unwrap_or(0),
+                            client_id: digits.parse::<i64>().expect(
+                                "phone digits fit i64: the target classifier caps phone digit strings at 15 digits",
+                            ),
                             phone: digits,
                             first_name: String::new(),
                             last_name: String::new(),

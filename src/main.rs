@@ -20,6 +20,8 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use commands::*;
 use executor::GlobalFlags;
 
+const MAIN_RUNTIME_STACK_SIZE: usize = 64 * 1024 * 1024;
+
 #[derive(Parser)]
 #[command(
     name = "tele",
@@ -152,7 +154,7 @@ fn main() -> std::process::ExitCode {
             let _ = e.print();
             if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
                 let hint = argv_command_hint().unwrap_or_default();
-                emit_usage_error(true, false, &hint, output::strip_ansi(&e.to_string()));
+                emit_usage_error(true, false, &hint, &output::strip_ansi(&e.to_string()));
             }
             std::process::exit(code);
         }
@@ -168,7 +170,7 @@ fn main() -> std::process::ExitCode {
             let _ = e.print();
             if e.use_stderr() && std::env::args_os().any(|a| a == "--json" || a == "--jsonl") {
                 let hint = argv_command_hint().unwrap_or_default();
-                emit_usage_error(true, false, &hint, output::strip_ansi(&e.to_string()));
+                emit_usage_error(true, false, &hint, &output::strip_ansi(&e.to_string()));
             }
             std::process::exit(code);
         }
@@ -192,7 +194,7 @@ fn main() -> std::process::ExitCode {
                 output::machine_mode(flags.json, flags.jsonl),
                 flags.dry_run,
                 &flags.command,
-                message,
+                &message,
             ));
         }
     }
@@ -206,18 +208,13 @@ fn main() -> std::process::ExitCode {
                 output::machine_mode(flags.json, flags.jsonl),
                 flags.dry_run,
                 &flags.command,
-                message,
+                &message,
             ));
         }
     }
     if flags.json && flags.jsonl {
         let message = "--json and --jsonl are mutually exclusive; pick one";
-        std::process::exit(emit_usage_error(
-            true,
-            false,
-            &flags.command,
-            message.to_string(),
-        ));
+        std::process::exit(emit_usage_error(true, false, &flags.command, message));
     }
     if config::app_data_dir_checked().is_err() {
         let message = "cannot determine app data directory; set TELE_APP_DIR to choose a location";
@@ -241,7 +238,7 @@ fn main() -> std::process::ExitCode {
         .build()
         .expect("tokio runtime");
     let code = match std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
+        .stack_size(MAIN_RUNTIME_STACK_SIZE)
         .spawn(move || {
             runtime.block_on(async {
                 tokio::select! {
@@ -291,8 +288,8 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::from(code.clamp(0, 255) as u8)
 }
 
-fn emit_usage_error(machine: bool, dry_run: bool, command: &str, message: String) -> i32 {
-    output::log_line("error", &message);
+fn emit_usage_error(machine: bool, dry_run: bool, command: &str, message: &str) -> i32 {
+    output::log_line("error", message);
     if machine {
         let error_json = serde_json::json!({"type": "UsageError", "message": message});
         let envelope = output::Envelope::failed(dry_run, command, error_json);
@@ -394,8 +391,9 @@ async fn run_command(command: Command, flags: &GlobalFlags) -> i32 {
             output::log_line("error", &e.message());
             if output::machine_mode(flags.json, flags.jsonl) {
                 let envelope = output::Envelope::failed(flags.dry_run, &flags.command, e.as_json());
-                let value = serde_json::to_value(&envelope).expect("envelope serializes");
-                let _ = output::print_json(&value);
+                if let Ok(value) = serde_json::to_value(&envelope) {
+                    let _ = output::print_json(&value);
+                }
             }
             e.exit_code()
         }

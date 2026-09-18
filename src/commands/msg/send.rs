@@ -671,7 +671,11 @@ pub(crate) fn send_poll_message(
     let quiz = match parse_poll_mode(mode)? {
         None => false,
         Some("quiz") => true,
-        Some(_) => unreachable!("parse_poll_mode only yields quiz"),
+        Some(other) => {
+            return Err(TeleError::Usage(format!(
+                "unknown --poll-mode {other:?} (valid: quiz)"
+            )));
+        }
     };
     let correct_answers = match quiz_option {
         None => None,

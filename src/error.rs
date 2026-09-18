@@ -10,7 +10,7 @@ pub const EXIT_ALL_FAILED: i32 = 3;
 pub const EXIT_AUTH: i32 = 4;
 pub const EXIT_INTERRUPTED: i32 = 130;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TeleError {
     Usage(String),
     Auth(String),
@@ -24,6 +24,7 @@ pub enum TeleError {
 }
 
 impl TeleError {
+    #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
             TeleError::Usage(_) => EXIT_USAGE,
@@ -35,6 +36,7 @@ impl TeleError {
         }
     }
 
+    #[must_use]
     pub fn message(&self) -> String {
         match self {
             TeleError::Usage(m)
@@ -49,6 +51,7 @@ impl TeleError {
         }
     }
 
+    #[must_use]
     pub fn as_json(&self) -> serde_json::Value {
         let kind = match self {
             TeleError::Usage(_) => "UsageError",
@@ -78,6 +81,7 @@ impl TeleError {
         value
     }
 
+    #[must_use]
     pub fn is_broken_pipe(&self) -> bool {
         matches!(self, TeleError::BrokenPipe)
     }

@@ -689,7 +689,7 @@ enum DraftAction {
     Clear,
 }
 
-fn draft_action(text: &Option<String>, clear: bool) -> TeleResult<DraftAction> {
+fn draft_action(text: Option<&str>, clear: bool) -> TeleResult<DraftAction> {
     if clear {
         if text.is_some() {
             return Err(TeleError::Usage(
@@ -699,7 +699,7 @@ fn draft_action(text: &Option<String>, clear: bool) -> TeleResult<DraftAction> {
         return Ok(DraftAction::Clear);
     }
     match text {
-        Some(t) => Ok(DraftAction::Set(t.clone())),
+        Some(t) => Ok(DraftAction::Set(t.to_string())),
         None => Err(TeleError::Usage(
             "nothing to do: pass --text <t> to save a draft or --clear to remove it".to_string(),
         )),
@@ -762,7 +762,7 @@ async fn draft(args: DraftArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     validate_draft(&args)?;
     crate::executor::require_explicit_selection("dialog draft", flags)?;
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
-    let action = draft_action(&args.text, args.clear)?;
+    let action = draft_action(args.text.as_deref(), args.clear)?;
     let cleared = matches!(action, DraftAction::Clear);
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -787,7 +787,7 @@ pub(crate) async fn dialog_draft_core(
     shares: &crate::client::ServeShares,
     params: DraftParams,
 ) -> TeleResult<serde_json::Value> {
-    let action = draft_action(&params.text, params.clear)?;
+    let action = draft_action(params.text.as_deref(), params.clear)?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -1642,7 +1642,7 @@ pub(crate) fn validate_drafts(args: &ListArgs) -> TeleResult<()> {
 
 pub(crate) fn validate_draft(args: &DraftArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
-    draft_action(&args.text, args.clear)?;
+    draft_action(args.text.as_deref(), args.clear)?;
     Ok(())
 }
 
@@ -2605,7 +2605,7 @@ mod tests {
 
     #[test]
     fn draft_action_requires_text_or_clear() {
-        let err = draft_action(&None, false).unwrap_err();
+        let err = draft_action(None, false).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("--text"));
         assert!(err.message().contains("--clear"));
@@ -2614,7 +2614,7 @@ mod tests {
     #[test]
     fn draft_action_rejects_text_and_clear_together() {
         let text = Some("hi".to_string());
-        let err = draft_action(&text, true).unwrap_err();
+        let err = draft_action(text.as_deref(), true).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)));
         assert!(err.message().contains("mutually exclusive"));
     }
@@ -2622,11 +2622,11 @@ mod tests {
     #[test]
     fn draft_action_set_carries_text_and_clear_when_only_clear() {
         assert!(matches!(
-            draft_action(&Some("hello".to_string()), false).unwrap(),
+            draft_action(Some("hello"), false).unwrap(),
             DraftAction::Set(t) if t == "hello"
         ));
         assert!(matches!(
-            draft_action(&None, true).unwrap(),
+            draft_action(None, true).unwrap(),
             DraftAction::Clear
         ));
     }

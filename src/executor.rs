@@ -22,7 +22,7 @@ fn command_is_unbudgeted(command: &str) -> bool {
         .any(|c| command == *c || command.starts_with(&format!("{c} ")))
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GlobalFlags {
     pub account: Vec<String>,
     pub tag: Vec<String>,

@@ -29,12 +29,9 @@ pub struct ServeShares {
 }
 
 impl ServeShares {
+    #[must_use]
     pub fn account_name(&self) -> Option<String> {
-        if self.account.is_empty() {
-            None
-        } else {
-            Some(self.account.clone())
-        }
+        (!self.account.is_empty()).then(|| self.account.clone())
     }
 }
 

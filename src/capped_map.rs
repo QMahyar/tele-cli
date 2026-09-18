@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
+#[derive(Debug)]
 pub struct CappedMap<K, V> {
     map: HashMap<K, V>,
     order: VecDeque<K>,
