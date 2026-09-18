@@ -3420,3 +3420,68 @@ fn msg_poll_unread_dry_run_json_reports_would() {
         "data: {d}"
     );
 }
+
+#[test]
+fn story_edit_requires_a_change_before_connect() {
+    let (code, _out, err) =
+        run_isolated("storyedit-none", &["story", "edit", "--chat", "me", "--id", "3"]);
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("nothing to change"), "stderr: {err}");
+}
+
+#[test]
+fn story_edit_views_reactions_link_dry_runs() {
+    let dir = isolated_appdir("storyedit-dry");
+    write_session(&dir, "work");
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "story", "edit", "--chat", "me", "--id", "3", "--caption", "new", "--account",
+            "work", "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert_eq!(d["dry_run"], serde_json::json!(true));
+    assert!(
+        d["would"].as_str().unwrap_or_default().contains("edit story 3"),
+        "data: {d}"
+    );
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "story", "views", "--chat", "me", "--ids", "1,2", "--account", "work", "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(
+        parse_json(&out)["results"][0]["data"]["ids"],
+        serde_json::json!([1, 2])
+    );
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "story", "reactions", "--chat", "me", "--id", "5", "--account", "work",
+            "--dry-run", "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert_eq!(
+        parse_json(&out)["results"][0]["data"]["dry_run"],
+        serde_json::json!(true)
+    );
+    let (code, out, err) = run_in(
+        &dir,
+        &[
+            "story", "link", "--chat", "me", "--id", "5", "--account", "work", "--dry-run",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    let d = parse_json(&out)["results"][0]["data"].clone();
+    assert!(
+        d["would"].as_str().unwrap_or_default().contains("export link"),
+        "data: {d}"
+    );
+}

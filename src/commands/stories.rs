@@ -31,6 +31,11 @@ pub enum StoryCmd {
     Delete(DeleteArgs),
     Pin(PinArgs),
     Unpin(PinArgs),
+    Edit(EditArgs),
+    Views(ViewsArgs),
+    Viewers(ViewersArgs),
+    Reactions(StoryReactionsArgs),
+    Link(LinkArgs),
 }
 
 #[derive(Clone, Args)]
@@ -99,6 +104,60 @@ pub struct PinArgs {
     chat: String,
     #[arg(long, help = "comma-separated story ids, e.g. 1,2,3")]
     ids: String,
+}
+
+#[derive(Args, Clone)]
+pub struct EditArgs {
+    #[arg(long, help = "target peer: @user, t.me link, numeric id, me, +phone")]
+    chat: String,
+    #[arg(long, help = "story id to edit")]
+    id: i32,
+    #[arg(long, help = "replacement photo or video path")]
+    file: Option<String>,
+    #[arg(long, help = "replacement caption")]
+    caption: Option<String>,
+    #[arg(long, help = "replacement audience: everyone | contacts | close-friends")]
+    privacy: Option<String>,
+}
+
+#[derive(Args, Clone)]
+pub struct ViewsArgs {
+    #[arg(long, help = "target peer: @user, t.me link, numeric id, me, +phone")]
+    chat: String,
+    #[arg(long, help = "comma-separated story ids to count views for, e.g. 1,2,3")]
+    ids: String,
+}
+
+#[derive(Args, Clone)]
+pub struct ViewersArgs {
+    #[arg(long, help = "target peer: @user, t.me link, numeric id, me, +phone")]
+    chat: String,
+    #[arg(long, help = "story id to list viewers for")]
+    id: i32,
+    #[arg(long, default_value_t = 20, help = "max viewers to return (1-100)")]
+    limit: u32,
+    #[arg(long, default_value = "", help = "paging offset returned by a previous call")]
+    offset: String,
+}
+
+#[derive(Args, Clone)]
+pub struct StoryReactionsArgs {
+    #[arg(long, help = "target peer: @user, t.me link, numeric id, me, +phone")]
+    chat: String,
+    #[arg(long, help = "story id to list reactions for")]
+    id: i32,
+    #[arg(long, default_value_t = 20, help = "max reactions to return (1-100)")]
+    limit: u32,
+    #[arg(long, default_value = "", help = "paging offset returned by a previous call")]
+    offset: String,
+}
+
+#[derive(Args, Clone)]
+pub struct LinkArgs {
+    #[arg(long, help = "target peer: @user, t.me link, numeric id, me, +phone")]
+    chat: String,
+    #[arg(long, help = "story id to export a deep link for")]
+    id: i32,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
@@ -288,6 +347,186 @@ impl From<&PinParams> for PinArgs {
     }
 }
 
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct EditParams {
+    #[serde(default)]
+    chat: String,
+    id: i32,
+    file: Option<String>,
+    caption: Option<String>,
+    privacy: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+impl From<&EditArgs> for EditParams {
+    fn from(a: &EditArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            file: a.file.clone(),
+            caption: a.caption.clone(),
+            privacy: a.privacy.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&EditParams> for EditArgs {
+    fn from(p: &EditParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            file: p.file.clone(),
+            caption: p.caption.clone(),
+            privacy: p.privacy.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct ViewsParams {
+    #[serde(default)]
+    chat: String,
+    #[serde(default)]
+    ids: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+impl From<&ViewsArgs> for ViewsParams {
+    fn from(a: &ViewsArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            ids: a.ids.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ViewsParams> for ViewsArgs {
+    fn from(p: &ViewsParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            ids: p.ids.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct ViewersParams {
+    #[serde(default)]
+    chat: String,
+    id: i32,
+    #[serde(default = "default_viewers_limit")]
+    limit: u32,
+    #[serde(default)]
+    offset: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn default_viewers_limit() -> u32 {
+    20
+}
+
+impl From<&ViewersArgs> for ViewersParams {
+    fn from(a: &ViewersArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            limit: a.limit,
+            offset: a.offset.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&ViewersParams> for ViewersArgs {
+    fn from(p: &ViewersParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            limit: p.limit,
+            offset: p.offset.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct StoryReactionsParams {
+    #[serde(default)]
+    chat: String,
+    id: i32,
+    #[serde(default = "default_viewers_limit")]
+    limit: u32,
+    #[serde(default)]
+    offset: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+impl From<&StoryReactionsArgs> for StoryReactionsParams {
+    fn from(a: &StoryReactionsArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            limit: a.limit,
+            offset: a.offset.clone(),
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&StoryReactionsParams> for StoryReactionsArgs {
+    fn from(p: &StoryReactionsParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+            limit: p.limit,
+            offset: p.offset.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(crate) struct LinkParams {
+    #[serde(default)]
+    chat: String,
+    id: i32,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+impl From<&LinkArgs> for LinkParams {
+    fn from(a: &LinkArgs) -> Self {
+        Self {
+            chat: a.chat.clone(),
+            id: a.id,
+            dry_run: false,
+        }
+    }
+}
+
+impl From<&LinkParams> for LinkArgs {
+    fn from(p: &LinkParams) -> Self {
+        Self {
+            chat: p.chat.clone(),
+            id: p.id,
+        }
+    }
+}
+
 pub async fn run(cmd: StoryCmd, flags: &GlobalFlags) -> TeleResult<i32> {
     match cmd {
         StoryCmd::Send(a) => send(a, flags).await,
@@ -296,6 +535,11 @@ pub async fn run(cmd: StoryCmd, flags: &GlobalFlags) -> TeleResult<i32> {
         StoryCmd::Delete(a) => delete(a, flags).await,
         StoryCmd::Pin(a) => toggle_pinned(a, true, flags).await,
         StoryCmd::Unpin(a) => toggle_pinned(a, false, flags).await,
+        StoryCmd::Edit(a) => edit(a, flags).await,
+        StoryCmd::Views(a) => views(a, flags).await,
+        StoryCmd::Viewers(a) => viewers(a, flags).await,
+        StoryCmd::Reactions(a) => reactions(a, flags).await,
+        StoryCmd::Link(a) => link(a, flags).await,
     }
 }
 
@@ -715,6 +959,566 @@ pub(crate) fn unpin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Valu
         &parse_ids(&args.ids)?,
         false,
     ))
+}
+
+pub(crate) fn validate_story_edit(args: &EditArgs) -> TeleResult<()> {
+    ChatTarget::parse_flag(&args.chat, "chat")?;
+    if args.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    if args.file.is_none() && args.caption.is_none() && args.privacy.is_none() {
+        return Err(TeleError::Usage(
+            "nothing to change: pass --file and/or --caption and/or --privacy".to_string(),
+        ));
+    }
+    if let Some(path) = &args.file {
+        if path.trim().is_empty() {
+            return Err(TeleError::Usage("--file must not be empty".to_string()));
+        }
+        validate_upload_path(path)?;
+    }
+    if let Some(caption) = &args.caption {
+        if caption.trim().is_empty() {
+            return Err(TeleError::Usage("--caption must not be empty".to_string()));
+        }
+    }
+    if let Some(privacy) = &args.privacy {
+        validate_privacy(privacy)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_story_views(args: &ViewsArgs) -> TeleResult<()> {
+    ChatTarget::parse_flag(&args.chat, "chat")?;
+    parse_ids(&args.ids)?;
+    Ok(())
+}
+
+pub(crate) fn validate_story_viewers(args: &ViewersArgs) -> TeleResult<()> {
+    ChatTarget::parse_flag(&args.chat, "chat")?;
+    if args.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    crate::commands::validate_limit(args.limit, 100, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn validate_story_reactions(args: &StoryReactionsArgs) -> TeleResult<()> {
+    ChatTarget::parse_flag(&args.chat, "chat")?;
+    if args.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    crate::commands::validate_limit(args.limit, 100, "limit")?;
+    Ok(())
+}
+
+pub(crate) fn validate_story_link(args: &LinkArgs) -> TeleResult<()> {
+    ChatTarget::parse_flag(&args.chat, "chat")?;
+    if args.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn edit_dry_run_payload(args: &EditArgs) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": args.chat,
+        "id": args.id,
+        "file": args.file,
+        "caption": args.caption,
+        "privacy": args.privacy,
+        "would": format!("edit story {} of {}", args.id, args.chat)})
+}
+
+fn views_dry_run_payload(chat: &str, ids: &[i32]) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "ids": ids,
+        "would": format!("fetch story view counts {} of {chat}", joined(ids))})
+}
+
+fn viewers_dry_run_payload(chat: &str, id: i32, limit: u32) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "id": id,
+        "limit": limit,
+        "would": format!("list viewers of story {id} of {chat}")})
+}
+
+fn story_reactions_dry_run_payload(chat: &str, id: i32, limit: u32) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "id": id,
+        "limit": limit,
+        "would": format!("list reactions on story {id} of {chat}")})
+}
+
+fn link_dry_run_payload(chat: &str, id: i32) -> serde_json::Value {
+    serde_json::json!({
+        "dry_run": true,
+        "chat": chat,
+        "id": id,
+        "would": format!("export link for story {id} of {chat}")})
+}
+
+pub(crate) fn edit_serve_dry_run(args: &EditArgs) -> TeleResult<serde_json::Value> {
+    Ok(edit_dry_run_payload(args))
+}
+
+pub(crate) fn views_serve_dry_run(args: &ViewsArgs) -> TeleResult<serde_json::Value> {
+    Ok(views_dry_run_payload(
+        args.chat.trim(),
+        &parse_ids(&args.ids)?,
+    ))
+}
+
+pub(crate) fn viewers_serve_dry_run(args: &ViewersArgs) -> TeleResult<serde_json::Value> {
+    Ok(viewers_dry_run_payload(args.chat.trim(), args.id, args.limit))
+}
+
+pub(crate) fn story_reactions_serve_dry_run(
+    args: &StoryReactionsArgs,
+) -> TeleResult<serde_json::Value> {
+    Ok(story_reactions_dry_run_payload(
+        args.chat.trim(),
+        args.id,
+        args.limit,
+    ))
+}
+
+pub(crate) fn link_serve_dry_run(args: &LinkArgs) -> TeleResult<serde_json::Value> {
+    Ok(link_dry_run_payload(args.chat.trim(), args.id))
+}
+
+fn reaction_row(reaction: &tl::enums::Reaction) -> serde_json::Value {
+    match reaction {
+        tl::enums::Reaction::Empty => serde_json::json!({"kind": "empty"}),
+        tl::enums::Reaction::Emoji(e) => serde_json::json!({
+            "kind": "emoji",
+            "emoticon": e.emoticon}),
+        tl::enums::Reaction::CustomEmoji(e) => serde_json::json!({
+            "kind": "custom_emoji",
+            "document_id": e.document_id}),
+        tl::enums::Reaction::Paid => serde_json::json!({"kind": "paid"}),
+    }
+}
+
+fn story_reaction_row(reaction: &tl::enums::StoryReaction) -> serde_json::Value {
+    match reaction {
+        tl::enums::StoryReaction::Reaction(r) => {
+            let mut row = serde_json::json!({
+                "kind": "reaction",
+                "peer_id": crate::commands::helpers::peer_id(&r.peer_id),
+                "date": r.date});
+            row["reaction"] = reaction_row(&r.reaction);
+            row
+        }
+        tl::enums::StoryReaction::PublicForward(r) => {
+            let id = match &r.message {
+                tl::enums::Message::Message(m) => m.id,
+                tl::enums::Message::Service(m) => m.id,
+                tl::enums::Message::Empty(m) => m.id,
+            };
+            serde_json::json!({"kind": "public_forward", "message_id": id})
+        }
+        tl::enums::StoryReaction::PublicRepost(r) => {
+            let story_id = match &r.story {
+                tl::enums::StoryItem::Deleted(d) => d.id,
+                tl::enums::StoryItem::Skipped(s) => s.id,
+                tl::enums::StoryItem::Item(i) => i.id,
+            };
+            serde_json::json!({
+                "kind": "public_repost",
+                "peer_id": crate::commands::helpers::peer_id(&r.peer_id),
+                "story_id": story_id})
+        }
+    }
+}
+
+pub(crate) async fn edit_core(
+    shares: &crate::client::ServeShares,
+    params: EditParams,
+) -> TeleResult<serde_json::Value> {
+    if params.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    if params.file.is_none() && params.caption.is_none() && params.privacy.is_none() {
+        return Err(TeleError::Usage(
+            "nothing to change: pass --file and/or --caption and/or --privacy".to_string(),
+        ));
+    }
+    if let Some(path) = &params.file {
+        validate_upload_path(path)?;
+    }
+    if let Some(privacy) = &params.privacy {
+        validate_privacy(privacy)?;
+    }
+    let chat_target = params.chat.trim().to_string();
+    shares.rate_limiter.acquire().await;
+    let peer = shares_input_peer(shares, &chat_target).await?;
+    let media = match &params.file {
+        Some(path) => {
+            let uploaded = shares
+                .client
+                .upload_file(path)
+                .await
+                .map_err(upload_error)?;
+            Some(input_media(path, uploaded.raw))
+        }
+        None => None,
+    };
+    let privacy_rules = params.privacy.as_deref().map(privacy_rules);
+    shares.rate_limiter.acquire().await;
+    let _: tl::enums::Updates = shares
+        .client
+        .invoke(&tl::functions::stories::EditStory {
+            peer,
+            id: params.id,
+            media,
+            media_areas: None,
+            caption: params.caption.clone(),
+            entities: None,
+            privacy_rules,
+            music: None,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    Ok(serde_json::json!({
+        "chat": chat_target,
+        "id": params.id,
+        "edited": true}))
+}
+
+pub(crate) async fn views_core(
+    shares: &crate::client::ServeShares,
+    params: ViewsParams,
+) -> TeleResult<serde_json::Value> {
+    let ids = parse_ids(&params.ids)?;
+    let chat_target = params.chat.trim().to_string();
+    shares.rate_limiter.acquire().await;
+    let peer = shares_input_peer(shares, &chat_target).await?;
+    shares.rate_limiter.acquire().await;
+    let res: tl::enums::stories::StoryViews = shares
+        .client
+        .invoke(&tl::functions::stories::GetStoriesViews { peer, id: ids })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::stories::StoryViews::Views(res) = res;
+    let rows: Vec<serde_json::Value> = res
+        .views
+        .iter()
+        .map(|v| {
+            let tl::enums::StoryViews::Views(counts) = v;
+            serde_json::json!({
+                "views_count": counts.views_count,
+                "forwards_count": counts.forwards_count,
+                "reactions_count": counts.reactions_count})
+        })
+        .collect();
+    Ok(serde_json::json!({"chat": chat_target, "views": rows}))
+}
+
+pub(crate) async fn viewers_core(
+    shares: &crate::client::ServeShares,
+    params: ViewersParams,
+) -> TeleResult<serde_json::Value> {
+    if params.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    let chat_target = params.chat.trim().to_string();
+    shares.rate_limiter.acquire().await;
+    let peer = shares_input_peer(shares, &chat_target).await?;
+    shares.rate_limiter.acquire().await;
+    let res: tl::enums::stories::StoryViewsList = shares
+        .client
+        .invoke(&tl::functions::stories::GetStoryViewsList {
+            just_contacts: false,
+            reactions_first: false,
+            forwards_first: false,
+            peer,
+            q: None,
+            id: params.id,
+            offset: params.offset.clone(),
+            limit: params.limit as i32,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::stories::StoryViewsList::List(list) = res;
+    let rows: Vec<serde_json::Value> = list
+        .views
+        .iter()
+        .map(|v| match v {
+            tl::enums::StoryView::View(v) => {
+                let mut row = serde_json::json!({
+                    "kind": "view",
+                    "user_id": v.user_id,
+                    "date": v.date});
+                if v.blocked {
+                    row["blocked"] = serde_json::json!(true);
+                }
+                if let Some(reaction) = &v.reaction {
+                    row["reaction"] = reaction_row(reaction);
+                }
+                row
+            }
+            tl::enums::StoryView::PublicForward(v) => {
+                let id = match &v.message {
+                    tl::enums::Message::Message(m) => m.id,
+                    tl::enums::Message::Service(m) => m.id,
+                    tl::enums::Message::Empty(m) => m.id,
+                };
+                serde_json::json!({"kind": "public_forward", "message_id": id})
+            }
+            tl::enums::StoryView::PublicRepost(v) => {
+                let story_id = match &v.story {
+                    tl::enums::StoryItem::Deleted(d) => d.id,
+                    tl::enums::StoryItem::Skipped(s) => s.id,
+                    tl::enums::StoryItem::Item(i) => i.id,
+                };
+                serde_json::json!({
+                    "kind": "public_repost",
+                    "peer_id": crate::commands::helpers::peer_id(&v.peer_id),
+                    "story_id": story_id})
+            }
+        })
+        .collect();
+    let mut out = serde_json::json!({
+        "chat": chat_target,
+        "id": params.id,
+        "count": list.count,
+        "views_count": list.views_count,
+        "forwards_count": list.forwards_count,
+        "reactions_count": list.reactions_count,
+        "viewers": rows});
+    if let Some(next) = list.next_offset {
+        out["next_offset"] = serde_json::json!(next);
+    }
+    Ok(out)
+}
+
+pub(crate) async fn story_reactions_core(
+    shares: &crate::client::ServeShares,
+    params: StoryReactionsParams,
+) -> TeleResult<serde_json::Value> {
+    if params.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    let chat_target = params.chat.trim().to_string();
+    shares.rate_limiter.acquire().await;
+    let peer = shares_input_peer(shares, &chat_target).await?;
+    shares.rate_limiter.acquire().await;
+    let res: tl::enums::stories::StoryReactionsList = shares
+        .client
+        .invoke(&tl::functions::stories::GetStoryReactionsList {
+            forwards_first: false,
+            peer,
+            id: params.id,
+            reaction: None,
+            offset: if params.offset.is_empty() {
+                None
+            } else {
+                Some(params.offset.clone())
+            },
+            limit: params.limit as i32,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::stories::StoryReactionsList::List(list) = res;
+    let rows: Vec<serde_json::Value> = list
+        .reactions
+        .iter()
+        .map(story_reaction_row)
+        .collect();
+    let mut out = serde_json::json!({
+        "chat": chat_target,
+        "id": params.id,
+        "count": list.count,
+        "reactions": rows});
+    if let Some(next) = list.next_offset {
+        out["next_offset"] = serde_json::json!(next);
+    }
+    Ok(out)
+}
+
+pub(crate) async fn link_core(
+    shares: &crate::client::ServeShares,
+    params: LinkParams,
+) -> TeleResult<serde_json::Value> {
+    if params.id <= 0 {
+        return Err(TeleError::Usage(
+            "--id must be a positive story id".to_string(),
+        ));
+    }
+    let chat_target = params.chat.trim().to_string();
+    shares.rate_limiter.acquire().await;
+    let peer = shares_input_peer(shares, &chat_target).await?;
+    shares.rate_limiter.acquire().await;
+    let exported: tl::enums::ExportedStoryLink = shares
+        .client
+        .invoke(&tl::functions::stories::ExportStoryLink {
+            peer,
+            id: params.id,
+        })
+        .await
+        .map_err(tele_invocation)?;
+    let tl::enums::ExportedStoryLink::Link(linked) = exported;
+    Ok(serde_json::json!({
+        "chat": chat_target,
+        "id": params.id,
+        "link": linked.link}))
+}
+
+async fn edit(args: EditArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_story_edit(&args)?;
+    require_explicit_selection("story edit", flags)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let params = EditParams::from(&args);
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let params = params.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(edit_dry_run_payload(&EditArgs::from(&params)));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            edit_core(&guard.shares(), params).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn views(args: ViewsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_story_views(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let params = ViewsParams::from(&args);
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let params = params.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(views_dry_run_payload(
+                    params.chat.trim(),
+                    &parse_ids(&params.ids)?,
+                ));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            views_core(&guard.shares(), params).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn viewers(args: ViewersArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_story_viewers(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let params = ViewersParams::from(&args);
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let params = params.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(viewers_dry_run_payload(
+                    params.chat.trim(),
+                    params.id,
+                    params.limit,
+                ));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            viewers_core(&guard.shares(), params).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn reactions(args: StoryReactionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_story_reactions(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let params = StoryReactionsParams::from(&args);
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let params = params.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(story_reactions_dry_run_payload(
+                    params.chat.trim(),
+                    params.id,
+                    params.limit,
+                ));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            story_reactions_core(&guard.shares(), params).await
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
+}
+
+async fn link(args: LinkArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_story_link(&args)?;
+    let config_path = flags.config_path.clone();
+    let dry_run = flags.dry_run;
+    let json = flags.json;
+    let jsonl = flags.jsonl;
+    let multi = crate::executor::select_accounts(flags)?.len() > 1;
+    let params = LinkParams::from(&args);
+    let envelope = run_fanout(flags, move |name| {
+        let config_path = config_path.clone();
+        let params = params.clone();
+        Box::pin(async move {
+            if dry_run {
+                return Ok(link_dry_run_payload(params.chat.trim(), params.id));
+            }
+            let guard =
+                ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
+            client::authorize(&guard.client).await?;
+            let result = link_core(&guard.shares(), params).await?;
+            if !output::machine_mode(json, jsonl) {
+                let line = format!("story link: {}", result["link"].as_str().unwrap_or_default());
+                let line = if multi {
+                    format!("{name}: {line}")
+                } else {
+                    line
+                };
+                output::print_line(&line)?;
+            }
+            Ok(result)
+        })
+    })
+    .await?;
+    crate::executor::finish(flags, &envelope)
 }
 
 async fn send(args: SendArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1217,10 +2021,90 @@ pub(crate) fn stories_serve_routes() -> Vec<crate::commands::serve::OpRoute> {
             run_unpin,
             crate::commands::serve::params_schema::<PinParams>
         ),
+        crate::serve_route!(
+            "story edit",
+            Lane::Mutate,
+            Some(std::time::Duration::from_secs(600)),
+            false,
+            false,
+            true,
+            "edit one of my stories",
+            EditParams,
+            EditArgs,
+            validate_story_edit,
+            edit_serve_dry_run,
+            run_edit,
+            crate::commands::serve::params_schema::<EditParams>
+        ),
+        crate::serve_route!(
+            "story views",
+            Lane::Read,
+            Some(OP_TIMEOUT_SIMPLE),
+            true,
+            false,
+            true,
+            "fetch story view counts",
+            ViewsParams,
+            ViewsArgs,
+            validate_story_views,
+            views_serve_dry_run,
+            run_views,
+            crate::commands::serve::params_schema::<ViewsParams>
+        ),
+        crate::serve_route!(
+            "story viewers",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list viewers of a story",
+            ViewersParams,
+            ViewersArgs,
+            validate_story_viewers,
+            viewers_serve_dry_run,
+            run_viewers,
+            crate::commands::serve::params_schema::<ViewersParams>
+        ),
+        crate::serve_route!(
+            "story reactions",
+            Lane::Read,
+            Some(OP_TIMEOUT_PAGINATED),
+            true,
+            false,
+            true,
+            "list reactions on a story",
+            StoryReactionsParams,
+            StoryReactionsArgs,
+            validate_story_reactions,
+            story_reactions_serve_dry_run,
+            run_reactions,
+            crate::commands::serve::params_schema::<StoryReactionsParams>
+        ),
+        crate::serve_route!(
+            "story link",
+            Lane::Read,
+            Some(OP_TIMEOUT_SIMPLE),
+            true,
+            false,
+            true,
+            "export a deep link for a story",
+            LinkParams,
+            LinkArgs,
+            validate_story_link,
+            link_serve_dry_run,
+            run_link,
+            crate::commands::serve::params_schema::<LinkParams>
+        ),
     ]
 }
 
 crate::serve_runner!(run_delete, delete_core, DeleteParams);
+crate::serve_runner!(run_edit, edit_core, EditParams);
+crate::serve_runner!(run_views, views_core, ViewsParams);
+crate::serve_runner!(run_viewers, viewers_core, ViewersParams);
+crate::serve_runner!(run_reactions, story_reactions_core, StoryReactionsParams);
+crate::serve_runner!(run_link, link_core, LinkParams);
 crate::serve_runner!(run_list, list_core, ListParams);
 crate::serve_runner!(run_pin, pin_core, PinParams);
 crate::serve_runner!(run_read, read_core, ReadParams);
@@ -1675,14 +2559,18 @@ mod tests {
     fn story_serve_lanes_and_timeouts_are_locked() {
         use crate::commands::serve::{Lane, OP_TIMEOUT_PAGINATED, OP_TIMEOUT_SIMPLE};
         let routes = stories_serve_routes();
-        assert_eq!(routes.len(), 6);
+        assert_eq!(routes.len(), 11);
         for route in &routes {
             match route.op {
-                "story list" => {
+                "story list" | "story viewers" | "story reactions" => {
                     assert_eq!(route.lane, Lane::Read);
                     assert_eq!(route.timeout, Some(OP_TIMEOUT_PAGINATED));
                 }
-                "story send" => {
+                "story views" | "story link" => {
+                    assert_eq!(route.lane, Lane::Read);
+                    assert_eq!(route.timeout, Some(OP_TIMEOUT_SIMPLE));
+                }
+                "story send" | "story edit" => {
                     assert_eq!(route.lane, Lane::Mutate);
                     assert_eq!(
                         route.timeout,
@@ -2031,5 +2919,138 @@ mod tests {
         assert_eq!(v["name"], "FLOOD_WAIT");
         assert_eq!(v["seconds"], 17);
         assert_eq!(v["type"], "InvocationError");
+    }
+
+    fn sample_edit_args() -> EditArgs {
+        EditArgs {
+            chat: "@someone".to_string(),
+            id: 3,
+            file: None,
+            caption: Some("new".to_string()),
+            privacy: None,
+        }
+    }
+
+    #[test]
+    fn validate_story_edit_requires_a_change() {
+        let err = validate_story_edit(&EditArgs {
+            chat: "@someone".to_string(),
+            id: 3,
+            file: None,
+            caption: None,
+            privacy: None,
+        })
+        .unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("nothing to change"));
+    }
+
+    #[test]
+    fn validate_story_edit_rejects_bad_id_and_privacy() {
+        let err = validate_story_edit(&EditArgs {
+            id: 0,
+            ..sample_edit_args()
+        })
+        .unwrap_err();
+        assert!(err.message().contains("--id"));
+        let err = validate_story_edit(&EditArgs {
+            privacy: Some("public".to_string()),
+            ..sample_edit_args()
+        })
+        .unwrap_err();
+        assert!(err.message().contains("--privacy"));
+        let err = validate_story_edit(&EditArgs {
+            caption: Some("  ".to_string()),
+            ..sample_edit_args()
+        })
+        .unwrap_err();
+        assert!(err.message().contains("--caption"));
+    }
+
+    #[test]
+    fn validate_story_viewers_and_reactions_bound_limits() {
+        let good = ViewersArgs {
+            chat: "@c".to_string(),
+            id: 2,
+            limit: 20,
+            offset: String::new(),
+        };
+        assert!(validate_story_viewers(&good).is_ok());
+        let mut bad = good.clone();
+        bad.limit = 101;
+        assert!(matches!(
+            validate_story_viewers(&bad),
+            Err(TeleError::Usage(_))
+        ));
+        let mut bad_id = good.clone();
+        bad_id.id = 0;
+        assert!(matches!(
+            validate_story_viewers(&bad_id),
+            Err(TeleError::Usage(_))
+        ));
+        let reactions = StoryReactionsArgs {
+            chat: "@c".to_string(),
+            id: 2,
+            limit: 20,
+            offset: String::new(),
+        };
+        assert!(validate_story_reactions(&reactions).is_ok());
+        let views = ViewsArgs {
+            chat: "@c".to_string(),
+            ids: "1,2".to_string(),
+        };
+        assert!(validate_story_views(&views).is_ok());
+        assert!(matches!(
+            validate_story_views(&ViewsArgs {
+                chat: "@c".to_string(),
+                ids: "0".to_string(),
+            }),
+            Err(TeleError::Usage(_))
+        ));
+        assert!(validate_story_link(&LinkArgs {
+            chat: "@c".to_string(),
+            id: 4,
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn story_edit_views_reactions_link_dry_runs_carry_would() {
+        let v = edit_dry_run_payload(&sample_edit_args());
+        assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert!(v["would"].as_str().unwrap().contains("edit story 3"));
+        let v = views_dry_run_payload("@c", &[1, 2]);
+        assert_eq!(v["ids"], serde_json::json!([1, 2]));
+        let v = viewers_dry_run_payload("@c", 5, 20);
+        assert!(v["would"].as_str().unwrap().contains("viewers"));
+        let v = story_reactions_dry_run_payload("@c", 5, 20);
+        assert!(v["would"].as_str().unwrap().contains("reactions"));
+        let v = link_dry_run_payload("@c", 5);
+        assert!(v["would"].as_str().unwrap().contains("export link"));
+    }
+
+    #[test]
+    fn reaction_row_shapes_known_variants() {
+        let emoji = reaction_row(&tl::enums::Reaction::Emoji(tl::types::ReactionEmoji {
+            emoticon: "❤".to_string(),
+        }));
+        assert_eq!(emoji["kind"], serde_json::json!("emoji"));
+        assert_eq!(emoji["emoticon"], serde_json::json!("❤"));
+        let custom = reaction_row(&tl::enums::Reaction::CustomEmoji(
+            tl::types::ReactionCustomEmoji { document_id: 99 },
+        ));
+        assert_eq!(custom["document_id"], serde_json::json!(99));
+    }
+
+    #[test]
+    fn story_reaction_row_shapes_public_forward() {
+        let row = story_reaction_row(&tl::enums::StoryReaction::PublicRepost(
+            tl::types::StoryReactionPublicRepost {
+                peer_id: tl::enums::Peer::User(tl::types::PeerUser { user_id: 5 }),
+                story: tl::enums::StoryItem::Deleted(tl::types::StoryItemDeleted { id: 8 }),
+            },
+        ));
+        assert_eq!(row["kind"], serde_json::json!("public_repost"));
+        assert_eq!(row["story_id"], serde_json::json!(8));
     }
 }
