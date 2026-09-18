@@ -513,6 +513,7 @@ async fn run_export(
                 }
                 ResumeCursor::Fresh => {}
             }
+            let mut dialog_peers = HashMap::new();
             loop {
                 if count >= limit {
                     break;
@@ -554,13 +555,13 @@ async fn run_export(
                     persist_checkpoints(dir, takeout_id, &checkpoints)?;
                     break;
                 }
-                let m_peers = build_peers(&guard.client, m_users, m_chats);
-                let mut lines = Vec::new();
+                dialog_peers.extend(build_peers(&guard.client, m_users, m_chats));
+                let mut lines = Vec::with_capacity(msgs.len());
                 for raw in &msgs {
                     if count >= limit {
                         break;
                     }
-                    let row = raw_message_to_json(raw, &m_peers, Some(chat_id))?;
+                    let row = raw_message_to_json(raw, &dialog_peers, Some(chat_id))?;
                     lines.push(serde_json::to_string(&row)?);
                     count += 1;
                 }
