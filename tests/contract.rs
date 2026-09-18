@@ -3141,6 +3141,16 @@ fn doctor_is_healthy_with_config_env_and_session() {
         "TELE_API_ID=1234567\nTELE_API_HASH=testhashvalue\n",
     )
     .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [
+            dir.join(".env"),
+            dir.join("sessions").join("work.session"),
+        ] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
     let (code, out, err) = run_no_creds(&dir, &["doctor", "--json"]);
     assert_eq!(code, 0, "stderr: {err}");
     let v = parse_json(&out);
