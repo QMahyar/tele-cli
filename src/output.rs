@@ -26,6 +26,34 @@ pub(crate) fn clear_output_fields() {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
+#[cfg(test)]
+static FIELDS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn lock_fields_for_test() -> std::sync::MutexGuard<'static, ()> {
+    FIELDS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) struct FieldsTestGuard;
+
+#[cfg(test)]
+impl FieldsTestGuard {
+    pub(crate) fn set(spec: &str) -> Self {
+        set_output_fields(spec).unwrap();
+        FieldsTestGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for FieldsTestGuard {
+    fn drop(&mut self) {
+        clear_output_fields();
+    }
+}
+
 pub fn parse_field_paths(spec: &str) -> crate::error::TeleResult<Vec<Vec<String>>> {
     let mut paths = Vec::new();
     for raw in spec.split(',') {
@@ -137,6 +165,23 @@ pub fn apply_output_fields(
                 )));
             }
         }
+        return Ok(projected);
+    }
+    if projected.is_object()
+        && projected.get("results").is_none()
+        && projected.get("accounts").is_none()
+    {
+        let mut row_matched = vec![false; paths.len()];
+        let row = project_object(&projected, &paths, &mut row_matched);
+        for (index, path) in paths.iter().enumerate() {
+            if !row_matched[index] {
+                return Err(crate::error::TeleError::Usage(format!(
+                    "unknown --fields {:?}: no result carries that field",
+                    path.join(".")
+                )));
+            }
+        }
+        return Ok(row);
     }
     Ok(projected)
 }
@@ -569,6 +614,8 @@ mod tests {
 
     #[test]
     fn print_json_to_closed_pipe_returns_err() {
+        let _lock = lock_fields_for_test();
+        clear_output_fields();
         let (reader, mut writer) = std::io::pipe().unwrap();
         drop(reader);
         let res = print_json_to(&mut writer, &serde_json::json!({"a": 1}));
@@ -577,6 +624,8 @@ mod tests {
 
     #[test]
     fn print_json_to_open_writer_succeeds() {
+        let _lock = lock_fields_for_test();
+        clear_output_fields();
         let mut buf: Vec<u8> = Vec::new();
         print_json_to(&mut buf, &serde_json::json!({"a": 1})).unwrap();
         assert_eq!(String::from_utf8(buf).unwrap(), "{\"a\":1}\n");
@@ -635,22 +684,7 @@ mod tests {
         vec![vec!["x".to_string(), "y".to_string()]]
     }
 
-    static FIELDS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct FieldsGuard;
-
-    impl FieldsGuard {
-        fn set(spec: &str) -> Self {
-            set_output_fields(spec).unwrap();
-            FieldsGuard
-        }
-    }
-
-    impl Drop for FieldsGuard {
-        fn drop(&mut self) {
-            clear_output_fields();
-        }
-    }
+    use super::{lock_fields_for_test, FieldsTestGuard};
 
     fn envelope_with_data(data: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
@@ -737,9 +771,7 @@ mod tests {
 
     #[test]
     fn apply_output_fields_without_setting_passes_through() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = lock_fields_for_test();
         clear_output_fields();
         let value = envelope_with_data(serde_json::json!({"a": 1}));
         assert_eq!(apply_output_fields(&value).unwrap(), value);
@@ -747,10 +779,8 @@ mod tests {
 
     #[test]
     fn apply_output_fields_projects_results_data() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("would");
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("would");
         let value = envelope_with_data(
             serde_json::json!({"would": "send message to chat me", "chat": "me", "dry_run": true}),
         );
@@ -765,10 +795,8 @@ mod tests {
 
     #[test]
     fn apply_output_fields_supports_dotted_paths() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("peer.id,message");
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("peer.id,message");
         let value = envelope_with_data(
             serde_json::json!({"peer": {"id": 7, "kind": "user"}, "message": "hi", "date": "x"}),
         );
@@ -781,10 +809,8 @@ mod tests {
 
     #[test]
     fn apply_output_fields_merges_overlapping_paths() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("peer,peer.id");
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("peer,peer.id");
         let value = envelope_with_data(serde_json::json!({"peer": {"id": 7, "kind": "user"}}));
         let projected = apply_output_fields(&value).unwrap();
         assert_eq!(
@@ -795,10 +821,8 @@ mod tests {
 
     #[test]
     fn apply_output_fields_unknown_field_is_usage() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("would,nosuchfield");
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("would,nosuchfield");
         let value = envelope_with_data(serde_json::json!({"would": "send message to chat me"}));
         let err = apply_output_fields(&value).unwrap_err();
         assert!(
@@ -809,31 +833,41 @@ mod tests {
     }
 
     #[test]
-    fn apply_output_fields_ignores_non_envelope_values() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("would");
-        let row = serde_json::json!({"event": "NewMessage", "would": "stream"});
-        assert_eq!(apply_output_fields(&row).unwrap(), row);
+    fn apply_output_fields_projects_streaming_rows() {
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("event");
+        let row = serde_json::json!({"event": "NewMessage", "account": "work", "chat_id": 7});
+        assert_eq!(
+            apply_output_fields(&row).unwrap(),
+            serde_json::json!({"event": "NewMessage"})
+        );
+    }
+
+    #[test]
+    fn apply_output_fields_unknown_field_on_streaming_row_is_usage() {
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("event,nosuchfield");
+        let row = serde_json::json!({"event": "NewMessage", "account": "work", "chat_id": 7});
+        let err = apply_output_fields(&row).unwrap_err();
+        assert!(
+            matches!(err, crate::error::TeleError::Usage(_)),
+            "err: {err}"
+        );
+        assert!(err.message().contains("nosuchfield"), "err: {err}");
     }
 
     #[test]
     fn apply_output_fields_empty_results_pass_through() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("would");
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("would");
         let value = serde_json::json!({"ok": false, "results": []});
         assert_eq!(apply_output_fields(&value).unwrap(), value);
     }
 
     #[test]
     fn apply_output_fields_projects_accounts_array() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("name");
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("name");
         let value = serde_json::json!({
             "ok": true,
             "results": [{"account": "work", "ok": true, "error": null, "data": {"name": "work", "tags": ""}}],
@@ -852,10 +886,8 @@ mod tests {
 
     #[test]
     fn print_json_to_applies_configured_fields() {
-        let _lock = FIELDS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _guard = FieldsGuard::set("would");
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("would");
         let mut buf: Vec<u8> = Vec::new();
         print_json_to(
             &mut buf,

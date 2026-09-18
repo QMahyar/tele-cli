@@ -3315,6 +3315,16 @@ fn validate_typing_matrix() {
     assert!(matches!(validate_typing(&bad), Err(TeleError::Usage(_))));
 }
 
+#[test]
+fn typing_serve_dry_run_rejects_unknown_action() {
+    assert!(matches!(
+        typing_serve_dry_run(&typing_args(Some("giphy"))),
+        Err(TeleError::Usage(_))
+    ));
+    let ok = typing_serve_dry_run(&typing_args(None)).unwrap();
+    assert_eq!(ok["action"], serde_json::json!("typing"));
+}
+
 #[tokio::test]
 async fn typing_dry_run_short_circuits_before_connect() {
     let _guard = lock_env();
@@ -3606,6 +3616,16 @@ fn validate_click_password_fails_honestly() {
     let err = validate_click(&args).unwrap_err();
     assert!(err.message().contains("password"), "{}", err.message());
     assert!(err.message().contains("not supported"), "{}", err.message());
+}
+
+#[test]
+fn click_serve_dry_run_rejects_missing_selector() {
+    assert!(matches!(
+        click_serve_dry_run(&click_args(None, None)),
+        Err(TeleError::Usage(_))
+    ));
+    let ok = click_serve_dry_run(&click_args(Some("Yes".to_string()), None)).unwrap();
+    assert_eq!(ok["dry_run"], serde_json::json!(true));
 }
 
 #[tokio::test]
@@ -5259,6 +5279,35 @@ fn validate_pin_rejects_nonpositive_id() {
             "id {bad:?} must fail as usage"
         );
     }
+}
+
+#[test]
+fn pin_serve_dry_run_rejects_show_with_id() {
+    let args = PinArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        id: Some(7),
+        unpin: false,
+        notify: false,
+        show: true,
+        all: false,
+    };
+    assert!(matches!(pin_serve_dry_run(&args), Err(TeleError::Usage(_))));
+}
+
+#[test]
+fn pin_serve_dry_run_carries_notify_flag() {
+    let args = PinArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        id: Some(7),
+        unpin: false,
+        notify: true,
+        show: false,
+        all: false,
+    };
+    let value = pin_serve_dry_run(&args).unwrap();
+    assert_eq!(value["dry_run"], serde_json::json!(true));
+    assert_eq!(value["notify"], serde_json::json!(true));
+    assert_eq!(value["would"], serde_json::json!("pin message 7"));
 }
 
 #[test]

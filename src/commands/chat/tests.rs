@@ -2283,6 +2283,25 @@ fn settings_all_toggles_validate_before_connect() {
 }
 
 #[test]
+fn settings_serve_dry_run_includes_noforwards() {
+    let mut args = settings_args("@chat");
+    args.noforwards = Some("on".to_string());
+    let value = settings_serve_dry_run(&args).unwrap();
+    assert_eq!(value["dry_run"], serde_json::json!(true));
+    assert_eq!(value["noforwards"], serde_json::json!(true));
+    assert_eq!(
+        value["would"],
+        serde_json::json!("update settings of chat @chat")
+    );
+    let mut off = settings_args("@chat");
+    off.noforwards = Some("off".to_string());
+    assert_eq!(
+        settings_serve_dry_run(&off).unwrap()["noforwards"],
+        serde_json::json!(false)
+    );
+}
+
+#[test]
 fn channel_from_chats_matches_by_id_only_for_channels() {
     let chats = vec![
         tl::enums::Chat::Chat(tl::types::Chat {

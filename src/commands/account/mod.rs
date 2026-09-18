@@ -925,26 +925,6 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         Box::pin(async move {
             if dry_run {
                 if let Some(would) = mode.dry_run_description() {
-                    // A terminate dry-run must not promise something the real
-                    // run would refuse: fetch the authorizations and apply the
-                    // same current-session guard the live path uses.
-                    if mode.is_mutator() {
-                        let guard =
-                            ClientGuard::connect(&name, credentials.api_id, config_path.as_deref())
-                                .await?;
-                        guard.rate_limiter.acquire().await;
-                        match mode {
-                            SessionsMode::Terminate(hash) => {
-                                let auths = fetch_authorizations(&guard.client).await?;
-                                terminate_decision(hash, &auths)?;
-                            }
-                            SessionsMode::TerminateWeb(hash) => {
-                                let webs = fetch_web_authorizations(&guard.client).await?;
-                                web_hash_decision(hash, &webs)?;
-                            }
-                            _ => {}
-                        }
-                    }
                     return Ok(serde_json::json!({
                         "dry_run": true,
                         "would": would,
@@ -1412,7 +1392,8 @@ impl SessionsMode {
 
     fn dry_run_description(self) -> Option<String> {
         match self {
-            SessionsMode::List | SessionsMode::ListWeb => None,
+            SessionsMode::List => Some("list device sessions".to_string()),
+            SessionsMode::ListWeb => Some("list web login sessions".to_string()),
             SessionsMode::Terminate(hash) => Some(format!("terminate authorization {hash}")),
             SessionsMode::TerminateWeb(hash) => Some(format!("terminate web authorization {hash}")),
             SessionsMode::TerminateAllWeb => Some("terminate all web authorizations".to_string()),

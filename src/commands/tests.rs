@@ -2640,3 +2640,33 @@ fn stopper_future_deadline_is_not_consumed_by_check() {
     assert!(!stopper.time_up());
     assert!(!stopper.time_up());
 }
+
+#[test]
+fn stream_row_line_honors_fields_projection() {
+    let _lock = crate::output::lock_fields_for_test();
+    let _guard = crate::output::FieldsTestGuard::set("event");
+    let row = serde_json::json!({"event": "NewMessage", "account": "work", "chat_id": 7});
+    let line = stream_row_line(&row).unwrap();
+    let back: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, serde_json::json!({"event": "NewMessage"}));
+}
+
+#[test]
+fn stream_row_line_rejects_unknown_field_as_usage() {
+    let _lock = crate::output::lock_fields_for_test();
+    let _guard = crate::output::FieldsTestGuard::set("event,nosuchfield");
+    let row = serde_json::json!({"event": "NewMessage", "account": "work"});
+    let err = stream_row_line(&row).unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "err: {err}");
+    assert!(err.message().contains("nosuchfield"), "err: {err}");
+}
+
+#[test]
+fn stream_row_line_passes_through_without_fields() {
+    let _lock = crate::output::lock_fields_for_test();
+    crate::output::clear_output_fields();
+    let row = serde_json::json!({"event": "Raw", "account": "work"});
+    let line = stream_row_line(&row).unwrap();
+    let back: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, row);
+}

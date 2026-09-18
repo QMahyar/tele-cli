@@ -1715,10 +1715,12 @@ fn create_serve_dry_run(args: &CreateArgs) -> TeleResult<serde_json::Value> {
 
 fn settings_serve_dry_run(args: &SettingsArgs) -> TeleResult<serde_json::Value> {
     let slow_mode = parse_slow_mode(args.slow_mode.as_deref())?;
+    let noforwards = parse_on_off(args.noforwards.as_deref())?;
     let signatures = parse_on_off(args.signatures.as_deref())?;
     let pre_history = parse_on_off(args.pre_history.as_deref())?;
     let join_request = parse_on_off(args.join_request.as_deref())?;
     let has_toggles = slow_mode.is_some()
+        || noforwards.is_some()
         || signatures.is_some()
         || pre_history.is_some()
         || join_request.is_some();
@@ -1732,6 +1734,9 @@ fn settings_serve_dry_run(args: &SettingsArgs) -> TeleResult<serde_json::Value> 
     }});
     if let Some(secs) = slow_mode {
         data["slow_mode"] = serde_json::json!(secs);
+    }
+    if let Some(v) = noforwards {
+        data["noforwards"] = serde_json::json!(v);
     }
     if let Some(v) = signatures {
         data["signatures"] = serde_json::json!(v);

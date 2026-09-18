@@ -2195,6 +2195,18 @@ fn sessions_mode_matrix_rejects_conflicting_primaries() {
 }
 
 #[test]
+fn sessions_list_dry_run_describes_offline_preview() {
+    assert_eq!(
+        SessionsMode::List.dry_run_description().as_deref(),
+        Some("list device sessions")
+    );
+    assert_eq!(
+        SessionsMode::ListWeb.dry_run_description().as_deref(),
+        Some("list web login sessions")
+    );
+}
+
+#[test]
 fn sessions_change_flags_needs_at_least_one_toggle() {
     let mut none = base_sessions_args();
     none.change_flags = Some(5);

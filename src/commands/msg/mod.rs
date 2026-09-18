@@ -668,6 +668,7 @@ fn forward_report(
 }
 
 pub(crate) fn pin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Value> {
+    validate_pin(args)?;
     let would = if args.show {
         "show pinned message".to_string()
     } else if args.all {
@@ -683,6 +684,7 @@ pub(crate) fn pin_serve_dry_run(args: &PinArgs) -> TeleResult<serde_json::Value>
         "dry_run": true,
         "id": args.id,
         "unpin": args.unpin,
+        "notify": args.notify,
         "show": args.show,
         "all": args.all,
         "would": would
@@ -1853,10 +1855,7 @@ fn search_row_kept(
 }
 
 pub(crate) fn typing_serve_dry_run(args: &TypingArgs) -> TeleResult<serde_json::Value> {
-    let action_name = match typing_action(args.action.as_deref()) {
-        Ok(choice) => choice.name(),
-        Err(_) => "typing",
-    };
+    let action_name = typing_action(args.action.as_deref())?.name();
     Ok(serde_json::json!({
         "dry_run": true,
         "chat": args.chat,
@@ -2208,6 +2207,7 @@ fn click_selector_label(selector: &ButtonSelector) -> String {
 }
 
 pub(crate) fn click_serve_dry_run(args: &ClickArgs) -> TeleResult<serde_json::Value> {
+    validate_click(args)?;
     let selector = click_selector(args);
     let selector_label = click_selector_label(&selector);
     Ok(serde_json::json!({

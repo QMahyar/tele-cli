@@ -1213,7 +1213,7 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 }
 
 async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
-    let line = serde_json::to_string(&value)?;
+    let line = stream_row_line(&value)?;
     tokio::task::spawn_blocking(move || {
         let mut out = std::io::stdout().lock();
         writeln!(out, "{line}")?;
@@ -1222,6 +1222,11 @@ async fn emit_row(value: serde_json::Value) -> TeleResult<()> {
     .await
     .map_err(|e| TeleError::TaskPanic(e.to_string()))??;
     Ok(())
+}
+
+fn stream_row_line(value: &serde_json::Value) -> TeleResult<String> {
+    let projected = crate::output::apply_output_fields(value)?;
+    Ok(serde_json::to_string(&projected)?)
 }
 
 #[derive(Default)]
@@ -1278,6 +1283,7 @@ async fn emit_row_or_stop(
     match emit_row(value).await {
         Ok(()) => {}
         Err(e) if emit_stops_stream(&e) => return Ok(true),
+        Err(e) if matches!(e, TeleError::Usage(_)) => return Err(e),
         Err(e) => {
             output::log_line("error", &format!("{account}: emit failed: {}", e.message()));
             return Ok(false);
