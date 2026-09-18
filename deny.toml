@@ -5,16 +5,11 @@ targets = [
 ]
 
 [advisories]
-version = 2
-vulnerability = "deny"
-unmaintained = "warn"
 yanked = "deny"
-notice = "warn"
+unmaintained = "workspace"
 ignore = []
 
 [licenses]
-version = 2
-unlicensed = "deny"
 allow = [
   "MIT",
   "Apache-2.0",
@@ -34,7 +29,10 @@ confidence-threshold = 0.8
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
-workspace-dependencies = "warn"
+
+[bans.workspace-dependencies]
+duplicates = "warn"
+unused = "warn"
 
 [sources]
 unknown-registry = "deny"

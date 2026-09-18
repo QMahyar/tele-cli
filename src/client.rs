@@ -7,6 +7,7 @@ use grammers_client::client::{AutoSleep, ClientConfiguration, UpdatesConfigurati
 use grammers_client::session::storages::SqliteSession;
 use grammers_client::session::updates::UpdatesLike;
 use grammers_client::{Client, SenderPool};
+use secrecy::ExposeSecret;
 use tokio::sync::mpsc;
 
 pub struct ClientGuard {
@@ -209,7 +210,7 @@ pub async fn qr_login(
             let response = client
                 .invoke(&tl::functions::auth::ExportLoginToken {
                     api_id: creds.api_id,
-                    api_hash: creds.api_hash.clone(),
+                    api_hash: creds.api_hash.expose_secret().to_owned(),
                     except_ids: Vec::new(),
                 })
                 .await?;

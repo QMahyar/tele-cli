@@ -8,6 +8,7 @@ use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::GlobalFlags;
 use crate::output::{self, log_line};
 use crate::session;
+use secrecy::ExposeSecret;
 
 use super::*;
 
@@ -322,7 +323,7 @@ pub(crate) async fn login_flow(
                 .ok_or_else(|| TeleError::Usage("--phone required for code login".to_string()))?;
             let token = guard
                 .client
-                .request_login_code(phone, &credentials.api_hash)
+                .request_login_code(phone, credentials.api_hash.expose_secret())
                 .await
                 .map_err(tele_invocation)?;
             let mut stdin = std::io::stdin().lock();

@@ -205,7 +205,7 @@ fn default_parallel_max() -> u32 {
 #[derive(Clone)]
 pub struct Credentials {
     pub api_id: i32,
-    pub api_hash: String,
+    pub api_hash: secrecy::SecretString,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -215,23 +215,6 @@ impl std::fmt::Debug for Credentials {
             .field("api_hash", &"[REDACTED]")
             .finish()
     }
-}
-
-impl Drop for Credentials {
-    fn drop(&mut self) {
-        zeroize_str(&mut self.api_hash);
-    }
-}
-
-pub(crate) fn zeroize_str(s: &mut str) {
-    // SAFETY: the bytes are uniquely borrowed from a live String and
-    // write_volatile keeps the wipe from being optimized away as a dead store.
-    unsafe {
-        for b in s.as_bytes_mut() {
-            std::ptr::write_volatile(b, 0);
-        }
-    }
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
 pub fn load_env(path: &std::path::Path) -> std::collections::HashMap<String, String> {
@@ -386,7 +369,7 @@ pub fn credentials() -> anyhow::Result<Credentials> {
         .ok_or_else(|| anyhow::anyhow!("{} (see .env.example)", crate::error::API_HASH_MISSING))?;
     let creds = Credentials {
         api_id,
-        api_hash: api_hash.to_string(),
+        api_hash: secrecy::SecretString::from(api_hash),
     };
     CREDS_CACHE
         .lock()
@@ -1433,7 +1416,7 @@ mod tests {
     fn credentials_debug_redacts_api_hash() {
         let creds = Credentials {
             api_id: 123,
-            api_hash: "abcdef0123456789secret".to_string(),
+            api_hash: secrecy::SecretString::from("abcdef0123456789secret"),
         };
         let rendered = format!("{creds:?}");
         assert!(rendered.contains("123"), "rendered: {rendered}");
@@ -1445,10 +1428,22 @@ mod tests {
     }
 
     #[test]
-    fn zeroize_str_wipes_contents() {
-        let mut s = "supersecret".to_string();
-        zeroize_str(&mut s);
-        assert!(s.bytes().all(|b| b == 0));
+    fn credentials_hash_exposes_secret_and_clone_preserves_it() {
+        use secrecy::ExposeSecret;
+        let creds = Credentials {
+            api_id: 7,
+            api_hash: secrecy::SecretString::from("hash-value"),
+        };
+        assert_eq!(creds.api_hash.expose_secret(), "hash-value");
+        let cloned = creds.clone();
+        assert_eq!(cloned.api_id, 7);
+        assert_eq!(cloned.api_hash.expose_secret(), "hash-value");
+    }
+
+    #[test]
+    fn credentials_hash_zeroizes_on_drop() {
+        fn assert_zeroize_on_drop<T: secrecy::zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<secrecy::SecretString>();
     }
 
     #[test]

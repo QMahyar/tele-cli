@@ -5,6 +5,7 @@ use crate::error::{tele_invocation, TeleError, TeleResult};
 use crate::executor::GlobalFlags;
 use crate::output::{self, log_line};
 use crate::session;
+use secrecy::ExposeSecret;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
@@ -281,7 +282,7 @@ pub(crate) async fn staged_begin_flow(
         &guard.session,
         phone,
         credentials.api_id,
-        &credentials.api_hash,
+        credentials.api_hash.expose_secret(),
     )
     .await
     {
