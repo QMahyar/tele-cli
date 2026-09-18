@@ -672,9 +672,9 @@ mod tests {
     fn classifier_markers_match_config_constructors() {
         let cfg = crate::config::AppConfig {
             proxy: Some(crate::config::ProxyConfig {
-                r#type: "http".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 8080,
+                r#type: "socks5".to_string(),
+                host: String::new(),
+                port: 9050,
             }),
             ..Default::default()
         };
