@@ -31,7 +31,8 @@ fn app_data_dir_checked_from_env(
 }
 
 pub fn ensure_app_data_dir() -> std::io::Result<()> {
-    crate::fs_util::create_dir_private(&app_data_dir())
+    let dir = app_data_dir_checked().map_err(|e| std::io::Error::other(e.message()))?;
+    crate::fs_util::create_dir_private(&dir)
 }
 
 #[cfg(test)]
@@ -366,7 +367,7 @@ pub fn credentials() -> anyhow::Result<Credentials> {
         .get("TELE_API_HASH")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("TELE_API_HASH must be set (see .env.example)"))?;
+        .ok_or_else(|| anyhow::anyhow!("{} (see .env.example)", crate::error::API_HASH_MISSING))?;
     let creds = Credentials {
         api_id,
         api_hash: api_hash.to_string(),
@@ -383,12 +384,12 @@ pub fn credentials() -> anyhow::Result<Credentials> {
 fn parse_api_id(env: &std::collections::HashMap<String, String>) -> anyhow::Result<i32> {
     let api_id = env
         .get("TELE_API_ID")
-        .ok_or_else(|| anyhow::anyhow!("TELE_API_ID must be set (see .env.example)"))?;
+        .ok_or_else(|| anyhow::anyhow!("{} (see .env.example)", crate::error::API_ID_MISSING))?;
     let api_id = api_id
         .parse::<i32>()
-        .map_err(|_| anyhow::anyhow!("TELE_API_ID must be a positive integer"))?;
+        .map_err(|_| anyhow::anyhow!("{}", crate::error::API_ID_INTEGER))?;
     if api_id <= 0 {
-        return Err(anyhow::anyhow!("TELE_API_ID must be a positive integer"));
+        return Err(anyhow::anyhow!("{}", crate::error::API_ID_INTEGER));
     }
     Ok(api_id)
 }
@@ -429,13 +430,19 @@ fn read_config(cfg_path: &std::path::Path) -> anyhow::Result<AppConfig> {
     }
     if cfg_path.is_dir() {
         return Err(anyhow::anyhow!(
-            "failed to read config: {} is a directory",
+            "{}{} is a directory",
+            crate::error::CONFIG_READ_MARK,
             config_display_name(cfg_path)
         ));
     }
     let text = std::fs::read_to_string(cfg_path)?;
-    let mut cfg: AppConfig = toml::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", config_display_name(cfg_path)))?;
+    let mut cfg: AppConfig = toml::from_str(&text).map_err(|e| {
+        anyhow::anyhow!(
+            "{}{}: {e}",
+            crate::error::CONFIG_PARSE_MARK,
+            config_display_name(cfg_path)
+        )
+    })?;
     let clamped = cfg.parallel_max.clamp(1, 32);
     if clamped != cfg.parallel_max {
         crate::output::log_line(
@@ -471,10 +478,18 @@ pub fn proxy_url_for(cfg: &AppConfig, name: &str) -> anyhow::Result<Option<Strin
         ));
     }
     if p.host.is_empty() {
-        return Err(anyhow::anyhow!("proxy for {name}: host must not be empty"));
+        return Err(anyhow::anyhow!(
+            "{}{}: host must not be empty",
+            crate::error::PROXY_MARK,
+            name
+        ));
     }
     if p.port == 0 {
-        return Err(anyhow::anyhow!("proxy for {name}: port must be non-zero"));
+        return Err(anyhow::anyhow!(
+            "{}{}: port must be non-zero",
+            crate::error::PROXY_MARK,
+            name
+        ));
     }
     // IPv6 literals must be bracket-wrapped in a URL authority or the
     // parser reads `::1:9050` as host "" port garbage.
@@ -535,9 +550,13 @@ pub fn write_config(path: &std::path::Path, cfg: &AppConfig) -> anyhow::Result<(
     }
     let text = if path.exists() {
         let existing = std::fs::read_to_string(path)?;
-        let mut doc: toml_edit::DocumentMut = existing
-            .parse()
-            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", config_display_name(path)))?;
+        let mut doc: toml_edit::DocumentMut = existing.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "{}{}: {e}",
+                crate::error::CONFIG_PARSE_MARK,
+                config_display_name(path)
+            )
+        })?;
         let mut fresh: toml_edit::DocumentMut = toml_edit::ser::to_string_pretty(cfg)?
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;

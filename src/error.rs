@@ -93,7 +93,18 @@ impl std::fmt::Display for TeleError {
     }
 }
 
-impl std::error::Error for TeleError {}
+impl std::error::Error for TeleError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+pub(crate) const API_ID_MISSING: &str = "TELE_API_ID must be set";
+pub(crate) const API_HASH_MISSING: &str = "TELE_API_HASH must be set";
+pub(crate) const API_ID_INTEGER: &str = "TELE_API_ID must be a positive integer";
+pub(crate) const CONFIG_PARSE_MARK: &str = "failed to parse ";
+pub(crate) const CONFIG_READ_MARK: &str = "failed to read config:";
+pub(crate) const PROXY_MARK: &str = "proxy for ";
 
 static PHONE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{7,15}\b").expect("static regex"));
@@ -111,7 +122,10 @@ static PASSWORD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(password\s*[:=]\s*)\S+").expect("static regex"));
 
 static CACHED_FILE_SECRETS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let path = crate::config::app_data_dir().join(".env");
+    let Ok(dir) = crate::config::app_data_dir_checked() else {
+        return Vec::new();
+    };
+    let path = dir.join(".env");
     let map = crate::config::load_env(&path);
     let mut secrets = Vec::new();
     for key in ["TELE_API_HASH", "TELE_API_ID"] {
@@ -227,17 +241,13 @@ pub fn bridge(e: anyhow::Error) -> TeleError {
 }
 
 fn classify_message(msg: &str) -> TeleError {
-    const USAGE_MARKERS: [&str; 3] = [
-        "TELE_API_ID must be set",
-        "TELE_API_HASH must be set",
-        "TELE_API_ID must be a positive integer",
-    ];
+    const USAGE_MARKERS: [&str; 3] = [API_ID_MISSING, API_HASH_MISSING, API_ID_INTEGER];
     if USAGE_MARKERS.iter().any(|m| msg.contains(m)) {
         return TeleError::Usage(scrub(msg.to_string()));
     }
-    let is_config_parse = msg.starts_with("failed to parse ")
-        || msg.contains("failed to read config:")
-        || msg.starts_with("proxy for ");
+    let is_config_parse = msg.starts_with(CONFIG_PARSE_MARK)
+        || msg.contains(CONFIG_READ_MARK)
+        || msg.starts_with(PROXY_MARK);
     if is_config_parse {
         return TeleError::Config(scrub(msg.to_string()));
     }
@@ -277,28 +287,58 @@ pub fn aggregate_exit_code(ok_count: usize, failed: &[i32]) -> i32 {
     }
 }
 
+pub trait InvocationErrorExt {
+    fn is_unauthorized(&self) -> bool;
+    fn message_text(&self) -> String;
+    fn wait_seconds(&self) -> Option<u32>;
+    fn to_tele_error(&self) -> TeleError;
+}
+
+impl InvocationErrorExt for grammers_client::InvocationError {
+    fn is_unauthorized(&self) -> bool {
+        matches!(
+            self,
+            grammers_client::InvocationError::Rpc(rpc) if rpc.code == 401
+        )
+    }
+
+    fn message_text(&self) -> String {
+        match self {
+            grammers_client::InvocationError::Rpc(rpc) => rpc.to_string(),
+            grammers_client::InvocationError::Dropped => PEER_UNKNOWN_HINT.to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    fn wait_seconds(&self) -> Option<u32> {
+        match self {
+            grammers_client::InvocationError::Rpc(rpc)
+                if rpc.code == 420 && rpc.value.is_some() =>
+            {
+                rpc.value
+            }
+            _ => None,
+        }
+    }
+
+    fn to_tele_error(&self) -> TeleError {
+        invocation_error_ref(self)
+    }
+}
+
 pub fn invocation_is_unauthorized(e: &grammers_client::InvocationError) -> bool {
-    matches!(e, grammers_client::InvocationError::Rpc(rpc) if rpc.code == 401)
+    e.is_unauthorized()
 }
 
 pub const PEER_UNKNOWN_HINT: &str =
     "peer unknown to this session; run tele dialog list to refresh the peer cache";
 
 pub fn invocation_message(e: &grammers_client::InvocationError) -> String {
-    match e {
-        grammers_client::InvocationError::Rpc(rpc) => rpc.to_string(),
-        grammers_client::InvocationError::Dropped => PEER_UNKNOWN_HINT.to_string(),
-        other => other.to_string(),
-    }
+    e.message_text()
 }
 
 pub fn invocation_wait_seconds(e: &grammers_client::InvocationError) -> Option<u32> {
-    match e {
-        grammers_client::InvocationError::Rpc(rpc) if rpc.code == 420 && rpc.value.is_some() => {
-            rpc.value
-        }
-        _ => None,
-    }
+    e.wait_seconds()
 }
 
 // Server-enforced account limits that read as tool bugs when surfaced raw.
@@ -339,7 +379,7 @@ pub fn invocation_error_ref(e: &grammers_client::InvocationError) -> TeleError {
 }
 
 pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
-    invocation_error_ref(&e)
+    e.to_tele_error()
 }
 
 pub use invocation_error as tele_invocation;
@@ -595,6 +635,63 @@ mod tests {
             caused_by: None,
         });
         assert!(!invocation_is_unauthorized(&denied));
+    }
+
+    #[test]
+    fn invocation_error_ext_matches_free_functions() {
+        let unauthorized = grammers_client::InvocationError::Rpc(RpcError {
+            code: 401,
+            name: "AUTH_KEY_UNREGISTERED".to_string(),
+            value: None,
+            caused_by: None,
+        });
+        assert!(unauthorized.is_unauthorized());
+        assert_eq!(
+            unauthorized.message_text(),
+            invocation_message(&unauthorized)
+        );
+        assert_eq!(unauthorized.wait_seconds(), None);
+        assert!(matches!(unauthorized.to_tele_error(), TeleError::Auth(_)));
+        let flood = rpc420("FLOOD_WAIT", 9);
+        assert!(!flood.is_unauthorized());
+        assert_eq!(flood.wait_seconds(), Some(9));
+        assert!(matches!(
+            flood.to_tele_error(),
+            TeleError::Rpc(_, 420, _, Some(9))
+        ));
+    }
+
+    #[test]
+    fn error_source_is_intentionally_absent() {
+        use std::error::Error;
+        let err = TeleError::Other("boom".to_string());
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn classifier_markers_match_config_constructors() {
+        let cfg = crate::config::AppConfig {
+            proxy: Some(crate::config::ProxyConfig {
+                r#type: "http".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+            }),
+            ..Default::default()
+        };
+        let proxy_err = crate::config::proxy_url_for(&cfg, "work").unwrap_err();
+        assert!(proxy_err.to_string().starts_with(PROXY_MARK));
+        let bridged = bridge(anyhow::anyhow!(proxy_err.to_string()));
+        assert!(matches!(bridged, TeleError::Config(_)));
+        for marker in [API_ID_MISSING, API_HASH_MISSING, API_ID_INTEGER] {
+            assert!(matches!(
+                bridge(anyhow::anyhow!(marker.to_string())),
+                TeleError::Usage(_)
+            ));
+        }
+        assert!(matches!(
+            bridge(anyhow::anyhow!(format!("{CONFIG_PARSE_MARK}x: bad"))),
+            TeleError::Config(_)
+        ));
     }
 
     #[test]
