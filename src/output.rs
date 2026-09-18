@@ -46,22 +46,62 @@ impl Envelope {
 }
 
 pub fn log_line(level: &str, message: &str) {
-    let min = crate::logging::min_line_level();
-    let (lv, eff) = match level {
-        "error" => (3, "error"),
-        "warn" => (2, "warn"),
-        "info" => (1, "info"),
-        "debug" => (0, "debug"),
-        _ => {
-            let _ = writeln!(std::io::stderr(), "[error] log_line: unknown level");
-            (3, "error")
-        }
+    let Ok(parsed) = level.parse::<LogLevel>() else {
+        let _ = writeln!(std::io::stderr(), "[error] log_line: unknown level");
+        log_level(LogLevel::Error, message);
+        return;
     };
-    if lv < min {
+    log_level(parsed, message);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        }
+    }
+
+    pub fn rank(self) -> u8 {
+        match self {
+            LogLevel::Debug => 0,
+            LogLevel::Info => 1,
+            LogLevel::Warn => 2,
+            LogLevel::Error => 3,
+        }
+    }
+}
+
+impl std::str::FromStr for LogLevel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "error" => Ok(LogLevel::Error),
+            "warn" => Ok(LogLevel::Warn),
+            "info" => Ok(LogLevel::Info),
+            "debug" => Ok(LogLevel::Debug),
+            _ => Err(()),
+        }
+    }
+}
+
+pub fn log_level(level: LogLevel, message: &str) {
+    if level.rank() < crate::logging::min_line_level() {
         return;
     }
     let scrubbed = crate::error::scrub(message.to_string());
-    let _ = writeln!(std::io::stderr(), "[{eff}] {scrubbed}");
+    let _ = writeln!(std::io::stderr(), "[{}] {scrubbed}", level.as_str());
 }
 
 pub fn print_json(value: &serde_json::Value) -> crate::error::TeleResult<()> {
@@ -107,6 +147,10 @@ pub fn print_line(line: &str) -> crate::error::TeleResult<()> {
     print_line_to(&mut std::io::stdout(), line)
 }
 
+/// ```
+/// assert_eq!(telecli::output::strip_ansi("\x1b[31merror\x1b[0m"), "error");
+/// assert_eq!(telecli::output::strip_ansi("plain"), "plain");
+/// ```
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -127,6 +171,21 @@ pub fn strip_ansi(s: &str) -> String {
 
 pub fn print_line_to(w: &mut impl std::io::Write, line: &str) -> crate::error::TeleResult<()> {
     writeln!(w, "{line}")?;
+    w.flush()?;
+    Ok(())
+}
+
+pub fn print_raw(text: &str) -> crate::error::TeleResult<()> {
+    print_raw_to(&mut std::io::stdout(), text)
+}
+
+/// ```
+/// let mut buf: Vec<u8> = Vec::new();
+/// telecli::output::print_raw_to(&mut buf, "a\nb").unwrap();
+/// assert_eq!(buf, b"a\nb");
+/// ```
+pub fn print_raw_to(w: &mut impl std::io::Write, text: &str) -> crate::error::TeleResult<()> {
+    w.write_all(text.as_bytes())?;
     w.flush()?;
     Ok(())
 }
@@ -154,6 +213,11 @@ fn print_account_table_to(
     print_table_to(w, headers, rows)
 }
 
+/// ```
+/// assert!(telecli::output::machine_mode(true, false));
+/// assert!(telecli::output::machine_mode(false, true));
+/// assert!(!telecli::output::machine_mode(false, false));
+/// ```
 pub fn machine_mode(json: bool, jsonl: bool) -> bool {
     json || jsonl
 }
@@ -309,9 +373,57 @@ mod tests {
     }
 
     #[test]
+    fn log_level_typed_does_not_panic() {
+        log_level(LogLevel::Info, "typed info");
+        log_level(LogLevel::Error, "typed error");
+    }
+
+    #[test]
     fn log_line_unknown_level_does_not_panic() {
         log_line("verbose", "test verbose");
         log_line("", "test empty");
+    }
+
+    #[test]
+    fn log_level_parses_all_names() {
+        assert_eq!("error".parse::<LogLevel>(), Ok(LogLevel::Error));
+        assert_eq!("warn".parse::<LogLevel>(), Ok(LogLevel::Warn));
+        assert_eq!("info".parse::<LogLevel>(), Ok(LogLevel::Info));
+        assert_eq!("debug".parse::<LogLevel>(), Ok(LogLevel::Debug));
+        assert_eq!("ERROR".parse::<LogLevel>(), Err(()));
+        assert_eq!("verbose".parse::<LogLevel>(), Err(()));
+        assert_eq!("".parse::<LogLevel>(), Err(()));
+    }
+
+    #[test]
+    fn log_level_rank_matches_line_floor_order() {
+        assert!(LogLevel::Debug.rank() < LogLevel::Info.rank());
+        assert!(LogLevel::Info.rank() < LogLevel::Warn.rank());
+        assert!(LogLevel::Warn.rank() < LogLevel::Error.rank());
+        assert_eq!(LogLevel::Error.as_str(), "error");
+        assert_eq!(LogLevel::Warn.as_str(), "warn");
+        assert_eq!(LogLevel::Info.as_str(), "info");
+        assert_eq!(LogLevel::Debug.as_str(), "debug");
+    }
+
+    #[test]
+    fn print_raw_to_preserves_exact_bytes() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_raw_to(&mut buf, "a\nb\n").unwrap();
+        assert_eq!(buf, b"a\nb\n");
+        let mut empty: Vec<u8> = Vec::new();
+        print_raw_to(&mut empty, "").unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn print_raw_to_failing_writer_propagates_broken_pipe() {
+        let mut w = FailingWriter {
+            kind: std::io::ErrorKind::BrokenPipe,
+        };
+        let err = print_raw_to(&mut w, "boom").unwrap_err();
+        assert!(err.is_broken_pipe());
+        assert_eq!(err.exit_code(), crate::error::EXIT_OK);
     }
 
     #[test]
