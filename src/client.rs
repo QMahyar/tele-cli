@@ -49,13 +49,23 @@ impl ClientGuard {
 }
 
 impl ClientGuard {
+    pub(crate) fn limiter_for(cfg: &crate::config::AppConfig, name: &str) -> Arc<RateLimiter> {
+        let acct = cfg.accounts.get(name);
+        RateLimiter::new(acct.and_then(|a| a.rpc_per_minute))
+    }
+
+    pub(crate) fn flood_threshold_for(cfg: &crate::config::AppConfig, name: &str) -> u64 {
+        let acct = cfg.accounts.get(name);
+        acct.and_then(|a| a.flood_sleep_threshold)
+            .unwrap_or(cfg.flood_sleep_threshold)
+    }
+
     pub fn account_rate_limiter(
         name: &str,
         config_path: Option<&std::path::Path>,
     ) -> anyhow::Result<Arc<RateLimiter>> {
         let cfg = crate::config::load_config(config_path)?;
-        let acct = cfg.accounts.get(name);
-        Ok(RateLimiter::new(acct.and_then(|a| a.rpc_per_minute)))
+        Ok(Self::limiter_for(&cfg, name))
     }
 
     pub async fn connect(
@@ -63,8 +73,9 @@ impl ClientGuard {
         api_id: i32,
         config_path: Option<&std::path::Path>,
     ) -> anyhow::Result<Self> {
-        let rate_limiter = Self::account_rate_limiter(name, config_path)?;
-        Self::connect_with_limiter(name, api_id, config_path, rate_limiter).await
+        let cfg = crate::config::load_config(config_path)?;
+        let rate_limiter = Self::limiter_for(&cfg, name);
+        Self::connect_with_config(name, api_id, &cfg, rate_limiter).await
     }
 
     pub async fn connect_with_limiter(
@@ -74,13 +85,19 @@ impl ClientGuard {
         rate_limiter: Arc<RateLimiter>,
     ) -> anyhow::Result<Self> {
         let cfg = crate::config::load_config(config_path)?;
-        let acct = cfg.accounts.get(name);
-        let flood_threshold = acct
-            .and_then(|a| a.flood_sleep_threshold)
-            .unwrap_or(cfg.flood_sleep_threshold);
+        Self::connect_with_config(name, api_id, &cfg, rate_limiter).await
+    }
+
+    pub async fn connect_with_config(
+        name: &str,
+        api_id: i32,
+        cfg: &crate::config::AppConfig,
+        rate_limiter: Arc<RateLimiter>,
+    ) -> anyhow::Result<Self> {
+        let flood_threshold = Self::flood_threshold_for(cfg, name);
         let locked = crate::session::open_session(name).await?;
         let session = Arc::new(locked.session);
-        let params = connection_params_for(&cfg, name)?;
+        let params = connection_params_for(cfg, name)?;
         let pool = SenderPool::with_configuration(Arc::clone(&session), api_id, params);
         let SenderPool {
             runner,
@@ -280,6 +297,44 @@ fn base64_url_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn limiter_for_derives_per_account_budget_from_config() {
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.accounts.insert(
+            "work".to_string(),
+            crate::config::AccountConfig {
+                rpc_per_minute: Some(120.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            ClientGuard::limiter_for(&cfg, "work").available_tokens(),
+            120
+        );
+        assert_eq!(
+            ClientGuard::limiter_for(&cfg, "ghost").available_tokens(),
+            u64::MAX,
+            "unknown account stays unlimited"
+        );
+    }
+
+    #[test]
+    fn flood_threshold_for_prefers_account_override() {
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.accounts.insert(
+            "work".to_string(),
+            crate::config::AccountConfig {
+                flood_sleep_threshold: Some(30),
+                ..Default::default()
+            },
+        );
+        assert_eq!(ClientGuard::flood_threshold_for(&cfg, "work"), 30);
+        assert_eq!(
+            ClientGuard::flood_threshold_for(&cfg, "ghost"),
+            cfg.flood_sleep_threshold
+        );
+    }
 
     #[test]
     fn base64_url_encode_is_padless_url_safe() {
