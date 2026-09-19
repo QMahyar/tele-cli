@@ -1,9 +1,9 @@
 use crate::pagination::needs_page_token;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Notify;
 
 pub struct RateLimiter {
     tokens: AtomicU64,
@@ -108,18 +108,21 @@ impl RateLimiter {
         if tokens >= self.capacity {
             // A full bucket banks no idle credit: advance the refill anchor so
             // idle time cannot accumulate into instant refills later.
-            if let Ok(mut last) = self.last_refill.try_lock() {
-                *last = Instant::now();
-                if let Ok(mut frac) = self.fractional.try_lock() {
-                    *frac = 0.0;
-                }
-            }
+            let mut last = self
+                .last_refill
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *last = Instant::now();
+            *self
+                .fractional
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = 0.0;
             return;
         }
-        let mut last = match self.last_refill.try_lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
+        let mut last = self
+            .last_refill
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let elapsed = last.elapsed().as_secs_f64();
         if elapsed < 0.01 {
             return;
@@ -128,10 +131,10 @@ impl RateLimiter {
         // rest of the idle window is discarded.
         let room = (self.capacity - tokens) as f64 / self.refill_rate;
         let elapsed = elapsed.min(room);
-        let mut frac = match self.fractional.try_lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
+        let mut frac = self
+            .fractional
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *frac += elapsed * self.refill_rate;
         let whole = *frac as u64;
         if whole == 0 {
@@ -204,6 +207,37 @@ mod tests {
     fn bounded_bucket_whole_number() {
         let rl = RateLimiter::new(Some(30.5));
         assert_eq!(rl.capacity, 31);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn refill_under_contention_still_credits_elapsed_time() {
+        let rl = RateLimiter::new(Some(60.0));
+        for _ in 0..60 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_secs(61);
+        let _guard = rl.last_refill.try_lock().unwrap();
+        let rl_waiter = Arc::clone(&rl);
+        let waiter = tokio::task::spawn_blocking(move || {
+            rl_waiter.maybe_refill();
+            rl_waiter.available_tokens()
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiter.is_finished(),
+            "a contended refill must wait its turn, not skip it"
+        );
+        drop(_guard);
+        let tokens = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("waiter must finish once the lock frees")
+            .unwrap();
+        assert_eq!(
+            tokens, 60,
+            "a contended refill must credit elapsed time, not skip"
+        );
     }
 
     #[tokio::test]
