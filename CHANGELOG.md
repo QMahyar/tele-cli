@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+Review-remediation slice: validators, cores, dry-run planners, and docs brought back into agreement. All machine-API changes are additive (new JSON keys on existing rows only); no renamed keys, removed commands, or exit-code changes.
+
+### Added
+
+- Additive enrichment on forwarded and album message rows (`poll`/`todo` objects and full peer identity with `username`, matching read-path rows).
+- Additive dry-run preview fields: `noforwards` on chat-settings previews, `notify` on pin previews.
+- `"via": "import"` outcome on phone-target contact adds resolved through contact import.
+
+### Changed
+
+- Usage-error coverage: non-positive message ids, empty search queries and topic titles, conflicting pin show/all with id, and blank kick/admin user targets now fail locally with exit 1 in both the CLI and machine-API lanes.
+- Dry-run truthfulness: chat-settings previews include `noforwards`; `account sessions` dry-runs are fully offline `would` previews; pin/typing/click previews validate before rendering; `--fields` now projects `listen` streaming rows instead of being silently ignored.
+- `chat stats` on basic groups, bad `topic list` chat targets, and topic close/reopen/delete with `--unpin` now fail as usage errors.
+- Docs resynced with the implementation: 93 routed ops (96 `ops.list` entries), 35 read-only, 9 destructive ops including `raw`, registry 25; noforwards behavior rewritten; contract gate now parses escaped pipes and asserts exact flag and registry counts.
+
+### Fixed
+
+- Admin-log `--until` no longer burns `--limit` on out-of-window events; invite and membership-request listings page with real cursors, dedup, and page caps.
+- CLI and machine-API default agreement on kick/ban, promote rights (including story and rank rights), and Saved-Messages delete with `--revoke`.
+- Session lifecycle: logout/delete close before removing files and report removal failure; exports checkpoint before snapshot; staged-login failures leave no phantom pending state; expired codes stay distinct from invalid codes across datacenter migration.
+- Secret and file hygiene: pending auth material created private atomically; credential cache keyed on content hash; short numbers stay redacted; passwords held in zeroizing wrappers.
+- Cache sync acquires rate budget per page; message-cache writes are transactional; serve dedupe keys on update-sourced pts; oversized serve frames and duplicate request ids rejected explicitly; `--count 0` emits zero rows.
+
 ## [0.14.0] - 2026-09-18
 
 The glow-up release: output/UX upgrades, the full rival-library ship list, perf and security hardening, and approved new dependencies. All machine-API changes are additive (new commands, flags, and JSON keys only); no renamed keys, removed commands, or exit-code changes, so the CLI contract is intact and this ships as MINOR per the Stability rule.
