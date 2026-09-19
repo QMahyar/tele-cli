@@ -28,16 +28,16 @@ This section follows STRIDE and explains why each rule exists.
 - **Repudiation.** Telegram keeps no audit trail for a fan-out. The stdout envelope reports `results[].account` with `ok` or `error` per account. A failing command also prints an `[error]` line to stderr. Message bodies never reach logs.
 - **Information disclosure.** Logs would leak access hashes, phone numbers, or login codes if they printed everything. Field allowlists decide what reaches logs and `--json` output. Secrets never pass either allowlist.
 - **Denial of service.** Parallel join and send bursts trip FloodWait or SpamBot limits. Fan-out defaults to sequential: `parallel_max` defaults to 1 and clamps to at most 32, and `--parallel` accepts 1 through 32. Waits surface as `error.seconds` instead of hidden retry storms.
-- **Elevation of privilege.** `tele raw` can call any TL method your account may call. It resolves accounts like every other command, and it supports `--dry-run`. Treat it as full power. `tele mcp` and `tele serve` expose the same routed core: destructive ops sit behind a `confirm:true` gate, and MCP adds `--read-only`/`--groups` filters that are enforced at `tools/call`, but the executor itself grants no more than the CLI's own account power.
+- **Elevation of privilege.** `tele raw` can call any TL method your account may call. It resolves accounts like every other command, supports `--dry-run`, and additionally requires a per-invocation ack (`--allow-raw` on the CLI, `allow_raw:true` over serve/MCP) because it runs at full account power. Treat it as full power. `tele mcp` and `tele serve` expose the same routed core: destructive ops sit behind a `confirm:true` gate, and MCP adds `--read-only`/`--groups` filters that are enforced at `tools/call` and on resource reads (`tele://profile` needs group `profile`, `tele://dialogs` needs group `dialog`; `tele://skill` stays public), but the executor itself grants no more than the CLI's own account power.
 
 ## Known exposures
 
 These behaviors are deliberate. Know them before you share output.
 
-- `contact list` prints phone numbers, and `takeout export` writes them to disk. Both follow from what these commands do. Remove phone numbers from any output before you paste it into a ticket or a log.
+- `contact list` prints phone numbers, and `takeout export` writes them to disk. Both follow from what these commands do. Pass `--redact-phones` to `contact list`, `profile get`, or `takeout export` to redact numbers in the output (it overrides `profile get --show-phone`). Remove phone numbers from any output before you paste it into a ticket or a log.
 - The QR login fallback prints the `tg://login?token=…` URI to stderr only when stderr is an interactive terminal or when you pass `--show-token`. Redirected stderr receives a warning line without the token. Treat all stderr during login as sensitive anyway.
 - The code-login prompt omits the phone number when stderr is not a terminal. Stderr redirected to a file therefore never records the number.
-- `--phone` places the number on the command line, where process listings and shell history can record it. For automation, prefer the stdin prompt or the `TELE_PHONE` environment variable.
+- `--phone` places the number on the command line, where process listings and shell history can record it. For automation, prefer the stdin prompt or the `TELE_PHONE` environment variable. Under `--no-input`, `--phone` on a prompting login flow and `--change-phone` on phone change are rejected outright instead of merely warning. Phone numbers used as operation targets (`--chat +…`, `--user +…`, `contact add --phone`) stay accepted: they select the peer rather than authenticate, and no stdin or env channel exists for them.
 - Password input disables terminal echo on Windows through `SetConsoleMode` and on Unix through `termios`. On every platform, the CLI reads passwords from stdin only and rejects them on argv.
 - `account password --set` and `account password --change` hash the new password locally with PH2. PH2 runs pbkdf2-hmac-sha512 over 100000 iterations on top of a 32-byte random salt extension. The implementation mirrors grammers-crypto 0.10 (`two_factor_auth.rs`, lines 134 to 154). The password never reaches a log, `--json` output, or the process title. With `--dry-run`, the command returns a `would` row with presence booleans for `hint` and `recovery_email`, and it prompts for no secrets.
 
@@ -52,9 +52,21 @@ Two choices here deserve their reasons:
 - Why owner-only? The session file is the account, so any other local user who can read it owns the account. The DACL therefore grants full access to exactly one trustee, the SID of the current process user, and to no one else.
 - Why does the lock file persist after exit? Exclusivity comes from the OS lock on `{name}.session.lock`, not from the file existing. A crashed process releases the lock automatically, and the leftover file harms nothing.
 
-A failed attempt to tighten permissions on `.env` produces a `[warn]` line when the CLI loads credentials. Config errors report only the leaf filename, so logs do not reveal install paths.
+A failed attempt to tighten permissions on `.env` fails closed: the CLI refuses to start instead of warning and continuing. Config errors report only the leaf filename, so logs do not reveal install paths.
 
-This model holds when the app directory stays at its default `%APPDATA%` location, because a per-user profile directory is already owned by that user. It weakens if `TELE_APP_DIR` points somewhere ACLs cannot protect. Keep sessions on a per-user path.
+This model holds when the app directory stays at its default `%APPDATA%` location, because a per-user profile directory is already owned by that user. It weakens if `TELE_APP_DIR` points somewhere ACLs cannot protect. Pointing `TELE_APP_DIR` outside per-user paths (roaming profiles, `HOME`/`XDG_CONFIG_HOME` on Unix) requires an explicit `--allow-insecure-app-dir` ack, so portable and container installs stay possible but never accidental. Keep sessions on a per-user path.
+
+Containers: bake the ack into the image entrypoint (`tele --allow-insecure-app-dir …`) when the state dir is a mounted volume outside any per-user path, and mount that volume `rw` for exactly one replica — two writers trip the OS session lock. Prefer mounting the volume at a per-user path inside the image (e.g. `/home/tele/.config/tele` with `TELE_APP_DIR` unset) to skip the ack entirely.
+
+## Supply chain
+
+`grammers-session` 0.10 requires its SQLite storage backend, so `libsql` is pinned to exactly `=0.9.30` in `Cargo.toml`. Do not bump the pin without testing session open/migrate against a real session copy: a storage mismatch corrupts the one file that owns the account.
+
+Pin-review cadence (run on every MINOR release, and quarterly at minimum):
+
+1. `cargo deny check` green against the committed `Cargo.lock` (`deny.toml` denies unlicensed, yanked, wildcard, and unknown-registry/git sources).
+2. Re-read the `libsql` pin comment in `Cargo.toml`; test-bump in a scratch worktree, run `cargo test`, then keep or revert with the reason recorded in the release notes.
+3. Confirm the tokio/grammers feature lists are still the smallest set that builds (see the features-audit comment in `Cargo.toml`); trimming without a measured size win is out of scope.
 
 ## Always
 
@@ -66,6 +78,7 @@ This model holds when the app directory stays at its default `%APPDATA%` locatio
 - 2FA passwords are never accepted on argv; read from stdin only, with terminal echo disabled
 - `--limit` caps at 10000 rows and `--message-limit` at 1000000 messages; larger values fail with a usage error
 - `tele raw --args` JSON is capped at 1 MiB; larger payloads fail with a usage error before dispatch
+- `tele raw` requires a per-invocation ack (`--allow-raw`, or `allow_raw:true` over serve/MCP), including for `--dry-run` previews
 - Invite URLs are parsed locally. The CLI speaks Telegram MTProto only and fetches no other HTTP endpoint
 - Live tests run against the designated chat only
 - `tele raw` evaluates nothing. It dispatches compiled typed arms from the Rust registry in `src/commands/raw.rs`, with no dynamic dispatch
@@ -80,7 +93,7 @@ This model holds when the app directory stays at its default `%APPDATA%` locatio
 
 ## Never
 
-- Logging api_hash, session strings, SMS codes, 2FA passwords, or phone numbers
+- Logging api_hash, session strings, SMS codes, 2FA passwords, phone numbers, or short service codes (3–6 digits in code/OTP contexts; counts and ids stay untouched, while keyword-adjacent numbers such as a year after "verification" may redact as accepted collateral)
 - Committing secrets
 - Sharing one session across clients
 - Running eval or dynamic imports outside the TL functions tree

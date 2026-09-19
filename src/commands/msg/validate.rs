@@ -83,32 +83,33 @@ pub(crate) fn validate_upload_path_inner(path: &str, dry_run: bool) -> TeleResul
     Ok(())
 }
 
+pub(crate) const SENSITIVE_SUFFIXES: [&str; 11] = [
+    ".session",
+    ".session-journal",
+    ".session-wal",
+    ".session-shm",
+    ".session.export",
+    ".session.tmp",
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".kdbx",
+];
+pub(crate) const SENSITIVE_PREFIXES: [&str; 6] = [
+    ".env",
+    "config.toml",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+];
+pub(crate) const SENSITIVE_EXACT: [&str; 3] = [".netrc", ".git-credentials", "credentials"];
+
 pub fn is_sensitive_basename(lower: &str) -> bool {
-    const SUFFIXES: [&str; 11] = [
-        ".session",
-        ".session-journal",
-        ".session-wal",
-        ".session-shm",
-        ".session.export",
-        ".session.tmp",
-        ".pem",
-        ".key",
-        ".p12",
-        ".pfx",
-        ".kdbx",
-    ];
-    const PREFIXES: [&str; 6] = [
-        ".env",
-        "config.toml",
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-    ];
-    const EXACT: [&str; 3] = [".netrc", ".git-credentials", "credentials"];
-    if SUFFIXES.iter().any(|s| lower.ends_with(s))
-        || PREFIXES.iter().any(|s| lower.starts_with(s))
-        || EXACT.contains(&lower)
+    if SENSITIVE_SUFFIXES.iter().any(|s| lower.ends_with(s))
+        || SENSITIVE_PREFIXES.iter().any(|s| lower.starts_with(s))
+        || SENSITIVE_EXACT.contains(&lower)
     {
         return true;
     }

@@ -56,7 +56,7 @@ mkdir -p "$env:APPDATA\tele"
 Set-Content "$env:APPDATA\tele\.env" "TELE_API_ID=1234567`nTELE_API_HASH=YOUR_API_HASH_HERE"
 ```
 
-`tele` tightens `.env` to owner-only on every credentials load, but set `0600` yourself too, and never commit the file. The placeholders above are not valid values; copy the real ones from your app page.
+`tele` tightens `.env` to owner-only on every credentials load and refuses to start when tightening fails, but set `0600` yourself too, and never commit the file. The placeholders above are not valid values; copy the real ones from your app page.
 
 ## Step 4: Add an account
 

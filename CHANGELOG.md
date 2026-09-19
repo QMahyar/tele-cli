@@ -8,18 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 Review-remediation slice: validators, cores, dry-run planners, and docs brought back into agreement. All machine-API changes are additive (new JSON keys on existing rows only); no renamed keys, removed commands, or exit-code changes.
 
+Hardening slice: eight deliberate exposures tightened. Machine shapes stay additive (new optional flags and JSON keys only), but new fail-closed acks may turn previously-accepted invocations into exit 1 with guidance — the sanctioned posture-ack exception in the Stability rule.
+
 ### Added
 
 - Additive enrichment on forwarded and album message rows (`poll`/`todo` objects and full peer identity with `username`, matching read-path rows).
 - Additive dry-run preview fields: `noforwards` on chat-settings previews, `notify` on pin previews.
 - `"via": "import"` outcome on phone-target contact adds resolved through contact import.
+- Posture acks: `--allow-raw` on `tele raw` (`allow_raw:true` over serve/MCP, including dry-run previews); `--allow-insecure-app-dir` for `TELE_APP_DIR` outside per-user paths; `--allow-trace` (`TELE_ALLOW_TRACE=1`) for `TELE_LOG=trace`.
+- `--redact-phones` on `contact list`, `profile get` (overrides `--show-phone`), and `takeout export` (redacts `contacts.json`); matching `redact_phones` params on the serve/MCP ops.
+- MCP `--groups` scoping extended to resources (`tele://profile` needs group `profile`, `tele://dialogs` needs group `dialog`; `tele://skill` stays public).
+- Short service codes (3–6 digits) redacted in code/OTP contexts; FTS5 update trigger keeping the message-cache index in sync on UPDATE.
+- Docs: supply-chain pin-review cadence (`docs/security.md`), offline measurement baselines and budget protocol (`docs/perf-baselines.md`), scope ADR-009.
 
 ### Changed
 
 - Usage-error coverage: non-positive message ids, empty search queries and topic titles, conflicting pin show/all with id, and blank kick/admin user targets now fail locally with exit 1 in both the CLI and machine-API lanes.
+- Fail-closed posture: `.env` permission-tightening failure aborts startup instead of warning; `--phone`/`--change-phone` on argv rejected under `--no-input` for prompting flows (non-prompting staged steps keep warn-only behavior).
+- Docs resynced with the implementation: 93 routed ops (96 `ops.list` entries), 35 read-only, 9 destructive ops including `raw`, registry 25; noforwards behavior rewritten; posture acks (`--allow-raw`, `--allow-insecure-app-dir`, `--allow-trace`), `--redact-phones`, and MCP resource `--groups` scoping documented; contract gate now parses escaped pipes and asserts exact flag and registry counts.
 - Dry-run truthfulness: chat-settings previews include `noforwards`; `account sessions` dry-runs are fully offline `would` previews; pin/typing/click previews validate before rendering; `--fields` now projects `listen` streaming rows instead of being silently ignored.
 - `chat stats` on basic groups, bad `topic list` chat targets, and topic close/reopen/delete with `--unpin` now fail as usage errors.
-- Docs resynced with the implementation: 93 routed ops (96 `ops.list` entries), 35 read-only, 9 destructive ops including `raw`, registry 25; noforwards behavior rewritten; contract gate now parses escaped pipes and asserts exact flag and registry counts.
 
 ### Fixed
 

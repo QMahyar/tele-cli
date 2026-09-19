@@ -23,6 +23,8 @@ pub enum ContactCmd {
 pub struct ListArgs {
     #[arg(long, default_value_t = 100, help = "max contacts to list (1-10000)")]
     limit: u32,
+    #[arg(long, help = "redact phone numbers in the output")]
+    redact_phones: bool,
 }
 
 #[derive(Args, Clone)]
@@ -322,6 +324,8 @@ pub(crate) struct ListParams {
     #[serde(default = "default_contact_limit")]
     pub(crate) limit: u32,
     #[serde(default)]
+    pub(crate) redact_phones: bool,
+    #[serde(default)]
     pub(crate) dry_run: bool,
 }
 
@@ -333,6 +337,7 @@ impl From<&ListArgs> for ListParams {
     fn from(a: &ListArgs) -> Self {
         Self {
             limit: a.limit,
+            redact_phones: a.redact_phones,
             dry_run: false,
         }
     }
@@ -340,7 +345,10 @@ impl From<&ListArgs> for ListParams {
 
 impl From<&ListParams> for ListArgs {
     fn from(p: &ListParams) -> Self {
-        Self { limit: p.limit }
+        Self {
+            limit: p.limit,
+            redact_phones: p.redact_phones,
+        }
     }
 }
 
@@ -536,6 +544,7 @@ pub(crate) async fn list_core(
     let mut rows = Vec::new();
     for user in users.into_iter().take(params.limit as usize) {
         if let tl::enums::User::User(user) = user {
+            let phone = user.phone.as_deref().unwrap_or_default();
             rows.push(serde_json::json!({
                 "id": user.id,
                 "name": format!(
@@ -543,11 +552,19 @@ pub(crate) async fn list_core(
                     user.first_name.clone().unwrap_or_default(),
                     user.last_name.clone().unwrap_or_default()
                 ).trim().to_string(),
-                "phone": user.phone.as_deref().unwrap_or_default(),
+                "phone": redact_list_phone(phone, params.redact_phones),
                 "username": user.username.as_deref().unwrap_or_default()}));
         }
     }
     Ok(serde_json::json!({"contacts": rows}))
+}
+
+pub(crate) fn redact_list_phone(phone: &str, redact_phones: bool) -> String {
+    if redact_phones && !phone.is_empty() {
+        "[REDACTED]".to_string()
+    } else {
+        phone.to_string()
+    }
 }
 
 pub(crate) async fn add_core(
@@ -846,6 +863,27 @@ mod tests {
         assert!(state.contact);
         assert!(state.mutual);
         assert_eq!(state.name, "Jane Doe");
+    }
+
+    #[test]
+    fn redact_list_phone_redacts_only_when_flag_set() {
+        assert_eq!(redact_list_phone("+15550100", true), "[REDACTED]");
+        assert_eq!(redact_list_phone("+15550100", false), "+15550100");
+        assert_eq!(redact_list_phone("", true), "");
+    }
+
+    #[test]
+    fn list_params_round_trip_carries_redact_phones() {
+        let args = ListArgs {
+            limit: 50,
+            redact_phones: true,
+        };
+        let params = ListParams::from(&args);
+        assert!(params.redact_phones);
+        assert_eq!(params.limit, 50);
+        let back = ListArgs::from(&params);
+        assert!(back.redact_phones);
+        assert_eq!(back.limit, 50);
     }
 
     #[test]

@@ -40,6 +40,8 @@ pub struct ExportArgs {
         help = "max messages per dialog to export"
     )]
     message_limit: u32,
+    #[arg(long, help = "redact phone numbers in the exported contacts.json")]
+    redact_phones: bool,
 }
 
 #[derive(Args)]
@@ -327,6 +329,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let limit = args.message_limit;
+        let redact_phones = args.redact_phones;
         Box::pin(async move {
             let dir = export_dir(&name);
             if dry_run {
@@ -334,6 +337,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "dry_run": true,
                     "dir": dir.to_string_lossy(),
                     "message_limit": limit,
+                    "redact_phones": redact_phones,
                     "would": format!("export takeout data to {}", dir.to_string_lossy()),
                 }));
             }
@@ -343,7 +347,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
             client::authorize(&guard.client).await?;
             guard.rate_limiter.acquire().await;
-            run_export(&guard, &dir, limit, takeout_id, human)
+            run_export(&guard, &dir, limit, takeout_id, human, redact_phones)
                 .await
                 .map_err(|e| TeleError::Other(export_error_message(&dir, &e.to_string())))
         })
@@ -358,6 +362,7 @@ async fn run_export(
     limit: u32,
     takeout_id: i64,
     human_progress: bool,
+    redact_phones: bool,
 ) -> TeleResult<serde_json::Value> {
     crate::fs_util::create_dir_private(dir)?;
     let mut checkpoints: HashMap<String, i64> = read_takeout_state(dir).map(|s| s.checkpoints)?;
@@ -383,7 +388,10 @@ async fn run_export(
                     user.first_name.clone().unwrap_or_default(),
                     user.last_name.clone().unwrap_or_default()
                 ).trim().to_string(),
-                "phone": user.phone.as_deref().unwrap_or_default(),
+                "phone": crate::commands::contact::redact_list_phone(
+                    user.phone.as_deref().unwrap_or_default(),
+                    redact_phones,
+                ),
                 "username": user.username.as_deref().unwrap_or_default(),
             }));
         }
@@ -857,10 +865,24 @@ mod tests {
 
     #[test]
     fn export_rejects_zero_message_limit() {
-        let args = ExportArgs { message_limit: 0 };
+        let args = ExportArgs {
+            message_limit: 0,
+            redact_phones: false,
+        };
         assert!(matches!(validate_export(&args), Err(TeleError::Usage(_))));
-        let one = ExportArgs { message_limit: 1 };
+        let one = ExportArgs {
+            message_limit: 1,
+            redact_phones: true,
+        };
         assert!(validate_export(&one).is_ok());
+    }
+
+    #[test]
+    fn export_redact_phones_covers_exported_contacts() {
+        assert_eq!(
+            crate::commands::contact::redact_list_phone("+15550100", true),
+            "[REDACTED]"
+        );
     }
 
     #[test]

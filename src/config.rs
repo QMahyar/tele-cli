@@ -360,12 +360,8 @@ fn overlay_process_env(
 pub fn credentials() -> anyhow::Result<Credentials> {
     let path = app_data_dir_checked()?.join(".env");
     if path.exists() {
-        if let Err(e) = crate::fs_util::restrict_file_private(&path) {
-            crate::output::log_line(
-                "warn",
-                &format!("failed to tighten permissions on the credentials file: {e}"),
-            );
-        }
+        crate::fs_util::restrict_file_private(&path)
+            .map_err(|e| credentials_tighten_error(&path, &e))?;
     } else {
         let _ = crate::fs_util::create_file_private(&path);
     }
@@ -397,6 +393,49 @@ pub fn credentials() -> anyhow::Result<Credentials> {
     #[cfg(test)]
     ENV_READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     Ok(creds)
+}
+
+fn credentials_tighten_error(path: &std::path::Path, e: &std::io::Error) -> anyhow::Error {
+    anyhow::anyhow!(
+        "refusing to start: cannot restrict credentials file {} to owner-only (failed to tighten permissions: {e}); fix the file mode or ownership and retry",
+        path.display()
+    )
+}
+
+pub fn app_dir_override() -> Option<PathBuf> {
+    std::env::var("TELE_APP_DIR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+pub fn app_dir_is_per_user(path: &std::path::Path) -> bool {
+    app_dir_is_per_user_from_env(path, &mut |k| std::env::var(k))
+}
+
+pub(crate) fn app_dir_is_per_user_from_env(
+    path: &std::path::Path,
+    get: &mut impl FnMut(&str) -> Result<String, std::env::VarError>,
+) -> bool {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if cfg!(windows) {
+        for key in ["APPDATA", "LOCALAPPDATA", "USERPROFILE"] {
+            if let Some(dir) = env_nonempty(get, key) {
+                roots.push(PathBuf::from(dir));
+            }
+        }
+    } else if let Some(xdg) = env_nonempty(get, "XDG_CONFIG_HOME") {
+        roots.push(PathBuf::from(xdg));
+    }
+    if let Some(home) = env_nonempty(get, "HOME") {
+        roots.push(PathBuf::from(home));
+    }
+    roots.iter().any(|root| {
+        crate::fs_util::path_under_guard(
+            &crate::fs_util::resolve_for_guard(path),
+            &crate::fs_util::resolve_for_guard(root),
+        )
+    })
 }
 
 fn parse_api_id(env: &std::collections::HashMap<String, String>) -> anyhow::Result<i32> {
@@ -1132,6 +1171,45 @@ mod tests {
         let resolved = app_data_dir_checked();
         std::env::remove_var("TELE_APP_DIR");
         assert_eq!(resolved.unwrap(), dir);
+    }
+
+    #[test]
+    fn credentials_tighten_failure_is_fail_closed() {
+        let err = credentials_tighten_error(
+            std::path::Path::new("/tmp/tele-test/.env"),
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        )
+        .to_string();
+        assert!(err.contains("refusing to start"), "err: {err}");
+        assert!(err.contains(".env"), "err: {err}");
+    }
+
+    #[test]
+    fn app_data_dir_override_outside_per_user_roots_requires_ack() {
+        let mut get = |k: &str| match k {
+            "HOME" => Ok("/home/tester".to_string()),
+            _ => Err(std::env::VarError::NotPresent),
+        };
+        assert!(app_dir_is_per_user_from_env(
+            std::path::Path::new("/home/tester/.config/tele"),
+            &mut get
+        ));
+        assert!(!app_dir_is_per_user_from_env(
+            std::path::Path::new("/tmp/portable-tele"),
+            &mut get
+        ));
+        assert!(!app_dir_is_per_user_from_env(
+            std::path::Path::new("/home/tester-other/.config/tele"),
+            &mut get
+        ));
+    }
+
+    #[test]
+    fn app_data_dir_is_per_user_without_roots_is_false() {
+        assert!(!app_dir_is_per_user_from_env(
+            std::path::Path::new("/tmp/portable-tele"),
+            &mut |_| Err(std::env::VarError::NotPresent)
+        ));
     }
 
     #[test]

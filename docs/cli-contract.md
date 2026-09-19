@@ -29,7 +29,7 @@ An empty account selection (no `--account`, no `--tag`) is a usage error for mut
 Sources resolve in the order `argv > env > file > default`:
 
 - `argv`: `--config PATH` selects the config file; `--parallel N` overrides `parallel_max`; `--account`/`--tag` select sessions; `-v`/`-q`/`--json` override logging and output selection.
-- `env`: `TELE_APP_DIR` overrides the default app-data directory; `TELE_API_ID`/`TELE_API_HASH` override the `.env` file values; `TELE_PHONE` supplies the login phone when `--phone` is absent; `TELE_LOG` selects the log level when neither `-v` nor `-q` is given. Empty or whitespace-only values are ignored (the next lower source wins).
+- `env`: `TELE_APP_DIR` overrides the default app-data directory (outside per-user paths it additionally requires `--allow-insecure-app-dir`); `TELE_API_ID`/`TELE_API_HASH` override the `.env` file values; `TELE_PHONE` supplies the login phone when `--phone` is absent; `TELE_LOG` selects the log level when neither `-v` nor `-q` is given (`TELE_LOG=trace` additionally requires `--allow-trace` or `TELE_ALLOW_TRACE=1`). Empty or whitespace-only values are ignored (the next lower source wins).
 - `file`: `config.toml` supplies `parallel_max` (clamped to 1..=32), accounts, tags, and proxy defaults; the app-data `.env` file supplies `TELE_API_ID`/`TELE_API_HASH` when the process environment does not.
 - `default`: `parallel_max` 1, flood sleep threshold 60s, logging off (freeform `[info]`/`[warn]`/`[error]` lines still print subject to the `-q` floor).
 
@@ -183,7 +183,7 @@ Rules:
 
 ## `account login`
 
-- Code login takes the phone from `--phone` or, when that flag is absent, from the `TELE_PHONE` env var (trimmed; empty values are ignored). The argv-exposure warning fires only when `--phone` was used.
+- Code login takes the phone from `--phone` or, when that flag is absent, from the `TELE_PHONE` env var (trimmed; empty values are ignored). The argv-exposure warning fires only when `--phone` was used. Under `--no-input`, `--phone` on a prompting login flow (and `--change-phone` on phone change) is rejected outright with guidance toward `TELE_PHONE`; non-prompting staged steps (`--stage status` and friends) keep warn-only behavior.
 - An invalid code triggers a re-prompt, up to 3 attempts on the same login token. Exhausting them exits with Usage and requires a fresh `tele account login`.
 - A wrong 2FA password triggers a re-prompt, up to 3 attempts (the token refreshes via `account.GetPassword` between attempts). No new SMS or code is sent.
 - `--qr-timeout-secs <n>` (default 300, must be above 0) sets the overall QR-login deadline. Transient update-stream errors during QR polling are retried with backoff, up to 3 times, before the command fails. On timeout, the command fails with a clear error instead of polling forever.
@@ -221,7 +221,7 @@ Filters: `--from SENDER` (same target syntax as `--chat`) keeps only that sender
 
 ## `contact list`
 
-Rows gain additive `"username"` (a string, empty when none). The human table appends a matching `username` column; existing column order is unchanged.
+Rows gain additive `"username"` (a string, empty when none). The human table appends a matching `username` column; existing column order is unchanged. `--redact-phones` replaces every `phone` value with `"[REDACTED]"` (machine and human output alike); the serve/MCP `contact list` op accepts the same `redact_phones` param.
 
 ## `msg send`
 
@@ -307,6 +307,10 @@ tele msg get --chat @BOT --id 123 --json | jq '.results[0].data.messages[0].repl
 Notes:
 
 - stdout is UTF-8 JSON; on pwsh set `chcp 65001` or `$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new()` if Persian mangles; prefer `target\debug\tele.exe` over `cargo run --` for hot loops (0.5s compile tax).
+
+## `profile get`
+
+Phone numbers stay redacted (`"phone": null`) unless `--show-phone` is passed. `--redact-phones` forces redaction even alongside `--show-phone`; the serve/MCP `profile get` op accepts the same `redact_phones` param.
 
 ## `profile set --username`
 
@@ -740,7 +744,7 @@ tele mcp --account NAME [--read-only] [--groups g1,g2]
 
 ### MCP resources
 
-`tele mcp` also advertises the MCP `resources` capability with three read-only context resources: `tele://skill` (the SKILL.md agent guide embedded in the binary, `text/markdown`, same bytes as `tele skill print`), `tele://profile` (the bound account's profile as JSON, same shape as `profile get`), and `tele://dialogs` (the first 100 dialogs as JSON, same shape as `dialog list --limit 100`). `resources/list` and `resources/read` work in both full and `--read-only` modes; `profile` and `dialogs` reads hit the network exactly like the equivalent tools. Unknown URIs fail with MCP error `-32602` listing the available set.
+`tele mcp` also advertises the MCP `resources` capability with three read-only context resources: `tele://skill` (the SKILL.md agent guide embedded in the binary, `text/markdown`, same bytes as `tele skill print`), `tele://profile` (the bound account's profile as JSON, same shape as `profile get`), and `tele://dialogs` (the first 100 dialogs as JSON, same shape as `dialog list --limit 100`). `resources/list` and `resources/read` work in both full and `--read-only` modes; `profile` and `dialogs` reads hit the network exactly like the equivalent tools. `--groups` scopes resources the same way it scopes tools: `tele://profile` requires group `profile`, `tele://dialogs` requires group `dialog`, and `tele://skill` stays public; out-of-scope reads fail with MCP error `-32602` naming the `--groups` gate, and `resources/list` hides them. Unknown URIs fail with MCP error `-32602` listing the available set.
 
 Process model:
 
@@ -796,6 +800,8 @@ No separate `title` field is emitted; clients fall back to `name`. Annotations a
 - `--read-only`: mutating tools are absent from `tools/list`.
 - `--groups`: least-privilege curation before the first request (for example,
   `--groups msg,dialog` exposes only messaging and dialog tools).
+- `raw` additionally requires `allow_raw:true` in its arguments (the tool-schema
+  twin of the CLI `--allow-raw` flag), including for `"dry_run":true` previews.
 
 ### Error taxonomy
 
@@ -1031,11 +1037,11 @@ Tool names, the descriptor fields above, and the `-32602` unknown-tool shape are
 
 ```
 tele takeout start [--contacts] [--messages] [--photos]
-tele takeout export [--message-limit <n>]
+tele takeout export [--message-limit <n>] [--redact-phones]
 tele takeout finish [--abandon]
 ```
 
-All three subcommands require explicit account selection. Per-account export artifacts live under `<app data>/export/<account>/`: `contacts.json`, `messages.jsonl`, `dialogs.json`, and the state file `takeout.json`.
+All three subcommands require explicit account selection. Per-account export artifacts live under `<app data>/export/<account>/`: `contacts.json`, `messages.jsonl`, `dialogs.json`, and the state file `takeout.json`. `--redact-phones` replaces every `phone` value in `contacts.json` with `"[REDACTED]"`.
 
 **Progress (human TTY mode):** without `--json`/`--jsonl` and with stderr attached to a terminal, export reports each dialogs page (`dialogs page 2: +100 dialogs`) and each history page (`dialog 3/57 Alice msgs=120`, style `dialog i/N <name> msgs=<n>`) on stderr through the standard log line channel. Stdout stays empty until the final envelope. Machine mode emits no progress lines, and neither does a non-terminal stderr (piped or redirected CI logs stay silent); `-q` silences progress through the usual `[error]`-only floor.
 
@@ -1047,10 +1053,10 @@ All three subcommands require explicit account selection. Per-account export art
 ## `tele raw`
 
 ```
-tele raw TL_NAME --args JSON
+tele raw TL_NAME --args JSON --allow-raw
 ```
 
-`TL_NAME` is a registry name from `src/commands/raw.rs`. Rust TL types are static, so the registry is a typed match: each supported method has a handler arm and a documented `--args` shape. An unregistered name exits 1 with the message
+`TL_NAME` is a registry name from `src/commands/raw.rs`. Rust TL types are static, so the registry is a typed match: each supported method has a handler arm and a documented `--args` shape. Every invocation requires the `--allow-raw` ack (raw runs at full account power), including `--dry-run` previews; without it the command exits 1 before validation. An unregistered name exits 1 with the message
 `raw method not in registry: <name>; add an arm in src/commands/raw.rs (registered: [...])` (the trailing list shows every valid name).
 `--args` is a JSON object of constructor kwargs. The result lands in `results[].data`. Mutating raw calls still require `--account` and honor `--dry-run` (dry-run does not invoke).
 
@@ -1116,4 +1122,5 @@ With `--json`/`--jsonl`, stdout carries the standard one-shot envelope instead o
 
 - New commands and new optional JSON keys are MINOR releases.
 - A changed exit-code meaning, a renamed JSON key, or a removed command is MAJOR.
+- Posture acks are the sanctioned exception: a new required ack flag (`--allow-raw`, `--allow-insecure-app-dir`, `--allow-trace`, phone-on-argv rejection under `--no-input`) may turn a previously-accepted invocation into exit 1 with guidance, without a MAJOR bump. Machine shapes stay additive regardless — only the acceptance gate changes.
 - Consumers read `CHANGELOG.md`; git log is not the changelog.

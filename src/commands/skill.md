@@ -41,7 +41,7 @@ compatibility: tele 0.14.0+ (generated; do not hand-edit - the binary stamps thi
 | `listen` | stream live events as JSONL |
 | `serve` | duplex JSONL server over stdin/stdout (1–32 accounts) |
 | `mcp` | MCP stdio server: tele ops as tools (exactly one account) |
-| `raw` | typed allowlist of 25 Telegram TL methods |
+| `raw` | typed allowlist of 25 Telegram TL methods (every call needs `--allow-raw`) |
 | `skill` | print or install this skill |
 
 ## Output envelope
@@ -67,6 +67,7 @@ tele listen --events NewMessage --chat '@team' --jsonl   # stream; each line is 
 tele chat participants --chat '@group' --json
 tele profile get --json
 tele mcp --account work --read-only                      # MCP server for tool-calling clients
+tele raw messages.GetAllDrafts --allow-raw --dry-run       # raw needs the ack, even to preview
 tele serve --account work                                # duplex JSONL: actions in, events out
 tele cache sync --account work --chat '@team' --json     # pull messages into local cache
 tele cache search --account work --query "deploy" --json # offline full-text search
