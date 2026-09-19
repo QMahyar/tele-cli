@@ -114,8 +114,6 @@ static FORMATTED_PHONE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\+?\d[\d\s\-\(\)]{5,30}\d").expect("static regex"));
 static LONG_TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{32,}").expect("static regex"));
-static HEX32_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{32,}\b").expect("static regex"));
 static QR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").expect("static regex"));
 static PASSWORD_RE: LazyLock<Regex> =
@@ -194,9 +192,36 @@ fn scrub_short_codes(s: String) -> String {
         .into_owned()
 }
 
+fn has_ascii_digit(s: &str) -> bool {
+    s.bytes().any(|b| b.is_ascii_digit())
+}
+
+fn has_password_marker(s: &str) -> bool {
+    s.bytes().any(|b| b == b'p' || b == b'P')
+}
+
+fn max_token_run(s: &str) -> usize {
+    let mut best = 0usize;
+    let mut run = 0usize;
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'_' | b'-') {
+            run += 1;
+            if run > best {
+                best = run;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    best
+}
+
 pub(crate) fn scrub(s: String) -> String {
-    let mut out = scrub_phones(s);
-    out = scrub_short_codes(out);
+    let mut out = if has_ascii_digit(&s) {
+        scrub_short_codes(scrub_phones(s))
+    } else {
+        s
+    };
     for key in ["TELE_API_HASH", "TELE_API_ID"] {
         if let Ok(v) = std::env::var(key) {
             let t = v.trim().to_string();
@@ -228,10 +253,15 @@ pub(crate) fn scrub(s: String) -> String {
             out = out.replace(&b64, "[REDACTED]");
         }
     }
-    out = LONG_TOKEN_RE.replace_all(&out, "[REDACTED]").into_owned();
-    out = HEX32_RE.replace_all(&out, "[REDACTED]").into_owned();
-    out = QR_RE.replace_all(&out, "[REDACTED]").into_owned();
-    out = PASSWORD_RE.replace_all(&out, "${1}[REDACTED]").into_owned();
+    if max_token_run(&out) >= 32 {
+        out = LONG_TOKEN_RE.replace_all(&out, "[REDACTED]").into_owned();
+    }
+    if out.contains("tg://login") {
+        out = QR_RE.replace_all(&out, "[REDACTED]").into_owned();
+    }
+    if has_password_marker(&out) {
+        out = PASSWORD_RE.replace_all(&out, "${1}[REDACTED]").into_owned();
+    }
     out
 }
 
@@ -985,5 +1015,42 @@ mod tests {
         let err2: TeleError = io_err.into();
         assert!(!err2.message().contains(long_token));
         assert!(err2.message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn scrub_parity_battery_for_fast_path_optimization() {
+        let hex40 = "deadbeef".repeat(5);
+        let joined_hex = format!("{}A{}B", "a".repeat(32), "b".repeat(32));
+        let exact: Vec<(String, &str)> = vec![
+            (
+                "rpc error 420: FLOOD_WAIT (value: 30)".to_string(),
+                "rpc error 420: FLOOD_WAIT (value: 30)",
+            ),
+            ("count 123 is fine".to_string(), "count 123 is fine"),
+            (
+                "no digits or secrets here".to_string(),
+                "no digits or secrets here",
+            ),
+            (hex40.clone(), "[REDACTED]"),
+            (format!("session {}", "A".repeat(50)), "session [REDACTED]"),
+            (format!("key {joined_hex} end"), "key [REDACTED] end"),
+        ];
+        for (input, expected) in exact {
+            assert_eq!(scrub(input.clone()), expected, "input: {input}");
+        }
+        let redacted = [
+            "call +1234567890 now",
+            "login code 123456 arrived",
+            "qr tg://login?token=abc123DEF456 end",
+            "password: supersecret123",
+        ];
+        for input in redacted {
+            let out = scrub(input.to_string());
+            assert!(out.contains("[REDACTED]"), "input: {input} -> {out}");
+        }
+        assert!(!scrub("call +1234567890 now".to_string()).contains("1234567890"));
+        assert!(!scrub("login code 123456 arrived".to_string()).contains("123456"));
+        assert!(!scrub("qr tg://login?token=abc123DEF456 end".to_string()).contains("abc123"));
+        assert!(!scrub("password: supersecret123".to_string()).contains("supersecret123"));
     }
 }
