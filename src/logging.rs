@@ -30,7 +30,7 @@ impl log::Log for StderrLogger {
 static LOGGER: StderrLogger = StderrLogger;
 
 pub fn init() {
-    let level = match std::env::var("TELE_LOG").as_deref() {
+    let level = match std::env::var("TELE_LOG").as_deref().map(str::trim) {
         Ok("trace") => LevelFilter::Trace,
         Ok("debug") => LevelFilter::Debug,
         Ok("info") => LevelFilter::Info,
@@ -82,9 +82,51 @@ pub fn min_line_level() -> u8 {
     MIN_LINE.load(Ordering::Relaxed)
 }
 
+pub const TRACE_ACK_ENV: &str = "TELE_ALLOW_TRACE";
+
+pub(crate) fn trace_ack_error(allow_trace: bool) -> crate::error::TeleResult<()> {
+    let trace_on = std::env::var("TELE_LOG")
+        .ok()
+        .is_some_and(|v| v.trim() == "trace");
+    if !trace_on || allow_trace {
+        return Ok(());
+    }
+    if std::env::var(TRACE_ACK_ENV).ok().as_deref() == Some("1") {
+        return Ok(());
+    }
+    Err(crate::error::TeleError::Usage("TELE_LOG=trace bypasses secret scrubbing for grammers internals; re-run with --allow-trace (or TELE_ALLOW_TRACE=1) to acknowledge the leak risk".to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trace_ack_blocks_unacknowledged_trace() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("TELE_LOG", "trace");
+        std::env::remove_var(TRACE_ACK_ENV);
+        assert!(trace_ack_error(false).is_err());
+        assert!(trace_ack_error(true).is_ok());
+        std::env::set_var(TRACE_ACK_ENV, "1");
+        assert!(trace_ack_error(false).is_ok());
+        std::env::remove_var(TRACE_ACK_ENV);
+        std::env::remove_var("TELE_LOG");
+    }
+
+    #[test]
+    fn trace_ack_passes_for_non_trace_levels() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("TELE_LOG", "debug");
+        std::env::remove_var(TRACE_ACK_ENV);
+        assert!(trace_ack_error(false).is_ok());
+        std::env::remove_var("TELE_LOG");
+        assert!(trace_ack_error(false).is_ok());
+    }
 
     #[test]
     fn min_line_level_default_is_info() {

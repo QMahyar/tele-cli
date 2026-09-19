@@ -22,8 +22,11 @@ fn isolated_appdir(tag: &str) -> PathBuf {
 }
 
 fn run_isolated(tag: &str, args: &[&str]) -> (i32, String, String) {
+    let acked: Vec<&str> = std::iter::once("--allow-insecure-app-dir")
+        .chain(args.iter().copied())
+        .collect();
     let out = tele()
-        .args(args)
+        .args(&acked)
         .env("TELE_APP_DIR", isolated_appdir(tag))
         .output()
         .expect("spawn telecli");
@@ -35,8 +38,11 @@ fn run_isolated(tag: &str, args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_in(dir: &Path, args: &[&str]) -> (i32, String, String) {
+    let acked: Vec<&str> = std::iter::once("--allow-insecure-app-dir")
+        .chain(args.iter().copied())
+        .collect();
     let out = tele()
-        .args(args)
+        .args(&acked)
         .env("TELE_APP_DIR", dir)
         .output()
         .expect("spawn telecli");
@@ -48,8 +54,11 @@ fn run_in(dir: &Path, args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_no_creds(dir: &Path, args: &[&str]) -> (i32, String, String) {
+    let acked: Vec<&str> = std::iter::once("--allow-insecure-app-dir")
+        .chain(args.iter().copied())
+        .collect();
     let out = tele()
-        .args(args)
+        .args(&acked)
         .env("TELE_APP_DIR", dir)
         .env_remove("TELE_API_ID")
         .env_remove("TELE_API_HASH")
@@ -432,9 +441,45 @@ fn empty_selection_is_usage_error() {
 
 #[test]
 fn raw_unregistered_name_exits_1_before_connect() {
-    let (code, _out, err) = run_isolated("rawbad", &["raw", "messages.Nope", "--args", "{}"]);
+    let (code, _out, err) = run_isolated(
+        "rawbad",
+        &["raw", "messages.Nope", "--args", "{}", "--allow-raw"],
+    );
     assert_eq!(code, 1);
     assert!(err.contains("raw method not in registry"), "stderr: {err}");
+}
+
+#[test]
+fn raw_without_allow_raw_exits_1_before_validation() {
+    let (code, _out, err) =
+        run_isolated("rawack", &["raw", "messages.GetAllDrafts", "--args", "{}"]);
+    assert_eq!(code, 1);
+    assert!(err.contains("--allow-raw"), "stderr: {err}");
+}
+
+#[test]
+fn app_dir_outside_per_user_roots_fails_closed_without_ack() {
+    let dir = isolated_appdir("appdirack");
+    let out = tele()
+        .args(["account", "list"])
+        .env("TELE_APP_DIR", &dir)
+        .env_remove("HOME")
+        .env_remove("APPDATA")
+        .env_remove("LOCALAPPDATA")
+        .env_remove("USERPROFILE")
+        .env_remove("XDG_CONFIG_HOME")
+        .output()
+        .expect("spawn telecli");
+    let code = out.status.code().unwrap_or(-1);
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(code, 1, "stderr: {err}");
+    assert!(err.contains("--allow-insecure-app-dir"), "stderr: {err}");
+
+    let (_code, _out, err) = run_in(&dir, &["account", "list"]);
+    assert!(
+        !err.contains("--allow-insecure-app-dir"),
+        "acked gate must pass: {err}"
+    );
 }
 
 #[test]
@@ -465,7 +510,8 @@ fn oversized_chat_target_rejected_without_panic() {
 
 #[test]
 fn raw_registered_name_reaches_fanout() {
-    let (code, _out, err) = run_isolated("rawreg", &["raw", "messages.GetAllDrafts"]);
+    let (code, _out, err) =
+        run_isolated("rawreg", &["raw", "messages.GetAllDrafts", "--allow-raw"]);
     assert_eq!(code, 1);
     assert!(err.contains("no accounts selected"), "stderr: {err}");
 }
@@ -479,7 +525,8 @@ fn raw_new_mutators_require_explicit_account_offline() {
         ),
         ("contacts.DeleteByPhones", "{\"phones\":[\"+15550100\"]}"),
     ] {
-        let (code, _out, err) = run_isolated("rawgate2", &["raw", name, "--args", args]);
+        let (code, _out, err) =
+            run_isolated("rawgate2", &["raw", name, "--args", args, "--allow-raw"]);
         assert_eq!(code, 1, "raw {name}");
         assert!(
             err.contains("mutates account data"),
@@ -1805,6 +1852,7 @@ fn raw_registry_names_are_offline_usable() {
                 name,
                 "--args",
                 args_for(name),
+                "--allow-raw",
                 "--account",
                 "work",
                 "--dry-run",
@@ -3348,8 +3396,11 @@ fn doctor_has_root_help_surface() {
 fn run_with_stdin(dir: &Path, args: &[&str], input: &str) -> (i32, String, String) {
     use std::io::Write as _;
     use std::process::Stdio;
+    let acked: Vec<&str> = std::iter::once("--allow-insecure-app-dir")
+        .chain(args.iter().copied())
+        .collect();
     let mut child = tele()
-        .args(args)
+        .args(&acked)
         .env("TELE_APP_DIR", dir)
         .env_remove("TELE_API_ID")
         .env_remove("TELE_API_HASH")

@@ -310,7 +310,11 @@ impl ServerHandler for TeleMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(resource_list()))
+        let items: Vec<Resource> = resource_list()
+            .into_iter()
+            .filter(|r| self.resource_visible(&r.uri))
+            .collect();
+        Ok(ListResourcesResult::with_all_items(items))
     }
 
     async fn read_resource(
@@ -329,6 +333,14 @@ impl ServerHandler for TeleMcp {
 const RESOURCE_SKILL_URI: &str = "tele://skill";
 const RESOURCE_PROFILE_URI: &str = "tele://profile";
 const RESOURCE_DIALOGS_URI: &str = "tele://dialogs";
+
+fn resource_group(uri: &str) -> Option<&'static str> {
+    match uri {
+        RESOURCE_PROFILE_URI => Some("profile"),
+        RESOURCE_DIALOGS_URI => Some("dialog"),
+        _ => None,
+    }
+}
 
 fn resource_list() -> Vec<Resource> {
     vec![
@@ -354,7 +366,23 @@ fn resource_list() -> Vec<Resource> {
 }
 
 impl TeleMcp {
+    fn resource_visible(&self, uri: &str) -> bool {
+        match (resource_group(uri), self.groups.as_deref()) {
+            (Some(required), Some(groups)) => groups.iter().any(|g| g == required),
+            _ => true,
+        }
+    }
+
     async fn read_resource_core(&self, uri: &str) -> Result<ResourceContents, ErrorData> {
+        if !self.resource_visible(uri) {
+            let required = resource_group(uri).unwrap_or_default();
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "resource {uri} is hidden by the --groups gate on this server (requires group {required})"
+                ),
+                None,
+            ));
+        }
         let contents = match uri {
             RESOURCE_SKILL_URI => ResourceContents::text(crate::commands::skill::SKILL_MD, uri)
                 .with_mime_type("text/markdown"),
@@ -364,6 +392,7 @@ impl TeleMcp {
                     crate::commands::profile::GetParams {
                         chat: None,
                         show_phone: false,
+                        redact_phones: false,
                         dry_run: false,
                     },
                 )
@@ -684,6 +713,27 @@ mod tests {
         .await
         .expect("visible tool must pass the gate");
         assert!(kept.is_ok(), "dialog_list is visible under --read-only");
+    }
+
+    #[tokio::test]
+    async fn groups_gate_scopes_resources_like_tools() {
+        let handler = offline_handler(false, Some(vec!["msg".to_string()])).await;
+        assert!(handler.resource_visible(RESOURCE_SKILL_URI));
+        assert!(!handler.resource_visible(RESOURCE_DIALOGS_URI));
+        assert!(!handler.resource_visible(RESOURCE_PROFILE_URI));
+        for uri in [RESOURCE_DIALOGS_URI, RESOURCE_PROFILE_URI] {
+            let err = handler.read_resource_core(uri).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+            assert!(err.message.contains("--groups"), "{}", err.message);
+        }
+        assert!(
+            handler.read_resource_core(RESOURCE_SKILL_URI).await.is_ok(),
+            "skill resource stays public under --groups"
+        );
+
+        let full = offline_handler(false, None).await;
+        assert!(full.resource_visible(RESOURCE_DIALOGS_URI));
+        assert!(full.resource_visible(RESOURCE_PROFILE_URI));
     }
 
     #[tokio::test]

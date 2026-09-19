@@ -14,7 +14,8 @@ use crate::commands::msg::send::{
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
-    validate_filename, validate_markdown, MAX_UPLOAD_BYTES,
+    validate_filename, validate_markdown, MAX_UPLOAD_BYTES, SENSITIVE_EXACT, SENSITIVE_PREFIXES,
+    SENSITIVE_SUFFIXES,
 };
 use crate::serialize::message_permalink;
 use grammers_client::tl;
@@ -4173,6 +4174,41 @@ fn download_guard_refuses_before_creating_dir() {
     assert!(!inside.exists(), "guard must refuse before creating dir");
     std::env::remove_var("TELE_APP_DIR");
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn sensitive_basename_lists_are_pinned_against_drift() {
+    assert_eq!(
+        SENSITIVE_SUFFIXES,
+        [
+            ".session",
+            ".session-journal",
+            ".session-wal",
+            ".session-shm",
+            ".session.export",
+            ".session.tmp",
+            ".pem",
+            ".key",
+            ".p12",
+            ".pfx",
+            ".kdbx",
+        ]
+    );
+    assert_eq!(
+        SENSITIVE_PREFIXES,
+        [
+            ".env",
+            "config.toml",
+            "id_rsa",
+            "id_ed25519",
+            "id_ecdsa",
+            "id_dsa",
+        ]
+    );
+    assert_eq!(
+        SENSITIVE_EXACT,
+        [".netrc", ".git-credentials", "credentials"]
+    );
 }
 
 #[test]

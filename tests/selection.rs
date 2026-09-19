@@ -22,8 +22,11 @@ fn appdir(tag: &str) -> PathBuf {
 }
 
 fn run_in(dir: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    let acked: Vec<&str> = std::iter::once("--allow-insecure-app-dir")
+        .chain(args.iter().copied())
+        .collect();
     let out = tele()
-        .args(args)
+        .args(&acked)
         .env("TELE_APP_DIR", dir)
         .output()
         .expect("spawn telecli");
@@ -380,7 +383,15 @@ fn login_rejects_unsafe_name_without_writing_files() {
     for sep in ["../evil", "..\\evil"] {
         let dir = appdir("loginbad");
         let out = tele()
-            .args(["account", "login", "--name", sep, "--phone", "+10000000000"])
+            .args([
+                "--allow-insecure-app-dir",
+                "account",
+                "login",
+                "--name",
+                sep,
+                "--phone",
+                "+10000000000",
+            ])
             .env("TELE_APP_DIR", &dir)
             .env("TELE_API_ID", "12345")
             .env("TELE_API_HASH", "deadbeefdeadbeef")

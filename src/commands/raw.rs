@@ -21,6 +21,11 @@ pub struct RawArgs {
     name: String,
     #[arg(long, default_value = "{}", help = "JSON object of method parameters")]
     args: String,
+    #[arg(
+        long,
+        help = "acknowledge running a raw TL method at full account power"
+    )]
+    allow_raw: bool,
 }
 
 pub const REGISTERED: &[&str] = &[
@@ -66,10 +71,12 @@ pub async fn run(args: &RawArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let config_path = flags.config_path.clone();
     let params: serde_json::Value = parse_raw_args(&args.args)?;
     let name = args.name.clone();
-    validate_raw(&RawCall {
+    let call = RawCall {
         method: name.clone(),
         args: params.clone(),
-    })?;
+        allow_raw: args.allow_raw,
+    };
+    validate_raw(&call)?;
     if !flags.dry_run
         && generated::requires_explicit_account(&name)
         && flags.account.is_empty()
@@ -146,6 +153,8 @@ pub(crate) struct RawParams {
     #[serde(default = "default_raw_args")]
     args: serde_json::Value,
     #[serde(default)]
+    allow_raw: bool,
+    #[serde(default)]
     dry_run: bool,
 }
 
@@ -159,6 +168,8 @@ pub(crate) struct RawCall {
     pub(crate) method: String,
     #[serde(default = "default_raw_args")]
     pub(crate) args: serde_json::Value,
+    #[serde(default)]
+    pub(crate) allow_raw: bool,
 }
 
 impl From<&RawParams> for RawCall {
@@ -166,6 +177,7 @@ impl From<&RawParams> for RawCall {
         Self {
             method: p.method.clone(),
             args: p.args.clone(),
+            allow_raw: p.allow_raw,
         }
     }
 }
@@ -175,12 +187,18 @@ impl From<&RawCall> for RawParams {
         Self {
             method: c.method.clone(),
             args: c.args.clone(),
+            allow_raw: c.allow_raw,
             dry_run: false,
         }
     }
 }
 
+pub(crate) const ALLOW_RAW_HINT: &str = "raw methods run at full account power; re-run with --allow-raw (CLI) or resend with allow_raw:true (serve/MCP) to acknowledge";
+
 pub(crate) fn validate_raw(call: &RawCall) -> TeleResult<()> {
+    if !call.allow_raw {
+        return Err(TeleError::Usage(ALLOW_RAW_HINT.to_string()));
+    }
     if registry::lookup(&call.method).is_none() {
         return Err(TeleError::Usage(format!(
             "raw method not in registry: {}; add an arm in src/commands/raw.rs (registered: {REGISTERED:?})",
@@ -191,7 +209,19 @@ pub(crate) fn validate_raw(call: &RawCall) -> TeleResult<()> {
 }
 
 pub(crate) fn raw_serve_dry_run(args: &RawCall) -> TeleResult<serde_json::Value> {
+    if !args.allow_raw {
+        return Err(TeleError::Usage(ALLOW_RAW_HINT.to_string()));
+    }
     Ok(raw_dry_run_payload(&args.method, &args.args))
+}
+
+pub(crate) fn raw_requires_bound_account(method: &str, account: &str) -> TeleResult<()> {
+    if generated::requires_explicit_account(method) && account.is_empty() {
+        return Err(TeleError::Usage(format!(
+            "raw method {method} mutates account data — the serve session pins no explicit account; bind the server to one account"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) async fn raw_core(
@@ -200,6 +230,7 @@ pub(crate) async fn raw_core(
 ) -> TeleResult<serde_json::Value> {
     let call = RawCall::from(&params);
     validate_raw(&call)?;
+    raw_requires_bound_account(&call.method, &shares.account)?;
     shares.rate_limiter.acquire().await;
     dispatch(
         &shares.client,
@@ -2524,10 +2555,61 @@ mod tests {
     }
 
     #[test]
+    fn raw_bound_account_guard_pins_mutating_methods() {
+        assert!(raw_requires_bound_account("messages.GetAllDrafts", "").is_ok());
+        assert!(raw_requires_bound_account("messages.GetAllDrafts", "work").is_ok());
+        assert!(raw_requires_bound_account("account.UpdateProfile", "work").is_ok());
+        let err = raw_requires_bound_account("account.UpdateProfile", "").unwrap_err();
+        assert!(err.message().contains("explicit account"), "{err}");
+    }
+
+    #[test]
+    fn raw_without_allow_raw_is_usage_error_naming_the_ack() {
+        for call in [
+            serde_json::json!({"method": "messages.GetAllDrafts", "args": {}}),
+            serde_json::json!({"method": "messages.GetAllDrafts", "args": {}, "dry_run": true}),
+            serde_json::json!({"method": "messages.FooBar", "args": {}}),
+        ] {
+            let err = plan_for("raw", call.clone()).unwrap_err();
+            assert_eq!(err["type"], "UsageError", "{call}");
+            let msg = err["message"].as_str().unwrap().to_string();
+            assert!(msg.contains("--allow-raw"), "{call}: {msg}");
+            assert!(msg.contains("allow_raw"), "{call}: {msg}");
+        }
+    }
+
+    #[test]
+    fn registry_and_dispatch_agree_on_every_registered_method() {
+        for method in REGISTERED {
+            assert!(
+                registry::lookup(method).is_some(),
+                "registered method {method} missing from the typed registry"
+            );
+            let probe = RawCall {
+                method: method.to_string(),
+                args: serde_json::json!({}),
+                allow_raw: true,
+            };
+            let verdict = validate_raw(&probe);
+            assert!(
+                verdict.is_ok() || matches!(verdict, Err(TeleError::Usage(_))),
+                "validate_raw must answer, never panic, for {method}"
+            );
+        }
+        let call = RawCall {
+            method: "messages.FooBar".to_string(),
+            args: serde_json::json!({}),
+            allow_raw: true,
+        };
+        let err = validate_raw(&call).unwrap_err();
+        assert!(err.message().contains("not in registry"), "{err}");
+    }
+
+    #[test]
     fn unknown_method_yields_usage_error_naming_it() {
         let err = plan_for(
             "raw",
-            serde_json::json!({"method": "messages.FooBar", "args": {}}),
+            serde_json::json!({"method": "messages.FooBar", "args": {}, "allow_raw": true}),
         )
         .unwrap_err();
         assert_eq!(err["type"], "UsageError");
@@ -2539,9 +2621,9 @@ mod tests {
     #[test]
     fn missing_args_fields_yield_usage_error_from_generated_gates() {
         for call in [
-            serde_json::json!({"method": "contacts.Search"}),
-            serde_json::json!({"method": "contacts.Search", "args": {}}),
-            serde_json::json!({"method": "stats.GetBroadcastStats", "args": {"channel": "  "}}),
+            serde_json::json!({"method": "contacts.Search", "allow_raw": true}),
+            serde_json::json!({"method": "contacts.Search", "args": {}, "allow_raw": true}),
+            serde_json::json!({"method": "stats.GetBroadcastStats", "args": {"channel": "  "}, "allow_raw": true}),
         ] {
             let err = plan_for("raw", call.clone()).unwrap_err();
             assert_eq!(err["type"], "UsageError", "{call}");
@@ -2557,7 +2639,7 @@ mod tests {
     fn non_object_args_yield_usage_error() {
         let err = plan_for(
             "raw",
-            serde_json::json!({"method": "messages.GetAllDrafts", "args": [1, 2]}),
+            serde_json::json!({"method": "messages.GetAllDrafts", "args": [1, 2], "allow_raw": true}),
         )
         .unwrap_err();
         assert_eq!(err["type"], "UsageError");
@@ -2568,7 +2650,7 @@ mod tests {
     fn registered_read_only_method_passes_all_gates_and_dry_runs_like_cli() {
         let plan = plan_for(
             "raw",
-            serde_json::json!({"method": "messages.GetAllDrafts", "dry_run": true}),
+            serde_json::json!({"method": "messages.GetAllDrafts", "dry_run": true, "allow_raw": true}),
         )
         .unwrap();
         let crate::commands::serve::Plan::DryRun(data) = plan else {
@@ -2583,7 +2665,7 @@ mod tests {
             serde_json::json!("invoke raw method messages.GetAllDrafts")
         );
 
-        let raw = serde_json::json!({"method": "messages.GetAllDrafts"});
+        let raw = serde_json::json!({"method": "messages.GetAllDrafts", "allow_raw": true});
         let plan = plan_for("raw", raw.clone()).unwrap();
         match plan {
             crate::commands::serve::Plan::Execute(passed) => assert_eq!(passed, raw),
@@ -2593,7 +2675,7 @@ mod tests {
         let with_args = serde_json::json!({"q": "ducks", "limit": 10});
         let plan = plan_for(
             "raw",
-            serde_json::json!({"method": "contacts.Search", "args": with_args, "dry_run": true}),
+            serde_json::json!({"method": "contacts.Search", "args": with_args, "dry_run": true, "allow_raw": true}),
         )
         .unwrap();
         let crate::commands::serve::Plan::DryRun(data) = plan else {
@@ -2607,7 +2689,7 @@ mod tests {
         let s = crate::commands::serve::params_schema::<RawParams>();
         assert_eq!(s["type"], "object");
         assert_eq!(s["additionalProperties"], serde_json::Value::Bool(false));
-        for prop in ["method", "args", "dry_run"] {
+        for prop in ["method", "args", "allow_raw", "dry_run"] {
             assert!(s["properties"][prop].is_object(), "{prop}");
         }
         let required: Vec<&str> = s["required"]

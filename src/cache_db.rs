@@ -36,6 +36,12 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, text, chat_name, sender_name)
     VALUES ('delete', old.rowid, old.text, old.chat_name, old.sender_name);
 END;
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, text, chat_name, sender_name)
+    VALUES ('delete', old.rowid, old.text, old.chat_name, old.sender_name);
+    INSERT INTO messages_fts(rowid, text, chat_name, sender_name)
+    VALUES (new.rowid, new.text, new.chat_name, new.sender_name);
+END;
 ";
 
 async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
@@ -527,6 +533,42 @@ mod tests {
             Some(0),
             "fts index must not keep docs for replaced-away text"
         );
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn update_keeps_fts_index_in_sync() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-cache-ftsu-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let account = test_account("ftsu");
+        store_messages(&account, &[atomic_message(1, "updatemeoriginal")])
+            .await
+            .unwrap();
+        let conn = open_db(&account).await.unwrap();
+        conn.execute(
+            "UPDATE messages SET text = 'updatededited' WHERE id = 1 AND chat_id = 100",
+            (),
+        )
+        .await
+        .unwrap();
+        let stale = search_cache(&account, "updatemeoriginal", None, 10)
+            .await
+            .unwrap();
+        assert!(stale.is_empty());
+        let fresh = search_cache(&account, "updatededited", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(fresh.len(), 1);
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }

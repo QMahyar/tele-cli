@@ -120,6 +120,10 @@ static QR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"tg://login\?token=[^\s]+").expect("static regex"));
 static PASSWORD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(password\s*[:=]\s*)\S+").expect("static regex"));
+static SHORT_CODE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(code|otp|verification|service|sms|2fa|confirm|token|password)[^\d\n]{0,20}(\d{3,6})\b")
+        .expect("static regex")
+});
 
 static CACHED_FILE_SECRETS: LazyLock<Vec<String>> = LazyLock::new(|| {
     let Ok(dir) = crate::config::app_data_dir_checked() else {
@@ -178,8 +182,21 @@ fn scrub_phones(s: String) -> String {
         .into_owned()
 }
 
+fn scrub_short_codes(s: String) -> String {
+    SHORT_CODE_RE
+        .replace_all(&s, |caps: &regex::Captures| {
+            let prefix = caps
+                .get(1)
+                .expect("capture group 1 always matches")
+                .as_str();
+            format!("{prefix}[REDACTED]")
+        })
+        .into_owned()
+}
+
 pub(crate) fn scrub(s: String) -> String {
     let mut out = scrub_phones(s);
+    out = scrub_short_codes(out);
     for key in ["TELE_API_HASH", "TELE_API_ID"] {
         if let Ok(v) = std::env::var(key) {
             let t = v.trim().to_string();
@@ -828,14 +845,50 @@ mod tests {
 
     #[test]
     fn test_scrub_phones_boundary_7_to_15() {
-        let err_short = TeleError::Usage("code 123456 is ok".to_string());
-        assert_eq!(err_short.message(), "code 123456 is ok");
+        let err_short = TeleError::Usage("count 123456 is ok".to_string());
+        assert_eq!(err_short.message(), "count 123456 is ok");
         let err_long = TeleError::Usage("id 1234567890123456 is long".to_string());
         assert_eq!(err_long.message(), "id 1234567890123456 is long");
         let err_ok = TeleError::Usage("phone 1234567".to_string());
         assert!(err_ok.message().contains("[REDACTED]"));
         let err_ok2 = TeleError::Usage("phone 123456789012345".to_string());
         assert!(err_ok2.message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_scrub_short_service_codes_redacted_in_code_context() {
+        for (msg, secret) in [
+            ("login code 123456 arrived", "123456"),
+            ("OTP 789012 expired", "789012"),
+            ("verification code: 445566", "445566"),
+            ("sms-code 1234 failed", "1234"),
+            ("2fa code 654321 rejected", "654321"),
+            ("confirm 987 with the service desk", "987"),
+        ] {
+            let err = TeleError::Usage(msg.to_string());
+            assert!(
+                !err.message().contains(secret),
+                "{msg} leaked: {}",
+                err.message()
+            );
+            assert!(err.message().contains("[REDACTED]"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn test_scrub_short_numbers_pass_in_count_context() {
+        for msg in [
+            "count 123 is fine",
+            "id 45678 selected",
+            "total 999 rows",
+            "rpc error 420: FLOOD_WAIT (value: 30)",
+            "error 404 from server",
+            "limit 100 reached",
+            "year 2026 report",
+        ] {
+            let err = TeleError::Usage(msg.to_string());
+            assert_eq!(err.message(), msg, "{msg} must not be redacted");
+        }
     }
 
     #[test]

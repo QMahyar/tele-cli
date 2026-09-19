@@ -80,6 +80,18 @@ struct Cli {
         help = "fail closed instead of prompting for interactive input"
     )]
     no_input: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "acknowledge placing app state outside a per-user directory (required when TELE_APP_DIR leaves per-user paths)"
+    )]
+    allow_insecure_app_dir: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "acknowledge that TELE_LOG=trace bypasses secret scrubbing for grammers internals"
+    )]
+    allow_trace: bool,
     #[arg(long, global = true, help = "validate without touching Telegram")]
     dry_run: bool,
     #[arg(
@@ -262,6 +274,34 @@ fn main() -> std::process::ExitCode {
             ) as u8);
         }
     }
+    if let Err(e) = logging::trace_ack_error(cli.allow_trace) {
+        return std::process::ExitCode::from(emit_usage_error(
+            UsageCtx {
+                machine: output::machine_mode(cli.json, cli.jsonl),
+                dry_run: cli.dry_run,
+            },
+            &flags.command,
+            &e.message(),
+        ) as u8);
+    }
+    if !cli.allow_insecure_app_dir {
+        if let Some(override_dir) = config::app_dir_override() {
+            if !config::app_dir_is_per_user(&override_dir) {
+                let message = format!(
+                    "TELE_APP_DIR={} is outside per-user paths; re-run with --allow-insecure-app-dir to acknowledge the weaker file-protection model",
+                    override_dir.display()
+                );
+                return std::process::ExitCode::from(emit_usage_error(
+                    UsageCtx {
+                        machine: output::machine_mode(cli.json, cli.jsonl),
+                        dry_run: cli.dry_run,
+                    },
+                    &flags.command,
+                    &message,
+                ) as u8);
+            }
+        }
+    }
     if config::app_data_dir_checked().is_err() {
         let message = "cannot determine app data directory; set TELE_APP_DIR to choose a location";
         output::log_line("error", message);
@@ -437,7 +477,22 @@ fn login_may_prompt(args: &account::LoginArgs) -> bool {
 fn no_input_violation(command: &Command, matches: &clap::ArgMatches) -> Option<String> {
     match command {
         Command::Account(account::AccountCmd::Login(args)) if login_may_prompt(args) => {
-            Some("account login would prompt for the login code or 2FA password".to_string())
+            if args.phone.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                Some("--phone on argv under --no-input is rejected (visible in process listings and shell history); use TELE_PHONE instead".to_string())
+            } else {
+                Some("account login would prompt for the login code or 2FA password".to_string())
+            }
+        }
+        Command::Account(account::AccountCmd::Phone(args))
+            if args
+                .change_phone
+                .as_deref()
+                .is_some_and(|p| !p.trim().is_empty()) =>
+        {
+            Some(
+                "--change-phone on argv under --no-input is rejected; re-run without --no-input"
+                    .to_string(),
+            )
         }
         Command::Account(account::AccountCmd::Password(_)) if password_requests_prompt(matches) => {
             Some("account password would prompt for the cloud password".to_string())
@@ -453,9 +508,13 @@ fn no_input_violation(command: &Command, matches: &clap::ArgMatches) -> Option<S
 }
 
 fn argv_command_hint() -> Option<String> {
+    argv_command_hint_from(std::env::args_os().skip(1))
+}
+
+fn argv_command_hint_from(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<String> {
     const GLOBAL_VALUE_FLAGS: [&str; 5] =
         ["--account", "--tag", "--parallel", "--config", "--fields"];
-    const GLOBAL_BOOL_FLAGS: [&str; 8] = [
+    const GLOBAL_BOOL_FLAGS: [&str; 10] = [
         "--json",
         "--jsonl",
         "--dry-run",
@@ -464,10 +523,12 @@ fn argv_command_hint() -> Option<String> {
         "--verbose",
         "-v",
         "--no-input",
+        "--allow-insecure-app-dir",
+        "--allow-trace",
     ];
     let mut parts: Vec<String> = Vec::new();
     let mut skip_value = false;
-    for arg in std::env::args_os().skip(1) {
+    for arg in args {
         let s = arg.to_string_lossy().into_owned();
         if skip_value {
             skip_value = false;
@@ -671,6 +732,54 @@ mod tests {
         let (command, m) = parsed(&["tele", "account", "delete", "--reason", "x", "--yes"]);
         assert!(super::no_input_violation(&command, &m).is_some());
         let (command, m) = parsed(&["tele", "msg", "send", "--chat", "me", "--text", "hi"]);
+        assert!(super::no_input_violation(&command, &m).is_none());
+    }
+
+    #[test]
+    fn argv_hint_skips_all_global_flags() {
+        let argv = [
+            "--allow-insecure-app-dir",
+            "--allow-trace",
+            "--json",
+            "msg",
+            "send",
+        ];
+        assert_eq!(
+            super::argv_command_hint_from(argv.map(std::ffi::OsString::from)),
+            Some("msg send".to_string())
+        );
+        let argv = ["--allow-insecure-app-dir", "--json", "foobar"];
+        assert_eq!(
+            super::argv_command_hint_from(argv.map(std::ffi::OsString::from)),
+            Some("foobar".to_string())
+        );
+    }
+
+    #[test]
+    fn no_input_violation_rejects_phone_on_argv() {
+        use clap::FromArgMatches;
+        let parsed = |argv: &[&str]| {
+            let m = super::Cli::command().try_get_matches_from(argv).unwrap();
+            let cli = super::Cli::from_arg_matches(&m).unwrap();
+            (cli.command, m)
+        };
+        let (command, m) = parsed(&[
+            "tele",
+            "account",
+            "login",
+            "--name",
+            "w",
+            "--phone",
+            "+10000000000",
+        ]);
+        let detail =
+            super::no_input_violation(&command, &m).expect("phone on argv must fail closed");
+        assert!(detail.contains("--phone"), "detail: {detail}");
+        let (command, m) = parsed(&["tele", "account", "phone", "--change-phone", "+10000000001"]);
+        let detail =
+            super::no_input_violation(&command, &m).expect("change-phone on argv must fail closed");
+        assert!(detail.contains("--change-phone"), "detail: {detail}");
+        let (command, m) = parsed(&["tele", "account", "login", "--name", "w", "--method", "qr"]);
         assert!(super::no_input_violation(&command, &m).is_none());
     }
 }

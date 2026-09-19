@@ -25,6 +25,11 @@ pub struct GetArgs {
     chat: Option<String>,
     #[arg(long, help = "include the account phone number (redacted by default)")]
     show_phone: bool,
+    #[arg(
+        long,
+        help = "redact phone numbers in the output (overrides --show-phone)"
+    )]
+    redact_phones: bool,
 }
 
 #[derive(Args, Clone)]
@@ -549,7 +554,15 @@ pub(crate) struct GetParams {
     #[serde(default)]
     pub(crate) show_phone: bool,
     #[serde(default)]
+    pub(crate) redact_phones: bool,
+    #[serde(default)]
     pub(crate) dry_run: bool,
+}
+
+impl GetParams {
+    pub(crate) fn effective_show_phone(&self) -> bool {
+        self.show_phone && !self.redact_phones
+    }
 }
 
 impl From<&GetArgs> for GetParams {
@@ -557,6 +570,7 @@ impl From<&GetArgs> for GetParams {
         Self {
             chat: a.chat.clone(),
             show_phone: a.show_phone,
+            redact_phones: a.redact_phones,
             dry_run: false,
         }
     }
@@ -567,6 +581,7 @@ impl From<&GetParams> for GetArgs {
         Self {
             chat: p.chat.clone(),
             show_phone: p.show_phone,
+            redact_phones: p.redact_phones,
         }
     }
 }
@@ -796,7 +811,7 @@ pub(crate) async fn get_core(
                         "id": user.id().bare_id().unwrap_or_default(),
                         "name": user.full_name(),
                         "username": user.username().unwrap_or_default(),
-                        "phone": redact_phone(user.phone(), params.show_phone),
+                        "phone": redact_phone(user.phone(), params.effective_show_phone()),
                         "bio": full_user.about,
                         "bot": user.is_bot(),
                     }))
@@ -825,7 +840,7 @@ pub(crate) async fn get_core(
                 "id": me.id().bare_id().unwrap_or_default(),
                 "name": me.full_name(),
                 "username": me.username().unwrap_or_default(),
-                "phone": redact_phone(me.phone(), params.show_phone),
+                "phone": redact_phone(me.phone(), params.effective_show_phone()),
                 "bio": full_user.about,
                 "bot": me.is_bot(),
             }))
@@ -1495,6 +1510,31 @@ mod tests {
     fn phone_shown_when_flag_set() {
         assert_eq!(redact_phone(Some("+123456789"), true), Some("+123456789"));
         assert_eq!(redact_phone(None, true), None);
+    }
+
+    #[test]
+    fn redact_phones_overrides_show_phone() {
+        let params = GetParams {
+            chat: None,
+            show_phone: true,
+            redact_phones: true,
+            dry_run: false,
+        };
+        assert!(!params.effective_show_phone());
+        let params = GetParams {
+            chat: None,
+            show_phone: true,
+            redact_phones: false,
+            dry_run: false,
+        };
+        assert!(params.effective_show_phone());
+        let params = GetParams {
+            chat: None,
+            show_phone: false,
+            redact_phones: false,
+            dry_run: false,
+        };
+        assert!(!params.effective_show_phone());
     }
 
     #[test]
