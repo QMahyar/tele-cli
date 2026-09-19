@@ -363,10 +363,10 @@ tele listen --raw
 # List available methods
 tele raw --help
 
-# Call a method
-tele raw contacts.Search --args '{"q":"alice","limit":10}'
-tele raw messages.GetAllDrafts
-tele raw users.GetUsers --args '{"id":[{"user_id":123456}]}'
+# Call a method (every raw call needs the --allow-raw ack)
+tele raw contacts.Search --args '{"q":"alice","limit":10}' --allow-raw
+tele raw messages.GetAllDrafts --allow-raw
+tele raw users.GetUsers --args '{"id":[{"user_id":123456}]}' --allow-raw
 ```
 
 ## Multi-account

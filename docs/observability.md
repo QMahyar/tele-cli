@@ -32,7 +32,7 @@ When peer resolution fails, the error tells you to refresh the peer cache. It do
 - In human mode with stderr attached to a terminal, `takeout export` writes progress to stderr. Lines look like `[info] dialogs page 1: +21 dialogs` and `[info] dialog 3/57 Alice msgs=120`. Machine output stays untouched. Machine mode (`--json`/`--jsonl`), piped or redirected stderr, and `-q` all silence progress.
 - Color policy: tele emits no ANSI color on stdout or stderr today (table cells are stripped of escapes, and the logger never adds any), so `NO_COLOR` (present with any value, per no-color.org) and `TERM=dumb` are honored by construction. No color helper ships until the first emission site exists — when one does, it must gate on `NO_COLOR` presence and `TERM=dumb`. There is no `--no-color` flag (stdout coloring stays out of scope while output is monochrome; a flag would need a `main.rs` change owned elsewhere).
 - Levels are typed in code (`output::LogLevel`: `error` > `warn` > `info` > `debug`, parsed case-sensitively). `output::log_line(&str, _)` remains as a compatibility shim over the typed `output::log_level` and keeps its unknown-level diagnostic; new call sites use the enum.
-- No log line ever carries api_hash, session data, phone numbers, passwords, QR login tokens, or the full `--args` value of `tele raw`.
+- No log line ever carries api_hash, session data, phone numbers, short service codes in code/OTP contexts, passwords, QR login tokens, or the full `--args` value of `tele raw`.
 
 ## What gets logged
 

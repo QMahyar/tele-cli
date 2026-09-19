@@ -89,7 +89,7 @@ Full walkthrough in [docs/getting-started.md](docs/getting-started.md). Usage re
 - **Duplex server**: `tele serve` runs a JSONL request/response protocol over stdin/stdout for embedding.
 - **Agent skill**: `tele skill` prints a complete SKILL.md for driving tele from any coding agent.
 - **Dry-run everywhere**: `--dry-run` validates and prints the exact intended action without any network call.
-- **Raw TL access**: `tele raw` invokes 25 typed Telegram API methods through an allowlist.
+- **Raw TL access**: `tele raw` invokes 25 typed Telegram API methods through an allowlist. Every call needs the `--allow-raw` ack.
 
 ## Multi-account
 
@@ -166,7 +166,7 @@ Add `--read-only` to hide destructive tools, or `--groups msg,dialog` to filter 
 
 - Sessions live under the OS app data directory, are permission-restricted, and hold an OS-level exclusive lock per account.
 - API keys, phone numbers, and 2FA passwords are scrubbed from logs and JSON output.
-- `tele raw` has full account power. Treat it like your Telegram client.
+- `tele raw` has full account power. Treat it like your Telegram client. Every invocation requires the `--allow-raw` ack (`allow_raw:true` over serve/MCP), including `--dry-run` previews.
 
 See [docs/security.md](docs/security.md) for the threat model.
 
