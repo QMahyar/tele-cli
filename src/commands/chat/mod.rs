@@ -380,7 +380,7 @@ pub struct SettingsArgs {
     #[arg(
         long,
         value_name = "on|off",
-        help = "restrict saving content (not available in this API layer; read-only)"
+        help = "restrict content forwarding/saving via messages.toggleNoForwards (on/off); channels/supergroups only"
     )]
     noforwards: Option<String>,
     #[arg(

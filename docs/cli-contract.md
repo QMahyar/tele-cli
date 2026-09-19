@@ -13,6 +13,7 @@ Globals (root callback, inherited):
   --parallel N       default config parallel_max (1 when unset); max 32 (values outside 1..=32 exit with usage error)
   --json             machine output on stdout
   --jsonl            machine output: JSON lines (one-shot commands emit a single envelope line; only `tele listen` emits one record per event)
+  --fields FIELDS    project machine-output rows to comma-separated dotted fields (requires --json/--jsonl; unknown fields are usage errors)
   --quiet / -q
   --verbose / -v     maps to log level
   --dry-run
@@ -117,6 +118,8 @@ Rules:
 - Telegram objects are serialized through an allowlist (`id`, `date`, `message`, `peer`, and more). Raw `api_hash`, session data, and auth keys never appear in output.
 - With `--dry-run`: `ok` is true, `dry_run` is true, and no network call is made. Every dry-run `results[].data` carries additive `dry_run`, a human-readable `would` string describing the exact intended action (built from the command's argument values), and the command's own argument keys. `account add` and `tele listen` follow the same `would` convention where applicable.
 - Message objects may carry `media_kind` (`photo`, `document`, `sticker`, `poll`, and more) and `media_label` (a filename, emoji, or poll question; null when the kind has none), alongside the legacy colon-joined `media` string.
+- When the message carries poll or checklist media, the row also carries an additive `poll` or `todo` object (question/options/voters, or title/items/completion flags) next to the media keys; forwarded and album rows carry the same enrichment as read-path rows, so parsers never branch on operation type.
+- `peer` and `sender` objects carry additive `username` (a string, or null when the peer has none); single-send and album rows are identity-resolved the same way.
 - When present on the Telegram message, message objects may also carry `grouped_id`, `views`, `forwards`, `edit_date` (RFC 3339), `reply_to` (the replied-to message id), and `via_bot` (the inline bot user id). Absent keys are omitted, like the media block.
 - `dialog list` rows also carry `pinned` (bool), `unread_mark` (bool), `unread_mentions`, `unread_reactions`, and `last_message_date` (RFC 3339; null when the dialog has no last message).
 - `dialog drafts` keys drafts by chat id: positive for users, negated for groups: `-chat_id` for basic groups and `-(1_000_000_000_000 + channel_id)` (the Bot-API `-100` form) for channels, exactly matching what numeric `--chat` targets accept.
@@ -125,21 +128,26 @@ Rules:
 
 `tele chat permissions --account A --chat X --user U` reads back the rights a participant actually holds. For channels and supergroups it calls raw `channels.getParticipant` and emits the complete flag maps: admins carry `admin_rights` (all 12 write-side flags mirrored from `chat admin --rights` vocabulary), bans/restrictions carry `banned_rights` (all 22 flags plus `until_date` as RFC 3339), creators carry their `admin_rights`, and plain members carry `role: "member"`. Rows also carry additive `rank`, `can_edit`, `kicked_by`, and `promoted_by` when the server provides them. Basic groups only expose the participant role over MTProto; those rows carry `role` plus a `detail` note instead of flag maps. Serve/MCP: `chat permissions` op (Read lane, 30s), `PermissionsParams` with `deny_unknown_fields`.
 
-## `chat kick`, `chat kick`, and `chat admin`
+## `chat stats`
+
+`tele chat stats --chat X` reads broadcast/supergroup statistics over raw `stats.GetBroadcastStats` / `stats.GetMegagroupStats`. Basic groups expose no stats API at this layer, so they fail with a Usage error before connect instead of a raw server error. Serve/MCP: `chat stats` op (Read lane, 120s).
+
+## `chat participants`, `chat kick`, and `chat admin`
 
 - `chat participants --chat X` accepts the additive filters `--role admin|banned|kicked|recent` and `--search <q>` on channels and supergroups. They map onto the grammers `iter_participants` filter parameter: `ChannelParticipantsAdmins`, `ChannelParticipantsBanned{q}`, `ChannelParticipantsKicked{q}`, `ChannelParticipantsSearch{q}` for a bare search, and `ChannelParticipantsRecent` otherwise. An unknown role is a Usage error before connect. On basic groups the filters fail with a clear Usage error instead of being ignored.
 - By default, `chat kick --chat X --user U` performs a plain friendly kick. With `--ban`, `--duration <secs|forever>`, or `--rights CSV`, the command builds `ChatBannedRights` through `set_banned_rights` instead (restrict or ban, with optional duration). `--duration` requires `--ban` or `--rights`. `--rights` takes comma-separated `name:true|false` pairs where `true` means the user keeps the right; names: `view_messages,send_messages,send_media,
   send_stickers,send_gifs,send_games,send_inline,embed_links,send_polls,
-  change_info,invite_users,pin_messages`. Success rows keep legacy `kicked: true` and additively carry `banned` (bool), `until` (epoch seconds, only when `--duration` was given), and `restricted` (denied right names, only when rights were revoked). Dry-run rows echo `ban` plus `duration` and `rights` when present.
-- `chat admin --rights CSV` additionally accepts `anonymous`, `other`, and `manage_topics`; the presets cover them too (`admin` grants everything except `anonymous`; `moderator` and `editor` include `manage_topics`). When `other` or `manage_topics` is requested, the command uses raw `channels.EditAdmin`, because the grammers builder has no setters for those flags. Otherwise it stays on the friendly `set_admin_rights` chain.
+  change_info,invite_users,pin_messages,manage_topics,send_photos,send_videos,
+  send_roundvideos,send_audios,send_voices,send_docs,send_plain,edit_rank,
+  send_reactions`. The ten granular names (`manage_topics` plus the media-kind splits, `edit_rank`, `send_reactions`) route through raw `channels.editBanned` and require a channel or supergroup — on basic groups they fail with a Usage error, where only `view_messages` bans are supported. Success rows keep legacy `kicked: true` and additively carry `banned` (bool), `until` (epoch seconds, only when `--duration` was given), and `restricted` (denied right names, only when rights were revoked). Dry-run rows echo `ban` plus `duration` and `rights` when present.
+- `chat admin --rights CSV` additionally accepts `anonymous`, `other`, `manage_topics`, `post_stories`, `edit_stories`, `delete_stories`, `manage_direct_messages`, and `manage_ranks`; the presets cover them too (`admin` grants everything except `anonymous`; `moderator` and `editor` include `manage_topics`). The default promote (no `--rights`, no `--preset`) grants the full set, so it always routes through raw `channels.EditAdmin`, as does any grant touching a raw-only right (`other`, `manage_topics`, the story rights, `manage_direct_messages`, `manage_ranks`). Only demotes and narrow builder-expressible grants stay on the friendly `set_admin_rights` chain. Raw-routed grants require a channel or supergroup and fail with a Usage error on basic groups. Serve/MCP lanes share the same builders and defaults.
 
 ## `chat settings`
 
 - `tele chat settings --chat X` with no toggle flags reads the current values from raw `channels.GetFullChannel`. Rows carry `slow_mode` (seconds; `0` when off), `noforwards`, `signatures`, `join_request` (from the channel object in the response; may be null when the server omits it), `pre_history_hidden`, and `linked_chat_id` (null when unset).
 - Each toggle maps to a raw method: `--slow-mode <secs|off>` to `channels.toggleSlowMode` (`off` sends 0), `--signatures on|off` to `channels.toggleSignatures`, `--pre-history on|off` to `channels.togglePreHistoryHidden` (`on` hides pre-join history), and `--join-request on|off` to `channels.toggleJoinRequest` (`apply_to_invites` follows the requested state, so existing invite links require approval once you enable it).
-- Success rows carry `"applied": [flag names]` in application order.
-- `--noforwards on|off` fails with a Usage error before any RPC: this TL layer (the grammers vendored schema) has no toggle method for it. Read-back still reports the current value.
-- On basic groups, the whole command fails with a clear message: these settings apply to channels and supergroups only. Values validate offline before connect (`slow_mode` between 0 and 3600 or `off`; strict `on|off`).
+- Success rows carry `"applied": [flag names]` in application order. Dry-run rows echo the requested toggles (`slow_mode`, `signatures`, `pre_history`, `join_request`, `noforwards`) alongside the `would` string; the serve/MCP dry-run preview carries the same `noforwards` field.
+- `--noforwards on|off` applies via raw `messages.toggleNoForwards` in both lanes: the CLI toggle and the serve/MCP execute path apply it identically, and read-back reports the current value. On basic groups, the whole command fails with a clear message: these settings apply to channels and supergroups only. Values validate offline before connect (`slow_mode` between 0 and 3600 or `off`; strict `on|off`).
 
 ## `chat edit` and `chat link`
 
@@ -183,10 +191,14 @@ Rules:
 
 Human mode (no `--json`) prints rich tables on stdout and uses the same exit codes.
 
+## `account sessions`
+
+`tele account sessions [--web] [--dry-run]` lists device sessions, or web sessions with `--web`. With `--dry-run`, both list modes answer offline with a `would` preview (`"list device sessions"` / `"list web login sessions"`) — nothing connects, no rate-limit budget is consumed, and no authorization is required. Terminating modes (`--terminate HASH`, `--terminate-web HASH`, `--terminate-all-web`, `--change-flags …`) preview their own `would` strings the same way, without pre-validating the hash against live authorizations; execute validates the hash against the fetched list and refuses the current session's own hash. Serve/MCP: `account sessions list` and `account sessions web` ops (Read lane, 120s) with the same offline dry-run previews.
+
 ## `msg pin`, `msg read`, `msg download`
 
-- `msg pin --show` emits `results[].data.pinned_message` (a message object or null). `msg pin --all` emits `{"unpinned_all": true}`. Both flags are mutually exclusive with each other and with `--id` and `--unpin`.
-- `msg pin --notify` pins with a member notification (the default stays silent) through the raw `messages.updatePinnedMessage` path.
+- `msg pin --show` emits `results[].data.pinned_message` (a message object or null). `msg pin --all` emits `{"unpinned_all": true}`. Both flags are mutually exclusive with each other and with `--id` and `--unpin`, in the CLI and in the serve/MCP lane alike.
+- `msg pin --notify` pins with a member notification (the default stays silent) through the raw `messages.updatePinnedMessage` path. Dry-run rows echo `notify` alongside `id`/`unpin`/`show`/`all`.
 - `msg read --mentions` clears only the mention badge (`{"mentions_cleared": true}`) and is mutually exclusive with `--mark-unread`.
 - `msg download --chunk-size-kb <4-512, multiple of 4>` streams the media through chunked `iter_download` into the same temp+commit flow. Without the flag, the default one-shot download behaves as before.
 - `msg download --all` downloads every media message from the chat (mutually exclusive with `--id`), with `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` date bounds (date-only `--since` uses local midnight, date-only `--until` uses local end-of-day) and `--limit N` (default 1000) capping the messages processed per run — only messages that pass the resume/date filters count against the limit, and the row carries additive `"truncated": true` when the limit ran out before the range was covered. Progress checkpoints to a per-chat state file so a re-run skips only ids the previous run actually handled (checkpoint records `last_message_id` and `max_seen_id`); messages that arrive after a sweep started are downloaded on the next resume instead of being skipped. `msg download --id N --album` also downloads every sibling sharing the anchor message's `grouped_id`.
@@ -195,11 +207,13 @@ Human mode (no `--json`) prints rich tables on stdout and uses the same exit cod
 
 With `--global`, the search runs across all dialogs (`messages.searchGlobal`) instead of one chat. `--chat` becomes optional, dry-run `data.chat` is null, and `data.global` is true. Rows use the same message object shape.
 
-Filters: `--from SENDER` (same target syntax as `--chat`) keeps only that sender's messages; `--kind photo|video|gif|document|url|audio|voice` maps to the `MessagesFilter` variant; `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` bound the date range (date-only `--since` uses local midnight, date-only `--until` uses local end-of-day; `--since` after `--until` is a Usage error). Per-chat search applies all three server-side; `--global` applies `kind` server-side and `from`/dates client-side.
+Filters: `--from SENDER` (same target syntax as `--chat`) keeps only that sender's messages; `--kind photo|video|gif|document|url|audio|voice` maps to the `MessagesFilter` variant; `--since/--until <RFC3339|unix-ts|YYYY-MM-DD>` bound the date range (date-only `--since` uses local midnight, date-only `--until` uses local end-of-day; `--since` after `--until` is a Usage error). An empty `--query` fails with a Usage error before connect instead of triggering a full-history server scan. Per-chat search applies all three server-side; `--global` applies `kind` server-side and `from`/dates client-side. Message ids everywhere in search (and in `msg get --ids`, `msg edit`, `msg delete`, `msg forward`, `msg pin`, `msg download`, and the scheduled ops) must be positive; non-positive ids fail with a Usage error before connect.
 
 ## `contact add`
 
-`results[].data` carries additive `contact` (bool) and `mutual` (bool), reflecting the post-add state parsed from the RPC response. A response that echoes the user counts as success — first-time adds return the user with `contact: false` (a min-user response), which the command reports with a warning instead of a false failure; the account row only fails when the RPC response carries no user at all. The command logs a warning when the add updates the display name of an existing contact.
+`tele contact add --user U [--phone P --first F --last L]` adds U to the account's contact list. `--phone` must be a full international number (`+` prefix, at least 5 digits); anything else fails with a Usage error before connect.
+
+`results[].data` carries additive `contact` (bool) and `mutual` (bool), reflecting the post-add state parsed from the RPC response. A response that echoes the user counts as success — first-time adds return the user with `contact: false` (a min-user response), which the command reports with a warning instead of a false failure; the account row only fails when the RPC response carries no user at all. When the target is a phone number (via `--phone` or a `+phone` user target), the add may route through `contacts.ImportContacts` and the row then carries additive `"via": "import"`; a privacy-restricted number that returns no user fails honestly, naming the supplied number instead of claiming it was not found. The command logs a warning when the add updates the display name of an existing contact.
 
 ## `contact remove`
 
@@ -223,6 +237,8 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 - `--format plain|markdown` (default `plain`) controls text formatting for outgoing text. Plain text sends are capped by Telegram at 4096 UTF-16 units (and captions at 1024); oversized text fails with the server's MESSAGE_TOO_LONG.
 - `--split <UTF16_UNITS>` (1..=4096) breaks `--text` into sequential messages of at most that size instead of failing — chunking is UTF-16-aware and prefers a paragraph break in the last quarter of each chunk; reply/schedule/link-preview apply to every chunk, but `--reply`/`--topic` land on the first chunk only. Multi-chunk sends return `{"messages": [...], "split": N}` (single-chunk sends keep the plain message row); each chunk after the first consumes a rate-limiter slot. Mutually exclusive with `--file/--url/--copy-from/--poll`.
 - `--silent` sends with notifications muted.
+- `--noforwards` marks the sent message as protected (recipients cannot forward or save it). Text sends only: combined with `--file`, `--url`, or `--copy-from` it fails with a Usage error. The grammers send builder carries no noforwards field, so the send routes through raw `messages.SendMessage` with markdown parsing. Dry-run echoes `noforwards`.
+- `--background` queues the send in the background instead of the foreground send queue (grammers builder `.background()`); rejected with albums. Dry-run echoes `background`.
 - `--no-preview` disables the link preview (on by default).
 - `--as voice|video-note` sends a single `--file` as a voice note (`documentAttributeAudio{voice:true}`) or round video note (`documentAttributeVideo{round_message:true}`); exactly one file, no caption/thumbnail/schedule.
 - `--poll "Question" --option A --option B` (repeatable, 2-10 options) creates a poll via `InputMediaPoll`, mutually exclusive with `--file/--text/--url/--copy-from`. `--poll-mode quiz` marks it a quiz; `--poll-quiz-option N` (1-based) sets the correct answer. Dry-run `would` is `"create poll …"`.
@@ -265,7 +281,7 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 - `--button-index N` is 1-based across all rows (row-major flatten). Example: a 2×2 inline keyboard has positions 1..4.
 - `--button TEXT` is an exact match (case-sensitive, then case-insensitive fallback). On miss, the error keeps `no button named …` and appends `Did you mean #i "text"? Available: [#1 "…", #2 "…"]` with real 1-based texts.
 - `--button-contains SUBSTRING` is a case-insensitive substring match against button `text`. It picks the first match; on ambiguous (≥2 hits) it exits 1 with `Did you mean #i "text" or #j "text"? Available: [#1 "…", #2 "…"]` (Persian+emoji resilient, substring is lowercased on both sides). On no match it suggests the available list like `--button`.
-- `--button-data DATA` matches the decoded callback payload exactly (the bytes that travel to the bot, lossy-UTF-8 decoded). It picks the first button whose `callback_data` decodes to exactly `DATA`.
+- `--button-data DATA` matches the decoded callback payload exactly (the bytes that travel to the bot, lossy-UTF-8 decoded). It picks the first button whose `callback_data` decodes to exactly `DATA`. Only callback buttons ever match: URL and other non-callback buttons are skipped, and a miss errors with `no button with callback data …` plus the same `Available: [#1 "…", …]` suggestion list.
 - Dry-run (`--dry-run` or `"dry_run": true` via `msg click` serve/MCP `ClickParams`) validates the selector and reports `would: "click button … on message N"` without network. `ClickParams` carries `button_contains` and `button_data` alongside `button` and `button_index` (`deny_unknown_fields`, `additionalProperties: false`). `--password` is reserved for 2FA-protected buttons and is not supported at this layer.
 
 ### Bot QA recipe (Windows pwsh)
@@ -321,14 +337,14 @@ This command removes the current profile photo. It reads the photo id from `user
 
 ## Topic lifecycle commands
 
-- `topic close`, `topic reopen`, `topic edit`, `topic delete`, and `topic pin` take `--chat <target> --topic <id>`. The id is the positive integer topic id shown by `tele topic list`. All five go through raw TL: close and reopen via `messages.EditForumTopic { closed: true/false }`, edit via `messages.EditForumTopic { title?, closed? }` (at least one of `--title` or `--closed <bool>` required), pin via `messages.updatePinnedForumTopic { pinned: true }`, and delete via `messages.deleteTopicHistory` (`top_msg_id` = topic id), which removes the whole topic history.
+- `topic close`, `topic reopen`, `topic edit`, `topic delete`, and `topic pin` take `--chat <target> --topic <id>`. The id is the positive integer topic id shown by `tele topic list`. `--chat` validates like every other chat target (bad targets fail as Usage errors); `tele topic create` rejects an empty `--title` the same way. All five go through raw TL: close and reopen via `messages.EditForumTopic { closed: true/false }`, edit via `messages.EditForumTopic { title?, closed? }` (at least one of `--title` or `--closed <bool>` required), pin via `messages.updatePinnedForumTopic { pinned: true }`, and delete via `messages.deleteTopicHistory` (`top_msg_id` = topic id), which removes the whole topic history. `close`, `reopen`, and `delete` reject `--unpin` with a Usage error instead of silently ignoring it (`--unpin` belongs to `topic pin` only).
 - `topic edit --emoji` is not offered; emoji icon changes stay deferred (M7).
 - Success rows carry `{"chat", "topic", "ok": true}` plus additive `"title"` and `"closed"` on `edit`, reflecting exactly what was requested. Dry-run rows add `"would": "<action> topic <id> in chat <chat>"`.
 - `topic list` rows gain additive `"closed"` and `"pinned"` booleans per topic; the human table appends matching columns (existing columns keep their order).
 
 ## `tele listen` streaming
 
-`tele listen` always streams JSON Lines on stdout, one event per line; `--json` is accepted as a no-op for symmetry. Stdout writes are backpressured: `listen` pauses on a slow reader instead of dropping events.
+`tele listen` always streams JSON Lines on stdout, one event per line; `--json` is accepted as a no-op for symmetry. Stdout writes are backpressured: `listen` pauses on a slow reader instead of dropping events. `--fields` projects every emitted streaming row to the named dotted fields (unknown fields fail with a Usage error); without it rows stream whole.
 
 Filter applicability per event family: `--from SENDER` applies to NewMessage/MessageEdited/MessageDeleted-adjacent rows that carry a sender, `--chat` applies wherever a chat id is present, and `--in/--out/--pattern` apply only to message rows. When `--in/--out/--pattern` are set, rows that structurally cannot match them (Raw, MessageDeleted, ChatAction, UserUpdate, CallbackQuery) are suppressed rather than bypassing the filter; `--from` and `--chat` still apply to ChatAction/UserUpdate/CallbackQuery rows. This keeps `--pattern ERROR` from drowning in typing-indicator rows while keeping `--from @bob` working on actions. Finite streams: `--timeout-secs S` bounds the whole run, `--count N` exits after N emitted event rows (all accounts combined), and `--until <RFC3339|unix-ts|YYYY-MM-DD>` exits after the first event at/after that timestamp — each prints a stderr info line and exits 0.
 
@@ -453,7 +469,8 @@ The driver answers with its own hello to complete negotiation:
 {"id":17,"op":"msg send","params":{"chat":"@team","text":"hi"}}
 ```
 
-- `id` is a driver-chosen unsigned integer, echoed on every response for correlation.
+- `id` is a driver-chosen unsigned integer, echoed on every response for correlation. Ids must be unique per connection: a repeated id is rejected with a `ServeError` naming the duplicate (the reply still echoes the id), while out-of-order ids are fine — only reuse is forbidden.
+- Stdin frames are capped at 1 MiB per line: an over-long line yields a `ServeError` size error with no `id` (the line never parsed into a request), and the connection stays up.
 - `op` is either a `"<group> <action>"` pair from the table below or a dotted transport op (`ping`, `ops.list`, `stream.resync`). Names mirror the CLI command each op wraps: `"msg send"` runs the same core behind `tele msg send`, with the same implementation, validation rules, and chat-target syntax (`@user`, `t.me/…` links, numeric ids, `me`, `+phone`; the phone branch wins over the numeric parse).
 - `params` mirrors the command's flags in snake_case without the dashes. It must be a JSON object; omitting it means `{}`. Params parse with `deny_unknown_fields`: a typo'd key produces a `ServeError` naming the field in `error.param`. Missing required fields and wrong-typed values carry `error.param` too when the offender can be identified.
 - An unknown op yields `NotImplemented`; its message lists every supported op. Prefer `ops.list` over parsing that message.
@@ -465,14 +482,14 @@ The driver answers with its own hello to complete negotiation:
 {"type":"response","id":18,"ok":false,"error":{"type":"InvocationError","message":"rpc error 420: FLOOD_WAIT (value: 17)","code":420,"name":"FLOOD_WAIT","seconds":17}}
 ```
 
-`ok:false` envelopes carry the same error objects as one-shot `--json`: `type`, `message`, plus the additive `seconds`, `code`, and `name` keys documented above. `id` is omitted when the failure cannot be attributed to a request, such as a malformed input line.
+`ok:false` envelopes carry the same error objects as one-shot `--json`: `type`, `message`, plus the additive `seconds`, `code`, and `name` keys documented above. `id` is omitted when the failure cannot be attributed to a request, such as a malformed input line or an over-long stdin frame that exceeded the 1 MiB cap.
 
 Error taxonomy on the serve wire:
 
 | `error.type` | When | Extra keys |
 |---|---|---|
 | `ParseError` | Input line is not valid JSON / not an object | — |
-| `ServeError` | Framing or params problem: bad `id`/`op`/`params` shape, unknown field, wrong param type, non-empty params where none are allowed | `param` (offending field name, when identified) |
+| `ServeError` | Framing or params problem: bad `id`/`op`/`params` shape, duplicate request id, stdin frame over the 1 MiB cap, unknown field, wrong param type, non-empty params where none are allowed | `param` (offending field name, when identified) |
 | `UsageError` | Command-level validation failed (identical rules and wording to the CLI flags) | — |
 | `AuthError` | Session invalid or logged out; fatal to the connection | — |
 | `InvocationError` | Telegram RPC or transport failure | `code`, `name` (RPC-backed); `seconds` (wait value for RPC 420: `FLOOD_WAIT`, `SLOWMODE_WAIT`, …) |
@@ -513,7 +530,7 @@ Inline ops handled by the serve loop itself (no route entry):
 `{"op","summary","group","read_only","destructive","retry_safe"}` where
 `group` is the leading word of a spaced op (`account`, `cache`, `chat`, `dialog`,
 `msg`, `privacy`, `profile`, `raw`, `sticker`, `story`, `topic`,
-`contact`) or `transport` for the three inline ops. The list covers all 90 routed ops plus the 3 inline ops, so it holds 93 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
+`contact`) or `transport` for the three inline ops. The list covers all 93 routed ops plus the 3 inline ops, so it holds 96 entries. Recount with `rg -c 'serve_route!\(' src/` (or `Select-String -Path src\commands\*.rs,src\commands\*\*.rs -Pattern 'serve_route!\('`).
 
 ### Two-lane execution and timeouts
 
@@ -526,7 +543,7 @@ Inline ops handled by the serve loop itself (no route entry):
 | simple | 30s | mutating ops and short reads |
 | paginated | 120s | list/search/get-style reads |
 | story send | 600s | `story send` (media upload) |
-| download | none | `msg download` streams until completion |
+| download | none | `msg download` and `msg export` stream until completion |
 | raw | 120s | `raw` |
 
 ### Confirm gate
@@ -552,7 +569,7 @@ Any routed op accepts `"dry_run":true` in its params. The request is validated a
 
 Intake is bounded end to end: a 64-line stdin queue and 64-job op queues. A slow consumer stalls the pipeline instead of growing memory without bound. Read stdout continuously.
 
-### Op table (90 routes)
+### Op table (93 routes)
 
 Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints column lists only non-default flags: `read_only` performs no state change, `destructive` sits behind the confirm gate, and `retry_unsafe` means a blind retry can duplicate an effect. An absent hint means mutating, non-destructive, or retry-safe respectively. Recount the routes with `rg -c 'serve_route!\(' src/`.
 
@@ -597,7 +614,8 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | `msg click` | click an inline button on a bot message | mutate | 30s | retry_unsafe |
 | `msg delete` | delete a message or all my messages in a chat | mutate | 30s | destructive |
 | `msg download` | download message media to disk | read | none | read_only retry_unsafe |
-| `msg edit` | edit the text of an outgoing message | mutate | 30s | |
+| `msg edit` | edit the text or media of an outgoing message | mutate | 30s | |
+| `msg export` | export chat history to JSONL or TXT | read | none | read_only retry_unsafe |
 | `msg forward` | forward messages between chats | mutate | 30s | retry_unsafe |
 | `msg get` | fetch messages from a chat by recency or id | read | 120s | read_only |
 | `msg pin` | pin or unpin a message in a chat | mutate | 30s | |
@@ -632,6 +650,7 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | `profile emoji-status` | set or clear my emoji status | mutate | 30s | |
 | `profile get` | show my profile | read | 120s | read_only |
 | `profile photo` | set or clear my profile photo | mutate | 30s | |
+| `profile photos` | list profile photo history (id/date/sizes) | read | 120s | read_only |
 | `profile set` | update my name or bio | mutate | 30s | |
 
 `raw` group:
@@ -702,6 +721,7 @@ Lane `mutate` is the ordered lane; `read` is the concurrent lane. The hints colu
 | `chat leave` | leave a chat or channel | mutate | 30s | destructive |
 | `chat link` | show or set the discussion link of a channel | mutate | 30s | |
 | `chat participants` | list chat participants | read | 120s | read_only |
+| `chat permissions` | show a participant's actual rights (read-back) | read | 30s | read_only |
 | `chat requests` | list or act on pending join requests | mutate | 30s | |
 | `chat settings` | update or read channel settings | mutate | 30s | |
 | `chat stats` | show broadcast or megagroup stats | read | 120s | read_only |
@@ -727,7 +747,7 @@ Process model:
 - Exactly one account: `--account NAME` is fixed for the server's lifetime, and every tool runs as that account. The standard OS-level session lock applies: while `tele mcp` holds the session, no other tele process can open it, and the reverse holds too ("session <name> is in use by another process").
 - Logs stay on stderr; stdout is transport only. Startup emits
   `mcp: serving N tools (full|read-only) over stdio for account NAME`.
-- `--read-only` omits every mutating tool from `tools/list`; only the 24 read-only tools of the table below are discoverable.
+- `--read-only` omits every mutating tool from `tools/list`; only the 35 read-only tools of the table below are discoverable.
 - `--groups msg,dialog` keeps only tools whose op group matches (comma-delimited, case-insensitive). Combined with `--read-only`, the two filters AND together. Both flags are discovery filters: a hidden tool is also rejected at `tools/call` with an `invalid_params` error, so treat them as a firm security gate, not just curation.
 - EOF on stdin shuts down cleanly: the Telegram client disconnects and the exit code is 0.
 
@@ -806,9 +826,9 @@ to preview anything first. MCP applies the same lane timeouts as the serve wire 
 
 `tele serve`'s three inline transport ops are serve-loop concepts, not MCP tools: `ping` (MCP has its own protocol-level ping), `ops.list` (replaced by `tools/list`), and `stream.resync` (no event streaming over MCP yet). They appear in neither the tool table nor `tools/list`.
 
-### Tool table (90)
+### Tool table (93)
 
-Same hints notation as the serve table: listed values mark non-defaults, and an absent hints cell means mutating, non-destructive, or retry-safe. All 90 tools are discoverable in full mode; the 32 rows carrying `read_only` survive `--read-only`.
+Same hints notation as the serve table: listed values mark non-defaults, and an absent hints cell means mutating, non-destructive, or retry-safe. All 93 tools are discoverable in full mode; the 35 rows carrying `read_only` survive `--read-only`.
 
 `account` group (5):
 
@@ -820,7 +840,7 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `account_ttl_get` | show the inactive-account self-destruct TTL | read_only |
 | `account_ttl_set` | set the inactive-account self-destruct TTL | |
 
-`chat` group (13):
+`chat` group (14):
 
 | tool | summary | hints |
 |---|---|---|
@@ -834,6 +854,7 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `chat_leave` | leave a chat or channel | destructive |
 | `chat_link` | show or set the discussion link of a channel | |
 | `chat_participants` | list chat participants | read_only |
+| `chat_permissions` | show a participant's actual rights (read-back) | read_only |
 | `chat_requests` | list or act on pending join requests | |
 | `chat_settings` | update or read channel settings | |
 | `chat_stats` | show broadcast or megagroup stats | read_only |
@@ -872,14 +893,15 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `dialog_list` | list recent dialogs | read_only |
 | `dialog_pin` | pin or unpin a dialog in the chat list | |
 
-`msg` group (23):
+`msg` group (24):
 
 | tool | summary | hints |
 |---|---|---|
 | `msg_click` | click an inline button on a bot message | retry_unsafe |
 | `msg_delete` | delete a message or all my messages in a chat | destructive |
 | `msg_download` | download message media to disk | read_only retry_unsafe |
-| `msg_edit` | edit the text of an outgoing message | |
+| `msg_edit` | edit the text or media of an outgoing message | |
+| `msg_export` | export chat history to JSONL or TXT | read_only retry_unsafe |
 | `msg_forward` | forward messages between chats | retry_unsafe |
 | `msg_get` | fetch messages from a chat by recency or id | read_only |
 | `msg_pin` | pin or unpin a message in a chat | |
@@ -907,13 +929,14 @@ Same hints notation as the serve table: listed values mark non-defaults, and an 
 | `privacy_get` | show one privacy setting | read_only |
 | `privacy_set` | set one privacy setting | |
 
-`profile` group (4):
+`profile` group (5):
 
 | tool | summary | hints |
 |---|---|---|
 | `profile_emoji-status` | set or clear my emoji status | |
 | `profile_get` | show my profile | read_only |
 | `profile_photo` | set or clear my profile photo | |
+| `profile_photos` | list profile photo history (id/date/sizes) | read_only |
 | `profile_set` | update my name or bio | |
 
 `raw` group (1):

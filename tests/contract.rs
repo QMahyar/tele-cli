@@ -96,7 +96,22 @@ fn matrix_rows() -> Vec<(String, String, String)> {
         if !line.starts_with('|') || !line.ends_with('|') {
             continue;
         }
-        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+        let body = line.trim_matches('|');
+        let mut owned: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' && chars.peek() == Some(&'|') {
+                cur.push('|');
+                chars.next();
+            } else if c == '|' {
+                owned.push(std::mem::take(&mut cur));
+            } else {
+                cur.push(c);
+            }
+        }
+        owned.push(cur);
+        let cells: Vec<&str> = owned.iter().map(|s| s.trim()).collect();
         if cells.len() < 4 {
             continue;
         }
