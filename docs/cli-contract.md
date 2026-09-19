@@ -1122,4 +1122,5 @@ With `--json`/`--jsonl`, stdout carries the standard one-shot envelope instead o
 
 - New commands and new optional JSON keys are MINOR releases.
 - A changed exit-code meaning, a renamed JSON key, or a removed command is MAJOR.
+- Posture acks are the sanctioned exception: a new required ack flag (`--allow-raw`, `--allow-insecure-app-dir`, `--allow-trace`, phone-on-argv rejection under `--no-input`) may turn a previously-accepted invocation into exit 1 with guidance, without a MAJOR bump. Machine shapes stay additive regardless — only the acceptance gate changes.
 - Consumers read `CHANGELOG.md`; git log is not the changelog.

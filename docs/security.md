@@ -37,7 +37,7 @@ These behaviors are deliberate. Know them before you share output.
 - `contact list` prints phone numbers, and `takeout export` writes them to disk. Both follow from what these commands do. Pass `--redact-phones` to `contact list`, `profile get`, or `takeout export` to redact numbers in the output (it overrides `profile get --show-phone`). Remove phone numbers from any output before you paste it into a ticket or a log.
 - The QR login fallback prints the `tg://login?token=…` URI to stderr only when stderr is an interactive terminal or when you pass `--show-token`. Redirected stderr receives a warning line without the token. Treat all stderr during login as sensitive anyway.
 - The code-login prompt omits the phone number when stderr is not a terminal. Stderr redirected to a file therefore never records the number.
-- `--phone` places the number on the command line, where process listings and shell history can record it. For automation, prefer the stdin prompt or the `TELE_PHONE` environment variable. Under `--no-input`, `--phone` on a prompting login flow and `--change-phone` on phone change are rejected outright instead of merely warning.
+- `--phone` places the number on the command line, where process listings and shell history can record it. For automation, prefer the stdin prompt or the `TELE_PHONE` environment variable. Under `--no-input`, `--phone` on a prompting login flow and `--change-phone` on phone change are rejected outright instead of merely warning. Phone numbers used as operation targets (`--chat +…`, `--user +…`, `contact add --phone`) stay accepted: they select the peer rather than authenticate, and no stdin or env channel exists for them.
 - Password input disables terminal echo on Windows through `SetConsoleMode` and on Unix through `termios`. On every platform, the CLI reads passwords from stdin only and rejects them on argv.
 - `account password --set` and `account password --change` hash the new password locally with PH2. PH2 runs pbkdf2-hmac-sha512 over 100000 iterations on top of a 32-byte random salt extension. The implementation mirrors grammers-crypto 0.10 (`two_factor_auth.rs`, lines 134 to 154). The password never reaches a log, `--json` output, or the process title. With `--dry-run`, the command returns a `would` row with presence booleans for `hint` and `recovery_email`, and it prompts for no secrets.
 
@@ -55,6 +55,8 @@ Two choices here deserve their reasons:
 A failed attempt to tighten permissions on `.env` fails closed: the CLI refuses to start instead of warning and continuing. Config errors report only the leaf filename, so logs do not reveal install paths.
 
 This model holds when the app directory stays at its default `%APPDATA%` location, because a per-user profile directory is already owned by that user. It weakens if `TELE_APP_DIR` points somewhere ACLs cannot protect. Pointing `TELE_APP_DIR` outside per-user paths (roaming profiles, `HOME`/`XDG_CONFIG_HOME` on Unix) requires an explicit `--allow-insecure-app-dir` ack, so portable and container installs stay possible but never accidental. Keep sessions on a per-user path.
+
+Containers: bake the ack into the image entrypoint (`tele --allow-insecure-app-dir …`) when the state dir is a mounted volume outside any per-user path, and mount that volume `rw` for exactly one replica — two writers trip the OS session lock. Prefer mounting the volume at a per-user path inside the image (e.g. `/home/tele/.config/tele` with `TELE_APP_DIR` unset) to skip the ack entirely.
 
 ## Supply chain
 

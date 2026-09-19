@@ -196,16 +196,17 @@ impl From<&RawCall> for RawParams {
 pub(crate) const ALLOW_RAW_HINT: &str = "raw methods run at full account power; re-run with --allow-raw (CLI) or resend with allow_raw:true (serve/MCP) to acknowledge";
 
 pub(crate) fn validate_raw(call: &RawCall) -> TeleResult<()> {
-    if !call.allow_raw {
-        return Err(TeleError::Usage(ALLOW_RAW_HINT.to_string()));
-    }
     if registry::lookup(&call.method).is_none() {
         return Err(TeleError::Usage(format!(
             "raw method not in registry: {}; add an arm in src/commands/raw.rs (registered: {REGISTERED:?})",
             call.method
         )));
     }
-    generated::validate_params(&call.method, &call.args)
+    generated::validate_params(&call.method, &call.args)?;
+    if !call.allow_raw {
+        return Err(TeleError::Usage(ALLOW_RAW_HINT.to_string()));
+    }
+    Ok(())
 }
 
 pub(crate) fn raw_serve_dry_run(args: &RawCall) -> TeleResult<serde_json::Value> {
@@ -2526,6 +2527,7 @@ mod tests {
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].op, "raw");
         assert_eq!(routes[0].lane, Lane::Mutate);
+        assert!(routes[0].destructive, "raw stays behind the confirm gate");
         assert_eq!(routes[0].timeout, Some(std::time::Duration::from_secs(120)));
     }
 
@@ -2568,7 +2570,6 @@ mod tests {
         for call in [
             serde_json::json!({"method": "messages.GetAllDrafts", "args": {}}),
             serde_json::json!({"method": "messages.GetAllDrafts", "args": {}, "dry_run": true}),
-            serde_json::json!({"method": "messages.FooBar", "args": {}}),
         ] {
             let err = plan_for("raw", call.clone()).unwrap_err();
             assert_eq!(err["type"], "UsageError", "{call}");
@@ -2576,6 +2577,18 @@ mod tests {
             assert!(msg.contains("--allow-raw"), "{call}: {msg}");
             assert!(msg.contains("allow_raw"), "{call}: {msg}");
         }
+    }
+
+    #[test]
+    fn raw_registry_error_precedes_allow_raw_gate() {
+        let err = plan_for(
+            "raw",
+            serde_json::json!({"method": "messages.FooBar", "args": {}}),
+        )
+        .unwrap_err();
+        assert_eq!(err["type"], "UsageError");
+        let msg = err["message"].as_str().unwrap().to_string();
+        assert!(msg.contains("not in registry"), "{msg}");
     }
 
     #[test]
