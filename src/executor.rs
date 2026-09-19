@@ -158,6 +158,25 @@ async fn collect_outcomes(
     collect_outcomes_with_budget(handles, Duration::from_secs(ACCOUNT_TIMEOUT_SECS)).await
 }
 
+fn join_error_outcome(name: String, e: tokio::task::JoinError) -> AccountOutcome {
+    if e.is_cancelled() {
+        return failed_outcome(name, TeleError::Other("account task cancelled".to_string()));
+    }
+    let msg = match e.try_into_panic() {
+        Ok(payload) => {
+            if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "account task panicked".to_string()
+            }
+        }
+        Err(_) => "account task panicked".to_string(),
+    };
+    failed_outcome(name, TeleError::TaskPanic(msg))
+}
+
 async fn collect_outcomes_unbudgeted(
     handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
 ) -> Vec<AccountOutcome> {
@@ -167,25 +186,7 @@ async fn collect_outcomes_unbudgeted(
         let outcome = match handle.await {
             Ok(Ok(outcome)) => outcome,
             Ok(Err(e)) => failed_outcome(name.clone(), e),
-            Err(e) if e.is_cancelled() => failed_outcome(
-                name.clone(),
-                TeleError::Other("account task cancelled".to_string()),
-            ),
-            Err(e) => {
-                let msg = match e.try_into_panic() {
-                    Ok(payload) => {
-                        if let Some(s) = payload.downcast_ref::<&str>() {
-                            (*s).to_string()
-                        } else if let Some(s) = payload.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "account task panicked".to_string()
-                        }
-                    }
-                    Err(_) => "account task panicked".to_string(),
-                };
-                failed_outcome(name.clone(), TeleError::TaskPanic(msg))
-            }
+            Err(e) => join_error_outcome(name.clone(), e),
         };
         outcomes.push(outcome);
     }
@@ -200,30 +201,17 @@ async fn collect_outcomes_with_budget(
     let mut outcomes: Vec<AccountOutcome> = Vec::new();
     {
         let _abort_guard = AbortOnDrop(handles);
+        // One shared deadline for every account: each task runs concurrently
+        // from spawn, so per-account budgets must share wall time instead of
+        // stacking sequentially (N accounts x budget).
+        let deadline = tokio::time::Instant::now() + budget;
         for (name, handle) in _abort_guard.0.iter_mut() {
-            let outcome = match tokio::time::timeout(budget, &mut *handle).await {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let outcome = match tokio::time::timeout(remaining, &mut *handle).await {
                 Ok(joined) => match joined {
                     Ok(Ok(outcome)) => outcome,
                     Ok(Err(e)) => failed_outcome(name.clone(), e),
-                    Err(e) if e.is_cancelled() => failed_outcome(
-                        name.clone(),
-                        TeleError::Other("account task cancelled".to_string()),
-                    ),
-                    Err(e) => {
-                        let msg = match e.try_into_panic() {
-                            Ok(payload) => {
-                                if let Some(s) = payload.downcast_ref::<&str>() {
-                                    (*s).to_string()
-                                } else if let Some(s) = payload.downcast_ref::<String>() {
-                                    s.clone()
-                                } else {
-                                    "account task panicked".to_string()
-                                }
-                            }
-                            Err(_) => "account task panicked".to_string(),
-                        };
-                        failed_outcome(name.clone(), TeleError::TaskPanic(msg))
-                    }
+                    Err(e) => join_error_outcome(name.clone(), e),
                 },
                 Err(_) => {
                     // The task lost the race with the budget; stop it now so
@@ -1057,6 +1045,37 @@ mod tests {
         assert!(
             !finished.load(std::sync::atomic::Ordering::SeqCst),
             "timed-out task must be aborted, not left running"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_timeouts_share_budget_not_sum() {
+        let hang_a = tokio::task::spawn(async {
+            run_one("a".to_string(), permit().await, async {
+                let _ = std::future::pending::<()>().await;
+                unreachable!()
+            })
+            .await
+        });
+        let hang_b = tokio::task::spawn(async {
+            run_one("b".to_string(), permit().await, async {
+                let _ = std::future::pending::<()>().await;
+                unreachable!()
+            })
+            .await
+        });
+        let start = tokio::time::Instant::now();
+        let outcomes = collect_outcomes_with_budget(
+            &mut vec![("a".to_string(), hang_a), ("b".to_string(), hang_b)],
+            Duration::from_millis(100),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert_eq!(outcomes.len(), 2);
+        assert!(outcomes.iter().all(|o| !o.ok));
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "two concurrent budgets must share wall time, elapsed: {elapsed:?}"
         );
     }
 
