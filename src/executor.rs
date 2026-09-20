@@ -233,13 +233,18 @@ async fn collect_outcomes_with_budget(
     outcomes
 }
 
-pub fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> TeleResult<u32> {
-    let p = flag.unwrap_or(cfg_max);
+pub fn validate_parallel_flag(p: u32) -> TeleResult<()> {
     if !(1..=32).contains(&p) {
         return Err(TeleError::Usage(format!(
             "--parallel {p} must be between 1 and 32"
         )));
     }
+    Ok(())
+}
+
+pub fn effective_parallel(flag: Option<u32>, cfg_max: u32) -> TeleResult<u32> {
+    let p = flag.unwrap_or(cfg_max);
+    validate_parallel_flag(p)?;
     Ok(p)
 }
 
@@ -594,6 +599,19 @@ mod tests {
         let err = pick(&cfg, &["home"], &[], &["nosuch"]).unwrap_err();
         assert_eq!(err.exit_code(), EXIT_USAGE);
         assert!(err.message().contains("no accounts with tag nosuch"));
+    }
+
+    #[test]
+    fn parallel_flag_validator_matches_entry_error() {
+        for bad in [0, 33, 99] {
+            let err = validate_parallel_flag(bad).unwrap_err();
+            assert_eq!(
+                err.message(),
+                format!("--parallel {bad} must be between 1 and 32")
+            );
+        }
+        assert!(validate_parallel_flag(1).is_ok());
+        assert!(validate_parallel_flag(32).is_ok());
     }
 
     #[test]

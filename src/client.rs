@@ -10,6 +10,8 @@ use grammers_client::{Client, SenderPool};
 use secrecy::ExposeSecret;
 use tokio::sync::mpsc;
 
+const IO_ERROR_FLOOD_SECS: u64 = 1;
+
 pub struct ClientGuard {
     pub client: Client,
     pub session: Arc<SqliteSession>,
@@ -108,7 +110,7 @@ impl ClientGuard {
         let conf = ClientConfiguration {
             retry_policy: Box::new(AutoSleep {
                 threshold: Duration::from_secs(flood_threshold),
-                io_errors_as_flood_of: Some(Duration::from_secs(1)),
+                io_errors_as_flood_of: Some(Duration::from_secs(IO_ERROR_FLOOD_SECS)),
             }),
             ..Default::default()
         };

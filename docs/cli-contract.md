@@ -31,7 +31,7 @@ Sources resolve in the order `argv > env > file > default`:
 - `argv`: `--config PATH` selects the config file; `--parallel N` overrides `parallel_max`; `--account`/`--tag` select sessions; `-v`/`-q`/`--json` override logging and output selection.
 - `env`: `TELE_APP_DIR` overrides the default app-data directory (outside per-user paths it additionally requires `--allow-insecure-app-dir`); `TELE_API_ID`/`TELE_API_HASH` override the `.env` file values; `TELE_PHONE` supplies the login phone when `--phone` is absent; `TELE_LOG` selects the log level when neither `-v` nor `-q` is given (`TELE_LOG=trace` additionally requires `--allow-trace` or `TELE_ALLOW_TRACE=1`). Empty or whitespace-only values are ignored (the next lower source wins).
 - `file`: `config.toml` supplies `parallel_max` (clamped to 1..=32), accounts, tags, and proxy defaults; the app-data `.env` file supplies `TELE_API_ID`/`TELE_API_HASH` when the process environment does not.
-- `default`: `parallel_max` 1, flood sleep threshold 60s, logging off (freeform `[info]`/`[warn]`/`[error]` lines still print subject to the `-q` floor).
+- `default`: `parallel_max` 1, flood sleep threshold 60s, transport IO errors treated as a 1s flood wait, logging off (freeform `[info]`/`[warn]`/`[error]` lines still print subject to the `-q` floor).
 
 Level flags resolve `-q` > `-v`/`-vv` > `TELE_LOG` > off: `-q` forces the error floor even when `TELE_LOG=debug` is set, and `-v` forces info even when `TELE_LOG` says otherwise.
 
