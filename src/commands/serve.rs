@@ -3263,6 +3263,15 @@ mod tests {
     }
 
     #[test]
+    fn routed_op_count_matches_documented_matrix() {
+        assert_eq!(
+            serve_op_routes().len(),
+            93,
+            "docs/capabilities.md mcp row claims 93 routed ops"
+        );
+    }
+
+    #[test]
     fn ops_list_covers_all_routes_plus_transport_inline_sorted() {
         let rows = ops_list_rows();
         let routed: Vec<String> = serve_op_routes().iter().map(|r| r.op.to_string()).collect();

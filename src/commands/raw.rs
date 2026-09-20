@@ -1586,6 +1586,15 @@ mod tests {
     }
 
     #[test]
+    fn registry_count_matches_documented_matrix() {
+        assert_eq!(
+            REGISTERED.len(),
+            25,
+            "docs/capabilities.md kernel.raw row claims 25 registry names"
+        );
+    }
+
+    #[test]
     fn registered_mutators_are_gated() {
         for name in REGISTERED {
             let mutating = matches!(

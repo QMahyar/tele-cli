@@ -135,26 +135,36 @@ pub fn apply_output_fields(
     let Some(paths) = output_fields() else {
         return Ok(value.clone());
     };
-    let mut projected = value.clone();
     let mut matched = vec![false; paths.len()];
     let mut saw_object = false;
-    if let Some(results) = projected.get_mut("results").and_then(|v| v.as_array_mut()) {
-        for outcome in results.iter_mut() {
+    let mut projected_results = None;
+    if let Some(results) = value.get("results").and_then(|v| v.as_array()) {
+        let mut out = Vec::with_capacity(results.len());
+        for outcome in results {
             if outcome.get("data").is_some_and(|d| d.is_object()) {
                 saw_object = true;
                 let next = project_object(&outcome["data"], &paths, &mut matched);
+                let mut outcome = outcome.clone();
                 outcome["data"] = next;
+                out.push(outcome);
+            } else {
+                out.push(outcome.clone());
             }
         }
+        projected_results = Some(serde_json::Value::Array(out));
     }
-    if let Some(rows) = projected.get_mut("accounts").and_then(|v| v.as_array_mut()) {
-        for row in rows.iter_mut() {
+    let mut projected_accounts = None;
+    if let Some(rows) = value.get("accounts").and_then(|v| v.as_array()) {
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
             if row.is_object() {
                 saw_object = true;
-                let next = project_object(row, &paths, &mut matched);
-                *row = next;
+                out.push(project_object(row, &paths, &mut matched));
+            } else {
+                out.push(row.clone());
             }
         }
+        projected_accounts = Some(serde_json::Value::Array(out));
     }
     if saw_object {
         for (index, path) in paths.iter().enumerate() {
@@ -165,14 +175,25 @@ pub fn apply_output_fields(
                 )));
             }
         }
-        return Ok(projected);
+        let mut map = serde_json::Map::new();
+        if let Some(obj) = value.as_object() {
+            for (key, val) in obj {
+                if key != "results" && key != "accounts" {
+                    map.insert(key.clone(), val.clone());
+                }
+            }
+        }
+        if let Some(results) = projected_results {
+            map.insert("results".to_string(), results);
+        }
+        if let Some(accounts) = projected_accounts {
+            map.insert("accounts".to_string(), accounts);
+        }
+        return Ok(serde_json::Value::Object(map));
     }
-    if projected.is_object()
-        && projected.get("results").is_none()
-        && projected.get("accounts").is_none()
-    {
+    if value.is_object() && value.get("results").is_none() && value.get("accounts").is_none() {
         let mut row_matched = vec![false; paths.len()];
-        let row = project_object(&projected, &paths, &mut row_matched);
+        let row = project_object(value, &paths, &mut row_matched);
         for (index, path) in paths.iter().enumerate() {
             if !row_matched[index] {
                 return Err(crate::error::TeleError::Usage(format!(
@@ -183,7 +204,7 @@ pub fn apply_output_fields(
         }
         return Ok(row);
     }
-    Ok(projected)
+    Ok(value.clone())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -791,6 +812,40 @@ mod tests {
         );
         assert_eq!(projected["ok"], serde_json::json!(true));
         assert_eq!(projected["command"], serde_json::json!("msg send"));
+    }
+
+    #[test]
+    fn apply_output_fields_preserves_mixed_rows_and_siblings() {
+        let _lock = lock_fields_for_test();
+        let _guard = FieldsTestGuard::set("would");
+        let value = serde_json::json!({
+            "ok": false,
+            "command": "msg send",
+            "dry_run": true,
+            "results": [
+                {"account": "a", "ok": true, "data": {"would": "x", "chat": "me"}, "error": null},
+                {"account": "b", "ok": false, "data": null, "error": {"type": "Error"}},
+                {"account": "c", "ok": true, "data": {"would": "y", "chat": "you"}, "error": null}
+            ]
+        });
+        let projected = apply_output_fields(&value).unwrap();
+        assert_eq!(projected["ok"], serde_json::json!(false));
+        assert_eq!(projected["command"], serde_json::json!("msg send"));
+        assert_eq!(projected["dry_run"], serde_json::json!(true));
+        assert_eq!(
+            projected["results"][0]["data"],
+            serde_json::json!({"would": "x"})
+        );
+        assert_eq!(projected["results"][0]["account"], serde_json::json!("a"));
+        assert_eq!(projected["results"][1]["data"], serde_json::Value::Null);
+        assert_eq!(
+            projected["results"][1]["error"],
+            serde_json::json!({"type": "Error"})
+        );
+        assert_eq!(
+            projected["results"][2]["data"],
+            serde_json::json!({"would": "y"})
+        );
     }
 
     #[test]

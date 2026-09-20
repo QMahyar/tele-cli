@@ -197,8 +197,8 @@ fn main() -> std::process::ExitCode {
     };
     logging::set_flags(cli.verbose, flags.quiet);
     if let Some(p) = flags.parallel {
-        if !(1..=32).contains(&p) {
-            let message = format!("--parallel {p} must be between 1 and 32");
+        if let Err(e) = executor::validate_parallel_flag(p) {
+            let message = e.message();
             return std::process::ExitCode::from(emit_usage_error(
                 UsageCtx {
                     machine: output::machine_mode(flags.json, flags.jsonl),

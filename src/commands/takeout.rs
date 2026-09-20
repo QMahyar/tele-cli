@@ -88,7 +88,7 @@ async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             if dry_run {
                 return Ok(start_dry_run_payload(contacts, messages, photos));
             }
-            let dir = export_dir(&name);
+            let dir = export_dir(&name)?;
             let init = async {
                 let guard =
                     ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -151,8 +151,10 @@ fn validate_export(args: &ExportArgs) -> TeleResult<()> {
     Ok(())
 }
 
-fn export_dir(name: &str) -> std::path::PathBuf {
-    crate::config::app_data_dir().join("export").join(name)
+fn export_dir(name: &str) -> TeleResult<std::path::PathBuf> {
+    Ok(crate::config::app_data_dir_checked()?
+        .join("export")
+        .join(name))
 }
 
 const TAKEOUT_STATE_FILE: &str = "takeout.json";
@@ -331,7 +333,7 @@ async fn export(args: ExportArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         let limit = args.message_limit;
         let redact_phones = args.redact_phones;
         Box::pin(async move {
-            let dir = export_dir(&name);
+            let dir = export_dir(&name)?;
             if dry_run {
                 return Ok(serde_json::json!({
                     "dry_run": true,
@@ -797,7 +799,7 @@ async fn finish(args: FinishArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                     "would": would
                 }));
             }
-            let dir = export_dir(&name);
+            let dir = export_dir(&name)?;
             let takeout_id = read_takeout_state(&dir)?.takeout_id;
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -892,7 +894,10 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base = temp_dir("dir");
         std::env::set_var("TELE_APP_DIR", &base);
-        assert_eq!(export_dir("work"), base.join("export").join("work"));
+        assert_eq!(
+            export_dir("work").unwrap(),
+            base.join("export").join("work")
+        );
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&base);
     }
