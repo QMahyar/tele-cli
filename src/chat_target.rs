@@ -61,14 +61,6 @@ impl AsRef<str> for ChatTarget {
     }
 }
 
-impl std::ops::Deref for ChatTarget {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 impl From<ChatTarget> for String {
     fn from(c: ChatTarget) -> Self {
         c.0

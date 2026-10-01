@@ -77,7 +77,7 @@ fn effective_preview(args: &SendArgs) -> bool {
 }
 
 pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
-    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     if let Some(units) = args.split {
         if args.text.is_none() {
             return Err(TeleError::Usage("--split requires --text".to_string()));

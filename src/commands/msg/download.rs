@@ -36,7 +36,7 @@ pub(crate) fn parse_download_date(
 }
 
 pub(crate) fn validate_download(args: &DownloadArgs) -> TeleResult<()> {
-    crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    crate::chat_target::ChatTarget::parse_flag(args.chat.as_str(), "chat")?;
     super::validate::validate_download_dir(&args.dir)?;
     if let Some(kb) = args.chunk_size_kb {
         validate_chunk_size_kb(kb)?;
