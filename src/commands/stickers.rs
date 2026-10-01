@@ -363,9 +363,10 @@ fn table_row(row: &serde_json::Value) -> Vec<String> {
     ]
 }
 
-fn list_dry_run_payload() -> serde_json::Value {
+fn list_dry_run_payload(limit: u32) -> serde_json::Value {
     serde_json::json!({
         "dry_run": true,
+        "limit": limit,
         "would": "list installed sticker sets"
     })
 }
@@ -403,8 +404,8 @@ fn remove_dry_run_payload(short_name: &str) -> serde_json::Value {
     })
 }
 
-pub(crate) fn list_serve_dry_run(_args: &ListArgs) -> TeleResult<serde_json::Value> {
-    Ok(list_dry_run_payload())
+pub(crate) fn list_serve_dry_run(args: &ListArgs) -> TeleResult<serde_json::Value> {
+    Ok(list_dry_run_payload(args.limit))
 }
 
 pub(crate) fn search_serve_dry_run(args: &SearchArgs) -> TeleResult<serde_json::Value> {
@@ -434,12 +435,13 @@ async fn list(args: ListArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     let jsonl = flags.jsonl;
     let multi = crate::executor::select_accounts(flags)?.len() > 1;
     let params = ListParams::from(&args);
+    let limit = args.limit;
     let envelope = run_fanout(flags, move |name| {
         let config_path = config_path.clone();
         let params = params.clone();
         Box::pin(async move {
             if dry_run {
-                return Ok(list_dry_run_payload());
+                return Ok(list_dry_run_payload(limit));
             }
             let guard =
                 ClientGuard::connect(&name, creds_api_id()?, config_path.as_deref()).await?;
@@ -1078,8 +1080,9 @@ mod tests {
 
     #[test]
     fn dry_run_payloads_carry_would_text_and_arguments() {
-        let v = list_dry_run_payload();
+        let v = list_dry_run_payload(200);
         assert_eq!(v["dry_run"], serde_json::json!(true));
+        assert_eq!(v["limit"], serde_json::json!(200));
         assert_eq!(v["would"], serde_json::json!("list installed sticker sets"));
 
         let v = search_dry_run_payload("cats");
@@ -1108,7 +1111,7 @@ mod tests {
         );
 
         for v in [
-            list_dry_run_payload(),
+            list_dry_run_payload(200),
             search_dry_run_payload("q"),
             show_dry_run_payload("s"),
             install_dry_run_payload("s", false),
@@ -1259,7 +1262,12 @@ mod tests {
             (
                 "sticker list",
                 serde_json::json!({"dry_run": true}),
-                list_dry_run_payload(),
+                list_dry_run_payload(200),
+            ),
+            (
+                "sticker list",
+                serde_json::json!({"limit": 5, "dry_run": true}),
+                list_dry_run_payload(5),
             ),
             (
                 "sticker remove",

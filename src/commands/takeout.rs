@@ -75,6 +75,7 @@ fn start_dry_run_payload(contacts: bool, messages: bool, photos: bool) -> serde_
 }
 
 async fn start(args: StartArgs, flags: &GlobalFlags) -> TeleResult<i32> {
+    validate_start(&args)?;
     require_explicit_selection("takeout start", flags)?;
     let config_path = flags.config_path.clone();
     let dry_run = flags.dry_run;
@@ -142,6 +143,15 @@ where
         },
     )?;
     Ok((takeout_id, cleared))
+}
+
+fn validate_start(args: &StartArgs) -> TeleResult<()> {
+    if !args.contacts && !args.messages && !args.photos {
+        return Err(TeleError::Usage(
+            "takeout start requires at least one of --contacts, --messages, --photos".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_export(args: &ExportArgs) -> TeleResult<()> {
@@ -863,6 +873,35 @@ mod tests {
                 "start takeout session (contacts: true, messages: false, photos: true)"
             )
         );
+    }
+
+    #[test]
+    fn start_rejects_empty_scope_before_connect() {
+        let none = StartArgs {
+            contacts: false,
+            messages: false,
+            photos: false,
+        };
+        assert!(matches!(validate_start(&none), Err(TeleError::Usage(_))));
+        for args in [
+            StartArgs {
+                contacts: true,
+                messages: false,
+                photos: false,
+            },
+            StartArgs {
+                contacts: false,
+                messages: true,
+                photos: false,
+            },
+            StartArgs {
+                contacts: false,
+                messages: false,
+                photos: true,
+            },
+        ] {
+            assert!(validate_start(&args).is_ok());
+        }
     }
 
     #[test]

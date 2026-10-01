@@ -319,10 +319,11 @@ Phone numbers stay redacted (`"phone": null`) unless `--show-phone` is passed. `
 - `--username <value|remove>` sets or clears the account username via raw `account.updateUsername`. Values accept `@name`, bare `name`, or a `t.me/…` or `telegram.me/…` link; the literal value `remove` (any case) clears the username. Client-side shape validation runs before connect: 5-32 chars, letters, digits, underscore, at least one letter, no leading digit, no trailing underscore.
 - Success rows carry additive `"username"`: the applied name, or `"removed"` after a clear.
 - Server RPC errors map to Usage: `USERNAME_NOT_ALLOWED`, `USERNAME_INVALID` / `USERNAME_BAD_SYNTAX`, and `USERNAME_OCCUPIED`.
+- Dry-run rows echo the requested argument keys alongside the `would` string (`name`, `bio`, `photo`, `username`, `clear_username`; null when the flag was absent).
 
 ## `profile photo --remove`
 
-This command removes the current profile photo. It reads the photo id from `users.getFullUser` (`full_user.profile_photo`) and calls raw `photos.deletePhotos`. It fails honestly when no photo is set. Setting a photo stays on `profile set --photo <path>`.
+This command removes the current profile photo. It reads the photo id from `users.getFullUser` (`full_user.profile_photo`) and calls raw `photos.deletePhotos`. It fails honestly when no photo is set. Setting a photo stays on `profile set --photo <path>`. Dry-run rows echo `remove` alongside the `would` string.
 
 ## `profile photos`
 
@@ -330,7 +331,7 @@ This command removes the current profile photo. It reads the photo id from `user
 
 ## `profile emoji-status`
 
-`tele profile emoji-status [--emoji <document-id> | --remove]` sets or clears the emoji status via raw `account.updateEmojiStatus`. The TL request takes an `EmojiStatus`: `emojiStatus{document_id}` to set, `emojiStatusEmpty` to clear (this layer has no separate Input constructor). `--emoji` and `--remove` are mutually exclusive, and one of them is required. Success rows carry `{"emoji_status": <id>|null, "removed": bool}`.
+`tele profile emoji-status [--emoji <document-id> | --remove]` sets or clears the emoji status via raw `account.updateEmojiStatus`. The TL request takes an `EmojiStatus`: `emojiStatus{document_id}` to set, `emojiStatusEmpty` to clear (this layer has no separate Input constructor). `--emoji` and `--remove` are mutually exclusive, and one of them is required. Success rows carry `{"emoji_status": <id>|null, "removed": bool}`. Dry-run rows echo `emoji` (null when clearing) and `remove` alongside the `would` string.
 
 ## `privacy set` keys and chat rules
 
@@ -1045,6 +1046,8 @@ tele takeout finish [--abandon]
 
 All three subcommands require explicit account selection. Per-account export artifacts live under `<app data>/export/<account>/`: `contacts.json`, `messages.jsonl`, `dialogs.json`, and the state file `takeout.json`. `--redact-phones` replaces every `phone` value in `contacts.json` with `"[REDACTED]"`.
 
+`takeout start` requires at least one scope flag (`--contacts`, `--messages`, or `--photos`); with no flag it exits 1 with a Usage error before connect.
+
 **Progress (human TTY mode):** without `--json`/`--jsonl` and with stderr attached to a terminal, export reports each dialogs page (`dialogs page 2: +100 dialogs`) and each history page (`dialog 3/57 Alice msgs=120`, style `dialog i/N <name> msgs=<n>`) on stderr through the standard log line channel. Stdout stays empty until the final envelope. Machine mode emits no progress lines, and neither does a non-terminal stderr (piped or redirected CI logs stay silent); `-q` silences progress through the usual `[error]`-only floor.
 
 **Cursor resume:** `takeout.json` carries per-dialog checkpoints
@@ -1118,7 +1121,9 @@ tele skill install [--dir PATH] [--force]
 
 With `--json`/`--jsonl`, stdout carries the standard one-shot envelope instead of the raw markdown: one `local`-account row whose `data` holds `{"skill": "<SKILL.md text>"}`. A `--dry-run` machine row adds `dry_run: true` and `would: "print agent skill to stdout"` alongside the same keys.
 
-`tele skill install` writes the same `SKILL.md` to `tele/SKILL.md` under each detected agent skill directory (any of `$HOME/.claude/skills`, `$HOME/.config/opencode/skills`, `$HOME/.cursor/skills` that exists). With `--dir PATH` it writes to `PATH/tele/SKILL.md` instead and skips detection. Existing files are refused without `--force`. Progress lines go to stderr; exit is 0 on success, non-zero when nothing was written and no `--dir` was given. With `--dry-run`, nothing is written: human mode logs `would install skill to <path>` per target on stderr, and machine mode emits the one-shot envelope with one `local`-account row carrying `{"dry_run": true, "force": <bool>, "targets": ["<path>", ...], "would": "install skill to <path>, ..."}`. Machine mode without `--dry-run` emits the envelope with `{"installed": ["<path>", ...], "force": <bool>}`.
+`tele skill install` writes the same `SKILL.md` to `tele/SKILL.md` under each detected agent skill directory (any of `$HOME/.claude/skills`, `$HOME/.config/opencode/skills`, `$HOME/.cursor/skills` that exists). With `--dir PATH` it writes to `PATH/tele/SKILL.md` instead and skips detection. Existing files are refused without `--force` as a Usage error (exit 1; correctable with `--force`). Progress lines go to stderr; exit is 0 on success, non-zero when nothing was written and no `--dir` was given. With `--dry-run`, nothing is written: human mode logs `would install skill to <path>` per target on stderr, and machine mode emits the one-shot envelope with one `local`-account row carrying `{"dry_run": true, "force": <bool>, "targets": ["<path>", ...], "would": "install skill to <path>, ..."}`. Machine mode without `--dry-run` emits the envelope with `{"installed": ["<path>", ...], "force": <bool>}`.
+
+`tele sticker list [--limit N]` dry-run rows echo `limit` alongside the `would` string.
 
 ## Stability
 

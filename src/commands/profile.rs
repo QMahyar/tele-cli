@@ -774,13 +774,19 @@ fn set_serve_dry_run(args: &SetArgs) -> TeleResult<serde_json::Value> {
     }
     Ok(serde_json::json!({
         "dry_run": true,
+        "name": args.name,
+        "bio": args.bio,
+        "photo": args.photo,
+        "username": args.username,
+        "clear_username": args.clear_username,
         "would": format!("set profile {}", fields.join(", "))
     }))
 }
 
-fn photo_serve_dry_run(_args: &PhotoArgs) -> TeleResult<serde_json::Value> {
+fn photo_serve_dry_run(args: &PhotoArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
         "dry_run": true,
+        "remove": args.remove,
         "would": "remove current profile photo"
     }))
 }
@@ -789,10 +795,14 @@ fn emoji_status_serve_dry_run(args: &EmojiStatusArgs) -> TeleResult<serde_json::
     Ok(match validate_emoji_status(args)? {
         Some(id) => serde_json::json!({
             "dry_run": true,
+            "emoji": args.emoji,
+            "remove": args.remove,
             "would": format!("set emoji status to emoji document {id}")
         }),
         None => serde_json::json!({
             "dry_run": true,
+            "emoji": args.emoji,
+            "remove": args.remove,
             "would": "clear emoji status"
         }),
     })
@@ -1791,7 +1801,14 @@ mod tests {
         };
         assert_eq!(
             v,
-            serde_json::json!({"dry_run": true, "would": "set profile name, bio"})
+            serde_json::json!({
+                "dry_run": true,
+                "name": "John Doe",
+                "bio": "hi",
+                "photo": null,
+                "username": null,
+                "clear_username": false,
+                "would": "set profile name, bio"})
         );
 
         let dir =
@@ -1814,7 +1831,14 @@ mod tests {
         };
         assert_eq!(
             v,
-            serde_json::json!({"dry_run": true, "would": "set profile photo, username"})
+            serde_json::json!({
+                "dry_run": true,
+                "name": null,
+                "bio": null,
+                "photo": photo.to_string_lossy(),
+                "username": "@john_doe",
+                "clear_username": false,
+                "would": "set profile photo, username"})
         );
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -1828,7 +1852,10 @@ mod tests {
         };
         assert_eq!(
             v,
-            serde_json::json!({"dry_run": true, "would": "remove current profile photo"})
+            serde_json::json!({
+                "dry_run": true,
+                "remove": true,
+                "would": "remove current profile photo"})
         );
 
         let plan = plan_for(
@@ -1843,6 +1870,8 @@ mod tests {
             v,
             serde_json::json!({
                 "dry_run": true,
+                "emoji": 5312345678i64,
+                "remove": false,
                 "would": "set emoji status to emoji document 5312345678"
             })
         );
@@ -1857,7 +1886,11 @@ mod tests {
         };
         assert_eq!(
             v,
-            serde_json::json!({"dry_run": true, "would": "clear emoji status"})
+            serde_json::json!({
+                "dry_run": true,
+                "emoji": null,
+                "remove": true,
+                "would": "clear emoji status"})
         );
     }
 

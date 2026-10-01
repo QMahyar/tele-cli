@@ -191,7 +191,7 @@ fn finish_install(
 
 fn write_skill(target: &std::path::Path, force: bool) -> TeleResult<()> {
     if target.exists() && !force {
-        return Err(crate::error::TeleError::Other(format!(
+        return Err(crate::error::TeleError::Usage(format!(
             "refusing to overwrite {} without --force",
             target.display()
         )));
@@ -296,6 +296,22 @@ mod tests {
             !dir.join("tele").join("SKILL.md").exists(),
             "dry-run must not write"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overwrite_refusal_is_usage_before_connect() {
+        let dir =
+            std::env::temp_dir().join(format!("telecli-skill-overwrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let target = dir.join("tele").join("SKILL.md");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "old").unwrap();
+        let err = write_skill(&target, false).unwrap_err();
+        assert!(matches!(err, crate::error::TeleError::Usage(_)));
+        assert_eq!(err.exit_code(), crate::error::EXIT_USAGE);
+        assert!(err.message().contains("--force"));
+        assert!(write_skill(&target, true).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
