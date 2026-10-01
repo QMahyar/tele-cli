@@ -235,13 +235,15 @@ Rows gain additive `"username"` (a string, empty when none). The human table app
 - `--topic <id>` posts into a forum topic. It is mutually exclusive with `--reply`: both set the reply-to header, and replying to the topic root lands the message in that topic. Reads scoped to a topic are available through `tele raw messages.Search` (`top_msg_id`), because grammers 0.10 exposes no topic filters on its history or search iterators.
 - `--caption <text>` attaches a caption to uploaded file(s) and requires `--file`.
 - `--format plain|markdown` (default `plain`) controls text formatting for outgoing text. Plain text sends are capped by Telegram at 4096 UTF-16 units (and captions at 1024); oversized text fails with the server's MESSAGE_TOO_LONG.
-- `--split <UTF16_UNITS>` (1..=4096) breaks `--text` into sequential messages of at most that size instead of failing — chunking is UTF-16-aware and prefers a paragraph break in the last quarter of each chunk; reply/schedule/link-preview apply to every chunk, but `--reply`/`--topic` land on the first chunk only. Multi-chunk sends return `{"messages": [...], "split": N}` (single-chunk sends keep the plain message row); each chunk after the first consumes a rate-limiter slot. Mutually exclusive with `--file/--url/--copy-from/--poll`.
+- `--split <UTF16_UNITS>` (1..=4096) breaks `--text` into sequential messages of at most that size instead of failing — chunking is UTF-16-aware and prefers a paragraph break in the last quarter of each chunk; link preview, `--silent`, and `--background` apply to every chunk, but `--reply`/`--topic`, `--schedule`, and `--effect` land on the first chunk only. Multi-chunk sends return `{"messages": [...], "split": N}` (single-chunk sends keep the plain message row); each chunk after the first consumes a rate-limiter slot. Mutually exclusive with `--file/--url/--copy-from/--poll`.
 - `--silent` sends with notifications muted.
 - `--noforwards` marks the sent message as protected (recipients cannot forward or save it). Text sends only: combined with `--file`, `--url`, or `--copy-from` it fails with a Usage error. The grammers send builder carries no noforwards field, so the send routes through raw `messages.SendMessage` with markdown parsing. Dry-run echoes `noforwards`.
 - `--background` queues the send in the background instead of the foreground send queue (grammers builder `.background()`); rejected with albums. Dry-run echoes `background`.
 - `--no-preview` disables the link preview (on by default).
 - `--as voice|video-note` sends a single `--file` as a voice note (`documentAttributeAudio{voice:true}`) or round video note (`documentAttributeVideo{round_message:true}`); exactly one file, no caption/thumbnail/schedule.
 - `--poll "Question" --option A --option B` (repeatable, 2-10 options) creates a poll via `InputMediaPoll`, mutually exclusive with `--file/--text/--url/--copy-from`. `--poll-mode quiz` marks it a quiz; `--poll-quiz-option N` (1-based) sets the correct answer. Dry-run `would` is `"create poll …"`.
+- `--effect <ID>` attaches an animated message effect (see `tele raw messages.GetAvailableEffects`; text, single-file, and checklist sends only; Premium and 1-on-1 limits are server-enforced). With `--split`, the effect lands on the first chunk only.
+- `--todo "Title" --todo-item ITEM` (repeatable, at least one) creates a checklist via `InputMediaTodo`, mutually exclusive with `--text/--file/--url/--copy-from/--poll`. `--todo-others-can-append` and `--todo-others-can-complete` let other members add or complete items. Dry-run `would` is `"create checklist …"`.
 
 ## `msg edit`
 
@@ -1097,12 +1099,12 @@ no secrets; boolean results return `{"ok": true|false}`. Numeric `--args` fields
 ## `tele completions`
 
 ```
-tele completions bash|zsh|fish|powershell
+tele completions bash|zsh|fish|powershell|man
 ```
 
-Prints a shell completion script for the `tele` binary to stdout and exits 0. No account selection or network is involved.
+Prints a shell completion script for the `tele` binary to stdout and exits 0. `man` prints a roff man page for `tele` instead of a shell script. No account selection or network is involved.
 
-With `--json`/`--jsonl`, stdout carries the standard one-shot envelope instead of the raw script: one `local`-account row whose `data` holds `{"shell": "<bash|zsh|fish|powershell>", "script": "<script text>"}`. A `--dry-run` machine row adds `dry_run: true` and `would: "generate <shell> completions"` alongside the same keys.
+With `--json`/`--jsonl`, stdout carries the standard one-shot envelope instead of the raw script: one `local`-account row whose `data` holds `{"shell": "<bash|zsh|fish|powershell|man>", "script": "<script text>"}`. A `--dry-run` machine row adds `dry_run: true` and `would: "generate <shell> completions"` alongside the same keys.
 
 ## `tele skill`
 

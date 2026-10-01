@@ -122,13 +122,13 @@ enum Command {
     /// Manage accounts (sessions, login, logout)
     #[command(subcommand)]
     Account(account::AccountCmd),
-    /// Messages: send, edit, delete, forward, pin, get, read, react, search, download
+    /// Messages: send, edit, delete, forward, pin, get, read, react, search, download, vote, polls, translate, transcribe, typing, click, scheduled, export
     #[command(subcommand)]
     Msg(msg::MsgCmd),
-    /// Chats: join, leave, invite, participants, kick, admin, admin-log, stats, create
+    /// Chats: join, leave, invite, requests, participants, kick, admin, admin-log, stats, settings, edit, link, create, permissions
     #[command(subcommand)]
     Chat(chat::ChatCmd),
-    /// Dialogs: list, drafts, draft, archive, pin, delete
+    /// Dialogs: list, drafts, draft, archive, pin, delete, folders, folder-create, folder-delete, folder-reorder
     #[command(subcommand)]
     Dialog(dialog::DialogCmd),
     /// Forum topics
@@ -137,13 +137,13 @@ enum Command {
     /// Sticker packs: list, search, show, install, remove
     #[command(subcommand)]
     Sticker(stickers::StickerCmd),
-    /// Stories: send, list, read, delete, pin, unpin
+    /// Stories: send, list, read, delete, pin, unpin, edit, views, viewers, reactions, link
     #[command(subcommand)]
     Story(stories::StoryCmd),
     /// Contacts: list, add, remove, block, unblock
     #[command(subcommand)]
     Contact(contact::ContactCmd),
-    /// Profile: get, set, photo, emoji-status
+    /// Profile: get, set, photo, photos, emoji-status
     #[command(subcommand)]
     Profile(profile::ProfileCmd),
     /// Privacy rules

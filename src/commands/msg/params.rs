@@ -15,12 +15,12 @@ pub struct SendArgs {
     #[arg(
         long,
         value_name = "UTF16_UNITS",
-        help = "split --text into sequential messages of at most this many UTF-16 units (Telegram's cap is 4096); reply/schedule apply to the first chunk only"
+        help = "split --text into sequential messages of at most this many UTF-16 units (Telegram's cap is 4096); reply/topic/schedule/effect apply to the first chunk only"
     )]
     pub(crate) split: Option<usize>,
     #[arg(
         long,
-        help = "send time: Unix timestamp or RFC3339 datetime (must be in the future)"
+        help = "send time: Unix timestamp, RFC3339 datetime (must be in the future), or online (deliver when the peer comes online)"
     )]
     pub(crate) schedule: Option<String>,
     #[arg(
