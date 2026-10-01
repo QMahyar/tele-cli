@@ -138,6 +138,7 @@ impl RateLimiter {
         *frac += elapsed * self.refill_rate;
         let whole = *frac as u64;
         if whole == 0 {
+            *last += Duration::from_secs_f64(elapsed);
             return;
         }
         let mut current = self.tokens.load(Ordering::Acquire);
@@ -400,6 +401,28 @@ mod tests {
         assert!(rl.is_limited());
         rl.acquire().await;
         assert!(!rl.is_limited());
+    }
+
+    #[tokio::test]
+    async fn repeated_small_refills_must_not_recount_the_same_window() {
+        let rl = RateLimiter::new(Some(600.0));
+        for _ in 0..600 {
+            rl.acquire().await;
+        }
+        assert_eq!(rl.available_tokens(), 0);
+        *rl.last_refill.try_lock().unwrap() = Instant::now() - Duration::from_millis(60);
+        rl.maybe_refill();
+        assert_eq!(
+            rl.available_tokens(),
+            0,
+            "60ms at 10/s credits 0.6 tokens, so no whole token mints"
+        );
+        rl.maybe_refill();
+        assert_eq!(
+            rl.available_tokens(),
+            0,
+            "re-reading the same window must not mint a token from already-counted time"
+        );
     }
 
     #[tokio::test]

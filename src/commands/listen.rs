@@ -1351,9 +1351,21 @@ pub(crate) async fn handle_stream_failure(
         Some(d) => delay.min(d.saturating_duration_since(std::time::Instant::now())),
         None => delay,
     };
+    if let Some(wait) = flood_wait_secs(&err) {
+        if let Some(d) = deadline {
+            if wait > d.saturating_duration_since(std::time::Instant::now()) {
+                return Err(err);
+            }
+        }
+    }
     output::log_line(
         "error",
-        &reconnect_message(account, *failures, delay.as_secs() as u32, &err.message()),
+        &reconnect_message(
+            account,
+            *failures,
+            sleep_for.as_secs() as u32,
+            &err.message(),
+        ),
     );
     tokio::time::sleep(sleep_for).await;
     Ok(())
@@ -1925,6 +1937,43 @@ mod stopper_tests {
         assert!(!stopper.is_exhausted());
         assert!(stopper.emitted());
         assert!(stopper.is_exhausted());
+    }
+
+    #[tokio::test]
+    async fn flood_wait_longer_than_deadline_fails_instead_of_reconnecting_early() {
+        let flood = crate::error::TeleError::Rpc(
+            "FLOOD_WAIT".to_string(),
+            420,
+            "FLOOD_WAIT".to_string(),
+            Some(60),
+        );
+        let deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(100));
+        let mut failures = 0u32;
+        let start = std::time::Instant::now();
+        let out = super::handle_stream_failure("probe", flood, &mut failures, deadline, 5).await;
+        assert!(
+            out.is_err(),
+            "must surface FloodWait, not retry while banned"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "must not sleep out the 60s wait"
+        );
+    }
+
+    #[tokio::test]
+    async fn short_flood_wait_still_backs_off_and_retries() {
+        let flood = crate::error::TeleError::Rpc(
+            "FLOOD_WAIT".to_string(),
+            420,
+            "FLOOD_WAIT".to_string(),
+            Some(1),
+        );
+        let deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        let mut failures = 0u32;
+        let out = super::handle_stream_failure("probe", flood, &mut failures, deadline, 5).await;
+        assert!(out.is_ok());
+        assert_eq!(failures, 1);
     }
 
     #[tokio::test]

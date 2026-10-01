@@ -44,6 +44,9 @@ impl<K: Eq + Hash + Clone, V> CappedMap<K, V> {
     }
 
     pub fn insert(&mut self, key: K, value: V) {
+        if self.cap == 0 {
+            return;
+        }
         let seq = self.claim_seq();
         if let Some(slot) = self.entries.get_mut(&key) {
             slot.value = value;
@@ -112,6 +115,9 @@ impl<K: Eq + Hash + Clone, V> CappedMap<K, V> {
 
 impl<K: Eq + Hash + Clone> CappedMap<K, ()> {
     pub fn check(&mut self, key: K) -> bool {
+        if self.cap == 0 {
+            return false;
+        }
         // Re-observation refreshes the eviction position, mirroring
         // insert's refresh semantics.
         let seq = self.claim_seq();
@@ -134,6 +140,19 @@ impl<K: Eq + Hash + Clone> CappedMap<K, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_cap_stores_nothing() {
+        let mut m: CappedMap<i32, i32> = CappedMap::new(0);
+        m.insert(1, 10);
+        assert!(m.is_empty());
+        assert!(!m.contains(&1));
+        assert_eq!(m.get(&1), None);
+        let mut d: CappedMap<i32, ()> = CappedMap::new(0);
+        assert!(!d.check(1));
+        assert!(!d.check(1), "nothing is retained, so every check is new");
+        assert!(d.is_empty());
+    }
 
     #[test]
     fn insert_tracks_size_and_capacity() {

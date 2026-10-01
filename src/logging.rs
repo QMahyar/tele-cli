@@ -68,7 +68,7 @@ fn resolve_log_level(verbose: u8, quiet: bool, env: Option<&str>) -> Option<Leve
             LevelFilter::Info
         });
     }
-    match env {
+    match env.map(str::trim) {
         Some("trace") => Some(LevelFilter::Trace),
         Some("debug") => Some(LevelFilter::Debug),
         Some("info") => Some(LevelFilter::Info),
@@ -258,6 +258,19 @@ mod tests {
             resolve_log_level(0, false, Some("trace")),
             Some(LevelFilter::Trace)
         );
+    }
+
+    #[test]
+    fn resolve_trims_tele_log_whitespace_like_init() {
+        assert_eq!(
+            resolve_log_level(0, false, Some(" debug ")),
+            Some(LevelFilter::Debug)
+        );
+        assert_eq!(
+            resolve_log_level(0, false, Some(" trace ")),
+            Some(LevelFilter::Trace)
+        );
+        assert_eq!(resolve_log_level(0, false, Some("  ")), None);
     }
 
     #[test]

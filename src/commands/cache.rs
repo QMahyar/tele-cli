@@ -265,10 +265,14 @@ async fn clear(_args: ClearArgs, flags: &GlobalFlags) -> TeleResult<i32> {
 pub(crate) struct SyncParams {
     #[serde(default)]
     pub(crate) chat: String,
-    #[serde(default)]
+    #[serde(default = "default_sync_limit")]
     pub(crate) limit: u32,
     #[serde(default)]
     pub(crate) dry_run: bool,
+}
+
+fn default_sync_limit() -> u32 {
+    100
 }
 
 impl From<&SyncArgs> for SyncParams {
@@ -297,10 +301,14 @@ pub(crate) struct SearchParams {
     #[serde(default)]
     pub(crate) query: String,
     pub(crate) chat_id: Option<i64>,
-    #[serde(default)]
+    #[serde(default = "default_search_limit")]
     pub(crate) limit: u32,
     #[serde(default)]
     pub(crate) dry_run: bool,
+}
+
+fn default_search_limit() -> u32 {
+    20
 }
 
 impl From<&SearchArgs> for SearchParams {
@@ -588,6 +596,18 @@ mod tests {
             limit: 10,
         };
         assert!(validate_sync(&args).is_err());
+    }
+
+    #[test]
+    fn serve_params_default_to_cli_limits() {
+        let sync: SyncParams =
+            serde_json::from_value(serde_json::json!({"chat": "@x"})).expect("sync params parse");
+        assert_eq!(sync.limit, 100);
+        assert!(validate_sync(&SyncArgs::from(&sync)).is_ok());
+        let search: SearchParams = serde_json::from_value(serde_json::json!({"query": "deploy"}))
+            .expect("search params parse");
+        assert_eq!(search.limit, 20);
+        assert!(validate_search(&SearchArgs::from(&search)).is_ok());
     }
 
     #[test]
