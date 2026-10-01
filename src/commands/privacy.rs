@@ -781,6 +781,10 @@ fn set_serve_dry_run(args: &SetArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
         "dry_run": true,
         "key": args.key,
+        "allow": args.allow,
+        "allow_chat": args.allow_chat,
+        "deny": args.deny,
+        "deny_chat": args.deny_chat,
         "replace": args.replace,
         "would": format!(
             "{} privacy rules for key {} (allow {} users + {} chats, deny {} users + {} chats)",
@@ -2249,6 +2253,10 @@ mod tests {
             serde_json::json!({
                 "dry_run": true,
                 "key": "status",
+                "allow": ["@alice"],
+                "allow_chat": [10, 20],
+                "deny": ["@bob"],
+                "deny_chat": null,
                 "replace": false,
                 "would": "merge into privacy rules for key status (allow 1 users + 2 chats, deny 1 users + 0 chats)"
             })
