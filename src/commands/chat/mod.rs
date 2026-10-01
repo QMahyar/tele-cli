@@ -1821,6 +1821,7 @@ pub(crate) async fn chat_join_core(
     shares: &crate::client::ServeShares,
     params: JoinParams,
 ) -> TeleResult<serde_json::Value> {
+    crate::chat_target::ChatTarget::parse_flag(&params.chat, "chat")?;
     shares.rate_limiter.acquire().await;
     let normalized = normalize_invite_link(&params.chat);
     let accept_url = if grammers_client::Client::parse_invite_link(&normalized).is_some() {
@@ -1860,6 +1861,7 @@ pub(crate) async fn chat_leave_core(
     shares: &crate::client::ServeShares,
     params: LeaveParams,
 ) -> TeleResult<serde_json::Value> {
+    crate::chat_target::ChatTarget::parse_flag(&params.chat, "chat")?;
     shares.rate_limiter.acquire().await;
     let peer =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -2275,6 +2277,7 @@ pub(crate) async fn chat_link_core(
     shares: &crate::client::ServeShares,
     params: LinkServeParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_link(&LinkArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;

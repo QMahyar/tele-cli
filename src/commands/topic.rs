@@ -245,6 +245,7 @@ async fn topic_action_core(
     params: LifecycleParams,
     kind: ActionKind,
 ) -> TeleResult<serde_json::Value> {
+    ChatTarget::parse_flag(&params.chat, "chat")?;
     let args = LifecycleArgs::from(&params);
     validate_lifecycle_for_kind(&args, kind)?;
     let topic_id = parse_topic_id(&params.topic)?;
@@ -324,6 +325,7 @@ pub(crate) async fn topic_edit_core(
     shares: &crate::client::ServeShares,
     params: EditParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_edit(&EditArgs::from(&params))?;
     let topic_id = parse_topic_id(&params.topic)?;
     shares.rate_limiter.acquire().await;
     let chat =
@@ -1294,6 +1296,53 @@ mod tests {
     #[test]
     fn serve_topic_delete_plan_matrix() {
         lifecycle_matrix("topic delete", "delete");
+    }
+
+    #[test]
+    fn edit_core_gate_rejects_bad_chat_topic_or_empty_changes() {
+        for params in [
+            EditParams {
+                chat: "   ".to_string(),
+                topic: "5".to_string(),
+                title: Some("n".to_string()),
+                closed: None,
+                dry_run: false,
+            },
+            EditParams {
+                chat: "work".to_string(),
+                topic: "0".to_string(),
+                title: Some("n".to_string()),
+                closed: None,
+                dry_run: false,
+            },
+            EditParams {
+                chat: "work".to_string(),
+                topic: "5".to_string(),
+                title: None,
+                closed: None,
+                dry_run: false,
+            },
+        ] {
+            assert!(matches!(
+                validate_edit(&EditArgs::from(&params)),
+                Err(TeleError::Usage(_))
+            ));
+        }
+        let params = EditParams {
+            chat: "work".to_string(),
+            topic: "5".to_string(),
+            title: Some("n".to_string()),
+            closed: None,
+            dry_run: false,
+        };
+        assert!(validate_edit(&EditArgs::from(&params)).is_ok());
+    }
+
+    #[test]
+    fn action_core_gate_rejects_bad_chat() {
+        let err = crate::chat_target::ChatTarget::parse_flag("   ", "chat").unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(crate::chat_target::ChatTarget::parse_flag("@room", "chat").is_ok());
     }
 
     #[test]

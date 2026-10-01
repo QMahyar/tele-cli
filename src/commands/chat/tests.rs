@@ -3472,6 +3472,72 @@ mod chat_serve_tests {
     }
 
     #[test]
+    fn join_core_gate_rejects_invalid_chat() {
+        for bad in ["", "   ", "t.me/durov/42", "+abc-xyz_123"] {
+            let params = JoinParams {
+                chat: bad.to_string(),
+                dry_run: false,
+            };
+            let err = crate::chat_target::ChatTarget::parse_flag(&params.chat, "chat").unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {bad:?}");
+        }
+        for good in ["@room", "me", "https://t.me/+abc123", "abc_def-123"] {
+            let params = JoinParams {
+                chat: good.to_string(),
+                dry_run: false,
+            };
+            assert!(
+                crate::chat_target::ChatTarget::parse_flag(&params.chat, "chat").is_ok(),
+                "for {good:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn leave_core_gate_rejects_invalid_chat() {
+        for bad in ["", "   ", "t.me/durov/42"] {
+            let params = LeaveParams {
+                chat: bad.to_string(),
+                dry_run: false,
+            };
+            let err = crate::chat_target::ChatTarget::parse_flag(&params.chat, "chat").unwrap_err();
+            assert!(matches!(err, TeleError::Usage(_)), "for {bad:?}");
+        }
+        let params = LeaveParams {
+            chat: "@room".to_string(),
+            dry_run: false,
+        };
+        assert!(crate::chat_target::ChatTarget::parse_flag(&params.chat, "chat").is_ok());
+    }
+
+    #[test]
+    fn link_core_gate_rejects_bad_targets() {
+        let params = LinkServeParams {
+            chat: "   ".to_string(),
+            to: None,
+            dry_run: false,
+        };
+        assert!(matches!(
+            validate_link(&LinkArgs::from(&params)),
+            Err(TeleError::Usage(_))
+        ));
+        let params = LinkServeParams {
+            chat: "work".to_string(),
+            to: Some("remove".to_string()),
+            dry_run: false,
+        };
+        let err = validate_link(&LinkArgs::from(&params)).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)));
+        assert!(err.message().contains("no unlink method"));
+        let params = LinkServeParams {
+            chat: "work".to_string(),
+            to: Some("@discuss".to_string()),
+            dry_run: false,
+        };
+        assert!(validate_link(&LinkArgs::from(&params)).is_ok());
+    }
+
+    #[test]
     fn chat_kick_plan_matrix() {
         let msg = serve_error(
             plan_chat_op("chat kick", serde_json::json!({"chat": "work"})).unwrap_err(),

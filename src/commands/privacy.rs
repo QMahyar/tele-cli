@@ -577,22 +577,6 @@ fn merge_privacy_rules_with_map(
     let mut base_allow_chat_ids = dedupe_ids(base_allow_chat_ids);
     let mut base_disallow_user_ids = dedupe_ids(base_disallow_user_ids);
     let mut base_disallow_chat_ids = dedupe_ids(base_disallow_chat_ids);
-    let new_allow_user_ids: Vec<i64> = targets
-        .allow_users
-        .iter()
-        .filter_map(|u| match u {
-            tl::enums::InputUser::User(u) => Some(u.user_id),
-            _ => None,
-        })
-        .collect();
-    let new_disallow_user_ids: Vec<i64> = targets
-        .disallow_users
-        .iter()
-        .filter_map(|u| match u {
-            tl::enums::InputUser::User(u) => Some(u.user_id),
-            _ => None,
-        })
-        .collect();
     if replace {
         // Revocation semantics: the four user/chat lists are exactly what the
         // flags name; anything previously allowed/denied that is not re-named
@@ -602,42 +586,6 @@ fn merge_privacy_rules_with_map(
         base_allow_chat_ids.clear();
         base_disallow_user_ids.clear();
         base_disallow_chat_ids.clear();
-    } else {
-        // Merge mode must never send a target on both sides of the key —
-        // the server would receive contradictory rules with undefined
-        // precedence. Reject instead, pointing at --replace for revocation.
-        let base_allow_users: HashSet<i64> = base_allow_user_ids.iter().copied().collect();
-        let base_allow_chats: HashSet<i64> = base_allow_chat_ids.iter().copied().collect();
-        let base_disallow_users: HashSet<i64> = base_disallow_user_ids.iter().copied().collect();
-        let base_disallow_chats: HashSet<i64> = base_disallow_chat_ids.iter().copied().collect();
-        let new_disallow_users: HashSet<i64> = new_disallow_user_ids.iter().copied().collect();
-        let new_allow_users: HashSet<i64> = new_allow_user_ids.iter().copied().collect();
-        let new_disallow_chats: HashSet<i64> = targets.disallow_chats.iter().copied().collect();
-        let new_allow_chats: HashSet<i64> = targets.allow_chats.iter().copied().collect();
-        let cross_allow = new_disallow_user_ids
-            .iter()
-            .filter(|id| base_allow_users.contains(id))
-            .count()
-            + targets
-                .disallow_chats
-                .iter()
-                .filter(|id| base_allow_chats.contains(id))
-                .count();
-        let cross_deny = new_allow_user_ids
-            .iter()
-            .filter(|id| base_disallow_users.contains(id))
-            .count()
-            + targets
-                .allow_chats
-                .iter()
-                .filter(|id| base_disallow_chats.contains(id))
-                .count();
-        if cross_allow > 0 || cross_deny > 0 {
-            base_allow_user_ids.retain(|id| !new_disallow_users.contains(id));
-            base_allow_chat_ids.retain(|id| !new_disallow_chats.contains(id));
-            base_disallow_user_ids.retain(|id| !new_allow_users.contains(id));
-            base_disallow_chat_ids.retain(|id| !new_allow_chats.contains(id));
-        }
     }
     let base_allow_user_set: HashSet<i64> = base_allow_user_ids.iter().copied().collect();
     let base_disallow_user_set: HashSet<i64> = base_disallow_user_ids.iter().copied().collect();
@@ -1413,22 +1361,38 @@ mod tests {
     }
 
     #[test]
-    fn merge_must_not_send_target_on_both_sides() {
+    fn merge_preserves_conflicting_sides_for_set_core_to_reject() {
         let base = vec![tl::enums::PrivacyRule::PrivacyValueAllowUsers(
             tl::types::PrivacyValueAllowUsers { users: vec![1] },
         )];
-        // Cross-side conflict in merge mode: the old allow for 1 must be
-        // stripped instead of shipping contradictory rules to the server.
         let merged = merge_privacy_rules(&base, &targets(&[], &[iu(1), iu(9)]));
         assert!(merged.iter().any(|r| matches!(
             r,
             tl::enums::InputPrivacyRule::InputPrivacyValueDisallowUsers(v)
                 if v.users.contains(&iu(1)) && v.users.contains(&iu(9))
         )));
-        assert!(!merged.iter().any(|r| matches!(
+        assert!(merged.iter().any(|r| matches!(
             r,
-            tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(_)
+            tl::enums::InputPrivacyRule::InputPrivacyValueAllowUsers(v)
+                if v.users.contains(&iu(1))
         )));
+    }
+
+    #[test]
+    fn split_base_rule_ids_surfaces_cross_side_targets() {
+        let base = vec![
+            tl::enums::PrivacyRule::PrivacyValueAllowUsers(tl::types::PrivacyValueAllowUsers {
+                users: vec![1],
+            }),
+            tl::enums::PrivacyRule::PrivacyValueDisallowChatParticipants(
+                tl::types::PrivacyValueDisallowChatParticipants { chats: vec![777] },
+            ),
+        ];
+        let ids = split_base_rule_ids(&base);
+        assert_eq!(ids.allow_users, vec![1]);
+        assert_eq!(ids.disallow_chats, vec![777]);
+        assert!(ids.allow_chats.is_empty());
+        assert!(ids.disallow_users.is_empty());
     }
 
     #[test]
