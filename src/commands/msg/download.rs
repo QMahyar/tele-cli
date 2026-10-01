@@ -102,7 +102,11 @@ pub(crate) fn download_serve_dry_run(args: &DownloadArgs) -> TeleResult<serde_js
     };
     Ok(serde_json::json!({
         "dry_run": true,
+        "chat": args.chat.as_str(),
         "id": args.id,
+        "dir": args.dir,
+        "force": args.force,
+        "chunk_size_kb": args.chunk_size_kb,
         "all": args.all,
         "album": args.album,
         "since": args.since,

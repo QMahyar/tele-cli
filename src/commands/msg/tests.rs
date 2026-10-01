@@ -2186,6 +2186,22 @@ fn download_dry_run_reflects_bulk_and_album_flags() {
 }
 
 #[test]
+fn download_dry_run_echoes_target_and_output_options() {
+    let dir = std::env::temp_dir();
+    let mut args = download_args("me", &dir);
+    args.force = true;
+    args.chunk_size_kb = Some(64);
+    let value = download_serve_dry_run(&args).unwrap();
+    assert_eq!(value["chat"], serde_json::json!("me"));
+    assert_eq!(
+        value["dir"],
+        serde_json::json!(dir.to_string_lossy().into_owned())
+    );
+    assert_eq!(value["force"], serde_json::json!(true));
+    assert_eq!(value["chunk_size_kb"], serde_json::json!(64));
+}
+
+#[test]
 fn bulk_media_name_suffixes_id_before_extension() {
     assert_eq!(bulk_media_name("photo.jpg", 42), "photo-42.jpg");
     assert_eq!(bulk_media_name("archive.tar.gz", 7), "archive.tar-7.gz");
@@ -3886,6 +3902,46 @@ fn validate_send_rejects_schedule_with_url_album_copy() {
     let mut ok = send_args("plain");
     ok.schedule = Some((chrono::Utc::now().timestamp() + 3600).to_string());
     assert!(validate_send(&ok).is_ok());
+}
+
+#[test]
+fn validate_send_rejects_online_schedule_case_insensitive_with_media() {
+    let dir = upload_fixture("sched-online-ci", &["a.jpg"]);
+    for online in ["online", "ONLINE", "Online", "oNlInE"] {
+        let mut file = send_args("plain");
+        file.text = None;
+        file.files = vec![dir.join("a.jpg").to_string_lossy().into_owned()];
+        file.schedule = Some(online.to_string());
+        assert!(
+            matches!(validate_send(&file), Err(TeleError::Usage(_))),
+            "file + schedule {online:?} must be rejected"
+        );
+        let mut url = send_args("plain");
+        url.text = None;
+        url.url = Some("https://example.com/x.jpg".to_string());
+        url.kind = Some("photo".to_string());
+        url.schedule = Some(online.to_string());
+        assert!(
+            matches!(validate_send(&url), Err(TeleError::Usage(_))),
+            "url + schedule {online:?} must be rejected"
+        );
+        let mut copy = send_args("plain");
+        copy.text = None;
+        copy.copy_from = Some("@src".to_string());
+        copy.copy_id = Some(1);
+        copy.schedule = Some(online.to_string());
+        assert!(
+            matches!(validate_send(&copy), Err(TeleError::Usage(_))),
+            "copy + schedule {online:?} must be rejected"
+        );
+        let mut text = send_args("plain");
+        text.schedule = Some(online.to_string());
+        assert!(
+            validate_send(&text).is_ok(),
+            "text + schedule {online:?} must stay allowed"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

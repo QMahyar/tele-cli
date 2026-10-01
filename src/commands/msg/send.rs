@@ -324,12 +324,20 @@ pub(crate) fn validate_send(args: &SendArgs) -> TeleResult<()> {
             ));
         }
     }
-    if args.schedule.as_deref() == Some("online") && !args.files.is_empty() {
+    if args
+        .schedule
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("online"))
+        && !args.files.is_empty()
+    {
         return Err(TeleError::Usage(
             "--schedule online is not supported with albums".to_string(),
         ));
     }
-    if args.schedule.as_deref() == Some("online")
+    if args
+        .schedule
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("online"))
         && (args.url.is_some() || args.copy_from.is_some())
     {
         return Err(TeleError::Usage(
