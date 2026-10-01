@@ -1026,4 +1026,30 @@ mod tests {
         assert!(!scrub("qr tg://login?token=abc123DEF456 end".to_string()).contains("abc123"));
         assert!(!scrub("password: supersecret123".to_string()).contains("supersecret123"));
     }
+
+    #[test]
+    fn tele_invocation_alias_matches_canonical_error() {
+        fn check(code: i32, name: &str, value: Option<u32>) {
+            let mk = || {
+                grammers_client::InvocationError::Rpc(RpcError {
+                    code,
+                    name: name.to_string(),
+                    value,
+                    caused_by: None,
+                })
+            };
+            assert_eq!(
+                invocation_error(mk()).as_json(),
+                tele_invocation(mk()).as_json(),
+                "alias must preserve canonical mapping for {name}"
+            );
+        }
+        check(401, "AUTH_KEY_UNREGISTERED", None);
+        check(420, "FLOOD_WAIT", Some(9));
+        check(400, "CHAT_INVALID", None);
+        assert_eq!(
+            invocation_error(grammers_client::InvocationError::Dropped).as_json(),
+            tele_invocation(grammers_client::InvocationError::Dropped).as_json()
+        );
+    }
 }

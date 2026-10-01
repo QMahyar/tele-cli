@@ -1,7 +1,7 @@
 use crate::client::ClientGuard;
 use crate::commands::credentials::creds;
 use crate::config;
-use crate::error::{tele_invocation, TeleError, TeleResult};
+use crate::error::{invocation_error, TeleError, TeleResult};
 use crate::executor::{require_explicit_selection, run_fanout, GlobalFlags};
 use crate::output::log_line;
 use clap::Args;
@@ -239,13 +239,13 @@ pub(crate) async fn send_change_phone_code(
             })?;
             match client.invoke(&request).await {
                 Ok(tl::enums::auth::SentCode::Code(code)) => Ok(code.phone_code_hash),
-                Err(e) => Err(tele_invocation(e)),
+                Err(e) => Err(invocation_error(e)),
                 Ok(_) => Err(TeleError::Other(
                     "unexpected response after DC migration".to_string(),
                 )),
             }
         }
-        Err(e) => Err(tele_invocation(e)),
+        Err(e) => Err(invocation_error(e)),
     }
 }
 
@@ -310,10 +310,10 @@ pub(crate) async fn confirm_change_phone(
                 Ok(grammers_client::tl::enums::User::Empty(_)) => Err(TeleError::Other(
                     "server returned an empty user after changing the phone".to_string(),
                 )),
-                Err(e) => Err(tele_invocation(e)),
+                Err(e) => Err(invocation_error(e)),
             }
         }
-        Err(e) => Err(tele_invocation(e)),
+        Err(e) => Err(invocation_error(e)),
     }
 }
 

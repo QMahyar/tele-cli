@@ -631,7 +631,8 @@ pub async fn import_session(
         ));
     }
     let _lock = acquire_lock_file(&name).await?;
-    install_copied_session(&name, file, byte_len).await
+    ensure_no_clobber(&name, force)?;
+    install_copied_session(&name, file, force).await
 }
 
 fn copy_file_capped(source: &Path, tmp_path: &Path, cap: u64) -> anyhow::Result<u64> {
@@ -665,16 +666,20 @@ fn copy_file_capped(source: &Path, tmp_path: &Path, cap: u64) -> anyhow::Result<
 async fn install_copied_session(
     name: &str,
     source: &Path,
-    byte_len: u64,
+    force: bool,
 ) -> anyhow::Result<ImportedSession> {
+    ensure_no_clobber(name, force)?;
     let path = session_path(name);
     pre_restrict_sidecars(name)?;
     let tmp_path = tmp_session_path(name);
     let _ = std::fs::remove_file(&tmp_path);
-    if let Err(e) = copy_file_capped(source, &tmp_path, MAX_SESSION_FILE_BYTES) {
-        cleanup_partial_import(name);
-        return Err(e);
-    }
+    let copied = match copy_file_capped(source, &tmp_path, MAX_SESSION_FILE_BYTES) {
+        Ok(n) => n,
+        Err(e) => {
+            cleanup_partial_import(name);
+            return Err(e);
+        }
+    };
     let probe_result = async {
         let probe = SqliteSession::open(&tmp_path).await?;
         drop(probe);
@@ -696,7 +701,7 @@ async fn install_copied_session(
     Ok(ImportedSession {
         account: name.to_string(),
         path,
-        bytes: byte_len,
+        bytes: copied,
     })
 }
 
@@ -1018,6 +1023,7 @@ pub async fn write_native_from_telethon(
     crate::fs_util::create_dir_private(&session_dir())?;
     let path = session_path(name);
     let lock = acquire_lock_file(name).await?;
+    ensure_no_clobber(name, force)?;
     pre_restrict_sidecars(name)?;
     let tmp_path = tmp_session_path(name);
     let _ = std::fs::remove_file(&tmp_path);
@@ -1069,7 +1075,7 @@ pub async fn convert_telethon_session(
     let data = parse_telethon_session(source).await?;
     let name = resolve_import_name(as_name, source)?;
     ensure_no_clobber(&name, force)?;
-    let path = write_native_from_telethon(&name, &data, true).await?;
+    let path = write_native_from_telethon(&name, &data, force).await?;
     let bytes = std::fs::metadata(&path)?.len();
     Ok(ImportedSession {
         account: name,
@@ -2470,6 +2476,112 @@ mod tests {
             assert!(empty.is_empty());
             assert_eq!(empty.session_state().pts, 0);
         }
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn import_post_lock_recheck_refuses_clobber_without_force() {
+        let _guard = lock_env();
+        let dir = test_dir("import-postlock-recheck");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+        seed_test_env(&dir);
+        let source = inbox.join("src.session");
+        sqlite_scaffold(&source).await;
+        {
+            let held = open_session("victim").await.unwrap();
+            drop(held);
+        }
+        let before = std::fs::read(session_path("victim")).unwrap();
+        let before_sha = sha256_hex(&before);
+        let _lock = acquire_lock_file("victim").await.unwrap();
+        let err = install_copied_session("victim", &source, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("--force to overwrite"),
+            "post-lock recheck must refuse concurrent clobber: {err}"
+        );
+        let after = std::fs::read(session_path("victim")).unwrap();
+        assert_eq!(
+            sha256_hex(&after),
+            before_sha,
+            "concurrent clobber must leave the live session untouched"
+        );
+        drop(_lock);
+        install_copied_session("victim", &source, true)
+            .await
+            .unwrap();
+        remove_session("victim").await.unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn import_reports_actual_copied_bytes_not_stale_metadata() {
+        let _guard = lock_env();
+        let dir = test_dir("import-copied-bytes");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+        seed_test_env(&dir);
+        let source = inbox.join("src.session");
+        sqlite_scaffold(&source).await;
+        let source_len = std::fs::metadata(&source).unwrap().len();
+        let imported = import_session(&source, Some("team_a"), false)
+            .await
+            .unwrap();
+        let dest_len = std::fs::metadata(session_path("team_a")).unwrap().len();
+        assert_eq!(
+            imported.bytes, source_len,
+            "reported bytes must equal the copied source length"
+        );
+        assert_eq!(
+            imported.bytes, dest_len,
+            "reported bytes must equal the installed file length, not stale pre-copy metadata"
+        );
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            std::fs::read(session_path("team_a")).unwrap()
+        );
+        remove_session("team_a").await.unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn telethon_convert_respects_caller_force_flag() {
+        let _guard = lock_env();
+        let dir = test_dir("telethon-force-flag");
+        let inbox = dir.join("inbox");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&inbox).unwrap();
+        seed_test_env(&dir);
+        let fixture = inbox.join("tg.session");
+        write_telethon_fixture(&fixture, Some(7)).await;
+        convert_telethon_session(&fixture, Some("fromtg"), false)
+            .await
+            .unwrap();
+        let before = std::fs::read(session_path("fromtg")).unwrap();
+        let before_sha = sha256_hex(&before);
+        let err = convert_telethon_session(&fixture, Some("fromtg"), false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("--force to overwrite"),
+            "telethon conversion must honor force=false: {err}"
+        );
+        assert_eq!(
+            sha256_hex(&std::fs::read(session_path("fromtg")).unwrap()),
+            before_sha,
+            "refused conversion must leave the existing session untouched"
+        );
+        convert_telethon_session(&fixture, Some("fromtg"), true)
+            .await
+            .unwrap();
+        remove_session("fromtg").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }

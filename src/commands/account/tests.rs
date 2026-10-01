@@ -2796,3 +2796,30 @@ fn pending_save_leaves_no_tmp_leftovers() {
     assert!(leftovers.is_empty(), "tmp left behind: {leftovers:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ttl_days_helper_guards_serve_core_without_route_validator() {
+    for bad in [0i64, 366, -5, 4_000_000_000] {
+        let err = validate_ttl_days(bad).unwrap_err();
+        assert!(matches!(err, TeleError::Usage(_)), "{bad}: {err}");
+        assert!(
+            err.message().contains("--days must be between 1 and 365"),
+            "{bad}: {err}"
+        );
+        assert!(
+            validate_serve_ttl_set(&TtlSetArgs { days: bad }).is_err(),
+            "route validator and core helper must agree on {bad}"
+        );
+    }
+    for good in [1i64, 90, 365] {
+        assert_eq!(
+            validate_ttl_days(good).unwrap(),
+            good as i32,
+            "good value {good} must pass"
+        );
+        assert!(
+            validate_serve_ttl_set(&TtlSetArgs { days: good }).is_ok(),
+            "route validator must accept {good}"
+        );
+    }
+}

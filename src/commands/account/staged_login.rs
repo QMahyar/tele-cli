@@ -1,7 +1,7 @@
 use crate::client::ClientGuard;
 use crate::commands::credentials::creds;
 use crate::config;
-use crate::error::{tele_invocation, TeleError, TeleResult};
+use crate::error::{invocation_error, TeleError, TeleResult};
 use crate::executor::GlobalFlags;
 use crate::output::{self, log_line};
 use crate::session;
@@ -272,7 +272,7 @@ pub(crate) async fn staged_begin_flow(
         .client
         .is_authorized()
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     if authorized {
         let _ = remove_pending(name);
         log_line("info", "account already authorized");
@@ -379,10 +379,10 @@ pub(crate) async fn send_login_code(
                 Ok(_) => Err(TeleError::Other(
                     "unexpected response after DC migration".to_string(),
                 )),
-                Err(e) => Err(tele_invocation(e)),
+                Err(e) => Err(invocation_error(e)),
             }
         }
-        Err(e) => Err(tele_invocation(e)),
+        Err(e) => Err(invocation_error(e)),
     }
 }
 
@@ -426,7 +426,7 @@ pub(crate) async fn staged_code_flow(
         .client
         .is_authorized()
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     if already {
         let _ = remove_pending(&pending.account);
         log_line("info", "account already authorized");
@@ -624,13 +624,13 @@ pub(crate) async fn staged_resend_flow(
                         &action_envelope(&pending.account, data, flags.dry_run, &flags.command),
                     )
                 }
-                Err(e) => Err(tele_invocation(e)),
+                Err(e) => Err(invocation_error(e)),
                 Ok(_) => Err(TeleError::Other(
                     "unexpected response after DC migration".to_string(),
                 )),
             }
         }
-        Err(e) => Err(tele_invocation(e)),
+        Err(e) => Err(invocation_error(e)),
     }
 }
 
@@ -713,10 +713,10 @@ pub(crate) async fn staged_cancel_code_flow(
                     "server refused to cancel the sent login code; local pending state kept"
                         .to_string(),
                 )),
-                Err(e) => Err(tele_invocation(e)),
+                Err(e) => Err(invocation_error(e)),
             }
         }
-        Err(e) => Err(tele_invocation(e)),
+        Err(e) => Err(invocation_error(e)),
     }
 }
 
@@ -817,10 +817,10 @@ pub(crate) async fn raw_sign_in(
                 {
                     StagedSignIn::InvalidCode
                 }
-                Err(e) => StagedSignIn::Failed(tele_invocation(e)),
+                Err(e) => StagedSignIn::Failed(invocation_error(e)),
             }
         }
-        Err(e) => StagedSignIn::Failed(tele_invocation(e)),
+        Err(e) => StagedSignIn::Failed(invocation_error(e)),
     }
 }
 

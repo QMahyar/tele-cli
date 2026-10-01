@@ -1,7 +1,7 @@
 use crate::client::ClientGuard;
 use crate::commands::credentials::creds;
 use crate::config;
-use crate::error::{tele_invocation, TeleError, TeleResult};
+use crate::error::{invocation_error, TeleError, TeleResult};
 use crate::executor::{require_explicit_selection, run_fanout, select_sessions, GlobalFlags};
 use crate::output::{self, log_line, AccountOutcome, Envelope};
 use crate::session;
@@ -472,7 +472,7 @@ async fn logout(args: &LogoutArgs, flags: &GlobalFlags) -> TeleResult<i32> {
         if crate::error::invocation_is_unauthorized(&e) {
             log_line("info", "account was not authorized; removing session");
         } else {
-            return Err(tele_invocation(e));
+            return Err(invocation_error(e));
         }
     }
     purge_pending(&args.name);
@@ -698,7 +698,7 @@ async fn execute_ttl_action(
                 .client
                 .invoke(&tl::functions::account::GetAccountTtl {})
                 .await
-                .map_err(tele_invocation)?;
+                .map_err(invocation_error)?;
             let enums::AccountDaysTtl::Ttl(ttl) = response;
             Ok(ttl_data(ttl.days))
         }
@@ -712,7 +712,7 @@ async fn execute_ttl_action(
                 Ok(false) => Err(TeleError::Other(
                     "server refused to update the account TTL".to_string(),
                 )),
-                Err(e) => Err(tele_invocation(e)),
+                Err(e) => Err(invocation_error(e)),
             }
         }
     }
@@ -900,7 +900,7 @@ pub(crate) async fn fetch_authorizations(
     let response = client
         .invoke(&tl::functions::account::GetAuthorizations {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let enums::account::Authorizations::Authorizations(listed) = response;
     Ok(listed
         .authorizations
@@ -979,7 +979,7 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                                 "server refused to terminate authorization {hash}"
                             )));
                         }
-                        Err(e) => return Err(tele_invocation(e)),
+                        Err(e) => return Err(invocation_error(e)),
                     }
                     Ok(serde_json::json!({ "terminated": true, "hash": hash }))
                 }
@@ -1008,7 +1008,7 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         Ok(false) => Err(TeleError::Other(format!(
                             "server refused to terminate web authorization {hash}"
                         ))),
-                        Err(e) => Err(tele_invocation(e)),
+                        Err(e) => Err(invocation_error(e)),
                     }
                 }
                 SessionsMode::TerminateAllWeb => {
@@ -1026,7 +1026,7 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         Ok(false) => Err(TeleError::Other(
                             "server refused to terminate web authorizations".to_string(),
                         )),
-                        Err(e) => Err(tele_invocation(e)),
+                        Err(e) => Err(invocation_error(e)),
                     }
                 }
                 SessionsMode::ChangeFlags {
@@ -1060,7 +1060,7 @@ async fn sessions(args: &SessionsArgs, flags: &GlobalFlags) -> TeleResult<i32> {
                         Ok(false) => Err(TeleError::Other(format!(
                             "server refused to update web authorization {hash}"
                         ))),
-                        Err(e) => Err(tele_invocation(e)),
+                        Err(e) => Err(invocation_error(e)),
                     }
                 }
             }
@@ -1360,7 +1360,7 @@ pub(crate) async fn fetch_web_authorizations(
     let response = client
         .invoke(&tl::functions::account::GetWebAuthorizations {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let enums::account::WebAuthorizations::Authorizations(listed) = response;
     Ok(listed
         .authorizations
@@ -1704,14 +1704,19 @@ impl From<&SessionsWebParams> for SessionsWebArgs {
     }
 }
 
-fn validate_serve_ttl_set(args: &TtlSetArgs) -> TeleResult<()> {
-    let parsed = i32::try_from(args.days)
+pub(crate) fn validate_ttl_days(days: i64) -> TeleResult<i32> {
+    let parsed = i32::try_from(days)
         .map_err(|_| TeleError::Usage("--days must be between 1 and 365".to_string()))?;
     if !(1..=365).contains(&parsed) {
         return Err(TeleError::Usage(format!(
             "--days must be between 1 and 365, got {parsed}"
         )));
     }
+    Ok(parsed)
+}
+
+fn validate_serve_ttl_set(args: &TtlSetArgs) -> TeleResult<()> {
+    validate_ttl_days(args.days)?;
     Ok(())
 }
 
@@ -1742,7 +1747,7 @@ pub(crate) async fn account_status_core(
                 if crate::error::invocation_is_unauthorized(&e) {
                     authorized = false;
                 } else {
-                    return Err(tele_invocation(e));
+                    return Err(invocation_error(e));
                 }
             }
         }
@@ -1760,7 +1765,7 @@ pub(crate) async fn account_ttl_get_core(
         .client
         .invoke(&grammers_client::tl::functions::account::GetAccountTtl {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let grammers_client::tl::enums::AccountDaysTtl::Ttl(ttl) = response;
     Ok(ttl_data(ttl.days))
 }
@@ -1769,8 +1774,7 @@ pub(crate) async fn account_ttl_set_core(
     shares: &crate::client::ServeShares,
     params: TtlSetParams,
 ) -> TeleResult<serde_json::Value> {
-    let days = i32::try_from(params.days)
-        .map_err(|_| TeleError::Usage("--days must be between 1 and 365".to_string()))?;
+    let days = validate_ttl_days(params.days)?;
     shares.rate_limiter.acquire().await;
     let request = grammers_client::tl::functions::account::SetAccountTtl {
         ttl: grammers_client::tl::enums::AccountDaysTtl::Ttl(
@@ -1783,7 +1787,7 @@ pub(crate) async fn account_ttl_set_core(
         Ok(false) => Err(TeleError::Other(
             "server refused to update the account TTL".to_string(),
         )),
-        Err(e) => Err(tele_invocation(e)),
+        Err(e) => Err(invocation_error(e)),
     }
 }
 

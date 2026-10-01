@@ -1,5 +1,5 @@
 use crate::client::ClientGuard;
-use crate::error::{tele_invocation, TeleError, TeleResult};
+use crate::error::{invocation_error, TeleError, TeleResult};
 use crate::output::{self, log_line};
 use hmac::Hmac;
 use num_bigint::BigUint;
@@ -174,7 +174,7 @@ pub(crate) async fn set_cloud_password(
         .client
         .invoke(&grammers_client::tl::functions::account::GetPassword {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let grammers_client::tl::enums::account::Password::Password(pw) = response;
     plan_password_step(PasswordMode::Set, pw.has_password)?;
     let base = extract_new_algo(&pw.new_algo)?;
@@ -231,7 +231,7 @@ pub(crate) async fn fetch_password(
         .client
         .invoke(&grammers_client::tl::functions::account::GetPassword {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     match response {
         grammers_client::tl::enums::account::Password::Password(pw) => Ok(pw),
     }
@@ -321,7 +321,7 @@ pub(crate) async fn start_password_reset(guard: &ClientGuard) -> TeleResult<serd
         .client
         .invoke(&grammers_client::tl::functions::account::ResetPassword {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let value = match result {
         grammers_client::tl::enums::account::ResetPasswordResult::ResetPasswordOk => {
             serde_json::json!({"result": "reset"})
@@ -372,7 +372,7 @@ pub(crate) async fn change_cloud_password(
         .client
         .invoke(&grammers_client::tl::functions::account::GetPassword {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let grammers_client::tl::enums::account::Password::Password(pw) = response;
     plan_password_step(PasswordMode::Change, pw.has_password)?;
     let params = extract_srp_params(pw.current_algo.as_ref())?;
@@ -492,7 +492,7 @@ Two-Step Verification"
             ));
         }
     }
-    tele_invocation(e)
+    invocation_error(e)
 }
 
 pub(crate) fn prompt_current_password_proof(
@@ -529,7 +529,7 @@ pub(crate) async fn remove_cloud_password(guard: &ClientGuard) -> TeleResult<()>
         .client
         .invoke(&tl::functions::account::GetPassword {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let enums::account::Password::Password(password) = response;
     if !password.has_password {
         return Err(TeleError::Usage(

@@ -4,7 +4,7 @@ use std::io::{IsTerminal, Write};
 use crate::client::{self, ClientGuard};
 use crate::commands::credentials::creds;
 use crate::config;
-use crate::error::{tele_invocation, TeleError, TeleResult};
+use crate::error::{invocation_error, TeleError, TeleResult};
 use crate::executor::GlobalFlags;
 use crate::output::{self, log_line};
 use crate::session;
@@ -146,7 +146,7 @@ pub(crate) async fn login(args: &LoginArgs, flags: &GlobalFlags) -> TeleResult<i
         .client
         .is_authorized()
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     if was_authorized {
         log_line("info", "account already authorized");
         purge_pending(&args.name);
@@ -332,7 +332,7 @@ pub(crate) async fn login_flow(
                 .client
                 .request_login_code(phone, credentials.api_hash.expose_secret())
                 .await
-                .map_err(tele_invocation)?;
+                .map_err(invocation_error)?;
             let mut stdin = std::io::stdin().lock();
             let mut stderr = std::io::stderr();
             let prompt = code_prompt(Some(phone), stderr.is_terminal());
@@ -411,7 +411,7 @@ pub(crate) async fn sign_in_with_retries(
                     "sign up with an official client first".to_string(),
                 ));
             }
-            Err(grammers_client::SignInError::Other(e)) => return Err(tele_invocation(e)),
+            Err(grammers_client::SignInError::Other(e)) => return Err(invocation_error(e)),
         }
     }
     Ok(())
@@ -459,7 +459,7 @@ pub(crate) async fn password_flow(
                 log_line("warn", "invalid 2FA password; try again");
                 pw_token = Some(refresh_password_token(client).await?);
             }
-            Err(grammers_client::SignInError::Other(e)) => return Err(tele_invocation(e)),
+            Err(grammers_client::SignInError::Other(e)) => return Err(invocation_error(e)),
             Err(_) => return Err(TeleError::Auth("2FA check failed".to_string())),
         }
     }
@@ -473,7 +473,7 @@ pub(crate) async fn refresh_password_token(
     let response = client
         .invoke(&tl::functions::account::GetPassword {})
         .await
-        .map_err(tele_invocation)?;
+        .map_err(invocation_error)?;
     let enums::account::Password::Password(password) = response;
     Ok(grammers_client::client::PasswordToken::new(password))
 }
@@ -486,7 +486,7 @@ pub(crate) async fn bootstrap_peer_cache(guard: &ClientGuard) -> TeleResult<()> 
         },
         tl,
     };
-    let me = guard.client.get_me().await.map_err(tele_invocation)?;
+    let me = guard.client.get_me().await.map_err(invocation_error)?;
     let me = match me.raw {
         tl::enums::User::User(u) => u,
         tl::enums::User::Empty(_) => {
