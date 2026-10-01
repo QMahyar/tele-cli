@@ -129,6 +129,13 @@ fn project_object(
     serde_json::Value::Object(out)
 }
 
+fn unknown_field_error(path: &[String]) -> crate::error::TeleError {
+    crate::error::TeleError::Usage(format!(
+        "unknown --fields {:?}: no result carries that field",
+        path.join(".")
+    ))
+}
+
 pub fn apply_output_fields(
     value: &serde_json::Value,
 ) -> crate::error::TeleResult<serde_json::Value> {
@@ -169,10 +176,7 @@ pub fn apply_output_fields(
     if saw_object {
         for (index, path) in paths.iter().enumerate() {
             if !matched[index] {
-                return Err(crate::error::TeleError::Usage(format!(
-                    "unknown --fields {:?}: no result carries that field",
-                    path.join(".")
-                )));
+                return Err(unknown_field_error(path));
             }
         }
         let mut map = serde_json::Map::new();
@@ -196,10 +200,7 @@ pub fn apply_output_fields(
         let row = project_object(value, &paths, &mut row_matched);
         for (index, path) in paths.iter().enumerate() {
             if !row_matched[index] {
-                return Err(crate::error::TeleError::Usage(format!(
-                    "unknown --fields {:?}: no result carries that field",
-                    path.join(".")
-                )));
+                return Err(unknown_field_error(path));
             }
         }
         return Ok(row);

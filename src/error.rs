@@ -216,6 +216,23 @@ fn max_token_run(s: &str) -> usize {
     best
 }
 
+fn redact_forms(out: &mut String, secret: &str) {
+    if secret.is_empty() {
+        return;
+    }
+    if out.contains(secret) {
+        *out = out.replace(secret, "[REDACTED]");
+    }
+    let enc = url_encode(secret);
+    if enc != secret && out.contains(&enc) {
+        *out = out.replace(&enc, "[REDACTED]");
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
+    if b64 != secret && out.contains(&b64) {
+        *out = out.replace(&b64, "[REDACTED]");
+    }
+}
+
 pub(crate) fn scrub(s: String) -> String {
     let mut out = if has_ascii_digit(&s) {
         scrub_short_codes(scrub_phones(s))
@@ -225,33 +242,11 @@ pub(crate) fn scrub(s: String) -> String {
     for key in ["TELE_API_HASH", "TELE_API_ID"] {
         if let Ok(v) = std::env::var(key) {
             let t = v.trim().to_string();
-            if !t.is_empty() && out.contains(&t) {
-                out = out.replace(&t, "[REDACTED]");
-            }
-            let enc = url_encode(&t);
-            if enc != t && out.contains(&enc) {
-                out = out.replace(&enc, "[REDACTED]");
-            }
-            if !t.is_empty() {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(t.as_bytes());
-                if b64 != t && out.contains(&b64) {
-                    out = out.replace(&b64, "[REDACTED]");
-                }
-            }
+            redact_forms(&mut out, &t);
         }
     }
     for secret in CACHED_FILE_SECRETS.iter() {
-        if out.contains(secret) {
-            out = out.replace(secret, "[REDACTED]");
-        }
-        let enc = url_encode(secret);
-        if enc != *secret && out.contains(&enc) {
-            out = out.replace(&enc, "[REDACTED]");
-        }
-        let b64 = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
-        if out.contains(&b64) {
-            out = out.replace(&b64, "[REDACTED]");
-        }
+        redact_forms(&mut out, secret);
     }
     if max_token_run(&out) >= 32 {
         out = LONG_TOKEN_RE.replace_all(&out, "[REDACTED]").into_owned();

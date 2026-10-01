@@ -49,14 +49,20 @@ impl ClientGuard {
         }
     }
 
+    fn account_cfg<'a>(
+        cfg: &'a crate::config::AppConfig,
+        name: &str,
+    ) -> Option<&'a crate::config::AccountConfig> {
+        cfg.accounts.get(name)
+    }
+
     pub(crate) fn limiter_for(cfg: &crate::config::AppConfig, name: &str) -> Arc<RateLimiter> {
-        let acct = cfg.accounts.get(name);
-        RateLimiter::new(acct.and_then(|a| a.rpc_per_minute))
+        RateLimiter::new(Self::account_cfg(cfg, name).and_then(|a| a.rpc_per_minute))
     }
 
     pub(crate) fn flood_threshold_for(cfg: &crate::config::AppConfig, name: &str) -> u64 {
-        let acct = cfg.accounts.get(name);
-        acct.and_then(|a| a.flood_sleep_threshold)
+        Self::account_cfg(cfg, name)
+            .and_then(|a| a.flood_sleep_threshold)
             .unwrap_or(cfg.flood_sleep_threshold)
     }
 

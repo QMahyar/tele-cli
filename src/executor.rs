@@ -162,20 +162,30 @@ fn join_error_outcome(name: String, e: tokio::task::JoinError) -> AccountOutcome
     failed_outcome(name, TeleError::TaskPanic(msg))
 }
 
+fn fold_join(
+    name: &str,
+    joined: Result<TeleResult<AccountOutcome>, tokio::task::JoinError>,
+) -> AccountOutcome {
+    match joined {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(e)) => failed_outcome(name.to_string(), e),
+        Err(e) => join_error_outcome(name.to_string(), e),
+    }
+}
+
+fn sort_outcomes(outcomes: &mut [AccountOutcome]) {
+    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
+}
+
 async fn collect_outcomes_unbudgeted(
     handles: &mut Vec<(String, tokio::task::JoinHandle<TeleResult<AccountOutcome>>)>,
 ) -> Vec<AccountOutcome> {
     let mut outcomes: Vec<AccountOutcome> = Vec::new();
     let _abort_guard = AbortOnDrop(handles);
     for (name, handle) in _abort_guard.0.iter_mut() {
-        let outcome = match handle.await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(e)) => failed_outcome(name.clone(), e),
-            Err(e) => join_error_outcome(name.clone(), e),
-        };
-        outcomes.push(outcome);
+        outcomes.push(fold_join(name, handle.await));
     }
-    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
+    sort_outcomes(&mut outcomes);
     outcomes
 }
 
@@ -193,11 +203,7 @@ async fn collect_outcomes_with_budget(
         for (name, handle) in _abort_guard.0.iter_mut() {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let outcome = match tokio::time::timeout(remaining, &mut *handle).await {
-                Ok(joined) => match joined {
-                    Ok(Ok(outcome)) => outcome,
-                    Ok(Err(e)) => failed_outcome(name.clone(), e),
-                    Err(e) => join_error_outcome(name.clone(), e),
-                },
+                Ok(joined) => fold_join(name, joined),
                 Err(_) => {
                     // The task lost the race with the budget; stop it now so
                     // it cannot linger on the shared runtime after we return.
@@ -214,7 +220,7 @@ async fn collect_outcomes_with_budget(
             outcomes.push(outcome);
         }
     }
-    outcomes.sort_by(|a, b| a.account.cmp(&b.account));
+    sort_outcomes(&mut outcomes);
     outcomes
 }
 
