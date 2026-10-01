@@ -521,14 +521,15 @@ fn merge_sent_updates(
     }
 }
 
-fn sent_updates_row(
+pub(crate) fn sent_updates_row(
     updates: &grammers_client::tl::enums::Updates,
     text: &str,
+    noforwards: bool,
 ) -> serde_json::Value {
     use grammers_client::tl;
     let mut row = serde_json::Map::new();
     row.insert("text".into(), serde_json::json!(text));
-    row.insert("noforwards".into(), serde_json::json!(true));
+    row.insert("noforwards".into(), serde_json::json!(noforwards));
     match updates {
         tl::enums::Updates::UpdateShortSentMessage(s) => {
             row.insert("id".into(), serde_json::json!(s.id));
@@ -617,7 +618,7 @@ async fn send_raw_text(
         })
         .await
         .map_err(tele_invocation)?;
-    let mut row = sent_updates_row(&updates, &message);
+    let mut row = sent_updates_row(&updates, &message, noforwards);
     if let Some(obj) = row.as_object_mut() {
         obj.insert("peer".into(), crate::serialize::peer_key(chat));
     }
@@ -741,7 +742,7 @@ async fn send_raw_media(
         })
         .await
         .map_err(tele_invocation)?;
-    let mut row = sent_updates_row(&updates, &message);
+    let mut row = sent_updates_row(&updates, &message, false);
     if let Some(obj) = row.as_object_mut() {
         obj.insert("peer".into(), crate::serialize::peer_key(chat));
     }
@@ -1007,7 +1008,7 @@ pub(crate) fn split_text_utf16(text: &str, cap: usize) -> Vec<String> {
                 .unwrap_or(rest.len());
         }
         let split_at = match last_nl {
-            Some(nl) if nl * 4 >= cut => nl,
+            Some(nl) if nl * 4 >= cut * 3 => nl,
             _ => cut,
         };
         remaining -= rest[..split_at].chars().map(char::len_utf16).sum::<usize>();
@@ -1057,6 +1058,7 @@ pub(crate) async fn send_core(
     shares: &crate::client::ServeShares,
     params: SendParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_send(&SendArgs::from(&params))?;
     for path in &params.files {
         super::validate::validate_upload_path(path)?;
     }
@@ -1205,7 +1207,7 @@ pub(crate) async fn send_core(
             })
             .await
             .map_err(tele_invocation)?;
-        let mut row = sent_updates_row(&updates, title);
+        let mut row = sent_updates_row(&updates, title, params.noforwards);
         if let Some(obj) = row.as_object_mut() {
             obj.insert("peer".into(), crate::serialize::peer_key(&chat));
             obj.insert(

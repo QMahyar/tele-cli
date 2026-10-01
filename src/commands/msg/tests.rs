@@ -10,7 +10,7 @@ use crate::commands::msg::params::{ClickArgs, SendArgs};
 use crate::commands::msg::send::{
     album_row, file_message, message_random_id, parse_as_media, parse_effect, parse_poll_mode,
     parse_schedule, send_as_media_message, send_dry_run_payload, send_poll_message,
-    split_chunk_opts, split_text_utf16, url_message,
+    sent_updates_row, split_chunk_opts, split_text_utf16, url_message,
 };
 use crate::commands::msg::validate::{
     check_upload_size, is_reserved_device_name, is_sensitive_basename, validate_download_dir,
@@ -5612,4 +5612,190 @@ fn album_row_carries_identity_and_grouping_context() {
         }
         assert_eq!(row.get(key), Some(value), "album row diverges on {key}");
     }
+}
+
+async fn offline_core_shares(tag: &str) -> crate::client::ServeShares {
+    let dir = std::env::temp_dir().join(format!(
+        "telecli-msg-core-{tag}-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = std::sync::Arc::new(
+        grammers_client::session::storages::SqliteSession::open(dir.join("s.session"))
+            .await
+            .unwrap(),
+    );
+    let pool = grammers_client::SenderPool::with_configuration(
+        std::sync::Arc::clone(&session),
+        1,
+        grammers_client::sender::ConnectionParams::default(),
+    );
+    let client = grammers_client::Client::with_configuration(
+        pool.handle,
+        grammers_client::client::ClientConfiguration::default(),
+    );
+    crate::client::ServeShares {
+        client,
+        session,
+        rate_limiter: crate::rate_limiter::RateLimiter::unlimited(),
+        _session_lock: None,
+        account: "test-acct".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn send_core_rejects_invalid_format_before_network() {
+    let shares = offline_core_shares("send").await;
+    let mut args = send_args("html");
+    args.text = Some("hi".to_string());
+    let params = SendParams::from(&args);
+    let err = send_core(&shares, params).await.unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "got {err:?}");
+    assert!(err.message().contains("unknown --format"), "msg: {err}");
+}
+
+#[tokio::test]
+async fn react_core_rejects_reaction_with_remove_before_network() {
+    let shares = offline_core_shares("react").await;
+    let params = ReactParams {
+        chat: "me".to_string(),
+        id: 5,
+        reaction: Some("👍".to_string()),
+        remove: true,
+        dry_run: false,
+    };
+    let err = react_core(&shares, params).await.unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "got {err:?}");
+    assert!(err.message().contains("not both"), "msg: {err}");
+}
+
+#[tokio::test]
+async fn read_core_rejects_deep_link_chat_before_network() {
+    let shares = offline_core_shares("read").await;
+    let params = ReadParams {
+        chat: "t.me/durov/42".to_string(),
+        mark_unread: false,
+        mentions: false,
+        dry_run: false,
+    };
+    let err = read_core(&shares, params).await.unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "got {err:?}");
+    assert!(err.message().contains("deep-link"), "msg: {err}");
+}
+
+#[tokio::test]
+async fn get_core_rejects_last_with_offset_before_network() {
+    let shares = offline_core_shares("get").await;
+    let params = GetParams {
+        chat: "me".to_string(),
+        id: None,
+        ids: Vec::new(),
+        limit: 10,
+        offset_id: Some(5),
+        last: true,
+        dry_run: false,
+        watch: false,
+        timeout_secs: 60,
+        poll_interval: 2,
+        replied: false,
+    };
+    let err = get_core(&shares, params).await.unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "got {err:?}");
+}
+
+#[tokio::test]
+async fn typing_core_rejects_deep_link_chat_before_network() {
+    let shares = offline_core_shares("typing").await;
+    let params = TypingParams {
+        chat: "t.me/durov/42".to_string(),
+        action: None,
+        dry_run: false,
+    };
+    let err = typing_core(&shares, params).await.unwrap_err();
+    assert!(matches!(err, TeleError::Usage(_)), "got {err:?}");
+    assert!(err.message().contains("deep-link"), "msg: {err}");
+}
+
+#[test]
+fn sent_updates_row_carries_real_noforwards_flag() {
+    let updates = tl::enums::Updates::TooLong;
+    let with_flag = sent_updates_row(&updates, "hi", true);
+    assert_eq!(with_flag["noforwards"], serde_json::json!(true));
+    assert_eq!(with_flag["text"], serde_json::json!("hi"));
+    let without_flag = sent_updates_row(&updates, "hi", false);
+    assert_eq!(without_flag["noforwards"], serde_json::json!(false));
+    let short = tl::enums::Updates::UpdateShortSentMessage(tl::types::UpdateShortSentMessage {
+        out: true,
+        id: 7,
+        pts: 0,
+        pts_count: 0,
+        date: 1700000000,
+        media: None,
+        entities: None,
+        ttl_period: None,
+    });
+    let row = sent_updates_row(&short, "hello", false);
+    assert_eq!(row["noforwards"], serde_json::json!(false));
+    assert_eq!(row["id"], serde_json::json!(7));
+    let row_true = sent_updates_row(&short, "hello", true);
+    assert_eq!(row_true["noforwards"], serde_json::json!(true));
+}
+
+#[test]
+fn delete_dry_run_carries_chat() {
+    let args = DeleteArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        ids: vec![1, 2],
+        all: false,
+        self_only: false,
+    };
+    let value = delete_serve_dry_run(&args).unwrap();
+    assert_eq!(value["dry_run"], serde_json::json!(true));
+    assert_eq!(value["chat"], serde_json::json!("me"));
+    assert_eq!(value["ids"], serde_json::json!([1, 2]));
+}
+
+#[test]
+fn forward_dry_run_carries_from_and_to() {
+    let args = ForwardArgs {
+        from: crate::chat_target::ChatTarget::new_unchecked("a".to_string()),
+        ids: vec![3],
+        to: crate::chat_target::ChatTarget::new_unchecked("b".to_string()),
+    };
+    let value = forward_serve_dry_run(&args).unwrap();
+    assert_eq!(value["dry_run"], serde_json::json!(true));
+    assert_eq!(value["from"], serde_json::json!("a"));
+    assert_eq!(value["to"], serde_json::json!("b"));
+    assert_eq!(value["ids"], serde_json::json!([3]));
+}
+
+#[test]
+fn react_dry_run_carries_chat() {
+    let args = ReactArgs {
+        chat: crate::chat_target::ChatTarget::new_unchecked("me".to_string()),
+        id: 5,
+        reaction: Some("👍".to_string()),
+        remove: false,
+    };
+    let value = react_serve_dry_run(&args).unwrap();
+    assert_eq!(value["dry_run"], serde_json::json!(true));
+    assert_eq!(value["chat"], serde_json::json!("me"));
+    assert_eq!(value["id"], serde_json::json!(5));
+}
+
+#[test]
+fn split_text_ignores_early_newline_but_keeps_late_break() {
+    let early = format!("{}\n{}", "a".repeat(10), "b".repeat(50));
+    let chunks = split_text_utf16(&early, 40);
+    assert!(
+        !chunks[0].ends_with('\n'),
+        "early break at 11/40 must hard-cut"
+    );
+    assert_eq!(chunks.concat(), early);
+    let late = format!("{}\n{}", "a".repeat(30), "b".repeat(30));
+    let chunks = split_text_utf16(&late, 40);
+    assert_eq!(chunks.len(), 2);
+    assert!(chunks[0].ends_with('\n'), "late break at 31/40 must split");
+    assert_eq!(chunks.concat(), late);
 }

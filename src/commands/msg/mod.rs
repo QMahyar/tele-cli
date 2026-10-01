@@ -312,6 +312,7 @@ fn delete_report(requested: usize, deleted: usize) -> (serde_json::Value, bool) 
 pub(crate) fn delete_serve_dry_run(args: &DeleteArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
     "dry_run": true,
+    "chat": args.chat,
     "ids": args.ids,
     "self_only": args.self_only,
     "would": if args.all {
@@ -450,6 +451,8 @@ pub(crate) fn validate_forward(args: &ForwardArgs) -> TeleResult<()> {
 pub(crate) fn forward_serve_dry_run(args: &ForwardArgs) -> TeleResult<serde_json::Value> {
     Ok(serde_json::json!({
         "dry_run": true,
+        "from": args.from,
+        "to": args.to,
         "ids": args.ids,
         "would": format!("forward {} message(s) to chat {}", args.ids.len(), args.to)
     }))
@@ -1004,6 +1007,7 @@ pub(crate) async fn get_core(
     shares: &crate::client::ServeShares,
     params: GetParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_get(&GetArgs::from(&params))?;
     let target_message = get_target_message_id(&params)?;
     let batch_ids = get_batch_ids(&params)?;
     shares.rate_limiter.acquire().await;
@@ -1226,6 +1230,7 @@ pub(crate) async fn read_core(
     shares: &crate::client::ServeShares,
     params: ReadParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_read(&ReadArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -1287,7 +1292,7 @@ pub(crate) fn react_serve_dry_run(args: &ReactArgs) -> TeleResult<serde_json::Va
     } else {
         format!("react to message {}", args.id)
     };
-    Ok(serde_json::json!({"dry_run": true, "id": args.id, "would": would}))
+    Ok(serde_json::json!({"dry_run": true, "chat": args.chat, "id": args.id, "would": would}))
 }
 
 async fn react(args: ReactArgs, flags: &GlobalFlags) -> TeleResult<i32> {
@@ -1316,6 +1321,7 @@ pub(crate) async fn react_core(
     shares: &crate::client::ServeShares,
     params: ReactParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_react(&ReactArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let chat =
         entities::resolve_peer(&shares.client, shares.session.as_ref(), &params.chat).await?;
@@ -1889,6 +1895,7 @@ pub(crate) async fn typing_core(
     shares: &crate::client::ServeShares,
     params: TypingParams,
 ) -> TeleResult<serde_json::Value> {
+    validate_typing(&TypingArgs::from(&params))?;
     shares.rate_limiter.acquire().await;
     let choice = typing_action(params.action.as_deref())?;
     let chat =
