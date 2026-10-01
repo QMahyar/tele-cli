@@ -48,9 +48,7 @@ impl ClientGuard {
             account: self.account_name.clone().unwrap_or_default(),
         }
     }
-}
 
-impl ClientGuard {
     pub(crate) fn limiter_for(cfg: &crate::config::AppConfig, name: &str) -> Arc<RateLimiter> {
         let acct = cfg.accounts.get(name);
         RateLimiter::new(acct.and_then(|a| a.rpc_per_minute))
