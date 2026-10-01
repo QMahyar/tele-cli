@@ -334,58 +334,31 @@ pub fn aggregate_exit_code(ok_count: usize, failed: &[i32]) -> i32 {
     }
 }
 
-pub trait InvocationErrorExt {
-    fn is_unauthorized(&self) -> bool;
-    fn message_text(&self) -> String;
-    fn wait_seconds(&self) -> Option<u32>;
-    fn to_tele_error(&self) -> TeleError;
-}
-
-impl InvocationErrorExt for grammers_client::InvocationError {
-    fn is_unauthorized(&self) -> bool {
-        matches!(
-            self,
-            grammers_client::InvocationError::Rpc(rpc) if rpc.code == 401
-        )
-    }
-
-    fn message_text(&self) -> String {
-        match self {
-            grammers_client::InvocationError::Rpc(rpc) => rpc.to_string(),
-            grammers_client::InvocationError::Dropped => PEER_UNKNOWN_HINT.to_string(),
-            other => other.to_string(),
-        }
-    }
-
-    fn wait_seconds(&self) -> Option<u32> {
-        match self {
-            grammers_client::InvocationError::Rpc(rpc)
-                if rpc.code == 420 && rpc.value.is_some() =>
-            {
-                rpc.value
-            }
-            _ => None,
-        }
-    }
-
-    fn to_tele_error(&self) -> TeleError {
-        invocation_error_ref(self)
-    }
-}
-
 pub fn invocation_is_unauthorized(e: &grammers_client::InvocationError) -> bool {
-    e.is_unauthorized()
+    matches!(
+        e,
+        grammers_client::InvocationError::Rpc(rpc) if rpc.code == 401
+    )
 }
 
 pub const PEER_UNKNOWN_HINT: &str =
     "peer unknown to this session; run tele dialog list to refresh the peer cache";
 
 pub fn invocation_message(e: &grammers_client::InvocationError) -> String {
-    e.message_text()
+    match e {
+        grammers_client::InvocationError::Rpc(rpc) => rpc.to_string(),
+        grammers_client::InvocationError::Dropped => PEER_UNKNOWN_HINT.to_string(),
+        other => other.to_string(),
+    }
 }
 
 pub fn invocation_wait_seconds(e: &grammers_client::InvocationError) -> Option<u32> {
-    e.wait_seconds()
+    match e {
+        grammers_client::InvocationError::Rpc(rpc) if rpc.code == 420 && rpc.value.is_some() => {
+            rpc.value
+        }
+        _ => None,
+    }
 }
 
 // Server-enforced account limits that read as tool bugs when surfaced raw.
@@ -426,7 +399,7 @@ pub fn invocation_error_ref(e: &grammers_client::InvocationError) -> TeleError {
 }
 
 pub fn invocation_error(e: grammers_client::InvocationError) -> TeleError {
-    e.to_tele_error()
+    invocation_error_ref(&e)
 }
 
 pub use invocation_error as tele_invocation;
@@ -685,25 +658,25 @@ mod tests {
     }
 
     #[test]
-    fn invocation_error_ext_matches_free_functions() {
+    fn invocation_helpers_classify_unauthorized_and_flood() {
         let unauthorized = grammers_client::InvocationError::Rpc(RpcError {
             code: 401,
             name: "AUTH_KEY_UNREGISTERED".to_string(),
             value: None,
             caused_by: None,
         });
-        assert!(unauthorized.is_unauthorized());
+        assert!(invocation_is_unauthorized(&unauthorized));
         assert_eq!(
-            unauthorized.message_text(),
-            invocation_message(&unauthorized)
+            invocation_message(&unauthorized),
+            "rpc error 401: AUTH_KEY_UNREGISTERED"
         );
-        assert_eq!(unauthorized.wait_seconds(), None);
-        assert!(matches!(unauthorized.to_tele_error(), TeleError::Auth(_)));
+        assert_eq!(invocation_wait_seconds(&unauthorized), None);
+        assert!(matches!(invocation_error(unauthorized), TeleError::Auth(_)));
         let flood = rpc420("FLOOD_WAIT", 9);
-        assert!(!flood.is_unauthorized());
-        assert_eq!(flood.wait_seconds(), Some(9));
+        assert!(!invocation_is_unauthorized(&flood));
+        assert_eq!(invocation_wait_seconds(&flood), Some(9));
         assert!(matches!(
-            flood.to_tele_error(),
+            invocation_error(flood),
             TeleError::Rpc(_, 420, _, Some(9))
         ));
     }
