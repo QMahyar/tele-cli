@@ -507,9 +507,7 @@ pub(crate) fn validate_invite(args: &InviteArgs) -> TeleResult<ValidatedInvite> 
                 "--title/--expire/--usage-limit/--request-approval configure invite links, not user invites".to_string(),
             ));
         }
-        if user.trim().is_empty() {
-            return Err(TeleError::Usage("--user must not be empty".to_string()));
-        }
+        ChatTarget::parse_flag(user, "user")?;
         plan.mode = InviteMode::User;
         plan.user = Some(user.trim().to_string());
         return Ok(plan);

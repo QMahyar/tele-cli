@@ -12,6 +12,9 @@ use crate::output;
 use super::*;
 pub(crate) async fn admin_log(args: AdminLogArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    if let Some(admin) = &args.admin {
+        crate::chat_target::ChatTarget::parse_flag(admin, "admin")?;
+    }
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let since = args
         .since

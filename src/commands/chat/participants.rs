@@ -903,9 +903,7 @@ pub(crate) fn banned_rights_row(raw: &tl::types::ChatBannedRights) -> serde_json
 
 pub(crate) fn validate_permissions(args: &PermissionsArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
-    if args.user.trim().is_empty() {
-        return Err(TeleError::Usage("--user must not be empty".to_string()));
-    }
+    crate::chat_target::ChatTarget::parse_flag(&args.user, "user")?;
     Ok(())
 }
 

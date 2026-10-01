@@ -268,11 +268,8 @@ pub(crate) fn parse_link_target(target: Option<&str>) -> TeleResult<Option<Strin
             "--to remove is not supported: this API layer has no unlink method (channels.setDiscussionGroup requires a group); re-point the link to another group instead".to_string(),
         )),
         Some(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return Err(TeleError::Usage("--to cannot be empty".to_string()));
-            }
-            Ok(Some(trimmed.to_string()))
+            crate::chat_target::ChatTarget::parse_flag(raw, "to")?;
+            Ok(Some(raw.trim().to_string()))
         }
     }
 }

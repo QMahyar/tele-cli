@@ -1852,6 +1852,15 @@ fn validate_folder_create(a: &FolderCreateArgs) -> TeleResult<()> {
             ));
         }
     }
+    for target in &a.include_chat {
+        crate::chat_target::ChatTarget::parse_flag(target, "include-chat")?;
+    }
+    for target in &a.exclude_chat {
+        crate::chat_target::ChatTarget::parse_flag(target, "exclude-chat")?;
+    }
+    for target in &a.pin_chat {
+        crate::chat_target::ChatTarget::parse_flag(target, "pin-chat")?;
+    }
     Ok(())
 }
 
@@ -3051,5 +3060,53 @@ mod tests {
             ..args
         };
         assert!(validate_folder_create(&ok).is_ok());
+    }
+
+    #[test]
+    fn folder_create_rejects_invalid_chat_targets_at_boundary() {
+        let base = FolderCreateArgs {
+            title: "livetest".to_string(),
+            contacts: false,
+            non_contacts: false,
+            groups: true,
+            broadcasts: false,
+            bots: false,
+            exclude_muted: false,
+            exclude_read: false,
+            exclude_archived: false,
+            emoticon: None,
+            include_chat: vec!["me".to_string()],
+            exclude_chat: vec![],
+            pin_chat: vec![],
+        };
+        for bad in ["+1-555-ext9", "+15551234567ext9", "+1234567890123456"] {
+            for slot in ["include", "exclude", "pin"] {
+                let mut args = FolderCreateArgs {
+                    title: base.title.clone(),
+                    contacts: base.contacts,
+                    non_contacts: base.non_contacts,
+                    groups: base.groups,
+                    broadcasts: base.broadcasts,
+                    bots: base.bots,
+                    exclude_muted: base.exclude_muted,
+                    exclude_read: base.exclude_read,
+                    exclude_archived: base.exclude_archived,
+                    emoticon: None,
+                    include_chat: vec![],
+                    exclude_chat: vec![],
+                    pin_chat: vec![],
+                };
+                match slot {
+                    "include" => args.include_chat = vec![bad.to_string()],
+                    "exclude" => args.exclude_chat = vec![bad.to_string()],
+                    _ => args.pin_chat = vec![bad.to_string()],
+                }
+                assert!(
+                    matches!(validate_folder_create(&args), Err(TeleError::Usage(_))),
+                    "--{slot}-chat {bad:?} must be rejected before any lookup"
+                );
+            }
+        }
+        assert!(validate_folder_create(&base).is_ok());
     }
 }

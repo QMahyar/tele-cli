@@ -2755,6 +2755,58 @@ fn requests_mutators_require_explicit_account_selection() {
 }
 
 #[test]
+fn secondary_peer_targets_reject_invalid_values_at_boundary() {
+    for bad in ["+1-555-ext9", "+15551234567ext9", "+1234567890123456", ""] {
+        let mut a = requests_args("@c");
+        a.approve = true;
+        a.user = Some(bad.to_string());
+        assert!(
+            matches!(validate_requests(&a), Err(TeleError::Usage(_))),
+            "--user {bad:?} must be rejected before any lookup"
+        );
+    }
+    let mut ok = requests_args("@c");
+    ok.approve = true;
+    ok.user = Some("  @bob  ".to_string());
+    assert_eq!(
+        validate_requests(&ok).unwrap().user.as_deref(),
+        Some("@bob")
+    );
+
+    for bad in ["+1-555-ext9", "+15551234567ext9", "+1234567890123456"] {
+        let mut a = invite_args("@c");
+        a.user = Some(bad.to_string());
+        assert!(
+            matches!(validate_invite(&a), Err(TeleError::Usage(_))),
+            "invite --user {bad:?} must be rejected before any lookup"
+        );
+    }
+
+    for bad in ["+1-555-ext9", "+15551234567ext9"] {
+        let mut a = admin_log_args("@c");
+        a.admin = Some(bad.to_string());
+        assert!(
+            matches!(validate_admin_log(&a), Err(TeleError::Usage(_))),
+            "admin-log --admin {bad:?} must be rejected before any lookup"
+        );
+    }
+    let mut ok_admin = admin_log_args("@c");
+    ok_admin.admin = Some("me".to_string());
+    assert!(validate_admin_log(&ok_admin).is_ok());
+
+    for bad in ["+1-555-ext9", "+15551234567ext9", "   "] {
+        let args = LinkArgs {
+            chat: "@c".to_string(),
+            to: Some(bad.to_string()),
+        };
+        assert!(
+            matches!(validate_link(&args), Err(TeleError::Usage(_))),
+            "link --to {bad:?} must be rejected before any lookup"
+        );
+    }
+}
+
+#[test]
 fn requests_dry_run_payloads_echo_action_scope_and_would() {
     let mut plan = ValidatedRequests {
         action: RequestsAction::Approve,
@@ -3888,6 +3940,19 @@ mod chat_serve_tests {
         };
         let err = participants::validate_permissions(&args).unwrap_err();
         assert!(matches!(err, TeleError::Usage(_)), "{}", err.message());
+        for bad in ["+1-555-ext9", "+15551234567ext9", "+1234567890123456"] {
+            let args = PermissionsArgs {
+                chat: "@x".to_string(),
+                user: bad.to_string(),
+            };
+            assert!(
+                matches!(
+                    participants::validate_permissions(&args),
+                    Err(TeleError::Usage(_))
+                ),
+                "--user {bad:?} must be rejected before any lookup"
+            );
+        }
         let args = PermissionsArgs {
             chat: "@x".to_string(),
             user: "@y".to_string(),

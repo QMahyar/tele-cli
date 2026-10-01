@@ -556,11 +556,8 @@ fn validate_requests(args: &RequestsArgs) -> TeleResult<ValidatedRequests> {
     }
     let user = match &args.user {
         Some(u) => {
-            let t = u.trim();
-            if t.is_empty() {
-                return Err(TeleError::Usage("--user must not be empty".to_string()));
-            }
-            Some(t.to_string())
+            crate::chat_target::ChatTarget::parse_flag(u, "user")?;
+            Some(u.trim().to_string())
         }
         None => None,
     };
@@ -1677,6 +1674,9 @@ fn validate_participants(args: &ParticipantsArgs) -> TeleResult<()> {
 
 fn validate_admin_log(args: &AdminLogArgs) -> TeleResult<()> {
     crate::chat_target::ChatTarget::parse_flag(&args.chat, "chat")?;
+    if let Some(admin) = &args.admin {
+        crate::chat_target::ChatTarget::parse_flag(admin, "admin")?;
+    }
     crate::commands::validate_limit(args.limit, 10_000, "limit")?;
     let since = args
         .since
