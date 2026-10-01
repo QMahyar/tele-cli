@@ -50,11 +50,8 @@ async fn open_db(account: &str) -> TeleResult<libsql::Connection> {
     // them off the async worker threads (create_dir_private walks metadata
     // and chmods on unix).
     tokio::task::spawn_blocking(move || -> TeleResult<()> {
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            TeleError::Other(format!("cannot create cache dir {}: {e}", dir.display()))
-        })?;
         crate::fs_util::create_dir_private(&dir).map_err(|e| {
-            TeleError::Other(format!("cannot restrict cache dir {}: {e}", dir.display()))
+            TeleError::Other(format!("cannot create cache dir {}: {e}", dir.display()))
         })?;
         Ok(())
     })
@@ -322,6 +319,11 @@ pub async fn clear_cache(account: &str) -> TeleResult<serde_json::Value> {
         .execute("DELETE FROM messages", libsql::params![])
         .await
         .map_err(|e| TeleError::Other(format!("cache clear failed: {e}")))?;
+    if deleted > 0 {
+        conn.execute_batch("VACUUM")
+            .await
+            .map_err(|e| TeleError::Other(format!("cache vacuum failed: {e}")))?;
+    }
     Ok(serde_json::json!({ "account": account, "deleted": deleted, "cleared": true }))
 }
 
@@ -638,6 +640,89 @@ mod tests {
         conn.execute_batch("DROP TRIGGER IF EXISTS cache_atomic_probe;")
             .await
             .unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn clear_reclaims_file_bytes() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-cache-vacuum-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let account = test_account("vacuum");
+        let bulk: Vec<CachedMessage> = (0..200)
+            .map(|i| CachedMessage {
+                id: i,
+                chat_id: 100,
+                chat_name: "team".to_string(),
+                sender_id: Some(5),
+                sender_name: "alice".to_string(),
+                date: 1700000000 + i64::from(i),
+                text: format!("payload-{i}-{}", "x".repeat(400)),
+                media_kind: None,
+            })
+            .collect();
+        store_messages(&account, &bulk).await.unwrap();
+        let before = cache_stats(&account).await.unwrap();
+        assert_eq!(before["messages"], 200);
+        let bytes_before = before["bytes"].as_u64().unwrap();
+        clear_cache(&account).await.unwrap();
+        let after = cache_stats(&account).await.unwrap();
+        assert_eq!(after["messages"], 0);
+        let bytes_after = after["bytes"].as_u64().unwrap();
+        assert!(
+            bytes_after < bytes_before,
+            "clear must reclaim file bytes: before {bytes_before} after {bytes_after}"
+        );
+        store_messages(&account, &[atomic_message(1, "postvacuum")])
+            .await
+            .unwrap();
+        let found = search_cache(&account, "postvacuum", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn open_db_creates_missing_cache_dir() {
+        let _guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "telecli-cache-mkdir-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        let account = test_account("mkdir");
+        let cache_subdir = cache_dir().unwrap();
+        assert!(
+            !cache_subdir.exists(),
+            "precondition: cache dir must start absent"
+        );
+        store_messages(&account, &[atomic_message(1, "fresh dir hello")])
+            .await
+            .unwrap();
+        assert!(
+            cache_subdir.is_dir(),
+            "single create_dir_private must create"
+        );
+        let found = search_cache(&account, "fresh dir hello", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
         std::env::remove_var("TELE_APP_DIR");
         let _ = std::fs::remove_dir_all(&dir);
     }

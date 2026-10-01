@@ -157,18 +157,36 @@ pub(crate) fn scan_serve_bytes(
     out
 }
 
+pub(crate) const SERVE_SEEN_IDS_CAP: usize = 100_000;
+
+pub(crate) fn check_request_id_capped(
+    seen: &mut std::collections::HashSet<u64>,
+    id: u64,
+    cap: usize,
+) -> Result<(), serde_json::Value> {
+    if seen.contains(&id) {
+        return Err(err_json(
+            "ServeError",
+            format!("duplicate request id {id}; request ids must be unique per connection"),
+        ));
+    }
+    if seen.len() >= cap {
+        return Err(err_json(
+            "ServeError",
+            format!(
+                "request id budget exhausted ({cap} unique ids per connection); reconnect to start a new id space"
+            ),
+        ));
+    }
+    seen.insert(id);
+    Ok(())
+}
+
 pub(crate) fn check_request_id(
     seen: &mut std::collections::HashSet<u64>,
     id: u64,
 ) -> Result<(), serde_json::Value> {
-    if seen.insert(id) {
-        Ok(())
-    } else {
-        Err(err_json(
-            "ServeError",
-            format!("duplicate request id {id}; request ids must be unique per connection"),
-        ))
-    }
+    check_request_id_capped(seen, id, SERVE_SEEN_IDS_CAP)
 }
 
 #[cfg(test)]
@@ -2730,6 +2748,46 @@ mod tests {
         assert!(msg.contains("duplicate"), "msg: {msg}");
         assert!(msg.contains('7'), "msg: {msg}");
         assert!(msg.contains("unique"), "msg: {msg}");
+    }
+
+    #[test]
+    fn seen_ids_are_bounded_per_connection() {
+        let mut seen = std::collections::HashSet::new();
+        for id in 0..=SERVE_SEEN_IDS_CAP as u64 {
+            let result = check_request_id(&mut seen, id);
+            if id < SERVE_SEEN_IDS_CAP as u64 {
+                assert!(result.is_ok(), "id {id} within budget must be accepted");
+            } else {
+                let err = result.unwrap_err();
+                assert_eq!(err["type"], "ServeError");
+                let msg = err["message"].as_str().unwrap();
+                assert!(msg.contains("budget"), "msg: {msg}");
+                assert!(msg.contains("reconnect"), "msg: {msg}");
+            }
+        }
+        assert_eq!(seen.len(), SERVE_SEEN_IDS_CAP);
+    }
+
+    #[test]
+    fn seen_ids_at_cap_still_reject_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for id in 0..4u64 {
+            assert!(check_request_id_capped(&mut seen, id, 4).is_ok());
+        }
+        let dup = check_request_id_capped(&mut seen, 1, 4).unwrap_err();
+        assert_eq!(dup["type"], "ServeError");
+        assert!(
+            dup["message"].as_str().unwrap().contains("duplicate"),
+            "duplicate at cap must stay a duplicate, got {dup}"
+        );
+        let over = check_request_id_capped(&mut seen, 99, 4).unwrap_err();
+        assert_eq!(over["type"], "ServeError");
+        assert!(
+            over["message"].as_str().unwrap().contains("budget"),
+            "novel id past cap must name the budget, got {over}"
+        );
+        assert_eq!(seen.len(), 4, "rejected ids must not grow the set");
+        assert!(!seen.contains(&99));
     }
 
     #[test]
