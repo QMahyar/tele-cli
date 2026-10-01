@@ -992,6 +992,11 @@ mod tests {
 
     #[test]
     fn scrub_parity_battery_for_fast_path_optimization() {
+        let _env_guard = crate::config::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("TELE_API_HASH");
+        std::env::remove_var("TELE_API_ID");
         let hex40 = "deadbeef".repeat(5);
         let joined_hex = format!("{}A{}B", "a".repeat(32), "b".repeat(32));
         let exact: Vec<(String, &str)> = vec![

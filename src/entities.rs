@@ -255,6 +255,15 @@ pub fn parse_target(target: &str) -> crate::error::TeleResult<ResolvedTarget> {
                 msg_id: None,
             });
         }
+        if rest
+            .chars()
+            .all(|c| c.is_ascii_digit() || is_phone_formatting(c))
+        {
+            return Err(crate::error::TeleError::Usage(format!(
+                "phone target {target:?} has too many digits (maximum 15, including country code)"
+            )));
+        }
+        return Err(invalid_target_error(target));
     }
     if let Ok(id) = t.parse::<i64>() {
         if id == 0 {
@@ -1770,6 +1779,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_target_rejects_plus_prefixed_non_phones() {
+        for raw in ["+1234567890123456", "+12345678901234567890"] {
+            let err = parse_target(raw).unwrap_err();
+            assert!(
+                err.message().contains("too many digits"),
+                "{raw}: {}",
+                err.message()
+            );
+        }
+        for raw in ["+12ab34", "+1-555-ext9", "+15551234567ext9"] {
+            let err = parse_target(raw).unwrap_err();
+            assert!(
+                matches!(err, crate::error::TeleError::Usage(_)),
+                "{raw}: {err}"
+            );
+        }
+        assert_eq!(
+            parse_target("+123456789012345").unwrap().peer_ref,
+            "+123456789012345"
+        );
+    }
+
+    #[test]
     fn parse_target_rejects_bare_host_path() {
         assert!(parse_target("t.me/").is_err());
     }
@@ -1919,35 +1951,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_and_classify_agree_on_non_phone_plus_targets() {
+    fn parse_rejects_non_phone_plus_targets() {
         for raw in ["+1-555-ext9", "+15551234567ext9", "+15551234567 x"] {
             assert!(
                 !matches!(classify_target(raw), Target::Phone(_)),
                 "{raw} must not classify as a phone"
             );
-            let rt = parse_target(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
-            assert_eq!(rt.peer_ref, raw, "{raw} must keep the original text");
+            let err = parse_target(raw).unwrap_err();
+            assert!(
+                matches!(err, crate::error::TeleError::Usage(_)),
+                "{raw}: {err}"
+            );
         }
-        assert_eq!(
-            classify_target("+1234567890123456"),
-            Target::Numeric(1234567890123456)
-        );
-        assert_eq!(
-            parse_target("+1234567890123456")
-                .unwrap()
-                .peer_ref
-                .parse::<i64>()
-                .unwrap(),
-            1234567890123456,
-            "16-digit + targets resolve numerically, not as phones"
-        );
-        assert!(matches!(
-            classify_target("+12345678901234567890"),
-            Target::Username(_)
-        ));
-        assert_eq!(
-            parse_target("+12345678901234567890").unwrap().peer_ref,
-            "+12345678901234567890"
-        );
+        for raw in ["+1234567890123456", "+12345678901234567890"] {
+            let err = parse_target(raw).unwrap_err();
+            assert!(
+                err.message().contains("too many digits"),
+                "{raw}: {}",
+                err.message()
+            );
+        }
     }
 }
