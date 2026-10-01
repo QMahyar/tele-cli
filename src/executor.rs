@@ -16,28 +16,13 @@ const ACCOUNT_TIMEOUT_SECS: u64 = 300;
 const UNBUDGETED_COMMANDS: &[&str] =
     &["msg download", "msg export", "story send", "takeout export"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BudgetLane {
-    Budgeted,
-    Unbudgeted,
-}
-
-fn budget_lane(command: &str) -> BudgetLane {
-    let unbudgeted = UNBUDGETED_COMMANDS.iter().any(|c| {
+fn is_unbudgeted_command(command: &str) -> bool {
+    UNBUDGETED_COMMANDS.iter().any(|c| {
         command == *c
             || command
                 .strip_prefix(c)
                 .is_some_and(|rest| rest.starts_with(' '))
-    });
-    if unbudgeted {
-        BudgetLane::Unbudgeted
-    } else {
-        BudgetLane::Budgeted
-    }
-}
-
-fn command_is_unbudgeted(command: &str) -> bool {
-    budget_lane(command) == BudgetLane::Unbudgeted
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -87,7 +72,7 @@ pub async fn run_fanout(
             }),
         ));
     }
-    let outcomes = if command_is_unbudgeted(&flags.command) {
+    let outcomes = if is_unbudgeted_command(&flags.command) {
         collect_outcomes_unbudgeted(&mut handles).await
     } else {
         collect_outcomes(&mut handles).await
@@ -1100,17 +1085,16 @@ mod tests {
     #[test]
     fn unbudgeted_commands_cover_long_lanes() {
         for lane in ["msg download", "msg export", "story send", "takeout export"] {
-            assert_eq!(budget_lane(lane), BudgetLane::Unbudgeted);
-            assert_eq!(
-                budget_lane(&format!("{lane} --flag")),
-                BudgetLane::Unbudgeted,
+            assert!(is_unbudgeted_command(lane));
+            assert!(
+                is_unbudgeted_command(&format!("{lane} --flag")),
                 "subforms of {lane} stay unbudgeted"
             );
         }
-        assert_eq!(budget_lane("msg send"), BudgetLane::Budgeted);
-        assert_eq!(budget_lane("listen"), BudgetLane::Budgeted);
-        assert_eq!(budget_lane("msg downloadx"), BudgetLane::Budgeted);
-        assert_eq!(budget_lane("msg download2 --flag"), BudgetLane::Budgeted);
+        assert!(!is_unbudgeted_command("msg send"));
+        assert!(!is_unbudgeted_command("listen"));
+        assert!(!is_unbudgeted_command("msg downloadx"));
+        assert!(!is_unbudgeted_command("msg download2 --flag"));
     }
 
     #[tokio::test]
