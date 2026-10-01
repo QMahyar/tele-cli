@@ -1039,7 +1039,7 @@ Tool names, the descriptor fields above, and the `-32602` unknown-tool shape are
 
 ```
 tele takeout start [--contacts] [--messages] [--photos]
-tele takeout export [--message-limit <n>] [--redact-phones]
+tele takeout export [--message-limit <1-1000000>] [--redact-phones]
 tele takeout finish [--abandon]
 ```
 

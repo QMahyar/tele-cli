@@ -21,7 +21,10 @@ pub enum ProfileCmd {
 
 #[derive(Args, Clone)]
 pub struct GetArgs {
-    #[arg(long, help = "target user: @username, numeric ID, or me (default)")]
+    #[arg(
+        long,
+        help = "target user: @username, t.me link, numeric ID, +phone, or me (default)"
+    )]
     chat: Option<String>,
     #[arg(long, help = "include the account phone number (redacted by default)")]
     show_phone: bool,
@@ -34,13 +37,16 @@ pub struct GetArgs {
 
 #[derive(Args, Clone)]
 pub struct SetArgs {
-    #[arg(long, help = "new display name (first and last)")]
+    #[arg(long, help = "new display name (first and last; 64 chars each)")]
     name: Option<String>,
-    #[arg(long, help = "new bio/about text")]
+    #[arg(long, help = "new bio/about text (max 70 chars)")]
     bio: Option<String>,
-    #[arg(long, help = "path to new profile photo")]
+    #[arg(long, help = "path to new profile photo (jpg/png/webp, under 10 MiB)")]
     photo: Option<String>,
-    #[arg(long, help = "new username (5-32 chars)")]
+    #[arg(
+        long,
+        help = "new username (5-32 chars: letters, digits, underscore; at least one letter; no leading digit or trailing underscore; @name, t.me link, or remove to clear)"
+    )]
     username: Option<String>,
     #[arg(long, help = "clear the current username")]
     clear_username: bool,
@@ -54,7 +60,10 @@ pub struct PhotoArgs {
 
 #[derive(Args, Clone)]
 pub struct EmojiStatusArgs {
-    #[arg(long, help = "custom emoji document ID to set as emoji status")]
+    #[arg(
+        long,
+        help = "custom emoji document ID to set as emoji status (positive)"
+    )]
     emoji: Option<i64>,
     #[arg(long, help = "clear the emoji status")]
     remove: bool,
@@ -639,7 +648,7 @@ pub(crate) struct PhotoParams {
 pub struct PhotosArgs {
     #[arg(
         long,
-        help = "target user/chat: @username, numeric ID, or me (default)"
+        help = "target user/chat: @username, t.me link, numeric ID, +phone, or me (default)"
     )]
     user: Option<String>,
     #[arg(long, default_value_t = 20, help = "max photos to list (1-100)")]

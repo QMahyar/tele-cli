@@ -28,7 +28,10 @@ pub struct GetArgs {
 
 #[derive(Args, Clone)]
 pub struct SetArgs {
-    #[arg(long, help = "privacy key to change")]
+    #[arg(
+        long,
+        help = "privacy key: status, profile_photo, phone_number, calls, forwards, chat_invite, added_by_phone, voice_messages, about, phone_p2p, birthday, star_gifts_auto_save, no_paid_messages, saved_music"
+    )]
     key: String,
     #[arg(
         long,

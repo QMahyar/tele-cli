@@ -122,7 +122,7 @@ enum Command {
     /// Manage accounts (sessions, login, logout)
     #[command(subcommand)]
     Account(account::AccountCmd),
-    /// Messages: send, edit, delete, forward, pin, get, read, react, search, download, vote, polls, translate, transcribe, typing, click, scheduled, export
+    /// Messages: send, edit, delete, forward, pin, get, read, react, search, download, vote, poll-close, poll-results, poll-votes, poll-unread, translate, transcribe, typing, click, scheduled, export
     #[command(subcommand)]
     Msg(msg::MsgCmd),
     /// Chats: join, leave, invite, requests, participants, kick, admin, admin-log, stats, settings, edit, link, create, permissions

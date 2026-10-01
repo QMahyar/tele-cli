@@ -37,7 +37,7 @@ pub struct ExportArgs {
     #[arg(
         long,
         default_value_t = 1000,
-        help = "max messages per dialog to export"
+        help = "max messages per dialog to export (1-1000000)"
     )]
     message_limit: u32,
     #[arg(long, help = "redact phone numbers in the exported contacts.json")]
