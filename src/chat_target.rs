@@ -14,13 +14,16 @@ impl ChatTarget {
         if s.trim().is_empty() {
             return Err(TeleError::Usage(format!("--{flag} must not be empty")));
         }
-        match crate::entities::parse_target(s) {
-            Ok(rt) if rt.msg_id.is_some() => {
-                return Err(TeleError::Usage(format!(
-                    "--{flag} \"{s}\" carries a deep-link message id; deep-link message ids are only accepted by: tele msg get"
-                )));
-            }
-            _ => {}
+        let target = crate::entities::parse_target(s).map_err(|e| {
+            TeleError::Usage(format!(
+                "--{flag} {s:?} is not a valid target: {}",
+                e.message()
+            ))
+        })?;
+        if target.msg_id.is_some() {
+            return Err(TeleError::Usage(format!(
+                "--{flag} \"{s}\" carries a deep-link message id; deep-link message ids are only accepted by: tele msg get"
+            )));
         }
         Ok(Self(s.to_string()))
     }

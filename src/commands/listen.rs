@@ -273,12 +273,21 @@ fn resolution_usage_error(flag: &str, target: &str, cause: &TeleError) -> TeleEr
 }
 
 fn validate_listen_inputs(chats: &[String], senders: &[String]) -> TeleResult<()> {
-    for target in chats.iter().chain(senders.iter()) {
+    for target in chats {
         if target.trim().is_empty() {
             return Err(TeleError::Usage(format!(
                 "empty --chat/--from target: {target:?}"
             )));
         }
+        crate::chat_target::ChatTarget::parse_flag(target, "chat")?;
+    }
+    for target in senders {
+        if target.trim().is_empty() {
+            return Err(TeleError::Usage(format!(
+                "empty --chat/--from target: {target:?}"
+            )));
+        }
+        crate::chat_target::ChatTarget::parse_flag(target, "from")?;
     }
     Ok(())
 }
@@ -633,6 +642,9 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
             "no accounts selected: use --account <name> or --tag <tag>".to_string(),
         ));
     }
+    let chat_targets = args.chat.clone();
+    let from_targets = args.from.clone();
+    validate_listen_inputs(&chat_targets, &from_targets)?;
     if flags.dry_run {
         output::log_line("info", "[dry-run] would stream updates");
         if flags.json || flags.jsonl {
@@ -655,9 +667,6 @@ pub async fn run(args: &ListenArgs, flags: &GlobalFlags) -> TeleResult<i32> {
     } else {
         None
     };
-    let chat_targets = args.chat.clone();
-    let from_targets = args.from.clone();
-    validate_listen_inputs(&chat_targets, &from_targets)?;
     let cfg = crate::config::load_config(config_path.as_deref())?;
     let parallel = crate::executor::effective_parallel(flags.parallel, cfg.parallel_max)? as usize;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel));
