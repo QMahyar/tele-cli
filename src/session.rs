@@ -62,7 +62,9 @@ pub fn list_session_names() -> Vec<String> {
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if let Some(base) = name.strip_suffix(".session") {
-            names.push(base.to_string());
+            if validate_name(base).is_ok() {
+                names.push(base.to_string());
+            }
         }
     }
     names.sort();
@@ -380,10 +382,6 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
             "no session file for account {name}; run tele account list to inspect accounts"
         ));
     }
-    let _live_lock = acquire_lock_file(name).await?;
-    let probe = SqliteSession::open(&source).await?;
-    drop(probe);
-    checkpoint_session_db(&source).await?;
     let dest = match out {
         Some(path) => path.to_path_buf(),
         None => {
@@ -419,6 +417,10 @@ pub async fn export_session(name: &str, out: Option<&Path>) -> anyhow::Result<Ex
             ));
         }
     }
+    let _live_lock = acquire_lock_file(name).await?;
+    let probe = SqliteSession::open(&source).await?;
+    drop(probe);
+    checkpoint_session_db(&source).await?;
     let dest_for_task = dest.clone();
     let source_for_task = source.clone();
     let (size, sha) = tokio::task::spawn_blocking(move || -> anyhow::Result<(u64, String)> {
@@ -1159,6 +1161,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn list_session_names_skips_files_with_invalid_account_names() {
+        let _guard = lock_env();
+        let dir = test_dir("list-filters-invalid");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(session_dir_for_test(&dir)).unwrap();
+        std::env::set_var("TELE_APP_DIR", &dir);
+        for file in [
+            "good.session",
+            "bad name.session",
+            "all.session",
+            "good.session.export",
+            "good.session.lock",
+        ] {
+            std::fs::write(session_dir_for_test(&dir).join(file), b"x").unwrap();
+        }
+        let names = list_session_names();
+        assert_eq!(names, vec!["good".to_string()]);
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn session_dir_for_test(base: &std::path::Path) -> PathBuf {
+        base.join("sessions")
+    }
+
     fn test_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("telecli-{tag}-{}", std::process::id()))
     }
@@ -1434,6 +1462,41 @@ mod tests {
             err.to_string()
                 .contains("destination equals the live session"),
             "{err}"
+        );
+        remove_session("work").await.unwrap();
+        std::env::remove_var("TELE_APP_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn export_invalid_dest_fails_before_touching_live_session() {
+        let _guard = lock_env();
+        let dir = test_dir("export-bad-dest-untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_test_env(&dir);
+        {
+            let held = open_session("work").await.unwrap();
+            drop(held);
+        }
+        let _ = std::fs::remove_file(lock_path("work"));
+        assert!(!lock_path("work").exists());
+        let before = std::fs::read(session_path("work")).unwrap();
+        let bad = session_dir().join("bad.session");
+        let err = export_session("work", Some(&bad)).await.unwrap_err();
+        assert!(
+            err.to_string().contains("must end in .session.export"),
+            "{err}"
+        );
+        assert!(!bad.exists(), "invalid dest must not be created");
+        assert!(
+            !lock_path("work").exists(),
+            "rejected export must not acquire the live lock"
+        );
+        assert_eq!(
+            std::fs::read(session_path("work")).unwrap(),
+            before,
+            "rejected export must leave the live session untouched"
         );
         remove_session("work").await.unwrap();
         std::env::remove_var("TELE_APP_DIR");

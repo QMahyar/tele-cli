@@ -79,6 +79,22 @@ fn file_check(name: &str, path: &std::path::Path, absent_detail: &str) -> Check 
     }
 }
 
+fn is_lock_held(path: &std::path::Path) -> bool {
+    let open = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path);
+    match open {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+        Ok(file) => match file.try_lock() {
+            Ok(()) => false,
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            Err(_) => false,
+        },
+    }
+}
+
 fn session_check(dir: &std::path::Path, name: &str) -> Check {
     let path = dir.join("sessions").join(format!("{name}.session"));
     if !path.exists() {
@@ -97,11 +113,7 @@ fn session_check(dir: &std::path::Path, name: &str) -> Check {
         };
     }
     let mut detail = format!("present ({size} bytes)");
-    if dir
-        .join("sessions")
-        .join(format!("{name}.session.lock"))
-        .exists()
-    {
+    if is_lock_held(&dir.join("sessions").join(format!("{name}.session.lock"))) {
         detail.push_str("; locked (possibly in use by another process)");
     }
     match is_private(&path) {
@@ -338,6 +350,46 @@ mod tests {
         std::fs::create_dir_all(dir.join("sessions")).unwrap();
         std::fs::write(dir.join("sessions").join("work.session"), b"").unwrap();
         assert!(!session_check(&dir, "work").ok);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_check_stale_lock_file_is_not_reported_as_locked() {
+        let dir = temp_dir("sessstale");
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions").join("work.session"), vec![1u8; 32]).unwrap();
+        std::fs::write(dir.join("sessions").join("work.session.lock"), b"").unwrap();
+        let check = session_check(&dir, "work");
+        assert!(check.ok);
+        assert!(
+            !check.detail.contains("locked"),
+            "stale lock file with no holder must not report locked: {}",
+            check.detail
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_check_held_lock_is_reported_as_locked() {
+        let dir = temp_dir("sessheld");
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions").join("work.session"), vec![1u8; 32]).unwrap();
+        let lock_path = dir.join("sessions").join("work.session.lock");
+        std::fs::write(&lock_path, b"").unwrap();
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        holder.try_lock().unwrap();
+        let check = session_check(&dir, "work");
+        assert!(check.ok);
+        assert!(
+            check.detail.contains("locked"),
+            "held lock must still report locked: {}",
+            check.detail
+        );
+        drop(holder);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
